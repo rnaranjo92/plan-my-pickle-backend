@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+__debug_bin*
+/api
+README.md
+Dockerfile
+.dockerignore

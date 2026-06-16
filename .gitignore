@@ -6,3 +6,6 @@
 # Build artifacts
 __debug_bin*
 /api
+
+# Accidental `script` capture (leaked secrets) — never commit
+typescript

@@ -22,44 +22,57 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	// --- Public: spectator/shareable reads + the on-site self-service flows
+	// reached from QR codes (register, pay, shirt order, self check-in). These
+	// intentionally need no account so players and spectators have zero
+	// friction. optionalAuth attaches the user when a token happens to be sent.
 	mux.HandleFunc("GET /events", s.listEvents)
-	mux.HandleFunc("POST /events", s.createEvent)
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
-	mux.HandleFunc("DELETE /events/{id}", s.deleteEvent)
-	mux.HandleFunc("POST /dev/seed", s.seedDemo)
-	mux.HandleFunc("POST /dev/seed-playoff", s.seedPlayoffDemo)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
-	mux.HandleFunc("POST /events/{id}/register", s.register)
-	mux.HandleFunc("GET /events/{id}/registrations", s.registrations)
-	mux.HandleFunc("GET /events/{id}/finance", s.financeEntries)
-	mux.HandleFunc("POST /events/{id}/finance", s.addFinanceEntry)
-	mux.HandleFunc("DELETE /finance/{id}", s.deleteFinanceEntry)
-	mux.HandleFunc("GET /events/{id}/checklist", s.checklist)
-	mux.HandleFunc("POST /events/{id}/checklist", s.addChecklistItem)
-	mux.HandleFunc("POST /checklist/{id}/check", s.setChecklistChecked)
-	mux.HandleFunc("DELETE /checklist/{id}", s.deleteChecklistItem)
-	mux.HandleFunc("POST /events/{id}/schedule", s.schedule)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
-	mux.HandleFunc("POST /matches/{id}/score", s.recordScore)
-	mux.HandleFunc("POST /matches/{id}/start", s.startMatch)
-	mux.HandleFunc("POST /matches/{id}/swap", s.swapMatchPlayer)
-	mux.HandleFunc("POST /brackets/{id}/playoff", s.playoff)
-	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
-	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
+	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
+	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
 	mux.HandleFunc("GET /courts/nearby", s.nearbyCourts)
 	mux.HandleFunc("GET /geocode", s.geocode)
-	// payments / check-in / SMS / DUPR (server-side integrations)
+	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
 	mux.HandleFunc("POST /registrations/{id}/pay", s.pay)
-	mux.HandleFunc("POST /registrations/{id}/checkin", s.checkin)
 	mux.HandleFunc("POST /registrations/{id}/shirt", s.saveShirt)
 	mux.HandleFunc("POST /events/{id}/checkin", s.checkinByToken)
 	mux.HandleFunc("POST /events/{id}/checkin-by-phone", s.checkinByPhone)
-	mux.HandleFunc("POST /rounds/{id}/start", s.startRound)
-	mux.HandleFunc("POST /events/{id}/dupr/import", s.duprImport)
 	mux.HandleFunc("POST /events/{id}/verify-admin", s.verifyAdmin)
+
+	// --- Authenticated: creating an event stamps the caller as its owner.
+	mux.HandleFunc("POST /events", requireAuth(s.createEvent))
+
+	// --- Owner-only: management actions require a valid token AND that the
+	// caller owns the event behind the resource (see service.OwnerOf).
+	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
+	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
+	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
+	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
+	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
+	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
+	mux.HandleFunc("POST /events/{id}/checklist", s.ownerOnly("event", "id", s.addChecklistItem))
+	mux.HandleFunc("POST /checklist/{id}/check", s.ownerOnly("checklist", "id", s.setChecklistChecked))
+	mux.HandleFunc("DELETE /checklist/{id}", s.ownerOnly("checklist", "id", s.deleteChecklistItem))
+	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
+	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
+	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
+	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
+	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
+	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
+	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
+	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
+
+	// --- Demo seeding: load a sample tournament owned by the signed-in user, so
+	// the "Load demo" buttons produce events the caller can actually manage.
+	// requireAuth keeps it from being an anonymous data-injection endpoint.
+	mux.HandleFunc("POST /dev/seed", requireAuth(s.seedDemo))
+	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
+
 	return withCORS(mux)
 }
 
@@ -77,7 +90,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	id, err := s.svc.CreateEvent(req)
+	id, err := s.svc.CreateEvent(req, userID(r))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -102,8 +115,8 @@ func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-func (s *Server) seedDemo(w http.ResponseWriter, _ *http.Request) {
-	id, err := s.svc.SeedDemo()
+func (s *Server) seedDemo(w http.ResponseWriter, r *http.Request) {
+	id, err := s.svc.SeedDemo(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -111,8 +124,8 @@ func (s *Server) seedDemo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
 }
 
-func (s *Server) seedPlayoffDemo(w http.ResponseWriter, _ *http.Request) {
-	id, err := s.svc.SeedPlayoffDemo()
+func (s *Server) seedPlayoffDemo(w http.ResponseWriter, r *http.Request) {
+	id, err := s.svc.SeedPlayoffDemo(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -464,6 +477,32 @@ func (s *Server) verifyAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- helpers ----
+
+var errForbidden = errors.New("you don't have access to this resource")
+
+// ownerOnly guards a handler so only the authenticated owner of the event
+// behind a resource may call it. kind/idParam identify the resource (see
+// service.OwnerOf); idParam is the path wildcard holding its id. Unowned
+// (legacy) resources are treated as forbidden — nobody may mutate them.
+func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.OwnerOf(kind, r.PathValue(idParam))
+		if errors.Is(err, service.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if owner == "" || owner != userID(r) {
+			writeErr(w, http.StatusForbidden, errForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	// Tolerate an empty body so optional-field endpoints (pay, checkin) work
 	// with no JSON; fields fall back to their service-side defaults.
@@ -499,7 +538,9 @@ func withCORS(next http.Handler) http.Handler {
 		// preflight blocks those calls. Origin "*" is safe — the API carries no
 		// cookies/credentials (the Supabase service key is server-side only).
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		// Authorization carries the user's bearer token; without it the browser
+		// preflight blocks every authenticated request.
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

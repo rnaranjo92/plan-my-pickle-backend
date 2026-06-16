@@ -127,7 +127,9 @@ func newID() string { return uuid.NewString() }
 var ErrNotFound = errors.New("not found")
 
 // ------------------------------------------------------------------ events
-func (s *Service) CreateEvent(req model.CreateEventRequest) (string, error) {
+// CreateEvent inserts an event owned by ownerID (the authenticated organizer).
+// ownerID may be empty for internal/demo seeding, leaving the event unowned.
+func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
 	}
@@ -171,6 +173,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest) (string, error) {
 		"location":               orNull(req.Location),
 		"dupr_sanctioned":        req.DuprSanctioned,
 		"admin_passcode":         orNull(req.AdminPasscode),
+		"owner_id":               orNull(ownerID),
 		"status":                 "open",
 	})
 	if err != nil {
@@ -256,7 +259,7 @@ func ratingPtr(v float64) *float64 { return &v }
 // SeedDemo creates a fully-populated round-robin demo tournament so the app has
 // data to explore (dev convenience). ~60% of pool matches are scored. Returns
 // the new event id.
-func (s *Service) SeedDemo() (string, error) {
+func (s *Service) SeedDemo(ownerID string) (string, error) {
 	return s.seedTournament(model.CreateEventRequest{
 		Name:                 "Demo Open Slam",
 		Format:               "doubles",
@@ -270,14 +273,14 @@ func (s *Service) SeedDemo() (string, error) {
 			{Name: "3.0-3.5", MinRating: ratingPtr(3.0), MaxRating: ratingPtr(3.5)},
 			{Name: "3.5-4.0 50+", MinRating: ratingPtr(3.5), MaxRating: ratingPtr(4.0), MinAge: agePtr(50)},
 		},
-	}, 0.6)
+	}, 0.6, ownerID)
 }
 
 // SeedPlayoffDemo creates a pools->playoff demo at the very first step: 16 players
 // registered across two divisions, with NO schedule generated and NO playoff
 // bracket yet. The coordinator drives every step from the UI — Generate schedule,
 // start matches, score the pools, then Build playoff. Returns the new event id.
-func (s *Service) SeedPlayoffDemo() (string, error) {
+func (s *Service) SeedPlayoffDemo(ownerID string) (string, error) {
 	eid, err := s.CreateEvent(model.CreateEventRequest{
 		Name:                 "Demo Pickle Cup",
 		Format:               "doubles",
@@ -291,7 +294,7 @@ func (s *Service) SeedPlayoffDemo() (string, error) {
 			{Name: "3.0-3.5", MinRating: ratingPtr(3.0), MaxRating: ratingPtr(3.5)},
 			{Name: "3.5-4.0 50+", MinRating: ratingPtr(3.5), MaxRating: ratingPtr(4.0), MinAge: agePtr(50)},
 		},
-	})
+	}, ownerID)
 	if err != nil {
 		return "", err
 	}
@@ -348,8 +351,8 @@ func (s *Service) registerDemoPlayers(eventID string) error {
 // seedTournament creates the event, registers the demo players, generates the
 // pool schedule, scores a `poolCompletion` fraction (0..1) of the pool matches,
 // and reconciles each round's status to match. Used by SeedDemo (round-robin).
-func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion float64) (string, error) {
-	eid, err := s.CreateEvent(req)
+func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion float64, ownerID string) (string, error) {
+	eid, err := s.CreateEvent(req, ownerID)
 	if err != nil {
 		return "", err
 	}

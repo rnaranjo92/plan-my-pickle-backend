@@ -10,6 +10,7 @@ type Event struct {
 	ScoringMode          string   `json:"scoringMode"`      // points | wins
 	NumCourts            int      `json:"numCourts"`
 	PointsToWin          int      `json:"pointsToWin"`
+	WinBy                int      `json:"winBy"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
 	Currency             string   `json:"currency"`
 	Location             *string  `json:"location,omitempty"`
@@ -146,6 +147,7 @@ type CreateEventRequest struct {
 	ScoringMode          string         `json:"scoringMode"`      // default wins
 	NumCourts            int            `json:"numCourts"`
 	PointsToWin          int            `json:"pointsToWin"`
+	WinBy                int            `json:"winBy"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	Location             string         `json:"location"`
 	VenueName            string         `json:"venueName"`

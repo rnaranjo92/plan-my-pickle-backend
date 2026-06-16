@@ -135,6 +135,7 @@ func mapEvent(m map[string]any) model.Event {
 		ScoringMode:          asStr(m, "scoring_mode"),
 		NumCourts:            asInt(m, "num_courts"),
 		PointsToWin:          asInt(m, "points_to_win"),
+		WinBy:                asInt(m, "win_by"),
 		RegistrationFeeCents: asInt(m, "registration_fee_cents"),
 		Currency:             asStr(m, "currency"),
 		Location:             asStrPtr(m, "location"),

@@ -167,6 +167,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if ptw < 1 {
 		ptw = 11
 	}
+	winBy := req.WinBy
+	if winBy < 1 {
+		winBy = 2
+	}
 
 	ev, err := s.sb.Insert("events", map[string]any{
 		"name":                   req.Name,
@@ -176,6 +180,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"scoring_mode":           scoring,
 		"num_courts":             courts,
 		"points_to_win":          ptw,
+		"win_by":                 winBy,
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"currency":               "USD",
 		"location":               orNull(req.Location),
@@ -1070,6 +1075,33 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 	}
 	if t1 == t2 {
 		return errors.New("a pickleball game cannot end in a tie")
+	}
+	// Validate against the event's match format: the winner must reach
+	// points_to_win AND win by at least win_by (real pickleball rules).
+	// Defaults (11, win by 2) apply if the event predates the format columns.
+	ptw, winBy := 11, 2
+	if fmtRow, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event:events!event_id(points_to_win,win_by)"); err != nil {
+		return err
+	} else if fmtRow == nil {
+		return ErrNotFound
+	} else if ev, ok := fmtRow["event"].(map[string]any); ok {
+		if g := asInt(ev, "points_to_win"); g > 0 {
+			ptw = g
+		}
+		if w := asInt(ev, "win_by"); w > 0 {
+			winBy = w
+		}
+	}
+	hi, lo := t1, t2
+	if t2 > t1 {
+		hi, lo = t2, t1
+	}
+	if hi < ptw {
+		return fmt.Errorf("winning score must reach %d", ptw)
+	}
+	if hi-lo < winBy {
+		return fmt.Errorf("must win by %d (got %d–%d)", winBy, hi, lo)
 	}
 	winner := 1
 	if t2 > t1 {

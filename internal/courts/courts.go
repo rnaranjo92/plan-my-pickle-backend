@@ -24,6 +24,9 @@ type Court struct {
 	Website        string  `json:"website,omitempty"`
 	Source         string  `json:"source"`
 	DistanceMeters int     `json:"distanceMeters,omitempty"`
+	Rating         float64 `json:"rating,omitempty"`      // Google: 0-5
+	RatingCount    int     `json:"ratingCount,omitempty"` // number of ratings
+	Category       string  `json:"category,omitempty"`    // e.g. "Park", "Athletic Field"
 }
 
 type Finder interface {

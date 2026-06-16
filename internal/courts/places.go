@@ -58,7 +58,7 @@ func (f *PlacesFinder) Nearby(lat, lng, radiusKm float64) ([]Court, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Goog-Api-Key", f.APIKey)
 	req.Header.Set("X-Goog-FieldMask",
-		"places.displayName,places.formattedAddress,places.location,places.nationalPhoneNumber,places.websiteUri")
+		"places.displayName,places.formattedAddress,places.location,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.primaryTypeDisplayName")
 
 	resp, err := f.Client.Do(req)
 	if err != nil {
@@ -80,8 +80,13 @@ func (f *PlacesFinder) Nearby(lat, lng, radiusKm float64) ([]Court, error) {
 				Latitude  float64 `json:"latitude"`
 				Longitude float64 `json:"longitude"`
 			} `json:"location"`
-			NationalPhoneNumber string `json:"nationalPhoneNumber"`
-			WebsiteURI          string `json:"websiteUri"`
+			NationalPhoneNumber string  `json:"nationalPhoneNumber"`
+			WebsiteURI          string  `json:"websiteUri"`
+			Rating              float64 `json:"rating"`
+			UserRatingCount     int     `json:"userRatingCount"`
+			PrimaryTypeDisplay  struct {
+				Text string `json:"text"`
+			} `json:"primaryTypeDisplayName"`
 		} `json:"places"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -97,13 +102,16 @@ func (f *PlacesFinder) Nearby(lat, lng, radiusKm float64) ([]Court, error) {
 			name = streetLabel(p.FormattedAddress)
 		}
 		out = append(out, Court{
-			Name:    name,
-			Lat:     p.Location.Latitude,
-			Lng:     p.Location.Longitude,
-			Address: p.FormattedAddress,
-			Phone:   p.NationalPhoneNumber,
-			Website: p.WebsiteURI,
-			Source:  "google",
+			Name:        name,
+			Lat:         p.Location.Latitude,
+			Lng:         p.Location.Longitude,
+			Address:     p.FormattedAddress,
+			Phone:       p.NationalPhoneNumber,
+			Website:     p.WebsiteURI,
+			Source:      "google",
+			Rating:      p.Rating,
+			RatingCount: p.UserRatingCount,
+			Category:    p.PrimaryTypeDisplay.Text,
 		})
 	}
 	return out, nil

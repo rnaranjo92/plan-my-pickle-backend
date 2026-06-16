@@ -2,19 +2,25 @@
 package model
 
 type Event struct {
-	ID                   string  `json:"id"`
-	Name                 string  `json:"name"`
-	Format               string  `json:"format"`           // singles | doubles
-	PartnerMode          string  `json:"partnerMode"`      // fixed | rotating | na
-	TournamentFormat     string  `json:"tournamentFormat"` // round_robin | single_elim | pools_playoff
-	ScoringMode          string  `json:"scoringMode"`      // points | wins
-	NumCourts            int     `json:"numCourts"`
-	PointsToWin          int     `json:"pointsToWin"`
-	RegistrationFeeCents int     `json:"registrationFeeCents"`
-	Currency             string  `json:"currency"`
-	Location             *string `json:"location,omitempty"`
-	DuprSanctioned       bool    `json:"duprSanctioned"`
-	Status               string  `json:"status"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Format               string   `json:"format"`           // singles | doubles
+	PartnerMode          string   `json:"partnerMode"`      // fixed | rotating | na
+	TournamentFormat     string   `json:"tournamentFormat"` // round_robin | single_elim | pools_playoff
+	ScoringMode          string   `json:"scoringMode"`      // points | wins
+	NumCourts            int      `json:"numCourts"`
+	PointsToWin          int      `json:"pointsToWin"`
+	RegistrationFeeCents int      `json:"registrationFeeCents"`
+	Currency             string   `json:"currency"`
+	Location             *string  `json:"location,omitempty"`
+	VenueName            *string  `json:"venueName,omitempty"`
+	VenueAddress         *string  `json:"venueAddress,omitempty"`
+	VenuePhone           *string  `json:"venuePhone,omitempty"`
+	VenueWebsite         *string  `json:"venueWebsite,omitempty"`
+	VenueLat             *float64 `json:"venueLat,omitempty"`
+	VenueLng             *float64 `json:"venueLng,omitempty"`
+	DuprSanctioned       bool     `json:"duprSanctioned"`
+	Status               string   `json:"status"`
 }
 
 type Bracket struct {
@@ -142,6 +148,12 @@ type CreateEventRequest struct {
 	PointsToWin          int            `json:"pointsToWin"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	Location             string         `json:"location"`
+	VenueName            string         `json:"venueName"`
+	VenueAddress         string         `json:"venueAddress"`
+	VenuePhone           string         `json:"venuePhone"`
+	VenueWebsite         string         `json:"venueWebsite"`
+	VenueLat             *float64       `json:"venueLat"`
+	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`

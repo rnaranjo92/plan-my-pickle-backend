@@ -138,6 +138,12 @@ func mapEvent(m map[string]any) model.Event {
 		RegistrationFeeCents: asInt(m, "registration_fee_cents"),
 		Currency:             asStr(m, "currency"),
 		Location:             asStrPtr(m, "location"),
+		VenueName:            asStrPtr(m, "venue_name"),
+		VenueAddress:         asStrPtr(m, "venue_address"),
+		VenuePhone:           asStrPtr(m, "venue_phone"),
+		VenueWebsite:         asStrPtr(m, "venue_website"),
+		VenueLat:             asFloatPtr(m, "venue_lat"),
+		VenueLng:             asFloatPtr(m, "venue_lng"),
 		DuprSanctioned:       asBool(m, "dupr_sanctioned"),
 		Status:               asStr(m, "status"),
 	}

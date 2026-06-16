@@ -49,8 +49,8 @@ func courtCacheKey(lat, lng, radiusKm float64) string {
 		radiusKm = 25
 	}
 	// Version prefix invalidates stale cached results when the data shape or
-	// source changes (v2: distance-rank + reverse-geocode; v3: Google Places).
-	return fmt.Sprintf("v3:%.3f:%.3f:%.1f", lat, lng, radiusKm)
+	// source changes (v2: distance-rank; v3: Google Places; v4: rating/category).
+	return fmt.Sprintf("v4:%.3f:%.3f:%.1f", lat, lng, radiusKm)
 }
 
 // NearbyCourts finds pickleball courts near a point (for the create-event venue
@@ -182,6 +182,12 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"dupr_sanctioned":        req.DuprSanctioned,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
+		"venue_name":             orNull(req.VenueName),
+		"venue_address":          orNull(req.VenueAddress),
+		"venue_phone":            orNull(req.VenuePhone),
+		"venue_website":          orNull(req.VenueWebsite),
+		"venue_lat":              fOrNull(req.VenueLat),
+		"venue_lng":              fOrNull(req.VenueLng),
 		"status":                 "open",
 	})
 	if err != nil {

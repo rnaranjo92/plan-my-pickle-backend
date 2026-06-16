@@ -1,10 +1,15 @@
 package api
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,6 +86,75 @@ func TestVerifyToken(t *testing.T) {
 		tok := makeToken("anything", "HS256", map[string]any{"sub": "u", "exp": future})
 		if _, err := verifyToken(tok); err == nil {
 			t.Fatal("expected fail-closed when no secret configured")
+		}
+	})
+}
+
+// makeES256Token signs a JWT the way modern Supabase does (ES256 over the
+// base64url header.payload, signature = r||s, 32 bytes each).
+func makeES256Token(t *testing.T, priv *ecdsa.PrivateKey, kid string, claims map[string]any) string {
+	t.Helper()
+	hb, _ := json.Marshal(map[string]any{"alg": "ES256", "kid": kid, "typ": "JWT"})
+	cb, _ := json.Marshal(claims)
+	h := base64.RawURLEncoding.EncodeToString(hb)
+	c := base64.RawURLEncoding.EncodeToString(cb)
+	sum := sha256.Sum256([]byte(h + "." + c))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return h + "." + c + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestVerifyTokenES256(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const kid = "test-es256-kid"
+	jwks.mu.Lock()
+	jwks.keys[kid] = &priv.PublicKey
+	jwks.mu.Unlock()
+	future := time.Now().Add(time.Hour).Unix()
+
+	t.Run("valid ES256 accepted", func(t *testing.T) {
+		tok := makeES256Token(t, priv, kid, map[string]any{"sub": "u-es", "exp": future})
+		c, err := verifyToken(tok)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Sub != "u-es" {
+			t.Fatalf("sub = %q, want u-es", c.Sub)
+		}
+	})
+
+	t.Run("wrong key rejected", func(t *testing.T) {
+		other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tok := makeES256Token(t, other, kid, map[string]any{"sub": "u", "exp": future})
+		if _, err := verifyToken(tok); err == nil {
+			t.Fatal("expected signature rejection")
+		}
+	})
+
+	t.Run("unknown kid rejected", func(t *testing.T) {
+		tok := makeES256Token(t, priv, "no-such-kid", map[string]any{"sub": "u", "exp": future})
+		if _, err := verifyToken(tok); err == nil {
+			t.Fatal("expected unknown-kid rejection")
+		}
+	})
+
+	t.Run("tampered claims rejected", func(t *testing.T) {
+		tok := makeES256Token(t, priv, kid, map[string]any{"sub": "u-es", "exp": future})
+		parts := strings.Split(tok, ".")
+		// Swap in an "admin" payload but keep the original signature.
+		forged := base64.RawURLEncoding.EncodeToString(
+			[]byte(`{"sub":"admin","exp":` + strconv.FormatInt(future, 10) + `}`))
+		bad := parts[0] + "." + forged + "." + parts[2]
+		if _, err := verifyToken(bad); err == nil {
+			t.Fatal("expected rejection of payload tampering")
 		}
 	})
 }

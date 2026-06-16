@@ -2,29 +2,39 @@ package api
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-// Supabase Auth (GoTrue) issues HS256 access tokens signed with the project's
-// JWT secret (dashboard → Settings → API → JWT Secret). We verify them inline
-// with the standard library — no external dependency, matching this backend's
-// minimalism — then enforce ownership in the service layer.
+// Supabase Auth (GoTrue) issues access tokens signed either with the project's
+// shared secret (HS256, legacy) or an asymmetric signing key (ES256, current —
+// verified against the project's published JWKS). We verify both inline with
+// the standard library — no external dependency — then enforce ownership in the
+// service layer.
 
 type ctxKey int
 
 const userIDKey ctxKey = iota
 
-// supabaseJWTSecret signs every Supabase access token. When empty, requireAuth
-// fails closed (rejects everything) so we never accidentally run unprotected.
-var supabaseJWTSecret = os.Getenv("SUPABASE_JWT_SECRET")
+var (
+	// supabaseJWTSecret verifies legacy HS256 tokens (dashboard → Settings →
+	// API → JWT Secret). Optional once the project uses asymmetric keys.
+	supabaseJWTSecret = os.Getenv("SUPABASE_JWT_SECRET")
+	// supabaseURL is the project URL; its JWKS endpoint provides the public
+	// keys for ES256 token verification.
+	supabaseURL = strings.TrimRight(os.Getenv("SUPABASE_URL"), "/")
+)
 
 var errInvalidToken = errors.New("invalid token")
 
@@ -35,40 +45,124 @@ type tokenClaims struct {
 	Exp   int64  `json:"exp"`
 }
 
-// verifyToken validates a bearer token's HS256 signature and expiry and returns
-// its claims. It rejects "none"/asymmetric algs and expired tokens.
+// jwks caches the project's ES256 public keys (by kid), refreshed lazily on a
+// miss so key rotation is picked up without a restart.
+var jwks = &jwksCache{keys: map[string]*ecdsa.PublicKey{}}
+
+var jwksHTTP = &http.Client{Timeout: 5 * time.Second}
+
+type jwksCache struct {
+	mu   sync.RWMutex
+	keys map[string]*ecdsa.PublicKey
+}
+
+func (j *jwksCache) keyFor(kid string) *ecdsa.PublicKey {
+	j.mu.RLock()
+	k := j.keys[kid]
+	j.mu.RUnlock()
+	if k != nil {
+		return k
+	}
+	j.refresh()
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.keys[kid]
+}
+
+func (j *jwksCache) refresh() {
+	if supabaseURL == "" {
+		return
+	}
+	resp, err := jwksHTTP.Get(supabaseURL + "/auth/v1/.well-known/jwks.json")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Keys []struct {
+			Kid string `json:"kid"`
+			Kty string `json:"kty"`
+			Crv string `json:"crv"`
+			X   string `json:"x"`
+			Y   string `json:"y"`
+		} `json:"keys"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&doc) != nil {
+		return
+	}
+	next := make(map[string]*ecdsa.PublicKey, len(doc.Keys))
+	for _, k := range doc.Keys {
+		if k.Kty != "EC" || k.Crv != "P-256" {
+			continue
+		}
+		xb, err1 := base64.RawURLEncoding.DecodeString(k.X)
+		yb, err2 := base64.RawURLEncoding.DecodeString(k.Y)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		next[k.Kid] = &ecdsa.PublicKey{
+			Curve: elliptic.P256(),
+			X:     new(big.Int).SetBytes(xb),
+			Y:     new(big.Int).SetBytes(yb),
+		}
+	}
+	j.mu.Lock()
+	j.keys = next
+	j.mu.Unlock()
+}
+
+// verifyToken validates a bearer token's signature (HS256 or ES256) and expiry
+// and returns its claims. It rejects "none", unknown algs and expired tokens.
 func verifyToken(raw string) (tokenClaims, error) {
 	var c tokenClaims
-	if supabaseJWTSecret == "" {
-		return c, errInvalidToken
-	}
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
 		return c, errInvalidToken
 	}
 
-	// Header: must be HS256 (block alg confusion / "none").
 	hdrJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		return c, errInvalidToken
 	}
 	var hdr struct {
 		Alg string `json:"alg"`
+		Kid string `json:"kid"`
 	}
-	if json.Unmarshal(hdrJSON, &hdr) != nil || hdr.Alg != "HS256" {
+	if json.Unmarshal(hdrJSON, &hdr) != nil {
 		return c, errInvalidToken
 	}
 
-	// Signature: HMAC-SHA256 over "header.payload", constant-time compared.
-	mac := hmac.New(sha256.New, []byte(supabaseJWTSecret))
-	mac.Write([]byte(parts[0] + "." + parts[1]))
-	want := mac.Sum(nil)
-	got, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || !hmac.Equal(want, got) {
+	signing := parts[0] + "." + parts[1]
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
 		return c, errInvalidToken
 	}
 
-	// Claims.
+	switch hdr.Alg {
+	case "HS256":
+		if supabaseJWTSecret == "" {
+			return c, errInvalidToken
+		}
+		mac := hmac.New(sha256.New, []byte(supabaseJWTSecret))
+		mac.Write([]byte(signing))
+		if !hmac.Equal(mac.Sum(nil), sig) {
+			return c, errInvalidToken
+		}
+	case "ES256":
+		pub := jwks.keyFor(hdr.Kid)
+		if pub == nil || len(sig) != 64 {
+			return c, errInvalidToken
+		}
+		h := sha256.Sum256([]byte(signing))
+		r := new(big.Int).SetBytes(sig[:32])
+		s := new(big.Int).SetBytes(sig[32:])
+		if !ecdsa.Verify(pub, h[:], r, s) {
+			return c, errInvalidToken
+		}
+	default:
+		return c, errInvalidToken
+	}
+
 	clJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return c, errInvalidToken
@@ -84,8 +178,7 @@ func verifyToken(raw string) (tokenClaims, error) {
 
 // bearer pulls the token out of an Authorization header ("Bearer <jwt>").
 func bearer(r *http.Request) string {
-	authz := r.Header.Get("Authorization")
-	if after, ok := strings.CutPrefix(authz, "Bearer "); ok {
+	if after, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 		return strings.TrimSpace(after)
 	}
 	return ""

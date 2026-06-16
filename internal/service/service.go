@@ -134,6 +134,10 @@ func newID() string { return uuid.NewString() }
 
 var ErrNotFound = errors.New("not found")
 
+// ErrScheduleHasResults guards against silently wiping recorded scores: a
+// re-generate is refused (409) once any match is completed, unless forced.
+var ErrScheduleHasResults = errors.New("schedule already has recorded results")
+
 // ------------------------------------------------------------------ events
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
@@ -379,7 +383,7 @@ func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion fl
 		return "", err
 	}
 
-	if _, err := s.GenerateSchedule(eid); err != nil {
+	if _, err := s.GenerateSchedule(eid, true); err != nil {
 		return "", err
 	}
 
@@ -610,8 +614,28 @@ func (s *Service) BusyCourts(eventID string) ([]int, error) {
 	return out, nil
 }
 
+// completedMatchCount counts an event's scored matches (guards re-generate).
+func (s *Service) completedMatchCount(eventID string) (int, error) {
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.completed&select=id")
+	if err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
 // ---------------------------------------------------------- scheduling
-func (s *Service) GenerateSchedule(eventID string) (int, error) {
+func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
+	// Refuse to wipe an in-progress event's scores unless explicitly forced.
+	if !force {
+		done, err := s.completedMatchCount(eventID)
+		if err != nil {
+			return 0, err
+		}
+		if done > 0 {
+			return done, fmt.Errorf("%w: %d match(es) already scored", ErrScheduleHasResults, done)
+		}
+	}
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
 		return 0, err

@@ -258,7 +258,13 @@ func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
-	n, err := s.svc.GenerateSchedule(r.PathValue("id"))
+	force := r.URL.Query().Get("force") == "true"
+	n, err := s.svc.GenerateSchedule(r.PathValue("id"), force)
+	if errors.Is(err, service.ErrScheduleHasResults) {
+		// 409 — the app should confirm with the user, then retry with ?force=true.
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
 	if err != nil {
 		status(w, err)
 		return

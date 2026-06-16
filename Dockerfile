@@ -1,6 +1,7 @@
 # PlanMyPickle backend — multi-stage build.
 # Pinned to Go 1.26 (Railway's Nixpacks may not have it yet, so we use Docker).
-# modernc.org/sqlite is pure Go, so CGO can stay off and we ship a static binary.
+# Pure-Go, no cgo deps (data layer is Supabase REST over HTTPS), so CGO stays
+# off and we ship a static binary on distroless.
 
 FROM golang:1.26 AS build
 WORKDIR /src

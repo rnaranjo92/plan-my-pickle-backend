@@ -1,11 +1,7 @@
 # Secrets / local config — never commit these
 .env
 .env.*
-
-# Local SQLite database (transitional; being replaced by Supabase)
-planmypickle.db
-planmypickle.db-shm
-planmypickle.db-wal
+!.env.example
 
 # Build artifacts
 __debug_bin*

@@ -17,7 +17,6 @@ import (
 func main() {
 	loadDotEnv(".env") // optional local config (SUPABASE_URL, SUPABASE_SERVICE_KEY, …)
 
-	dsn := env("PMP_DSN", "file:planmypickle.db")
 	addr := env("PMP_ADDR", ":8080")
 	// PaaS platforms (Railway/Heroku/Render) inject $PORT and expect the app to
 	// bind to it. Honor it unless PMP_ADDR was set explicitly.
@@ -27,30 +26,25 @@ func main() {
 		}
 	}
 
-	db, err := store.Open(dsn)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
+	// Supabase is the sole data store — refuse to start without it. (The anon
+	// key is blocked by RLS; the backend needs the service_role key.)
+	if !store.NewClient().Ready() {
+		if os.Getenv("SUPABASE_URL") != "" && os.Getenv("SUPABASE_SERVICE_KEY") == "" {
+			log.Fatal("Supabase: SUPABASE_URL set but SUPABASE_SERVICE_KEY missing — " +
+				"the backend needs the service_role key (the anon key is blocked by RLS)")
+		}
+		log.Fatal("Supabase: not configured — set SUPABASE_URL + SUPABASE_SERVICE_KEY")
 	}
-	defer db.Close()
+	log.Printf("Supabase: configured (%s)", os.Getenv("SUPABASE_URL"))
 
-	switch {
-	case store.NewClient().Ready():
-		log.Printf("Supabase: configured (%s)", os.Getenv("SUPABASE_URL"))
-	case os.Getenv("SUPABASE_URL") != "" && os.Getenv("SUPABASE_SERVICE_KEY") == "":
-		log.Printf("Supabase: SUPABASE_URL set but SUPABASE_SERVICE_KEY missing — " +
-			"the backend needs the service_role key (the anon key is blocked by RLS)")
-	default:
-		log.Printf("Supabase: not configured (set SUPABASE_URL + SUPABASE_SERVICE_KEY)")
-	}
-
-	handler := api.NewServer(service.New(db))
+	handler := api.NewServer(service.New())
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
-	log.Printf("PlanMyPickle API listening on %s (db=%s)", addr, dsn)
+	log.Printf("PlanMyPickle API listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

@@ -4,7 +4,6 @@
 package service
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,17 +23,15 @@ import (
 )
 
 type Service struct {
-	db     *store.DB
-	sb     *store.Client // Supabase REST client (data-layer migration in progress)
+	sb     *store.Client // Supabase REST (the sole data store)
 	Pay    gateway.PaymentGateway
 	Sms    gateway.SmsGateway
 	Dupr   gateway.DuprGateway
 	Courts courts.Finder
 }
 
-func New(db *store.DB) *Service {
+func New() *Service {
 	return &Service{
-		db:     db,
 		sb:     store.NewClient(),
 		Pay:    gateway.NewMockPayment(),
 		Sms:    gateway.NewMockSms(),
@@ -161,81 +158,97 @@ func (s *Service) CreateEvent(req model.CreateEventRequest) (string, error) {
 		ptw = 11
 	}
 
-	id := newID()
-	_, err := s.db.Exec(`INSERT INTO events
-		(id,name,format,partner_mode,tournament_format,scoring_mode,num_courts,points_to_win,
-		 registration_fee_cents,currency,location,dupr_sanctioned,admin_passcode,status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'open')`,
-		id, req.Name, format, partner, tf, scoring, courts, ptw,
-		req.RegistrationFeeCents, "USD", nullStr(req.Location), b2i(req.DuprSanctioned), nullStr(req.AdminPasscode))
+	ev, err := s.sb.Insert("events", map[string]any{
+		"name":                   req.Name,
+		"format":                 format,
+		"partner_mode":           partner,
+		"tournament_format":      tf,
+		"scoring_mode":           scoring,
+		"num_courts":             courts,
+		"points_to_win":          ptw,
+		"registration_fee_cents": req.RegistrationFeeCents,
+		"currency":               "USD",
+		"location":               orNull(req.Location),
+		"dupr_sanctioned":        req.DuprSanctioned,
+		"admin_passcode":         orNull(req.AdminPasscode),
+		"status":                 "open",
+	})
 	if err != nil {
 		return "", err
 	}
+	if len(ev) == 0 {
+		return "", errors.New("event insert returned no row")
+	}
+	id := asStr(ev[0], "id")
 
 	divs := req.Brackets
 	if len(divs) == 0 {
 		divs = []model.BracketInput{{Name: "Open"}}
 	}
+	brackets := make([]map[string]any, 0, len(divs))
 	for i, d := range divs {
-		if _, err := s.db.Exec(
-			`INSERT INTO brackets (id,event_id,name,min_rating,max_rating,min_age,max_age,sort_order) VALUES (?,?,?,?,?,?,?,?)`,
-			newID(), id, d.Name, nullF(d.MinRating), nullF(d.MaxRating),
-			nullI(d.MinAge), nullI(d.MaxAge), i); err != nil {
-			return "", err
-		}
+		brackets = append(brackets, map[string]any{
+			"event_id":   id,
+			"name":       d.Name,
+			"min_rating": fOrNull(d.MinRating),
+			"max_rating": fOrNull(d.MaxRating),
+			"min_age":    iOrNull(d.MinAge),
+			"max_age":    iOrNull(d.MaxAge),
+			"sort_order": i,
+		})
 	}
+	if _, err := s.sb.Insert("brackets", brackets); err != nil {
+		return "", err
+	}
+	courtRows := make([]map[string]any, 0, courts)
 	for i := 1; i <= courts; i++ {
-		if _, err := s.db.Exec(
-			`INSERT INTO courts (id,event_id,label,court_number) VALUES (?,?,?,?)`,
-			newID(), id, "Court "+strconv.Itoa(i), i); err != nil {
-			return "", err
-		}
+		courtRows = append(courtRows, map[string]any{
+			"event_id":     id,
+			"label":        "Court " + strconv.Itoa(i),
+			"court_number": i,
+		})
+	}
+	if _, err := s.sb.Insert("courts", courtRows); err != nil {
+		return "", err
 	}
 	return id, nil
 }
 
 func (s *Service) ListEvents() ([]model.Event, error) {
-	rows, err := s.db.Query(`SELECT id,name,format,partner_mode,tournament_format,scoring_mode,
-		num_courts,points_to_win,registration_fee_cents,currency,location,dupr_sanctioned,status
-		FROM events ORDER BY created_at DESC`)
+	rows, err := s.sb.Select("events", "select=*&order=created_at.desc")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []model.Event
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	out := make([]model.Event, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapEvent(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Service) GetEvent(id string) (model.Event, error) {
-	row := s.db.QueryRow(`SELECT id,name,format,partner_mode,tournament_format,scoring_mode,
-		num_courts,points_to_win,registration_fee_cents,currency,location,dupr_sanctioned,status
-		FROM events WHERE id=?`, id)
-	e, err := scanEvent(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return e, ErrNotFound
+	row, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=*")
+	if err != nil {
+		return model.Event{}, err
 	}
-	return e, err
+	if row == nil {
+		return model.Event{}, ErrNotFound
+	}
+	return mapEvent(row), nil
 }
 
 // DeleteEvent removes an event and (via ON DELETE CASCADE) all its brackets,
 // courts, registrations, payments, rounds, matches, match_participants,
 // notifications and DUPR submissions. Players are global and are not deleted.
 func (s *Service) DeleteEvent(id string) error {
-	res, err := s.db.Exec(`DELETE FROM events WHERE id=?`, id)
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=id")
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if ev == nil {
 		return ErrNotFound
 	}
-	return nil
+	return s.sb.Delete("events", "id=eq."+store.Q(id))
 }
 
 func ratingPtr(v float64) *float64 { return &v }
@@ -379,69 +392,85 @@ func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion fl
 // completed and 'active' when only some are; rounds with no completed matches are
 // left 'pending'. Used after seeding, which records scores without the usual
 // StartRound flow.
+// reconcileRoundStatuses marks each round completed (all its matches done),
+// active (some done), or leaves it pending (none done). PostgREST can't do the
+// GROUP BY/HAVING, so we pull each round with its matches' statuses embedded and
+// compute the transitions in Go, batching the two UPDATEs by target status.
 func (s *Service) reconcileRoundStatuses(eventID string) error {
-	if _, err := s.db.Exec(`
-		UPDATE rounds SET status='completed', updated_at=?
-		WHERE event_id=? AND id IN (
-			SELECT r.id FROM rounds r JOIN matches m ON m.round_id=r.id
-			GROUP BY r.id
-			HAVING SUM(CASE WHEN m.status='completed' THEN 0 ELSE 1 END)=0
-		)`, now(), eventID); err != nil {
+	rows, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+"&select=id,status,matches(status)")
+	if err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`
-		UPDATE rounds SET status='active', updated_at=?
-		WHERE event_id=? AND id IN (
-			SELECT r.id FROM rounds r JOIN matches m ON m.round_id=r.id
-			GROUP BY r.id
-			HAVING SUM(CASE WHEN m.status='completed' THEN 1 ELSE 0 END) > 0
-			   AND SUM(CASE WHEN m.status='completed' THEN 0 ELSE 1 END) > 0
-		)`, now(), eventID)
-	return err
+	var toCompleted, toActive []string
+	for _, r := range rows {
+		ms, _ := r["matches"].([]any)
+		total, done := 0, 0
+		for _, m := range ms {
+			mm, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			total++
+			if asStr(mm, "status") == "completed" {
+				done++
+			}
+		}
+		if total == 0 {
+			continue
+		}
+		switch {
+		case done == total:
+			if asStr(r, "status") != "completed" {
+				toCompleted = append(toCompleted, asStr(r, "id"))
+			}
+		case done > 0:
+			if asStr(r, "status") != "active" {
+				toActive = append(toActive, asStr(r, "id"))
+			}
+		}
+	}
+	if len(toCompleted) > 0 {
+		if _, err := s.sb.Update("rounds", "id=in.("+strings.Join(toCompleted, ",")+")",
+			map[string]any{"status": "completed"}); err != nil {
+			return err
+		}
+	}
+	if len(toActive) > 0 {
+		if _, err := s.sb.Update("rounds", "id=in.("+strings.Join(toActive, ",")+")",
+			map[string]any{"status": "active"}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // listPoolMatchIDs returns the ids of every pool-stage match for an event, in a
 // stable insertion order.
 func (s *Service) listPoolMatchIDs(eventID string) ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT id FROM matches WHERE event_id=? AND stage='pool' ORDER BY rowid`, eventID)
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id&order=created_at,id")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, asStr(r, "id"))
 	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
-	rows, err := s.db.Query(
-		`SELECT id,event_id,name,min_rating,max_rating,min_age,max_age,sort_order FROM brackets WHERE event_id=? ORDER BY sort_order`, eventID)
+	rows, err := s.sb.Select("brackets",
+		"event_id=eq."+store.Q(eventID)+"&select=*&order=sort_order")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []model.Bracket
-	for rows.Next() {
-		var b model.Bracket
-		var mn, mx sql.NullFloat64
-		var mnA, mxA sql.NullInt64
-		if err := rows.Scan(&b.ID, &b.EventID, &b.Name, &mn, &mx, &mnA, &mxA, &b.SortOrder); err != nil {
-			return nil, err
-		}
-		b.MinRating = nf(mn)
-		b.MaxRating = nf(mx)
-		b.MinAge = ni(mnA)
-		b.MaxAge = ni(mxA)
-		out = append(out, b)
+	out := make([]model.Bracket, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapBracket(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ------------------------------------------------------------ registration
@@ -449,14 +478,23 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
 	}
-	playerID := newID()
-	if _, err := s.db.Exec(
-		`INSERT INTO players (id,full_name,phone,email,skill_level,dupr_id,dupr_rating,dupr_reliability)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		playerID, req.FullName, nullStr(req.Phone), nullStr(req.Email), nullF(req.SkillLevel),
-		nullStr(req.DuprID), nullF(req.DuprRating), nullF(req.DuprReliability)); err != nil {
+	pl, err := s.sb.Insert("players", map[string]any{
+		"full_name":        req.FullName,
+		"phone":            orNull(req.Phone),
+		"email":            orNull(req.Email),
+		"skill_level":      fOrNull(req.SkillLevel),
+		"dupr_id":          orNull(req.DuprID),
+		"dupr_rating":      fOrNull(req.DuprRating),
+		"dupr_reliability": fOrNull(req.DuprReliability),
+	})
+	if err != nil {
 		return model.Registration{}, err
 	}
+	if len(pl) == 0 {
+		return model.Registration{}, errors.New("player insert returned no row")
+	}
+	playerID := asStr(pl[0], "id")
+
 	bracketID := req.BracketID
 	if bracketID == "" {
 		b, err := s.autoAssignBracket(eventID, req.SkillLevel)
@@ -465,15 +503,22 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 		}
 		bracketID = b
 	}
-	regID := newID()
 	token := newID()
-	if _, err := s.db.Exec(
-		`INSERT INTO registrations (id,event_id,player_id,partner_id,bracket_id,check_in_token) VALUES (?,?,?,?,?,?)`,
-		regID, eventID, playerID, nullStr(req.PartnerID), nullStr(bracketID), token); err != nil {
+	reg, err := s.sb.Insert("registrations", map[string]any{
+		"event_id":       eventID,
+		"player_id":      playerID,
+		"partner_id":     orNull(req.PartnerID),
+		"bracket_id":     orNull(bracketID),
+		"check_in_token": token,
+	})
+	if err != nil {
 		return model.Registration{}, err
 	}
+	if len(reg) == 0 {
+		return model.Registration{}, errors.New("registration insert returned no row")
+	}
 	return model.Registration{
-		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
+		ID: asStr(reg[0], "id"), EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,
 	}, nil
 }
@@ -499,65 +544,48 @@ func (s *Service) autoAssignBracket(eventID string, rating *float64) (string, er
 }
 
 func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
-	rows, err := s.db.Query(`SELECT r.id,r.event_id,r.player_id,p.full_name,r.bracket_id,
-		r.payment_status,r.checked_in,r.check_in_token,p.phone,p.dupr_id,p.dupr_rating,b.min_rating,b.max_rating
-		FROM registrations r
-		JOIN players p ON p.id=r.player_id
-		LEFT JOIN brackets b ON b.id=r.bracket_id
-		WHERE r.event_id=?`, eventID)
+	// registrations has two FKs to players (player_id, partner_id) so the embed
+	// must name the FK column; alias both embeds to stable keys.
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&select=id,event_id,player_id,bracket_id,payment_status,checked_in,check_in_token,"+
+			"player:players!player_id(full_name,phone,dupr_id,dupr_rating),"+
+			"bracket:brackets(min_rating,max_rating)")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []model.Registration
-	for rows.Next() {
-		var r model.Registration
-		var bid, tok, phone, duprID sql.NullString
-		var checked int
-		var rating, bMin, bMax sql.NullFloat64
-		if err := rows.Scan(&r.ID, &r.EventID, &r.PlayerID, &r.FullName, &bid,
-			&r.PaymentStatus, &checked, &tok, &phone, &duprID, &rating, &bMin, &bMax); err != nil {
-			return nil, err
-		}
-		r.BracketID = ns(bid)
-		r.CheckInToken = ns(tok)
-		r.Phone = phone.String
-		r.DuprID = ns(duprID)
-		r.CheckedIn = checked == 1
-		r.DuprRating = nf(rating)
-		// Flag (don't block) a player whose DUPR rating is outside their division.
-		if rating.Valid {
-			if (bMin.Valid && rating.Float64 < bMin.Float64) ||
-				(bMax.Valid && rating.Float64 > bMax.Float64) {
-				r.OutsideRating = true
-			}
-		}
-		out = append(out, r)
+	out := make([]model.Registration, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapRegistration(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // BusyCourts returns the distinct court numbers that currently have an
 // in-progress match in this event. The schedule UI uses this to dim other
 // scheduled matches assigned to a court that's already in play.
 func (s *Service) BusyCourts(eventID string) ([]int, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT c.court_number
-		FROM matches m JOIN courts c ON c.id=m.court_id
-		WHERE m.event_id=? AND m.status='in_progress' AND c.court_number IS NOT NULL
-		ORDER BY c.court_number`, eventID)
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.in_progress&select=court:courts!court_id(court_number)")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	seen := map[int]bool{}
 	out := []int{}
-	for rows.Next() {
-		var n int
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
+	for _, r := range rows {
+		c := asMap(r, "court")
+		if c == nil {
+			continue
 		}
-		out = append(out, n)
+		n := asIntPtr(c, "court_number")
+		if n == nil || seen[*n] {
+			continue
+		}
+		seen[*n] = true
+		out = append(out, *n)
 	}
-	return out, rows.Err()
+	sort.Ints(out)
+	return out, nil
 }
 
 // ---------------------------------------------------------- scheduling
@@ -622,7 +650,7 @@ func (s *Service) GenerateSchedule(eventID string) (int, error) {
 	if err := s.spreadCourts(eventID); err != nil {
 		return 0, err
 	}
-	_, err = s.db.Exec(`UPDATE events SET status='in_progress', updated_at=? WHERE id=?`, now(), eventID)
+	_, err = s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{"status": "in_progress"})
 	return total, err
 }
 
@@ -645,31 +673,37 @@ func (s *Service) spreadCourts(eventID string) error {
 	}
 	sort.Ints(courtNums)
 
-	rows, err := s.db.Query(`
-		SELECT m.id, r.round_number
-		FROM matches m JOIN rounds r ON r.id=m.round_id
-		WHERE m.event_id=? AND m.stage='pool'
-		ORDER BY r.round_number, m.bracket_id, m.rowid`, eventID)
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
 	if err != nil {
 		return err
 	}
 	type mr struct {
-		id    string
-		round int
+		id, bracket, created string
+		round                int
 	}
-	var list []mr
-	for rows.Next() {
-		var x mr
-		if err := rows.Scan(&x.id, &x.round); err != nil {
-			rows.Close()
-			return err
+	list := make([]mr, 0, len(rows))
+	for _, r := range rows {
+		round := 0
+		if rd := asMap(r, "round"); rd != nil {
+			round = asInt(rd, "round_number")
 		}
-		list = append(list, x)
+		list = append(list, mr{
+			id: asStr(r, "id"), bracket: asStr(r, "bracket_id"),
+			created: asStr(r, "created_at"), round: round,
+		})
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
+	// Match the old ORDER BY r.round_number, m.bracket_id, insertion order.
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		if a.round != b.round {
+			return a.round < b.round
+		}
+		if a.bracket != b.bracket {
+			return a.bracket < b.bracket
+		}
+		return a.created < b.created
+	})
 
 	prevRound, idx := -1, 0
 	for _, m := range list {
@@ -679,8 +713,8 @@ func (s *Service) spreadCourts(eventID string) error {
 		}
 		cid := courtByNum[courtNums[idx%len(courtNums)]]
 		idx++
-		if _, err := s.db.Exec(
-			`UPDATE matches SET court_id=?, updated_at=? WHERE id=?`, cid, now(), m.id); err != nil {
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(m.id),
+			map[string]any{"court_id": cid}); err != nil {
 			return err
 		}
 	}
@@ -708,19 +742,28 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 
 	count := 0
 	for _, round := range schedule {
-		roundID := newID()
-		if _, err := s.db.Exec(
-			`INSERT INTO rounds (id,event_id,bracket_id,round_number) VALUES (?,?,?,?)`,
-			roundID, ev.ID, bracketID, round.RoundNumber); err != nil {
+		rd, err := s.sb.Insert("rounds", map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID, "round_number": round.RoundNumber,
+		})
+		if err != nil {
 			return 0, err
 		}
+		if len(rd) == 0 {
+			return 0, errors.New("round insert returned no row")
+		}
+		roundID := asStr(rd[0], "id")
 		for _, m := range round.Matches {
-			matchID := newID()
-			if _, err := s.db.Exec(
-				`INSERT INTO matches (id,event_id,bracket_id,round_id,court_id,stage) VALUES (?,?,?,?,?, 'pool')`,
-				matchID, ev.ID, bracketID, roundID, nullStr(courtByNum[m.CourtNumber])); err != nil {
+			mt, err := s.sb.Insert("matches", map[string]any{
+				"event_id": ev.ID, "bracket_id": bracketID, "round_id": roundID,
+				"court_id": orNull(courtByNum[m.CourtNumber]), "stage": "pool",
+			})
+			if err != nil {
 				return 0, err
 			}
+			if len(mt) == 0 {
+				return 0, errors.New("match insert returned no row")
+			}
+			matchID := asStr(mt[0], "id")
 			if err := s.insertSide(matchID, 1, m.Team1); err != nil {
 				return 0, err
 			}
@@ -738,27 +781,28 @@ func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [
 	idByKey := map[string]string{}
 	count := 0
 	for _, m := range plan.Matches {
-		mid := newID()
-		idByKey[key(m.Round, m.Slot)] = mid
-		isBye := m.ResolvedWinner != nil
-		var winning sql.NullInt64
-		status := "scheduled"
-		var completed sql.NullString
-		if isBye {
-			status = "completed"
-			completed = sql.NullString{String: now(), Valid: true}
+		row := map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+			"bracket_round": m.Round, "bracket_slot": m.Slot, "status": "scheduled",
+		}
+		if m.ResolvedWinner != nil { // a bye — auto-complete it
+			row["status"] = "completed"
+			row["completed_at"] = now()
 			if !engine.IsBye(m.Side1) && m.Side1 != nil {
-				winning = sql.NullInt64{Int64: 1, Valid: true}
+				row["winning_team"] = 1
 			} else {
-				winning = sql.NullInt64{Int64: 2, Valid: true}
+				row["winning_team"] = 2
 			}
 		}
-		if _, err := s.db.Exec(
-			`INSERT INTO matches (id,event_id,bracket_id,stage,bracket_round,bracket_slot,status,winning_team,completed_at)
-			 VALUES (?,?,?, 'bracket', ?,?,?,?,?)`,
-			mid, ev.ID, bracketID, m.Round, m.Slot, status, winning, completed); err != nil {
+		out, err := s.sb.Insert("matches", row)
+		if err != nil {
 			return 0, err
 		}
+		if len(out) == 0 {
+			return 0, errors.New("bracket match insert returned no row")
+		}
+		mid := asStr(out[0], "id")
+		idByKey[key(m.Round, m.Slot)] = mid
 		if err := s.insertSide(mid, 1, m.Side1); err != nil {
 			return 0, err
 		}
@@ -773,9 +817,9 @@ func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [
 		}
 		mid := idByKey[key(m.Round, m.Slot)]
 		feedID := idByKey[key(m.FeedsRound, m.FeedsSlot)]
-		if _, err := s.db.Exec(
-			`UPDATE matches SET feeds_match_id=?, feeds_slot=?, updated_at=? WHERE id=?`,
-			feedID, m.FeedsTeam, now(), mid); err != nil {
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(mid), map[string]any{
+			"feeds_match_id": feedID, "feeds_slot": m.FeedsTeam,
+		}); err != nil {
 			return 0, err
 		}
 	}
@@ -796,45 +840,59 @@ func (s *Service) persistMedalBracket(ev model.Event, bracketID string, sides []
 	if len(sides) >= 4 {
 		s1, s2, s3, s4 = sides[0], sides[1], sides[2], sides[3]
 	}
-	goldID, bronzeID, sf1ID, sf2ID := newID(), newID(), newID(), newID()
 
-	// Round 2 medal games (TBD until the semifinals resolve).
-	for _, g := range []struct {
-		id   string
-		slot int
-	}{{goldID, 0}, {bronzeID, 1}} {
-		if _, err := s.db.Exec(
-			`INSERT INTO matches (id,event_id,bracket_id,stage,bracket_round,bracket_slot,status)
-			 VALUES (?,?,?, 'bracket', 2, ?, 'scheduled')`,
-			g.id, ev.ID, bracketID, g.slot); err != nil {
-			return 0, err
+	// Round 2 medal games (TBD until the semifinals resolve). Insert these first
+	// so we have their ids to point the semifinals' winner/loser feeds at.
+	medal := func(slot int) (string, error) {
+		out, err := s.sb.Insert("matches", map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+			"bracket_round": 2, "bracket_slot": slot, "status": "scheduled",
+		})
+		if err != nil {
+			return "", err
 		}
+		if len(out) == 0 {
+			return "", errors.New("medal game insert returned no row")
+		}
+		return asStr(out[0], "id"), nil
+	}
+	goldID, err := medal(0)
+	if err != nil {
+		return 0, err
+	}
+	bronzeID, err := medal(1)
+	if err != nil {
+		return 0, err
 	}
 
 	// Round 1 semifinals (1v4, 2v3). Winner -> gold, loser -> bronze, each into
 	// team-slot (sf slot + 1) of the round-2 game.
 	semis := []struct {
-		id   string
 		slot int
 		a, b []string
 	}{
-		{sf1ID, 0, s1, s4}, // #1 vs #4 (nil = TBD skeleton)
-		{sf2ID, 1, s2, s3}, // #2 vs #3
+		{0, s1, s4}, // #1 vs #4 (nil = TBD skeleton)
+		{1, s2, s3}, // #2 vs #3
 	}
 	for _, sf := range semis {
 		feedSlot := sf.slot + 1
-		if _, err := s.db.Exec(
-			`INSERT INTO matches
-			 (id,event_id,bracket_id,stage,bracket_round,bracket_slot,status,
-			  feeds_match_id,feeds_slot,loser_feeds_match_id,loser_feeds_slot)
-			 VALUES (?,?,?, 'bracket', 1, ?, 'scheduled', ?,?,?,?)`,
-			sf.id, ev.ID, bracketID, sf.slot, goldID, feedSlot, bronzeID, feedSlot); err != nil {
+		out, err := s.sb.Insert("matches", map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+			"bracket_round": 1, "bracket_slot": sf.slot, "status": "scheduled",
+			"feeds_match_id": goldID, "feeds_slot": feedSlot,
+			"loser_feeds_match_id": bronzeID, "loser_feeds_slot": feedSlot,
+		})
+		if err != nil {
 			return 0, err
 		}
-		if err := s.insertSide(sf.id, 1, sf.a); err != nil {
+		if len(out) == 0 {
+			return 0, errors.New("semifinal insert returned no row")
+		}
+		sfID := asStr(out[0], "id")
+		if err := s.insertSide(sfID, 1, sf.a); err != nil {
 			return 0, err
 		}
-		if err := s.insertSide(sf.id, 2, sf.b); err != nil {
+		if err := s.insertSide(sfID, 2, sf.b); err != nil {
 			return 0, err
 		}
 	}
@@ -842,21 +900,20 @@ func (s *Service) persistMedalBracket(ev model.Event, bracketID string, sides []
 }
 
 func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error) {
-	var eventID string
-	if err := s.db.QueryRow(`SELECT event_id FROM brackets WHERE id=?`, bracketID).Scan(&eventID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrNotFound
-		}
+	b, err := s.sb.SelectOne("brackets", "id=eq."+store.Q(bracketID)+"&select=event_id")
+	if err != nil {
 		return 0, err
 	}
+	if b == nil {
+		return 0, ErrNotFound
+	}
+	eventID := asStr(b, "event_id")
 
 	// A single-elimination playoff is seeded from pool standings, so the pools
 	// must be fully played first. Otherwise "Build playoff" would seed a
 	// meaningless bracket off all-zero standings.
-	var poolTotal, poolOpen int
-	if err := s.db.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(CASE WHEN status!='completed' THEN 1 ELSE 0 END), 0)
-		FROM matches WHERE bracket_id=? AND stage='pool'`, bracketID).Scan(&poolTotal, &poolOpen); err != nil {
+	poolTotal, poolOpen, err := s.poolProgress(bracketID)
+	if err != nil {
 		return 0, err
 	}
 	if poolTotal == 0 {
@@ -927,46 +984,42 @@ func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID string) ([][]s
 // once every pool match in the division is complete. No-op when the pools
 // aren't done, there's no skeleton, or it's already seeded.
 func (s *Service) maybeSeedPlayoff(bracketID string) error {
-	var eventID string
-	if err := s.db.QueryRow(`SELECT event_id FROM brackets WHERE id=?`, bracketID).Scan(&eventID); err != nil {
+	b, err := s.sb.SelectOne("brackets", "id=eq."+store.Q(bracketID)+"&select=event_id")
+	if err != nil {
 		return err
 	}
-	var total, open int
-	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status!='completed' THEN 1 ELSE 0 END),0)
-		FROM matches WHERE bracket_id=? AND stage='pool'`, bracketID).Scan(&total, &open); err != nil {
+	if b == nil {
+		return ErrNotFound
+	}
+	eventID := asStr(b, "event_id")
+	total, open, err := s.poolProgress(bracketID)
+	if err != nil {
 		return err
 	}
 	if total == 0 || open > 0 {
 		return nil
 	}
 	// Locate the skeleton semifinals (round 1).
-	rows, err := s.db.Query(`SELECT id, bracket_slot FROM matches
-		WHERE bracket_id=? AND stage='bracket' AND bracket_round=1 ORDER BY bracket_slot`, bracketID)
+	semis, err := s.sb.Select("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket&bracket_round=eq.1&select=id,bracket_slot&order=bracket_slot")
 	if err != nil {
 		return err
 	}
 	semiBySlot := map[int]string{}
-	for rows.Next() {
-		var id string
-		var slot int
-		if err := rows.Scan(&id, &slot); err != nil {
-			rows.Close()
-			return err
-		}
-		semiBySlot[slot] = id
+	for _, m := range semis {
+		semiBySlot[asInt(m, "bracket_slot")] = asStr(m, "id")
 	}
-	rows.Close()
 	sf1, ok1 := semiBySlot[0]
 	sf2, ok2 := semiBySlot[1]
 	if !ok1 || !ok2 {
 		return nil // no skeleton (e.g. fewer than 4 teams)
 	}
 	// Already seeded? (sf1 has participants)
-	var seeded int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM match_participants WHERE match_id=?`, sf1).Scan(&seeded); err != nil {
+	seeded, err := s.sb.Select("match_participants", "match_id=eq."+store.Q(sf1)+"&select=match_id")
+	if err != nil {
 		return err
 	}
-	if seeded > 0 {
+	if len(seeded) > 0 {
 		return nil
 	}
 	ev, err := s.GetEvent(eventID)
@@ -1005,52 +1058,49 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 	if t2 > t1 {
 		winner = 2
 	}
-	res, err := s.db.Exec(
-		`UPDATE matches SET team1_score=?, team2_score=?, winning_team=?, status='completed', completed_at=?, updated_at=? WHERE id=?`,
-		t1, t2, winner, now(), now(), matchID)
+	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
+		"team1_score": t1, "team2_score": t2, "winning_team": winner,
+		"status": "completed", "completed_at": now(),
+	})
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if len(out) == 0 {
 		return ErrNotFound
 	}
-
-	var stage, eventID string
-	var feedsMatch, loserFeedsMatch, bracketCol sql.NullString
-	var feedsSlot, loserFeedsSlot sql.NullInt64
-	if err := s.db.QueryRow(
-		`SELECT stage, event_id, bracket_id, feeds_match_id, feeds_slot, loser_feeds_match_id, loser_feeds_slot
-		 FROM matches WHERE id=?`, matchID).
-		Scan(&stage, &eventID, &bracketCol, &feedsMatch, &feedsSlot, &loserFeedsMatch, &loserFeedsSlot); err != nil {
-		return err
-	}
+	// The updated row (return=representation) carries the routing columns.
+	m := out[0]
+	stage := asStr(m, "stage")
+	eventID := asStr(m, "event_id")
 	if stage == "bracket" {
 		loser := 3 - winner
 		// Winner advances (e.g. semifinal -> gold game).
-		if feedsMatch.Valid {
-			if err := s.advanceTeam(matchID, winner, feedsMatch.String, int(feedsSlot.Int64)); err != nil {
+		if fm := asStrPtr(m, "feeds_match_id"); fm != nil {
+			if err := s.advanceTeam(matchID, winner, *fm, asInt(m, "feeds_slot")); err != nil {
 				return err
 			}
 		}
 		// Loser drops down (e.g. semifinal loser -> bronze game).
-		if loserFeedsMatch.Valid {
-			if err := s.advanceTeam(matchID, loser, loserFeedsMatch.String, int(loserFeedsSlot.Int64)); err != nil {
+		if lm := asStrPtr(m, "loser_feeds_match_id"); lm != nil {
+			if err := s.advanceTeam(matchID, loser, *lm, asInt(m, "loser_feeds_slot")); err != nil {
 				return err
 			}
 		}
 	}
 	// A completed pool match may have finished the pools — seed the playoff.
-	if stage == "pool" && bracketCol.Valid {
-		if err := s.maybeSeedPlayoff(bracketCol.String); err != nil {
-			return err
+	if stage == "pool" {
+		if bc := asStrPtr(m, "bracket_id"); bc != nil {
+			if err := s.maybeSeedPlayoff(*bc); err != nil {
+				return err
+			}
 		}
 	}
 	// DUPR-sanctioned events queue completed results for later import.
-	var sanctioned int
-	if err := s.db.QueryRow(`SELECT dupr_sanctioned FROM events WHERE id=?`, eventID).Scan(&sanctioned); err != nil {
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=dupr_sanctioned")
+	if err != nil {
 		return err
 	}
-	if sanctioned == 1 {
+	if ev != nil && asBool(ev, "dupr_sanctioned") {
 		if err := s.queueDuprSubmission(matchID, eventID); err != nil {
 			return err
 		}
@@ -1067,18 +1117,18 @@ type DuprImportSummary struct {
 
 // VerifyAdminPasscode gates the coordinator scoring page. No passcode = open.
 func (s *Service) VerifyAdminPasscode(eventID, code string) (bool, error) {
-	var pass sql.NullString
-	err := s.db.QueryRow(`SELECT admin_passcode FROM events WHERE id=?`, eventID).Scan(&pass)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, ErrNotFound
-	}
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=admin_passcode")
 	if err != nil {
 		return false, err
 	}
-	if !pass.Valid || pass.String == "" {
+	if ev == nil {
+		return false, ErrNotFound
+	}
+	pass := asStr(ev, "admin_passcode")
+	if pass == "" {
 		return true, nil
 	}
-	return pass.String == strings.TrimSpace(code), nil
+	return pass == strings.TrimSpace(code), nil
 }
 
 // CollectPayment charges the registration fee via the payment gateway. (#4)
@@ -1086,18 +1136,23 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 	if provider == "" {
 		provider = "manual"
 	}
-	var eventID string
-	if err := s.db.QueryRow(`SELECT event_id FROM registrations WHERE id=?`, registrationID).Scan(&eventID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, ErrNotFound
-		}
+	reg, err := s.sb.SelectOne("registrations", "id=eq."+store.Q(registrationID)+"&select=event_id")
+	if err != nil {
 		return false, err
 	}
-	var fee int
-	var currency string
-	if err := s.db.QueryRow(`SELECT registration_fee_cents, currency FROM events WHERE id=?`, eventID).Scan(&fee, &currency); err != nil {
+	if reg == nil {
+		return false, ErrNotFound
+	}
+	eventID := asStr(reg, "event_id")
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=registration_fee_cents,currency")
+	if err != nil {
 		return false, err
 	}
+	if ev == nil {
+		return false, ErrNotFound
+	}
+	fee := asInt(ev, "registration_fee_cents")
+	currency := asStr(ev, "currency")
 	res, err := s.Pay.Charge(registrationID, fee, currency, provider)
 	if err != nil {
 		return false, err
@@ -1108,12 +1163,19 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 		status, regStatus = "paid", "paid"
 		ref, paidAt = res.ProviderRef, now()
 	}
-	if _, err := s.db.Exec(
-		`INSERT INTO payments (id,registration_id,provider,provider_ref,amount_cents,currency,status,paid_at) VALUES (?,?,?,?,?,?,?,?)`,
-		newID(), registrationID, provider, ref, fee, currency, status, paidAt); err != nil {
+	if _, err := s.sb.Insert("payments", map[string]any{
+		"registration_id": registrationID,
+		"provider":        provider,
+		"provider_ref":    ref,
+		"amount_cents":    fee,
+		"currency":        currency,
+		"status":          status,
+		"paid_at":         paidAt,
+	}); err != nil {
 		return false, err
 	}
-	if _, err := s.db.Exec(`UPDATE registrations SET payment_status=?, updated_at=? WHERE id=?`, regStatus, now(), registrationID); err != nil {
+	if _, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID),
+		map[string]any{"payment_status": regStatus}); err != nil {
 		return false, err
 	}
 	return res.OK, nil
@@ -1125,29 +1187,39 @@ func (s *Service) SaveShirtOrder(registrationID string, req model.ShirtRequest) 
 	if strings.TrimSpace(req.Size) == "" {
 		return model.ShirtOrder{}, errors.New("shirt size is required")
 	}
-	var rid string
-	err := s.db.QueryRow(`SELECT id FROM registrations WHERE id=?`, registrationID).Scan(&rid)
-	if errors.Is(err, sql.ErrNoRows) {
+	r, err := s.sb.SelectOne("registrations", "id=eq."+store.Q(registrationID)+"&select=id")
+	if err != nil {
+		return model.ShirtOrder{}, err
+	}
+	if r == nil {
 		return model.ShirtOrder{}, ErrNotFound
 	}
-	if err != nil {
-		return model.ShirtOrder{}, err
-	}
 
-	var id string
-	err = s.db.QueryRow(`SELECT id FROM shirt_orders WHERE registration_id=?`, registrationID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		id = newID()
-		_, err = s.db.Exec(
-			`INSERT INTO shirt_orders (id,registration_id,size,name_on_shirt,number,color) VALUES (?,?,?,?,?,?)`,
-			id, registrationID, req.Size, nullStr(req.NameOnShirt), nullStr(req.Number), nullStr(req.Color))
-	} else if err == nil {
-		_, err = s.db.Exec(
-			`UPDATE shirt_orders SET size=?, name_on_shirt=?, number=?, color=?, updated_at=? WHERE id=?`,
-			req.Size, nullStr(req.NameOnShirt), nullStr(req.Number), nullStr(req.Color), now(), id)
-	}
+	existing, err := s.sb.SelectOne("shirt_orders", "registration_id=eq."+store.Q(registrationID)+"&select=id")
 	if err != nil {
 		return model.ShirtOrder{}, err
+	}
+	fields := map[string]any{
+		"size":          req.Size,
+		"name_on_shirt": orNull(req.NameOnShirt),
+		"number":        orNull(req.Number),
+		"color":         orNull(req.Color),
+	}
+	var id string
+	if existing == nil {
+		fields["registration_id"] = registrationID
+		out, ierr := s.sb.Insert("shirt_orders", fields)
+		if ierr != nil {
+			return model.ShirtOrder{}, ierr
+		}
+		if len(out) > 0 {
+			id = asStr(out[0], "id")
+		}
+	} else {
+		id = asStr(existing, "id")
+		if _, uerr := s.sb.Update("shirt_orders", "id=eq."+store.Q(id), fields); uerr != nil {
+			return model.ShirtOrder{}, uerr
+		}
 	}
 	return model.ShirtOrder{
 		ID: id, RegistrationID: registrationID, Size: req.Size,
@@ -1172,60 +1244,46 @@ func (s *Service) AddFinanceEntry(eventID string, req model.FinanceEntryRequest)
 	if req.AmountCents <= 0 {
 		return model.FinanceEntry{}, errors.New("amount must be greater than zero")
 	}
-	var eid string
-	err := s.db.QueryRow(`SELECT id FROM events WHERE id=?`, eventID).Scan(&eid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return model.FinanceEntry{}, ErrNotFound
-	}
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=id")
 	if err != nil {
 		return model.FinanceEntry{}, err
 	}
-	id := newID()
-	ts := now()
-	note := strings.TrimSpace(req.Note)
-	if _, err := s.db.Exec(
-		`INSERT INTO finance_entries (id,event_id,kind,category,amount_cents,note,created_at)
-		 VALUES (?,?,?,?,?,?,?)`,
-		id, eventID, req.Kind, category, req.AmountCents, note, ts); err != nil {
+	if ev == nil {
+		return model.FinanceEntry{}, ErrNotFound
+	}
+	out, err := s.sb.Insert("finance_entries", map[string]any{
+		"event_id":     eventID,
+		"kind":         req.Kind,
+		"category":     category,
+		"amount_cents": req.AmountCents,
+		"note":         strings.TrimSpace(req.Note),
+	})
+	if err != nil {
 		return model.FinanceEntry{}, err
 	}
-	return model.FinanceEntry{
-		ID: id, EventID: eventID, Kind: req.Kind, Category: category,
-		AmountCents: req.AmountCents, Note: note, CreatedAt: ts,
-	}, nil
+	if len(out) == 0 {
+		return model.FinanceEntry{}, errors.New("insert returned no row")
+	}
+	return mapFinanceEntry(out[0]), nil
 }
 
 // FinanceEntries lists an event's ledger lines, newest first.
 func (s *Service) FinanceEntries(eventID string) ([]model.FinanceEntry, error) {
-	rows, err := s.db.Query(
-		`SELECT id,event_id,kind,category,amount_cents,COALESCE(note,''),created_at
-		 FROM finance_entries WHERE event_id=? ORDER BY created_at DESC, id DESC`, eventID)
+	rows, err := s.sb.Select("finance_entries",
+		"event_id=eq."+store.Q(eventID)+"&select=*&order=created_at.desc,id.desc")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []model.FinanceEntry{}
-	for rows.Next() {
-		var e model.FinanceEntry
-		if err := rows.Scan(&e.ID, &e.EventID, &e.Kind, &e.Category,
-			&e.AmountCents, &e.Note, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	out := make([]model.FinanceEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapFinanceEntry(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// DeleteFinanceEntry removes a ledger line.
+// DeleteFinanceEntry removes a ledger line (idempotent).
 func (s *Service) DeleteFinanceEntry(id string) error {
-	res, err := s.db.Exec(`DELETE FROM finance_entries WHERE id=?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.sb.Delete("finance_entries", "id=eq."+store.Q(id))
 }
 
 // ---------------------------------------------------------- checklist
@@ -1256,49 +1314,44 @@ var defaultChecklist = []string{
 // Checklist returns an event's prep checklist, seeding the common must-haves the
 // first time it's opened so a new event starts with a useful default list.
 func (s *Service) Checklist(eventID string) ([]model.ChecklistItem, error) {
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM checklist_items WHERE event_id=?`, eventID).Scan(&n); err != nil {
+	items, err := s.listChecklist(eventID)
+	if err != nil {
 		return nil, err
 	}
-	if n == 0 {
-		var eid string
-		err := s.db.QueryRow(`SELECT id FROM events WHERE id=?`, eventID).Scan(&eid)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		if err != nil {
-			return nil, err
-		}
-		for i, label := range defaultChecklist {
-			if _, err := s.db.Exec(
-				`INSERT INTO checklist_items (id,event_id,label,checked,sort_order) VALUES (?,?,?,0,?)`,
-				newID(), eventID, label, i); err != nil {
-				return nil, err
-			}
-		}
+	if len(items) > 0 {
+		return items, nil
+	}
+	// Empty — seed the default must-haves (after confirming the event exists).
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=id")
+	if err != nil {
+		return nil, err
+	}
+	if ev == nil {
+		return nil, ErrNotFound
+	}
+	seed := make([]map[string]any, 0, len(defaultChecklist))
+	for i, label := range defaultChecklist {
+		seed = append(seed, map[string]any{
+			"event_id": eventID, "label": label, "checked": false, "sort_order": i,
+		})
+	}
+	if _, err := s.sb.Insert("checklist_items", seed); err != nil {
+		return nil, err
 	}
 	return s.listChecklist(eventID)
 }
 
 func (s *Service) listChecklist(eventID string) ([]model.ChecklistItem, error) {
-	rows, err := s.db.Query(
-		`SELECT id,event_id,label,checked,sort_order FROM checklist_items
-		 WHERE event_id=? ORDER BY sort_order, rowid`, eventID)
+	rows, err := s.sb.Select("checklist_items",
+		"event_id=eq."+store.Q(eventID)+"&select=*&order=sort_order,created_at")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []model.ChecklistItem{}
-	for rows.Next() {
-		var c model.ChecklistItem
-		var checked int
-		if err := rows.Scan(&c.ID, &c.EventID, &c.Label, &checked, &c.SortOrder); err != nil {
-			return nil, err
-		}
-		c.Checked = checked == 1
-		out = append(out, c)
+	out := make([]model.ChecklistItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapChecklistItem(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // AddChecklistItem appends a custom item to the end of the list.
@@ -1307,52 +1360,50 @@ func (s *Service) AddChecklistItem(eventID, label string) (model.ChecklistItem, 
 	if label == "" {
 		return model.ChecklistItem{}, errors.New("label is required")
 	}
-	var eid string
-	err := s.db.QueryRow(`SELECT id FROM events WHERE id=?`, eventID).Scan(&eid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return model.ChecklistItem{}, ErrNotFound
-	}
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=id")
 	if err != nil {
 		return model.ChecklistItem{}, err
 	}
-	var maxOrder sql.NullInt64
-	_ = s.db.QueryRow(`SELECT MAX(sort_order) FROM checklist_items WHERE event_id=?`, eventID).Scan(&maxOrder)
-	order := int(maxOrder.Int64) + 1
-	id := newID()
-	if _, err := s.db.Exec(
-		`INSERT INTO checklist_items (id,event_id,label,checked,sort_order) VALUES (?,?,?,0,?)`,
-		id, eventID, label, order); err != nil {
+	if ev == nil {
+		return model.ChecklistItem{}, ErrNotFound
+	}
+	order := 0
+	last, err := s.sb.Select("checklist_items",
+		"event_id=eq."+store.Q(eventID)+"&select=sort_order&order=sort_order.desc&limit=1")
+	if err != nil {
 		return model.ChecklistItem{}, err
 	}
-	return model.ChecklistItem{ID: id, EventID: eventID, Label: label, SortOrder: order}, nil
+	if len(last) > 0 {
+		order = asInt(last[0], "sort_order") + 1
+	}
+	out, err := s.sb.Insert("checklist_items", map[string]any{
+		"event_id": eventID, "label": label, "checked": false, "sort_order": order,
+	})
+	if err != nil {
+		return model.ChecklistItem{}, err
+	}
+	if len(out) == 0 {
+		return model.ChecklistItem{}, errors.New("insert returned no row")
+	}
+	return mapChecklistItem(out[0]), nil
 }
 
 // SetChecklistChecked sets an item's checked state.
 func (s *Service) SetChecklistChecked(id string, checked bool) error {
-	v := 0
-	if checked {
-		v = 1
-	}
-	res, err := s.db.Exec(`UPDATE checklist_items SET checked=? WHERE id=?`, v, id)
+	out, err := s.sb.Update("checklist_items", "id=eq."+store.Q(id),
+		map[string]any{"checked": checked})
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if len(out) == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-// DeleteChecklistItem removes an item.
+// DeleteChecklistItem removes an item (idempotent).
 func (s *Service) DeleteChecklistItem(id string) error {
-	res, err := s.db.Exec(`DELETE FROM checklist_items WHERE id=?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.sb.Delete("checklist_items", "id=eq."+store.Q(id))
 }
 
 // CheckIn marks a registration checked in. (#1)
@@ -1360,13 +1411,15 @@ func (s *Service) CheckIn(registrationID, method string) error {
 	if method == "" {
 		method = "manual"
 	}
-	res, err := s.db.Exec(
-		`UPDATE registrations SET checked_in=1, checked_in_at=?, check_in_method=?, updated_at=? WHERE id=?`,
-		now(), method, now(), registrationID)
+	out, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID), map[string]any{
+		"checked_in":      true,
+		"checked_in_at":   now(),
+		"check_in_method": method,
+	})
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if len(out) == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -1374,14 +1427,15 @@ func (s *Service) CheckIn(registrationID, method string) error {
 
 // CheckInByToken redeems a player's QR/check-in token. Returns the registration id.
 func (s *Service) CheckInByToken(eventID, token string) (string, error) {
-	var regID string
-	err := s.db.QueryRow(`SELECT id FROM registrations WHERE event_id=? AND check_in_token=?`, eventID, token).Scan(&regID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
-	}
+	row, err := s.sb.SelectOne("registrations",
+		"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+"&select=id")
 	if err != nil {
 		return "", err
 	}
+	if row == nil {
+		return "", ErrNotFound
+	}
+	regID := asStr(row, "id")
 	return regID, s.CheckIn(regID, "qr")
 }
 
@@ -1404,35 +1458,27 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 	if len(want) < 7 {
 		return "", "", errors.New("enter the phone number you registered with")
 	}
-	rows, err := s.db.Query(`SELECT r.id, p.full_name, p.phone
-		FROM registrations r JOIN players p ON p.id=r.player_id
-		WHERE r.event_id=?`, eventID)
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&select=id,player:players!player_id(full_name,phone)")
 	if err != nil {
 		return "", "", err
 	}
 	var matchID, matchName string
 	found := false
-	for rows.Next() {
-		var id, name, ph string
-		if err := rows.Scan(&id, &name, &ph); err != nil {
-			rows.Close()
-			return "", "", err
+	for _, r := range rows {
+		p := asMap(r, "player")
+		if p == nil {
+			continue
 		}
-		have := digitsOnly(ph)
+		have := digitsOnly(asStr(p, "phone"))
 		if have == "" {
 			continue
 		}
 		if have == want || strings.HasSuffix(have, want) || strings.HasSuffix(want, have) {
-			matchID, matchName = id, name
+			matchID, matchName = asStr(r, "id"), asStr(p, "full_name")
 			found = true
 			break
 		}
-	}
-	// Close the read cursor BEFORE the CheckIn write — holding an open cursor
-	// during an UPDATE deadlocks the single file-backed SQLite connection.
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return "", "", err
 	}
 	if !found {
 		return "", "", ErrNotFound
@@ -1444,49 +1490,40 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 
 // StartRound activates a round and texts each player their court. (#5)
 func (s *Service) StartRound(roundID string) (int, error) {
-	var roundNumber int
-	var eventID string
-	err := s.db.QueryRow(`SELECT round_number, event_id FROM rounds WHERE id=?`, roundID).Scan(&roundNumber, &eventID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
-	}
+	rd, err := s.sb.SelectOne("rounds", "id=eq."+store.Q(roundID)+"&select=round_number,event_id")
 	if err != nil {
 		return 0, err
 	}
-	if _, err := s.db.Exec(`UPDATE rounds SET status='active', started_at=?, updated_at=? WHERE id=?`, now(), now(), roundID); err != nil {
+	if rd == nil {
+		return 0, ErrNotFound
+	}
+	roundNumber := asInt(rd, "round_number")
+	if _, err := s.sb.Update("rounds", "id=eq."+store.Q(roundID),
+		map[string]any{"status": "active", "started_at": now()}); err != nil {
 		return 0, err
 	}
 	// Mark every not-yet-played match in the round as in progress, so starting a
 	// whole round behaves like starting each match individually.
-	if _, err := s.db.Exec(
-		`UPDATE matches SET status='in_progress', updated_at=? WHERE round_id=? AND status='scheduled'`,
-		now(), roundID); err != nil {
+	if _, err := s.sb.Update("matches",
+		"round_id=eq."+store.Q(roundID)+"&status=eq.scheduled",
+		map[string]any{"status": "in_progress"}); err != nil {
 		return 0, err
 	}
 
-	type mc struct{ id, court, eventID string }
-	rows, err := s.db.Query(`SELECT m.id, COALESCE(c.label,'your court'), m.event_id
-		FROM matches m LEFT JOIN courts c ON c.id=m.court_id WHERE m.round_id=?`, roundID)
+	matches, err := s.sb.Select("matches",
+		"round_id=eq."+store.Q(roundID)+"&select=id,event_id,court:courts!court_id(label)")
 	if err != nil {
 		return 0, err
 	}
-	var matches []mc
-	for rows.Next() {
-		var x mc
-		if err := rows.Scan(&x.id, &x.court, &x.eventID); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		matches = append(matches, x)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-
 	sent := 0
 	for _, m := range matches {
-		n, err := s.notifyMatchStart(m.id, m.eventID, m.court, roundNumber)
+		court := "your court"
+		if c := asMap(m, "court"); c != nil {
+			if l := asStr(c, "label"); l != "" {
+				court = l
+			}
+		}
+		n, err := s.notifyMatchStart(asStr(m, "id"), asStr(m, "event_id"), court, roundNumber)
 		if err != nil {
 			return 0, err
 		}
@@ -1499,36 +1536,39 @@ func (s *Service) StartRound(roundID string) (int, error) {
 // pool round to 'active' if it was still pending, and texts that match's players.
 // Returns the number of SMS sent.
 func (s *Service) StartMatch(matchID string) (int, error) {
-	var court, eventID string
-	var roundID sql.NullString
-	var roundNumber sql.NullInt64
-	err := s.db.QueryRow(`SELECT COALESCE(c.label,'your court'), m.event_id, m.round_id, r.round_number
-		FROM matches m
-		LEFT JOIN courts c ON c.id=m.court_id
-		LEFT JOIN rounds r ON r.id=m.round_id
-		WHERE m.id=?`, matchID).Scan(&court, &eventID, &roundID, &roundNumber)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
-	}
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event_id,round_id,court:courts!court_id(label),round:rounds!round_id(round_number)")
 	if err != nil {
 		return 0, err
 	}
-	if _, err := s.db.Exec(
-		`UPDATE matches SET status='in_progress', updated_at=? WHERE id=? AND status='scheduled'`,
-		now(), matchID); err != nil {
+	if m == nil {
+		return 0, ErrNotFound
+	}
+	eventID := asStr(m, "event_id")
+	court := "your court"
+	if c := asMap(m, "court"); c != nil {
+		if l := asStr(c, "label"); l != "" {
+			court = l
+		}
+	}
+	if _, err := s.sb.Update("matches",
+		"id=eq."+store.Q(matchID)+"&status=eq.scheduled",
+		map[string]any{"status": "in_progress"}); err != nil {
 		return 0, err
 	}
-	// Reflect that play has begun on the parent pool round (if any).
-	if roundID.Valid {
-		if _, err := s.db.Exec(
-			`UPDATE rounds SET status='active', started_at=COALESCE(started_at,?), updated_at=? WHERE id=? AND status='pending'`,
-			now(), now(), roundID.String); err != nil {
+	// Reflect that play has begun on the parent pool round (if it was pending).
+	// (started_at is null on a pending round, so setting it here matches the old
+	// COALESCE(started_at, now()).)
+	if rid := asStrPtr(m, "round_id"); rid != nil {
+		if _, err := s.sb.Update("rounds",
+			"id=eq."+store.Q(*rid)+"&status=eq.pending",
+			map[string]any{"status": "active", "started_at": now()}); err != nil {
 			return 0, err
 		}
 	}
 	rn := 0
-	if roundNumber.Valid {
-		rn = int(roundNumber.Int64)
+	if r := asMap(m, "round"); r != nil {
+		rn = asInt(r, "round_number")
 	}
 	return s.notifyMatchStart(matchID, eventID, court, rn)
 }
@@ -1536,34 +1576,34 @@ func (s *Service) StartMatch(matchID string) (int, error) {
 // notifyMatchStart texts every player in a match that they're up, recording each
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
-	prows, err := s.db.Query(`SELECT p.phone FROM match_participants mp JOIN players p ON p.id=mp.player_id WHERE mp.match_id=?`, matchID)
+	prows, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(phone)")
 	if err != nil {
 		return 0, err
 	}
 	var phones []string
-	for prows.Next() {
-		var ph sql.NullString
-		if err := prows.Scan(&ph); err != nil {
-			prows.Close()
-			return 0, err
+	for _, r := range prows {
+		if p := asMap(r, "player"); p != nil {
+			if ph := asStr(p, "phone"); ph != "" {
+				phones = append(phones, ph)
+			}
 		}
-		if ph.Valid && ph.String != "" {
-			phones = append(phones, ph.String)
-		}
-	}
-	prows.Close()
-	if err := prows.Err(); err != nil {
-		return 0, err
 	}
 
 	sent := 0
 	for _, phone := range phones {
 		body := fmt.Sprintf("PlanMyPickle: You are up! Head to %s for round %d.", court, roundNumber)
-		notifID := newID()
-		if _, err := s.db.Exec(`INSERT INTO notifications (id,event_id,match_id,type,to_address,body) VALUES (?,?,?,?,?,?)`,
-			notifID, eventID, matchID, "game_starting", phone, body); err != nil {
+		ins, err := s.sb.Insert("notifications", map[string]any{
+			"event_id": eventID, "match_id": matchID, "type": "game_starting",
+			"to_address": phone, "body": body,
+		})
+		if err != nil {
 			return 0, err
 		}
+		if len(ins) == 0 {
+			return 0, errors.New("notification insert returned no row")
+		}
+		notifID := asStr(ins[0], "id")
 		r, err := s.Sms.Send(phone, body)
 		if err != nil {
 			return 0, err
@@ -1574,8 +1614,9 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 			st, ref, sentAt = "sent", r.ProviderRef, now()
 			sent++
 		}
-		if _, err := s.db.Exec(`UPDATE notifications SET status=?, provider_ref=?, sent_at=?, updated_at=? WHERE id=?`,
-			st, ref, sentAt, now(), notifID); err != nil {
+		if _, err := s.sb.Update("notifications", "id=eq."+store.Q(notifID), map[string]any{
+			"status": st, "provider_ref": ref, "sent_at": sentAt,
+		}); err != nil {
 			return 0, err
 		}
 	}
@@ -1583,16 +1624,18 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 }
 
 func (s *Service) queueDuprSubmission(matchID, eventID string) error {
-	var existing string
-	err := s.db.QueryRow(`SELECT id FROM dupr_submissions WHERE match_id=?`, matchID).Scan(&existing)
-	if errors.Is(err, sql.ErrNoRows) {
-		_, err = s.db.Exec(`INSERT INTO dupr_submissions (id,event_id,match_id) VALUES (?,?,?)`, newID(), eventID, matchID)
-		return err
-	}
+	existing, err := s.sb.SelectOne("dupr_submissions", "match_id=eq."+store.Q(matchID)+"&select=id")
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE dupr_submissions SET status='pending', error=NULL, updated_at=? WHERE id=?`, now(), existing)
+	if existing == nil {
+		_, err := s.sb.Insert("dupr_submissions", map[string]any{
+			"event_id": eventID, "match_id": matchID,
+		})
+		return err
+	}
+	_, err = s.sb.Update("dupr_submissions", "id=eq."+store.Q(asStr(existing, "id")),
+		map[string]any{"status": "pending", "error": nil})
 	return err
 }
 
@@ -1605,53 +1648,47 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 	if !ev.DuprSanctioned {
 		return DuprImportSummary{}, nil
 	}
-	var duprEventID string
-	_ = s.db.QueryRow(`SELECT COALESCE(dupr_event_id,'') FROM events WHERE id=?`, eventID).Scan(&duprEventID)
+	duprEventID := ""
+	if row, _ := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=dupr_event_id"); row != nil {
+		duprEventID = asStr(row, "dupr_event_id")
+	}
 
-	rows, err := s.db.Query(`SELECT id, match_id FROM dupr_submissions WHERE event_id=? AND status='pending'`, eventID)
+	pendings, err := s.sb.Select("dupr_submissions",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.pending&select=id,match_id")
 	if err != nil {
-		return DuprImportSummary{}, err
-	}
-	type pend struct{ id, matchID string }
-	var pendings []pend
-	for rows.Next() {
-		var p pend
-		if err := rows.Scan(&p.id, &p.matchID); err != nil {
-			rows.Close()
-			return DuprImportSummary{}, err
-		}
-		pendings = append(pendings, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return DuprImportSummary{}, err
 	}
 
 	var sum DuprImportSummary
 	for _, p := range pendings {
-		var t1s, t2s, wt sql.NullInt64
-		if err := s.db.QueryRow(`SELECT team1_score, team2_score, winning_team FROM matches WHERE id=?`, p.matchID).
-			Scan(&t1s, &t2s, &wt); err != nil {
+		subID := asStr(p, "id")
+		matchID := asStr(p, "match_id")
+		m, err := s.sb.SelectOne("matches",
+			"id=eq."+store.Q(matchID)+"&select=team1_score,team2_score,winning_team")
+		if err != nil {
 			return sum, err
 		}
-		if !wt.Valid || !t1s.Valid || !t2s.Valid {
-			s.markSubmission(p.id, "failed", "", "match not completed")
+		t1s := asIntPtr(m, "team1_score")
+		t2s := asIntPtr(m, "team2_score")
+		wt := asIntPtr(m, "winning_team")
+		if m == nil || wt == nil || t1s == nil || t2s == nil {
+			s.markSubmission(subID, "failed", "", "match not completed")
 			sum.Failed++
 			continue
 		}
-		prows, err := s.db.Query(
-			`SELECT mp.team, COALESCE(p.dupr_id,''), p.full_name FROM match_participants mp JOIN players p ON p.id=mp.player_id WHERE mp.match_id=?`, p.matchID)
+		parts, err := s.sb.Select("match_participants",
+			"match_id=eq."+store.Q(matchID)+"&select=team,player:players!player_id(dupr_id,full_name)")
 		if err != nil {
 			return sum, err
 		}
 		var t1, t2 []string
 		missing := ""
-		for prows.Next() {
-			var team int
-			var did, name string
-			if err := prows.Scan(&team, &did, &name); err != nil {
-				prows.Close()
-				return sum, err
+		for _, pr := range parts {
+			team := asInt(pr, "team")
+			did, name := "", ""
+			if pl := asMap(pr, "player"); pl != nil {
+				did = asStr(pl, "dupr_id")
+				name = asStr(pl, "full_name")
 			}
 			if did == "" {
 				missing = name
@@ -1662,28 +1699,24 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 				t2 = append(t2, did)
 			}
 		}
-		prows.Close()
-		if err := prows.Err(); err != nil {
-			return sum, err
-		}
 		if missing != "" {
-			s.markSubmission(p.id, "failed", "", "Missing DUPR id for "+missing)
+			s.markSubmission(subID, "failed", "", "Missing DUPR id for "+missing)
 			sum.Failed++
 			continue
 		}
 		res, err := s.Dupr.SubmitMatch(gateway.DuprPayload{
 			EventID: eventID, DuprEventID: duprEventID,
 			Team1DuprIDs: t1, Team2DuprIDs: t2,
-			Team1Score: int(t1s.Int64), Team2Score: int(t2s.Int64),
+			Team1Score: *t1s, Team2Score: *t2s,
 		})
 		if err != nil {
 			return sum, err
 		}
 		if res.OK {
-			s.markSubmission(p.id, "submitted", res.DuprMatchID, "")
+			s.markSubmission(subID, "submitted", res.DuprMatchID, "")
 			sum.Submitted++
 		} else {
-			s.markSubmission(p.id, "failed", "", res.Error)
+			s.markSubmission(subID, "failed", "", res.Error)
 			sum.Failed++
 		}
 	}
@@ -1691,19 +1724,16 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 }
 
 func (s *Service) markSubmission(id, status, ref, errMsg string) {
-	var submittedAt, refv, errv any
+	var submittedAt any
 	if status == "submitted" {
 		submittedAt = now()
 	}
-	if ref != "" {
-		refv = ref
-	}
-	if errMsg != "" {
-		errv = errMsg
-	}
-	_, _ = s.db.Exec(
-		`UPDATE dupr_submissions SET status=?, provider_ref=?, error=?, submitted_at=?, updated_at=? WHERE id=?`,
-		status, refv, errv, submittedAt, now(), id)
+	_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
+		"status":       status,
+		"provider_ref": orNull(ref),
+		"error":        orNull(errMsg),
+		"submitted_at": submittedAt,
+	})
 }
 
 // advanceTeam copies one side (by team number) of a finished match into its
@@ -1712,171 +1742,112 @@ func (s *Service) markSubmission(id, status, ref, errMsg string) {
 // advanced into that exact (feed match, slot) so a re-scored match that flips
 // the result does not leave both teams' players on one side.
 func (s *Service) advanceTeam(matchID string, team int, feedsMatchID string, feedsSlot int) error {
-	if _, err := s.db.Exec(
-		`DELETE FROM match_participants WHERE match_id=? AND team=?`, feedsMatchID, feedsSlot); err != nil {
+	// Clear any team previously advanced into this exact (feed match, slot) so a
+	// re-scored match that flips the result doesn't pile both teams onto one side.
+	if err := s.sb.Delete("match_participants",
+		"match_id=eq."+store.Q(feedsMatchID)+"&team=eq."+strconv.Itoa(feedsSlot)); err != nil {
 		return err
 	}
-	rows, err := s.db.Query(`SELECT player_id FROM match_participants WHERE match_id=? AND team=?`, matchID, int(team))
+	rows, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&team=eq."+strconv.Itoa(team)+"&select=player_id")
 	if err != nil {
 		return err
 	}
-	var winners []string
-	for rows.Next() {
-		var pid string
-		if err := rows.Scan(&pid); err != nil {
-			rows.Close()
-			return err
-		}
-		winners = append(winners, pid)
+	side := make([]string, 0, len(rows))
+	for _, r := range rows {
+		side = append(side, asStr(r, "player_id"))
 	}
-	// Close the read cursor BEFORE the INSERT writes — holding it open during a
-	// write deadlocks the single file-backed SQLite connection.
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, pid := range winners {
-		if _, err := s.db.Exec(
-			`INSERT OR IGNORE INTO match_participants (id,match_id,player_id,team) VALUES (?,?,?,?)`,
-			newID(), feedsMatchID, pid, feedsSlot); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.insertSide(feedsMatchID, feedsSlot, side)
 }
 
 // ----------------------------------------------------------- standings
 func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Standing, error) {
-	order := "points_for DESC, wins DESC, point_diff DESC"
-	if byWins {
-		order = "wins DESC, losses ASC, points_for DESC, point_diff DESC"
-	}
-	bracketClause := ""
-	args := []any{eventID}
+	// Pool standings are a GROUP BY aggregation PostgREST can't express, so they
+	// live in the pmp_standings SQL function (see 0002_rpc.sql). It returns rows
+	// unordered; we apply the wins-vs-points sort here.
+	payload := map[string]any{"p_event_id": eventID}
 	if bracketID != "" {
-		bracketClause = "AND m.bracket_id = ?"
-		args = append(args, bracketID)
+		payload["p_bracket_id"] = bracketID
 	}
-	q := fmt.Sprintf(`
-SELECT mp.player_id, pl.full_name, COUNT(*) AS games_played,
-  SUM(CASE WHEN m.winning_team=mp.team THEN 1 ELSE 0 END) AS wins,
-  SUM(CASE WHEN m.winning_team<>mp.team THEN 1 ELSE 0 END) AS losses,
-  SUM(CASE mp.team WHEN 1 THEN m.team1_score ELSE m.team2_score END) AS points_for,
-  SUM(CASE mp.team WHEN 1 THEN m.team2_score ELSE m.team1_score END) AS points_against,
-  SUM(CASE mp.team WHEN 1 THEN m.team1_score ELSE m.team2_score END)
-    - SUM(CASE mp.team WHEN 1 THEN m.team2_score ELSE m.team1_score END) AS point_diff
-FROM match_participants mp
-JOIN matches m ON m.id=mp.match_id
-JOIN players pl ON pl.id=mp.player_id
-WHERE m.event_id=? AND m.stage='pool' AND m.status='completed' AND m.winning_team IS NOT NULL %s
-GROUP BY mp.player_id
-ORDER BY %s`, bracketClause, order)
-	rows, err := s.db.Query(q, args...)
+	body, err := s.sb.RPC("pmp_standings", payload)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []model.Standing
-	for rows.Next() {
-		var st model.Standing
-		if err := rows.Scan(&st.PlayerID, &st.FullName, &st.GamesPlayed, &st.Wins, &st.Losses,
-			&st.PointsFor, &st.PointsAgainst, &st.PointDiff); err != nil {
-			return nil, err
-		}
-		out = append(out, st)
+	var rows []map[string]any
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	out := make([]model.Standing, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapStanding(r))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if byWins {
+			if a.Wins != b.Wins {
+				return a.Wins > b.Wins
+			}
+			if a.Losses != b.Losses {
+				return a.Losses < b.Losses
+			}
+			if a.PointsFor != b.PointsFor {
+				return a.PointsFor > b.PointsFor
+			}
+			return a.PointDiff > b.PointDiff
+		}
+		if a.PointsFor != b.PointsFor {
+			return a.PointsFor > b.PointsFor
+		}
+		if a.Wins != b.Wins {
+			return a.Wins > b.Wins
+		}
+		return a.PointDiff > b.PointDiff
+	})
+	return out, nil
 }
 
 // ------------------------------------------------------ bracket dashboard
 func (s *Service) BracketMatches(bracketID string) ([]model.Match, error) {
-	rows, err := s.db.Query(`SELECT id,bracket_id,stage,bracket_round,bracket_slot,
-		team1_score,team2_score,winning_team,status
-		FROM matches WHERE bracket_id=? AND stage='bracket' ORDER BY bracket_round, bracket_slot`, bracketID)
+	rows, err := s.sb.Select("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket&select="+matchSelect+
+			"&order=bracket_round,bracket_slot")
 	if err != nil {
 		return nil, err
 	}
-	var out []model.Match
-	for rows.Next() {
-		m, err := scanMatch(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	rows.Close() // close BEFORE the nested matchSides queries (single sqlite conn)
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		sides, err := s.matchSides(out[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		out[i].Sides = sides
+	out := make([]model.Match, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapMatch(r))
 	}
 	return out, nil
 }
 
 func (s *Service) Rounds(eventID string) ([]model.RoundView, error) {
-	rows, err := s.db.Query(
-		`SELECT id, bracket_id, round_number, status FROM rounds WHERE event_id=? ORDER BY bracket_id, round_number`, eventID)
+	rows, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+"&select=id,bracket_id,round_number,status&order=bracket_id,round_number")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []model.RoundView
-	for rows.Next() {
-		var rv model.RoundView
-		var bid sql.NullString
-		if err := rows.Scan(&rv.ID, &bid, &rv.RoundNumber, &rv.Status); err != nil {
-			return nil, err
-		}
-		rv.BracketID = ns(bid)
-		out = append(out, rv)
+	out := make([]model.RoundView, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapRoundView(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // MatchesForRound returns a pool round's matches with resolved sides + court #.
 func (s *Service) MatchesForRound(roundID string) ([]model.Match, error) {
-	rows, err := s.db.Query(`SELECT m.id,m.bracket_id,m.stage,m.bracket_round,m.bracket_slot,
-		c.court_number,m.team1_score,m.team2_score,m.winning_team,m.status
-		FROM matches m LEFT JOIN courts c ON c.id=m.court_id
-		WHERE m.round_id=? ORDER BY c.court_number`, roundID)
+	rows, err := s.sb.Select("matches", "round_id=eq."+store.Q(roundID)+"&select="+matchSelect)
 	if err != nil {
 		return nil, err
 	}
-	var out []model.Match
-	for rows.Next() {
-		var m model.Match
-		var bid sql.NullString
-		var br, bs, court, t1, t2, wt sql.NullInt64
-		if err := rows.Scan(&m.ID, &bid, &m.Stage, &br, &bs, &court, &t1, &t2, &wt, &m.Status); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		m.BracketID = ns(bid)
-		m.BracketRound = ni(br)
-		m.BracketSlot = ni(bs)
-		m.CourtNumber = ni(court)
-		m.Team1Score = ni(t1)
-		m.Team2Score = ni(t2)
-		m.WinningTeam = ni(wt)
-		out = append(out, m)
+	out := make([]model.Match, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapMatch(r))
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		sides, err := s.matchSides(out[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		out[i].Sides = sides
-	}
+	// Order by court number (the court is an embed, so PostgREST can't sort on it).
+	sort.SliceStable(out, func(i, j int) bool {
+		return intOr(out[i].CourtNumber, 1<<30) < intOr(out[j].CourtNumber, 1<<30)
+	})
 	return out, nil
 }
 
@@ -1884,78 +1855,27 @@ func (s *Service) MatchesForRound(roundID string) ([]model.Match, error) {
 // court number, and round context (id/number/status). The Game tab loads this
 // as one stream so it can group + filter (search, status, division) in memory.
 func (s *Service) EventPoolMatches(eventID string) ([]model.Match, error) {
-	rows, err := s.db.Query(`SELECT m.id,m.bracket_id,m.stage,m.bracket_round,m.bracket_slot,
-		c.court_number,m.team1_score,m.team2_score,m.winning_team,m.status,
-		r.id,r.round_number,r.status
-		FROM matches m
-		LEFT JOIN courts c ON c.id=m.court_id
-		JOIN rounds r ON r.id=m.round_id
-		WHERE m.event_id=? AND m.stage='pool'
-		ORDER BY r.round_number, m.bracket_id, c.court_number`, eventID)
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select="+matchSelect)
 	if err != nil {
 		return nil, err
 	}
-	var out []model.Match
-	for rows.Next() {
-		var m model.Match
-		var bid, rid, roundStatus sql.NullString
-		var br, bs, court, t1, t2, wt, roundNum sql.NullInt64
-		if err := rows.Scan(&m.ID, &bid, &m.Stage, &br, &bs, &court, &t1, &t2, &wt, &m.Status,
-			&rid, &roundNum, &roundStatus); err != nil {
-			rows.Close()
-			return nil, err
+	out := make([]model.Match, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapMatch(r))
+	}
+	// Order by round number, then division, then court (round/court are embeds).
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if ra, rb := intOr(a.RoundNumber, 1<<30), intOr(b.RoundNumber, 1<<30); ra != rb {
+			return ra < rb
 		}
-		m.BracketID = ns(bid)
-		m.BracketRound = ni(br)
-		m.BracketSlot = ni(bs)
-		m.CourtNumber = ni(court)
-		m.Team1Score = ni(t1)
-		m.Team2Score = ni(t2)
-		m.WinningTeam = ni(wt)
-		m.RoundID = ns(rid)
-		m.RoundNumber = ni(roundNum)
-		m.RoundStatus = roundStatus.String
-		out = append(out, m)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		sides, err := s.matchSides(out[i].ID)
-		if err != nil {
-			return nil, err
+		if ba, bb := strOr(a.BracketID), strOr(b.BracketID); ba != bb {
+			return ba < bb
 		}
-		out[i].Sides = sides
-	}
+		return intOr(a.CourtNumber, 1<<30) < intOr(b.CourtNumber, 1<<30)
+	})
 	return out, nil
-}
-
-func (s *Service) matchSides(matchID string) ([]model.Side, error) {
-	rows, err := s.db.Query(`SELECT mp.team, mp.player_id, p.full_name FROM match_participants mp
-		JOIN players p ON p.id=mp.player_id WHERE mp.match_id=? ORDER BY mp.team`, matchID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	names := map[int][]string{}
-	ids := map[int][]string{}
-	for rows.Next() {
-		var team int
-		var pid, name string
-		if err := rows.Scan(&team, &pid, &name); err != nil {
-			return nil, err
-		}
-		names[team] = append(names[team], name)
-		ids[team] = append(ids[team], pid)
-	}
-	var sides []model.Side
-	for _, t := range []int{1, 2} {
-		if ns, ok := names[t]; ok {
-			sides = append(sides, model.Side{Team: t, Players: ns, PlayerIDs: ids[t]})
-		}
-	}
-	return sides, rows.Err()
 }
 
 // SwapMatchPlayer replaces one player in a match with another (keeping the same
@@ -1967,36 +1887,38 @@ func (s *Service) SwapMatchPlayer(matchID, outPlayerID, inPlayerID string) error
 	if outPlayerID == inPlayerID {
 		return nil
 	}
-	var pid string
-	err := s.db.QueryRow(`SELECT id FROM players WHERE id=?`, inPlayerID).Scan(&pid)
-	if errors.Is(err, sql.ErrNoRows) {
+	pl, err := s.sb.SelectOne("players", "id=eq."+store.Q(inPlayerID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if pl == nil {
 		return errors.New("replacement player not found")
 	}
+	// The player being swapped out must currently be in the match.
+	cur, err := s.sb.SelectOne("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&player_id=eq."+store.Q(outPlayerID)+"&select=team")
 	if err != nil {
 		return err
 	}
-	// The player being swapped out must currently be in the match.
-	var team int
-	err = s.db.QueryRow(`SELECT team FROM match_participants WHERE match_id=? AND player_id=?`, matchID, outPlayerID).Scan(&team)
-	if errors.Is(err, sql.ErrNoRows) {
+	if cur == nil {
 		return ErrNotFound
 	}
+	// Don't swap in someone already playing in this match.
+	dup, err := s.sb.SelectOne("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&player_id=eq."+store.Q(inPlayerID)+"&select=match_id")
 	if err != nil {
 		return err
 	}
-	// Don't swap in someone already playing in this match.
-	var dup int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM match_participants WHERE match_id=? AND player_id=?`, matchID, inPlayerID).Scan(&dup); err != nil {
-		return err
-	}
-	if dup > 0 {
+	if dup != nil {
 		return errors.New("that player is already in this match")
 	}
-	res, err := s.db.Exec(`UPDATE match_participants SET player_id=? WHERE match_id=? AND player_id=?`, inPlayerID, matchID, outPlayerID)
+	out, err := s.sb.Update("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&player_id=eq."+store.Q(outPlayerID),
+		map[string]any{"player_id": inPlayerID})
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if len(out) == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -2010,94 +1932,93 @@ type reg struct {
 }
 
 func (s *Service) bracketRegs(eventID, bracketID string) ([]reg, error) {
-	rows, err := s.db.Query(
-		`SELECT id, player_id, COALESCE(partner_id,'') FROM registrations WHERE event_id=? AND bracket_id=?`,
-		eventID, bracketID)
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+"&select=id,player_id,partner_id")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []reg
-	for rows.Next() {
-		var r reg
-		if err := rows.Scan(&r.id, &r.playerID, &r.partnerID); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]reg, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, reg{
+			id:        asStr(r, "id"),
+			playerID:  asStr(r, "player_id"),
+			partnerID: asStr(r, "partner_id"), // "" when null
+		})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Service) playerSkills() (map[string]float64, error) {
-	rows, err := s.db.Query(`SELECT id, COALESCE(skill_level,0) FROM players`)
+	rows, err := s.sb.Select("players", "select=id,skill_level")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	m := map[string]float64{}
-	for rows.Next() {
-		var id string
-		var sk float64
-		if err := rows.Scan(&id, &sk); err != nil {
-			return nil, err
+	for _, r := range rows {
+		sk := 0.0
+		if p := asFloatPtr(r, "skill_level"); p != nil {
+			sk = *p
 		}
-		m[id] = sk
+		m[asStr(r, "id")] = sk
 	}
-	return m, rows.Err()
+	return m, nil
 }
 
 func (s *Service) courtIDsByNumber(eventID string) (map[int]string, error) {
-	rows, err := s.db.Query(`SELECT court_number, id FROM courts WHERE event_id=?`, eventID)
+	rows, err := s.sb.Select("courts", "event_id=eq."+store.Q(eventID)+"&select=court_number,id")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	m := map[int]string{}
-	for rows.Next() {
-		var n int
-		var id string
-		if err := rows.Scan(&n, &id); err != nil {
-			return nil, err
-		}
-		m[n] = id
+	for _, r := range rows {
+		m[asInt(r, "court_number")] = asStr(r, "id")
 	}
-	return m, rows.Err()
+	return m, nil
 }
 
 func (s *Service) insertSide(matchID string, team int, side []string) error {
-	if side == nil || engine.IsBye(side) {
+	if len(side) == 0 || engine.IsBye(side) {
 		return nil
 	}
+	rows := make([]map[string]any, 0, len(side))
 	for _, pid := range side {
-		if _, err := s.db.Exec(
-			`INSERT OR IGNORE INTO match_participants (id,match_id,player_id,team) VALUES (?,?,?,?)`,
-			newID(), matchID, pid, team); err != nil {
-			return err
-		}
+		rows = append(rows, map[string]any{"match_id": matchID, "player_id": pid, "team": team})
 	}
-	return nil
+	// Upsert (merge-duplicates) mirrors the old INSERT OR IGNORE: re-seeding the
+	// same (match_id,player_id) is a no-op rather than a unique-constraint error.
+	_, err := s.sb.Upsert("match_participants", "match_id,player_id", rows)
+	return err
 }
 
+// wipeAllMatches clears an event's schedule. Deleting matches/rounds cascades to
+// match_participants via the FK ON DELETE CASCADE, so no explicit child delete.
 func (s *Service) wipeAllMatches(eventID string) error {
-	if _, err := s.db.Exec(
-		`DELETE FROM match_participants WHERE match_id IN (SELECT id FROM matches WHERE event_id=?)`, eventID); err != nil {
+	if err := s.sb.Delete("matches", "event_id=eq."+store.Q(eventID)); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`DELETE FROM matches WHERE event_id=?`, eventID); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(`DELETE FROM rounds WHERE event_id=?`, eventID)
-	return err
+	return s.sb.Delete("rounds", "event_id=eq."+store.Q(eventID))
 }
 
 func (s *Service) wipeBracketStage(bracketID string) error {
-	if _, err := s.db.Exec(
-		`DELETE FROM match_participants WHERE match_id IN (SELECT id FROM matches WHERE bracket_id=? AND stage='bracket')`,
-		bracketID); err != nil {
-		return err
+	return s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket")
+}
+
+// poolProgress reports how many pool matches a division has (total) and how many
+// are not yet completed (open). Replaces a COUNT/SUM aggregation by tallying the
+// fetched statuses in Go.
+func (s *Service) poolProgress(bracketID string) (total, open int, err error) {
+	rows, err := s.sb.Select("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.pool&select=status")
+	if err != nil {
+		return 0, 0, err
 	}
-	_, err := s.db.Exec(`DELETE FROM matches WHERE bracket_id=? AND stage='bracket'`, bracketID)
-	return err
+	for _, m := range rows {
+		total++
+		if asStr(m, "status") != "completed" {
+			open++
+		}
+	}
+	return total, open, nil
 }
 
 func sidesForBracket(ev model.Event, regs []reg) [][]string {
@@ -2173,84 +2094,11 @@ func pairScore(pair []string, rate map[string]int) int {
 
 func key(round, slot int) string { return strconv.Itoa(round) + ":" + strconv.Itoa(slot) }
 
-// scan helpers
-type scanner interface{ Scan(dest ...any) error }
-
-func scanEvent(sc scanner) (model.Event, error) {
-	var e model.Event
-	var dupr int
-	var loc sql.NullString
-	err := sc.Scan(&e.ID, &e.Name, &e.Format, &e.PartnerMode, &e.TournamentFormat, &e.ScoringMode,
-		&e.NumCourts, &e.PointsToWin, &e.RegistrationFeeCents, &e.Currency, &loc, &dupr, &e.Status)
-	e.Location = ns(loc)
-	e.DuprSanctioned = dupr == 1
-	return e, err
-}
-
-func scanMatch(sc scanner) (model.Match, error) {
-	var m model.Match
-	var bid sql.NullString
-	var br, bs, t1, t2, wt sql.NullInt64
-	err := sc.Scan(&m.ID, &bid, &m.Stage, &br, &bs, &t1, &t2, &wt, &m.Status)
-	m.BracketID = ns(bid)
-	m.BracketRound = ni(br)
-	m.BracketSlot = ni(bs)
-	m.Team1Score = ni(t1)
-	m.Team2Score = ni(t2)
-	m.WinningTeam = ni(wt)
-	return m, err
-}
-
-// null helpers
-func b2i(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-func nullStr(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-func nullF(f *float64) any {
-	if f == nil {
-		return nil
-	}
-	return *f
-}
-func nullI(i *int) any {
-	if i == nil {
-		return nil
-	}
-	return *i
-}
 func agePtr(v int) *int { return &v }
+
 func strp(s string) *string {
 	if s == "" {
 		return nil
 	}
 	return &s
-}
-func ns(n sql.NullString) *string {
-	if !n.Valid {
-		return nil
-	}
-	v := n.String
-	return &v
-}
-func ni(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
-	}
-	v := int(n.Int64)
-	return &v
-}
-func nf(n sql.NullFloat64) *float64 {
-	if !n.Valid {
-		return nil
-	}
-	v := n.Float64
-	return &v
 }

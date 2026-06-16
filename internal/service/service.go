@@ -396,9 +396,9 @@ func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion fl
 	for i := 0; i < cut; i++ {
 		loser := 5 + (i*3)%6 // 5..10, deterministic
 		if i%2 == 0 {
-			err = s.RecordScore(poolIDs[i], 11, loser)
+			err = s.applyScore(poolIDs[i], 11, loser)
 		} else {
-			err = s.RecordScore(poolIDs[i], loser, 11)
+			err = s.applyScore(poolIDs[i], loser, 11)
 		}
 		if err != nil {
 			return "", err
@@ -1141,6 +1141,14 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 	if hi-lo < winBy {
 		return fmt.Errorf("must win by %d (got %d–%d)", winBy, hi, lo)
 	}
+	return s.applyScore(matchID, t1, t2)
+}
+
+// applyScore writes a final score (winner = the higher), marks the match
+// completed, and runs advancement. It does NOT validate the match format —
+// callers that already trust the score (e.g. demo seeding) use it directly,
+// avoiding RecordScore's per-score format lookup.
+func (s *Service) applyScore(matchID string, t1, t2 int) error {
 	winner := 1
 	if t2 > t1 {
 		winner = 2

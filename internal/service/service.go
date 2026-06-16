@@ -1156,25 +1156,32 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 		return ErrNotFound
 	}
 	// The updated row (return=representation) carries the routing columns.
-	m := out[0]
+	return s.advanceAfterScore(out[0])
+}
+
+// advanceAfterScore runs the post-completion routing for a just-finished match
+// (the updated row carries the routing columns): advance the winner and drop
+// the loser in medal play, auto-seed the playoff when pools complete, and queue
+// DUPR submissions for sanctioned events. Shared by RecordScore and
+// ForfeitMatch so a forfeit advances brackets exactly like a played result.
+func (s *Service) advanceAfterScore(m map[string]any) error {
+	matchID := asStr(m, "id")
+	winner := asInt(m, "winning_team")
 	stage := asStr(m, "stage")
 	eventID := asStr(m, "event_id")
 	if stage == "bracket" {
 		loser := 3 - winner
-		// Winner advances (e.g. semifinal -> gold game).
 		if fm := asStrPtr(m, "feeds_match_id"); fm != nil {
 			if err := s.advanceTeam(matchID, winner, *fm, asInt(m, "feeds_slot")); err != nil {
 				return err
 			}
 		}
-		// Loser drops down (e.g. semifinal loser -> bronze game).
 		if lm := asStrPtr(m, "loser_feeds_match_id"); lm != nil {
 			if err := s.advanceTeam(matchID, loser, *lm, asInt(m, "loser_feeds_slot")); err != nil {
 				return err
 			}
 		}
 	}
-	// A completed pool match may have finished the pools — seed the playoff.
 	if stage == "pool" {
 		if bc := asStrPtr(m, "bracket_id"); bc != nil {
 			if err := s.maybeSeedPlayoff(*bc); err != nil {
@@ -1182,7 +1189,6 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 			}
 		}
 	}
-	// DUPR-sanctioned events queue completed results for later import.
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=dupr_sanctioned")
 	if err != nil {
 		return err
@@ -1193,6 +1199,48 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 		}
 	}
 	return nil
+}
+
+// ForfeitMatch resolves a match with no played score — a no-show forfeit, a
+// mid-match retirement, or a walkover. The winning team is credited a
+// conventional win (points_to_win to 0); kind labels how it ended. Bracket
+// advancement and playoff seeding run exactly as for a normal result.
+func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string) error {
+	if winningTeam != 1 && winningTeam != 2 {
+		return errors.New("winning team must be 1 or 2")
+	}
+	if kind == "" {
+		kind = "forfeit"
+	}
+	if kind != "forfeit" && kind != "retire" && kind != "walkover" {
+		return errors.New("result type must be forfeit, retire, or walkover")
+	}
+	ptw := 11
+	if row, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event:events!event_id(points_to_win)"); err != nil {
+		return err
+	} else if row == nil {
+		return ErrNotFound
+	} else if ev, ok := row["event"].(map[string]any); ok {
+		if g := asInt(ev, "points_to_win"); g > 0 {
+			ptw = g
+		}
+	}
+	t1, t2 := ptw, 0
+	if winningTeam == 2 {
+		t1, t2 = 0, ptw
+	}
+	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
+		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
+		"status": "completed", "completed_at": now(), "result_type": kind,
+	})
+	if err != nil {
+		return err
+	}
+	if len(out) == 0 {
+		return ErrNotFound
+	}
+	return s.advanceAfterScore(out[0])
 }
 
 // DuprImportSummary is the result of flushing queued results to DUPR.

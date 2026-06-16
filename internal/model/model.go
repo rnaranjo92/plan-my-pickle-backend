@@ -103,6 +103,7 @@ type Match struct {
 	Team2Score   *int    `json:"team2Score,omitempty"`
 	WinningTeam  *int    `json:"winningTeam,omitempty"`
 	Status       string  `json:"status"`
+	ResultType   string  `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
 	// Round context — populated by the event-wide pool-matches query so the
 	// Game tab can group + filter every match from one stream.
 	RoundID     *string `json:"roundId,omitempty"`
@@ -176,6 +177,13 @@ type RegisterRequest struct {
 type ScoreRequest struct {
 	Team1Score int `json:"team1Score"`
 	Team2Score int `json:"team2Score"`
+}
+
+// ForfeitRequest resolves a match without a played score (no-show / retire /
+// walkover). WinningTeam is the team credited the win.
+type ForfeitRequest struct {
+	WinningTeam int    `json:"winningTeam"`
+	Kind        string `json:"kind"` // forfeit | retire | walkover
 }
 
 type PayRequest struct {

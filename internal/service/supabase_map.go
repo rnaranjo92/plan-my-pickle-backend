@@ -211,7 +211,7 @@ func mapRoundView(m map[string]any) model.RoundView {
 // court number, round context, and participants (with player names) embedded —
 // so a match and its sides load in one round-trip instead of N+1 queries.
 const matchSelect = "id,bracket_id,stage,bracket_round,bracket_slot," +
-	"team1_score,team2_score,winning_team,status," +
+	"team1_score,team2_score,winning_team,status,result_type," +
 	"court:courts!court_id(court_number)," +
 	"round:rounds!round_id(id,round_number,status)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
@@ -256,6 +256,7 @@ func mapMatch(m map[string]any) model.Match {
 		Team2Score:   asIntPtr(m, "team2_score"),
 		WinningTeam:  asIntPtr(m, "winning_team"),
 		Status:       asStr(m, "status"),
+		ResultType:   asStr(m, "result_type"),
 		Sides:        mapSides(m),
 	}
 	if c := asMap(m, "court"); c != nil {

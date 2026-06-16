@@ -61,6 +61,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
+	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
@@ -289,6 +290,18 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.RecordScore(r.PathValue("id"), req.Team1Score, req.Team2Score); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
+}
+
+func (s *Server) forfeitMatch(w http.ResponseWriter, r *http.Request) {
+	var req model.ForfeitRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.ForfeitMatch(r.PathValue("id"), req.WinningTeam, req.Kind); err != nil {
 		status(w, err)
 		return
 	}

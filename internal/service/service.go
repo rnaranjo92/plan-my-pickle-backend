@@ -760,7 +760,21 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	for i, r := range regs {
 		ids[i] = r.playerID
 	}
-	schedule := engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, 7)
+	// Rounds only affects rotating doubles (singles & fixed doubles always run a
+	// full N-1 round-robin and ignore this). Scale the social mixer with the
+	// field instead of a magic 7: ~N-1, clamped to a practical 3..12 so small
+	// fields don't over-repeat and huge fields don't run all day.
+	rounds := 7
+	if format == engine.Doubles && partner == engine.Rotating {
+		rounds = len(ids) - 1
+		if rounds < 3 {
+			rounds = 3
+		}
+		if rounds > 12 {
+			rounds = 12
+		}
+	}
+	schedule := engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds)
 
 	count := 0
 	for _, round := range schedule {

@@ -105,15 +105,18 @@ func (f *OverpassFinder) Nearby(lat, lng, radiusKm float64) ([]Court, error) {
 		if lt == 0 && ln == 0 {
 			continue
 		}
+		addr := formatAddr(e.Tags)
 		name := e.Tags["name"]
 		if name == "" {
-			name = "Pickleball court"
+			// No proper name — label it by its street instead of a generic
+			// "Pickleball court".
+			name = streetLabel(addr)
 		}
 		out = append(out, Court{
 			Name:    name,
 			Lat:     lt,
 			Lng:     ln,
-			Address: formatAddr(e.Tags),
+			Address: addr,
 			Phone:   firstNonEmpty(e.Tags["phone"], e.Tags["contact:phone"]),
 			Website: firstNonEmpty(e.Tags["website"], e.Tags["contact:website"]),
 			Source:  "osm",
@@ -230,6 +233,22 @@ func Geocode(query string) (*GeoResult, error) {
 	lat, _ := strconv.ParseFloat(results[0].Lat, 64)
 	lng, _ := strconv.ParseFloat(results[0].Lon, 64)
 	return &GeoResult{Lat: lat, Lng: lng, Label: results[0].DisplayName}, nil
+}
+
+// streetLabel turns a formatted address into a short title — the street line
+// (everything before the first comma), e.g. "8020 Regents Road, San Diego, CA"
+// -> "8020 Regents Road". Used to label courts that have no proper name, so the
+// list shows a street instead of a generic "Pickleball court". Falls back to
+// "Pickleball court" only when there is no address at all.
+func streetLabel(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "Pickleball court"
+	}
+	if i := strings.IndexByte(addr, ','); i > 0 {
+		return strings.TrimSpace(addr[:i])
+	}
+	return addr
 }
 
 func formatAddr(t map[string]string) string {

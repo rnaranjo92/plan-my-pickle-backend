@@ -42,8 +42,8 @@ func TestPlacesFinderParses(t *testing.T) {
 	if a.Name != "Barnes Tennis Center" || a.Phone == "" || a.Address == "" || a.Source != "google" {
 		t.Fatalf("rich fields not parsed: %+v", a)
 	}
-	if courts[1].Name != "Pickleball court" { // empty displayName -> default
-		t.Fatalf("unnamed should default, got %q", courts[1].Name)
+	if courts[1].Name != "123 Court Way" { // empty displayName -> labeled by street
+		t.Fatalf("unnamed should fall back to street, got %q", courts[1].Name)
 	}
 }
 

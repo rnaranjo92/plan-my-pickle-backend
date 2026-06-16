@@ -92,7 +92,9 @@ func (f *PlacesFinder) Nearby(lat, lng, radiusKm float64) ([]Court, error) {
 	for _, p := range parsed.Places {
 		name := p.DisplayName.Text
 		if name == "" {
-			name = "Pickleball court"
+			// No place name — label it by its street instead of a generic
+			// "Pickleball court".
+			name = streetLabel(p.FormattedAddress)
 		}
 		out = append(out, Court{
 			Name:    name,

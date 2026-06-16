@@ -61,3 +61,21 @@ func TestOverpassErrorStatus(t *testing.T) {
 		t.Fatal("expected error on non-200")
 	}
 }
+
+func TestRankSortsByDistanceAndCaps(t *testing.T) {
+	cs := []Court{
+		{Name: "far", Lat: 40.80, Lng: -74.0},
+		{Name: "near", Lat: 40.71, Lng: -74.0},
+		{Name: "mid", Lat: 40.75, Lng: -74.0},
+	}
+	out := Rank(cs, 40.71, -74.0, 2)
+	if len(out) != 2 {
+		t.Fatalf("cap not applied: got %d", len(out))
+	}
+	if out[0].Name != "near" || out[1].Name != "mid" {
+		t.Fatalf("not sorted nearest-first: %s, %s", out[0].Name, out[1].Name)
+	}
+	if out[0].DistanceMeters > out[1].DistanceMeters {
+		t.Fatalf("DistanceMeters not ascending: %d > %d", out[0].DistanceMeters, out[1].DistanceMeters)
+	}
+}

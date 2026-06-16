@@ -16,13 +16,14 @@ import (
 )
 
 type Court struct {
-	Name    string  `json:"name"`
-	Lat     float64 `json:"lat"`
-	Lng     float64 `json:"lng"`
-	Address string  `json:"address,omitempty"`
-	Phone   string  `json:"phone,omitempty"`
-	Website string  `json:"website,omitempty"`
-	Source  string  `json:"source"`
+	Name           string  `json:"name"`
+	Lat            float64 `json:"lat"`
+	Lng            float64 `json:"lng"`
+	Address        string  `json:"address,omitempty"`
+	Phone          string  `json:"phone,omitempty"`
+	Website        string  `json:"website,omitempty"`
+	Source         string  `json:"source"`
+	DistanceMeters int     `json:"distanceMeters,omitempty"`
 }
 
 type Finder interface {

@@ -1,0 +1,129 @@
+package courts
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"sync"
+	"time"
+)
+
+// Rank sets DistanceMeters on each court (haversine from the search center),
+// sorts nearest-first, and keeps at most max courts (max <= 0 keeps all).
+func Rank(cs []Court, lat, lng float64, max int) []Court {
+	for i := range cs {
+		cs[i].DistanceMeters = int(haversineMeters(lat, lng, cs[i].Lat, cs[i].Lng))
+	}
+	sort.SliceStable(cs, func(i, j int) bool {
+		return cs[i].DistanceMeters < cs[j].DistanceMeters
+	})
+	if max > 0 && len(cs) > max {
+		cs = cs[:max]
+	}
+	return cs
+}
+
+func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthR = 6371000.0
+	const rad = math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLng := (lng2 - lng1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * earthR * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+// --- reverse geocoding: label the nameless OSM courts ---
+
+// geocoderKey enables reverse geocoding (Geoapify, OSM-based, free tier). When
+// unset, EnrichLabels is a no-op and unnamed courts keep their generic label.
+var geocoderKey = os.Getenv("PMP_GEOCODER_KEY")
+
+var reverseHTTP = &http.Client{Timeout: 6 * time.Second}
+
+// reverseCache memoizes reverse lookups by ~11m-rounded coordinate, so repeat
+// searches and clustered courts never re-hit the geocoder.
+var reverseCache sync.Map // string -> reverseResult
+
+type reverseResult struct {
+	Name    string
+	Address string
+}
+
+// EnrichLabels reverse-geocodes courts that still have no real name (the generic
+// "Pickleball court" with no address) and relabels them by their park/POI name
+// or street. Lookups run concurrently (capped) and are cached. No-op when
+// PMP_GEOCODER_KEY is unset.
+func EnrichLabels(cs []Court) {
+	if geocoderKey == "" {
+		return
+	}
+	const maxConcurrent = 8
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	for i := range cs {
+		if cs[i].Name != "Pickleball court" {
+			continue // already has a real name or a street label
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r := reverseLookup(cs[idx].Lat, cs[idx].Lng)
+			if r.Name != "" {
+				cs[idx].Name = r.Name
+			}
+			if cs[idx].Address == "" && r.Address != "" {
+				cs[idx].Address = r.Address
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func reverseLookup(lat, lng float64) reverseResult {
+	key := fmt.Sprintf("%.4f,%.4f", lat, lng)
+	if v, ok := reverseCache.Load(key); ok {
+		return v.(reverseResult)
+	}
+	r := reverseGeoapify(lat, lng)
+	reverseCache.Store(key, r)
+	return r
+}
+
+// reverseGeoapify resolves a coordinate to a place name + address via Geoapify.
+// Prefers a POI/park name, then the street. Returns an empty result on any
+// error so the caller keeps the generic label.
+func reverseGeoapify(lat, lng float64) reverseResult {
+	u := fmt.Sprintf("https://api.geoapify.com/v1/geocode/reverse?lat=%f&lon=%f&format=json&apiKey=%s",
+		lat, lng, url.QueryEscape(geocoderKey))
+	resp, err := reverseHTTP.Get(u)
+	if err != nil {
+		return reverseResult{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return reverseResult{}
+	}
+	var parsed struct {
+		Results []struct {
+			Name      string `json:"name"`
+			Street    string `json:"street"`
+			Formatted string `json:"formatted"`
+		} `json:"results"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&parsed) != nil || len(parsed.Results) == 0 {
+		return reverseResult{}
+	}
+	r := parsed.Results[0]
+	name := r.Name
+	if name == "" {
+		name = r.Street
+	}
+	return reverseResult{Name: name, Address: r.Formatted}
+}

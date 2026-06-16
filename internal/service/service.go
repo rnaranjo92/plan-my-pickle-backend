@@ -48,7 +48,9 @@ func courtCacheKey(lat, lng, radiusKm float64) string {
 	if radiusKm <= 0 {
 		radiusKm = 25
 	}
-	return fmt.Sprintf("%.3f:%.3f:%.1f", lat, lng, radiusKm)
+	// v2: distance-ranked + reverse-geocoded labels. The version prefix bypasses
+	// stale v1 entries ("Pickleball court", no distance) before the 14d TTL.
+	return fmt.Sprintf("v2:%.3f:%.3f:%.1f", lat, lng, radiusKm)
 }
 
 // NearbyCourts finds pickleball courts near a point (for the create-event venue
@@ -68,6 +70,12 @@ func (s *Service) NearbyCourts(lat, lng, radiusKm float64) ([]courts.Court, erro
 	if err != nil {
 		return nil, err
 	}
+
+	// Rank nearest-first and keep the closest 20 (per the courts spec), then
+	// reverse-geocode any that are still nameless so the list shows a street or
+	// park name instead of "Pickleball court". The enriched result is cached.
+	found = courts.Rank(found, lat, lng, 20)
+	courts.EnrichLabels(found)
 
 	if s.sb.Ready() {
 		s.cacheCourts(key, lat, lng, radiusKm, found)

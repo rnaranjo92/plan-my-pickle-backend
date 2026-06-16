@@ -662,7 +662,13 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if len(regs) < 2 {
+		// Doubles needs at least 4 players (a full game); singles 2. Skip
+		// undersized divisions instead of persisting empty rounds.
+		minPlayers := 2
+		if ev.Format == "doubles" {
+			minPlayers = 4
+		}
+		if len(regs) < minPlayers {
 			continue
 		}
 		if ev.TournamentFormat == "single_elim" {
@@ -1141,6 +1147,17 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 	if hi-lo < winBy {
 		return fmt.Errorf("must win by %d (got %d–%d)", winBy, hi, lo)
 	}
+	// Deuce cap: a game can exceed points_to_win only by exactly win_by, out of
+	// deuce (e.g. 12–10) — never more (15–2 is impossible). With no win-by
+	// margin it ends at the target. Keeps the backend rule identical to the
+	// Flutter client's validatePickleballScore.
+	if winBy >= 2 {
+		if hi > ptw && (hi-lo != winBy || lo < ptw-1) {
+			return fmt.Errorf("past %d a game ends on a %d-point lead, e.g. %d–%d", ptw, winBy, ptw+winBy-1, ptw-1)
+		}
+	} else if hi > ptw {
+		return fmt.Errorf("a game to %d with no win-by margin ends at %d", ptw, ptw)
+	}
 	return s.applyScore(matchID, t1, t2)
 }
 
@@ -1155,7 +1172,7 @@ func (s *Service) applyScore(matchID string, t1, t2 int) error {
 	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winner,
-		"status": "completed", "completed_at": now(),
+		"status": "completed", "completed_at": now(), "result_type": "normal",
 	})
 	if err != nil {
 		return err
@@ -1930,38 +1947,55 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 	// on any error h2h is nil and we fall back to the stat-only order.
 	h2h, _ := s.headToHead(eventID, bracketID)
 
+	// h2hCmp: +1 if a beat b head-to-head more, -1 if b did, 0 if even/none.
+	// Pairwise (resolves the common 2-way tie; multi-way groups fall through).
+	h2hCmp := func(a, b model.Standing) int {
+		if h2h == nil {
+			return 0
+		}
+		aw, bw := h2h[a.PlayerID][b.PlayerID], h2h[b.PlayerID][a.PlayerID]
+		if aw > bw {
+			return 1
+		}
+		if bw > aw {
+			return -1
+		}
+		return 0
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if byWins {
+			// USAP order: record, then HEAD-TO-HEAD, then point differential,
+			// then fewest points allowed, then points scored.
 			if a.Wins != b.Wins {
 				return a.Wins > b.Wins
 			}
 			if a.Losses != b.Losses {
 				return a.Losses < b.Losses
 			}
-			if a.PointsFor != b.PointsFor {
-				return a.PointsFor > b.PointsFor
+			if c := h2hCmp(a, b); c != 0 {
+				return c > 0
 			}
 			if a.PointDiff != b.PointDiff {
 				return a.PointDiff > b.PointDiff
 			}
-		} else {
-			if a.PointsFor != b.PointsFor {
-				return a.PointsFor > b.PointsFor
+			if a.PointsAgainst != b.PointsAgainst {
+				return a.PointsAgainst < b.PointsAgainst
 			}
-			if a.Wins != b.Wins {
-				return a.Wins > b.Wins
-			}
-			if a.PointDiff != b.PointDiff {
-				return a.PointDiff > b.PointDiff
-			}
+			return a.PointsFor > b.PointsFor
 		}
-		// All box-score stats equal — break by head-to-head result.
-		if h2h != nil {
-			aw, bw := h2h[a.PlayerID][b.PlayerID], h2h[b.PlayerID][a.PlayerID]
-			if aw != bw {
-				return aw > bw
-			}
+		// Points leaderboard (a user view, not USAP standings): points first.
+		if a.PointsFor != b.PointsFor {
+			return a.PointsFor > b.PointsFor
+		}
+		if a.Wins != b.Wins {
+			return a.Wins > b.Wins
+		}
+		if a.PointDiff != b.PointDiff {
+			return a.PointDiff > b.PointDiff
+		}
+		if c := h2hCmp(a, b); c != 0 {
+			return c > 0
 		}
 		return false
 	})

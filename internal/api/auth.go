@@ -170,7 +170,8 @@ func verifyToken(raw string) (tokenClaims, error) {
 	if json.Unmarshal(clJSON, &c) != nil || c.Sub == "" {
 		return c, errInvalidToken
 	}
-	if c.Exp > 0 && time.Now().Unix() >= c.Exp {
+	// Require an expiry and enforce it — reject forged no-exp tokens.
+	if c.Exp == 0 || time.Now().Unix() >= c.Exp {
 		return c, errInvalidToken
 	}
 	return c, nil

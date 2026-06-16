@@ -96,6 +96,43 @@ func reverseLookup(lat, lng float64) reverseResult {
 	return r
 }
 
+// geocodeGeoapify resolves a free-text place (city / address / zip) to a point
+// via Geoapify forward geocoding. Returns nil if no match.
+func geocodeGeoapify(query string) (*GeoResult, error) {
+	country := os.Getenv("PMP_GEO_COUNTRY")
+	if country == "" {
+		country = "us"
+	}
+	u := fmt.Sprintf("https://api.geoapify.com/v1/geocode/search?text=%s&limit=1&format=json&apiKey=%s",
+		url.QueryEscape(query), url.QueryEscape(geocoderKey))
+	if country != "any" {
+		u += "&filter=countrycode:" + url.QueryEscape(country)
+	}
+	resp, err := reverseHTTP.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("geoapify geocode %d", resp.StatusCode)
+	}
+	var parsed struct {
+		Results []struct {
+			Lat       float64 `json:"lat"`
+			Lon       float64 `json:"lon"`
+			Formatted string  `json:"formatted"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	if len(parsed.Results) == 0 {
+		return nil, nil
+	}
+	r := parsed.Results[0]
+	return &GeoResult{Lat: r.Lat, Lng: r.Lon, Label: r.Formatted}, nil
+}
+
 // reverseGeoapify resolves a coordinate to a place name + address via Geoapify.
 // Prefers a POI/park name, then the street. Returns an empty result on any
 // error so the caller keeps the generic label.

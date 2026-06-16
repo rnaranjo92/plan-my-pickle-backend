@@ -178,9 +178,23 @@ type GeoResult struct {
 	Label string  `json:"label"`
 }
 
-// Geocode resolves a city / address / zip to a point via OSM Nominatim (free,
-// keyless; requires a User-Agent, ~1 req/s rate limit). Returns nil if not found.
+// Geocode resolves a city / address / zip to a point. Prefers Geoapify when a
+// key is configured (reliable from server IPs), since Nominatim's usage policy
+// blocks datacenter IPs like Railway's. Falls back to keyless Nominatim.
+// Returns nil if not found.
 func Geocode(query string) (*GeoResult, error) {
+	if geocoderKey != "" {
+		if res, err := geocodeGeoapify(query); err == nil {
+			return res, nil
+		}
+		// fall through to Nominatim on Geoapify error
+	}
+	return geocodeNominatim(query)
+}
+
+// geocodeNominatim is the keyless OSM Nominatim path (requires a User-Agent,
+// ~1 req/s rate limit; often blocked from datacenter IPs).
+func geocodeNominatim(query string) (*GeoResult, error) {
 	endpoint := os.Getenv("PMP_NOMINATIM_URL")
 	if endpoint == "" {
 		endpoint = "https://nominatim.openstreetmap.org/search"

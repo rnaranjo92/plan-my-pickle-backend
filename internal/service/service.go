@@ -1798,6 +1798,12 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 	for _, r := range rows {
 		out = append(out, mapStanding(r))
 	}
+
+	// Head-to-head map for breaking ties when the box-score stats are equal —
+	// the USAP convention (whoever won the meeting ranks higher). Best-effort:
+	// on any error h2h is nil and we fall back to the stat-only order.
+	h2h, _ := s.headToHead(eventID, bracketID)
+
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if byWins {
@@ -1810,17 +1816,80 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 			if a.PointsFor != b.PointsFor {
 				return a.PointsFor > b.PointsFor
 			}
-			return a.PointDiff > b.PointDiff
+			if a.PointDiff != b.PointDiff {
+				return a.PointDiff > b.PointDiff
+			}
+		} else {
+			if a.PointsFor != b.PointsFor {
+				return a.PointsFor > b.PointsFor
+			}
+			if a.Wins != b.Wins {
+				return a.Wins > b.Wins
+			}
+			if a.PointDiff != b.PointDiff {
+				return a.PointDiff > b.PointDiff
+			}
 		}
-		if a.PointsFor != b.PointsFor {
-			return a.PointsFor > b.PointsFor
+		// All box-score stats equal — break by head-to-head result.
+		if h2h != nil {
+			aw, bw := h2h[a.PlayerID][b.PlayerID], h2h[b.PlayerID][a.PlayerID]
+			if aw != bw {
+				return aw > bw
+			}
 		}
-		if a.Wins != b.Wins {
-			return a.Wins > b.Wins
-		}
-		return a.PointDiff > b.PointDiff
+		return false
 	})
 	return out, nil
+}
+
+// headToHead returns wins[a][b] = the number of completed pool matches in which
+// player a's team beat player b's team (event-wide, or scoped to a bracket).
+// Used only to break standings ties; pairwise, which resolves the common 2-way
+// tie correctly (multi-way ties fall back to stable stat order).
+func (s *Service) headToHead(eventID, bracketID string) (map[string]map[string]int, error) {
+	q := "event_id=eq." + store.Q(eventID) +
+		"&stage=eq.pool&status=eq.completed" +
+		"&select=winning_team,participants:match_participants(player_id,team)"
+	if bracketID != "" {
+		q += "&bracket_id=eq." + store.Q(bracketID)
+	}
+	rows, err := s.sb.Select("matches", q)
+	if err != nil {
+		return nil, err
+	}
+	h := map[string]map[string]int{}
+	for _, r := range rows {
+		wt := asInt(r, "winning_team")
+		if wt != 1 && wt != 2 {
+			continue
+		}
+		parts, _ := r["participants"].([]any)
+		var winners, losers []string
+		for _, p := range parts {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			pid := asStr(pm, "player_id")
+			if pid == "" {
+				continue
+			}
+			if asInt(pm, "team") == wt {
+				winners = append(winners, pid)
+			} else {
+				losers = append(losers, pid)
+			}
+		}
+		for _, w := range winners {
+			if h[w] == nil {
+				h[w] = map[string]int{}
+			}
+			for _, l := range losers {
+				h[w][l]++
+			}
+		}
+	}
+	return h, nil
 }
 
 // ------------------------------------------------------ bracket dashboard

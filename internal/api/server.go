@@ -495,7 +495,10 @@ func status(w http.ResponseWriter, err error) {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		// DELETE is used by events/finance/checklist; without it a browser's
+		// preflight blocks those calls. Origin "*" is safe — the API carries no
+		// cookies/credentials (the Supabase service key is server-side only).
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

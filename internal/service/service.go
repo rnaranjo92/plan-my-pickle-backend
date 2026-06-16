@@ -48,9 +48,9 @@ func courtCacheKey(lat, lng, radiusKm float64) string {
 	if radiusKm <= 0 {
 		radiusKm = 25
 	}
-	// v2: distance-ranked + reverse-geocoded labels. The version prefix bypasses
-	// stale v1 entries ("Pickleball court", no distance) before the 14d TTL.
-	return fmt.Sprintf("v2:%.3f:%.3f:%.1f", lat, lng, radiusKm)
+	// Version prefix invalidates stale cached results when the data shape or
+	// source changes (v2: distance-rank + reverse-geocode; v3: Google Places).
+	return fmt.Sprintf("v3:%.3f:%.3f:%.1f", lat, lng, radiusKm)
 }
 
 // NearbyCourts finds pickleball courts near a point (for the create-event venue

@@ -2122,7 +2122,10 @@ func (s *Service) resetCompletedDownstream(matchID string) error {
 	}
 	if _, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": nil, "team2_score": nil, "winning_team": nil,
-		"status": "scheduled", "completed_at": nil, "result_type": nil,
+		"status": "scheduled", "completed_at": nil,
+		// result_type is NOT NULL — reset to its default rather than NULL (NULL
+		// fails the constraint and aborts the whole re-score cascade mid-write).
+		"result_type": "normal", "counts_for_diff": true,
 	}); err != nil {
 		return err
 	}

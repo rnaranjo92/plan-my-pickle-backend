@@ -5,19 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/service"
 )
 
-type Server struct{ svc *service.Service }
+type Server struct {
+	svc *service.Service
+	// phoneCheckin throttles the public phone check-in endpoint so it can't be
+	// brute-forced to enumerate registrants.
+	phoneCheckin *rateLimiter
+}
 
 // NewServer wires the routes and returns the HTTP handler.
 func NewServer(svc *service.Service) http.Handler {
-	s := &Server{svc: svc}
+	s := &Server{svc: svc, phoneCheckin: newRateLimiter(8, 60)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -67,6 +75,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
+	mux.HandleFunc("POST /registrations/{id}/mark-paid", s.ownerOnly("registration", "id", s.markPaid))
 
 	// --- Demo seeding: load a sample tournament owned by the signed-in user, so
 	// the "Load demo" buttons produce events the caller can actually manage.
@@ -301,7 +310,7 @@ func (s *Server) forfeitMatch(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.ForfeitMatch(r.PathValue("id"), req.WinningTeam, req.Kind); err != nil {
+	if err := s.svc.ForfeitMatch(r.PathValue("id"), req.WinningTeam, req.Kind, req.Team1Score, req.Team2Score); err != nil {
 		status(w, err)
 		return
 	}
@@ -392,6 +401,17 @@ func (s *Server) pay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"paid": ok})
 }
 
+// markPaid is the organizer confirming, owner-only, that a fee-bearing
+// registration was paid out of band (cash/e-transfer). The public /pay endpoint
+// cannot do this for fee-bearing events (no real gateway is wired up).
+func (s *Server) markPaid(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CollectPaymentManually(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"paid": true})
+}
+
 func (s *Server) checkin(w http.ResponseWriter, r *http.Request) {
 	var req model.CheckinRequest
 	if !decode(w, r, &req) {
@@ -433,6 +453,12 @@ func (s *Server) checkinByToken(w http.ResponseWriter, r *http.Request) {
 func (s *Server) checkinByPhone(w http.ResponseWriter, r *http.Request) {
 	var req model.PhoneCheckinRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	// Throttle per client IP + event so the public phone lookup can't be
+	// brute-forced to enumerate registrants' names.
+	if !s.phoneCheckin.allow(clientIP(r) + "|" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many attempts, try again in a minute"))
 		return
 	}
 	regID, name, err := s.svc.CheckInByPhone(r.PathValue("id"), req.Phone)
@@ -548,6 +574,55 @@ func status(w http.ResponseWriter, err error) {
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err)
+}
+
+// clientIP returns the caller's IP, preferring the first X-Forwarded-For hop
+// (Railway terminates TLS at a proxy, so RemoteAddr is the proxy's address).
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// rateLimiter is a small in-memory sliding-window limiter (best-effort; per
+// process, fine for a single backend instance). It throttles the public phone
+// check-in endpoint against name-enumeration brute force.
+type rateLimiter struct {
+	mu     sync.Mutex
+	hits   map[string][]int64
+	limit  int
+	window int64 // seconds
+}
+
+func newRateLimiter(limit int, windowSec int64) *rateLimiter {
+	return &rateLimiter{hits: map[string][]int64{}, limit: limit, window: windowSec}
+}
+
+// allow records an attempt for key and reports whether it's within the limit.
+func (rl *rateLimiter) allow(key string) bool {
+	nowTs := time.Now().Unix()
+	cutoff := nowTs - rl.window
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	kept := rl.hits[key][:0]
+	for _, t := range rl.hits[key] {
+		if t > cutoff {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= rl.limit {
+		rl.hits[key] = kept
+		return false
+	}
+	rl.hits[key] = append(kept, nowTs)
+	return true
 }
 
 func withCORS(next http.Handler) http.Handler {

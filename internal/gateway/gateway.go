@@ -17,6 +17,10 @@ type PaymentResult struct {
 
 type PaymentGateway interface {
 	Charge(registrationID string, amountCents int, currency, provider string) (PaymentResult, error)
+	// Live reports whether this is a real payment processor. The public pay
+	// endpoint only marks a fee-bearing registration "paid" when Live() is true,
+	// so the always-succeeds mock can't be used to self-confirm payment.
+	Live() bool
 }
 
 type MockPayment struct {
@@ -26,6 +30,9 @@ type MockPayment struct {
 }
 
 func NewMockPayment() *MockPayment { return &MockPayment{ShouldSucceed: true} }
+
+// Live is false: the mock is not a real processor.
+func (m *MockPayment) Live() bool { return false }
 
 func (m *MockPayment) Charge(_ string, amountCents int, currency, provider string) (PaymentResult, error) {
 	m.seq++

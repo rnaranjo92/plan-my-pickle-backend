@@ -35,13 +35,28 @@ func TestVerifyToken(t *testing.T) {
 
 	t.Run("valid token returns subject", func(t *testing.T) {
 		tok := makeToken("test-secret", "HS256",
-			map[string]any{"sub": "user-1", "email": "a@b.c", "exp": future})
+			map[string]any{"sub": "user-1", "email": "a@b.c", "aud": "authenticated", "exp": future})
 		c, err := verifyToken(tok)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if c.Sub != "user-1" {
 			t.Fatalf("sub = %q, want user-1", c.Sub)
+		}
+	})
+
+	t.Run("wrong audience rejected", func(t *testing.T) {
+		tok := makeToken("test-secret", "HS256",
+			map[string]any{"sub": "u", "aud": "anon", "exp": future})
+		if _, err := verifyToken(tok); err == nil {
+			t.Fatal("expected audience rejection")
+		}
+	})
+
+	t.Run("missing audience rejected", func(t *testing.T) {
+		tok := makeToken("test-secret", "HS256", map[string]any{"sub": "u", "exp": future})
+		if _, err := verifyToken(tok); err == nil {
+			t.Fatal("expected rejection when aud is absent")
 		}
 	})
 
@@ -121,13 +136,22 @@ func TestVerifyTokenES256(t *testing.T) {
 	future := time.Now().Add(time.Hour).Unix()
 
 	t.Run("valid ES256 accepted", func(t *testing.T) {
-		tok := makeES256Token(t, priv, kid, map[string]any{"sub": "u-es", "exp": future})
+		tok := makeES256Token(t, priv, kid,
+			map[string]any{"sub": "u-es", "aud": "authenticated", "exp": future})
 		c, err := verifyToken(tok)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if c.Sub != "u-es" {
 			t.Fatalf("sub = %q, want u-es", c.Sub)
+		}
+	})
+
+	t.Run("array-form audience accepted", func(t *testing.T) {
+		tok := makeES256Token(t, priv, kid,
+			map[string]any{"sub": "u-es", "aud": []string{"authenticated", "other"}, "exp": future})
+		if _, err := verifyToken(tok); err != nil {
+			t.Fatalf("unexpected error for array aud: %v", err)
 		}
 	})
 

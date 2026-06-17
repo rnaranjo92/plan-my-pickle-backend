@@ -38,11 +38,45 @@ var (
 
 var errInvalidToken = errors.New("invalid token")
 
-// tokenClaims is the subset of the Supabase JWT we use.
+// tokenClaims is the subset of the Supabase JWT we use. Aud is decoded raw
+// because the JWT spec allows it to be either a string or an array of strings.
 type tokenClaims struct {
-	Sub   string `json:"sub"` // the auth user's uuid
-	Email string `json:"email"`
-	Exp   int64  `json:"exp"`
+	Sub   string          `json:"sub"` // the auth user's uuid
+	Email string          `json:"email"`
+	Exp   int64           `json:"exp"`
+	Iss   string          `json:"iss"`
+	Aud   json.RawMessage `json:"aud"`
+}
+
+// expectedIssuer is the issuer Supabase stamps on its access tokens (the
+// project's GoTrue URL). Empty when SUPABASE_URL is unset (dev), in which case
+// the issuer check is skipped.
+var expectedIssuer = func() string {
+	if supabaseURL == "" {
+		return ""
+	}
+	return supabaseURL + "/auth/v1"
+}()
+
+// hasAudience reports whether the token's `aud` claim contains want. It accepts
+// both the string ("authenticated") and array (["authenticated", ...]) forms.
+func hasAudience(raw json.RawMessage, want string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return one == want
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) == nil {
+		for _, a := range many {
+			if a == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // jwks caches the project's ES256 public keys (by kid), refreshed lazily on a
@@ -172,6 +206,20 @@ func verifyToken(raw string) (tokenClaims, error) {
 	}
 	// Require an expiry and enforce it — reject forged no-exp tokens.
 	if c.Exp == 0 || time.Now().Unix() >= c.Exp {
+		return c, errInvalidToken
+	}
+	// Audience must be Supabase's signed-in audience — rejects anon/service
+	// keys and tokens minted for a different audience even if the signature and
+	// expiry check out.
+	if !hasAudience(c.Aud, "authenticated") {
+		return c, errInvalidToken
+	}
+	// Issuer check (defense-in-depth; the signature already binds the token to
+	// this project's keys). Only reject a token that *claims* a foreign issuer:
+	// accept this project's GoTrue URL and the legacy "supabase" issuer, and
+	// don't block when the claim is absent — so it can never lock out a valid
+	// token whose issuer format differs across GoTrue versions.
+	if c.Iss != "" && c.Iss != "supabase" && expectedIssuer != "" && c.Iss != expectedIssuer {
 		return c, errInvalidToken
 	}
 	return c, nil

@@ -521,6 +521,13 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 	}
 	playerID := asStr(pl[0], "id")
 
+	// Resolve the division. An explicitly-chosen bracket must actually belong to
+	// this event (otherwise a crafted request could file a registration under
+	// another event's division); an empty choice is auto-assigned by rating.
+	bks, err := s.GetBrackets(eventID)
+	if err != nil {
+		return model.Registration{}, err
+	}
 	bracketID := req.BracketID
 	if bracketID == "" {
 		b, err := s.autoAssignBracket(eventID, req.SkillLevel)
@@ -528,6 +535,29 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 			return model.Registration{}, err
 		}
 		bracketID = b
+	}
+	var chosen *model.Bracket
+	for i := range bks {
+		if bks[i].ID == bracketID {
+			chosen = &bks[i]
+			break
+		}
+	}
+	if bracketID != "" && chosen == nil {
+		return model.Registration{}, errors.New("selected division is not part of this event")
+	}
+	// Soft eligibility flag: surface (don't block) when the player's rating falls
+	// outside the division's band. Prefer DUPR; fall back to self-reported skill.
+	playerRating := req.DuprRating
+	if playerRating == nil {
+		playerRating = req.SkillLevel
+	}
+	outside := false
+	if chosen != nil && playerRating != nil {
+		if (chosen.MinRating != nil && *playerRating < *chosen.MinRating) ||
+			(chosen.MaxRating != nil && *playerRating > *chosen.MaxRating) {
+			outside = true
+		}
 	}
 	token := newID()
 	reg, err := s.sb.Insert("registrations", map[string]any{
@@ -546,6 +576,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 	return model.Registration{
 		ID: asStr(reg[0], "id"), EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,
+		OutsideRating: outside,
 	}, nil
 }
 
@@ -997,14 +1028,27 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error
 	if err != nil {
 		return 0, err
 	}
-	_ = topN // medal format is fixed at the top 4
 	if len(sides) < 4 {
 		return 0, errors.New("need at least 4 teams in this division to build the playoff")
+	}
+	// Draw size: default to the top 4; honor a larger request (8/16…) but never
+	// ask for more teams than the division has.
+	if topN < 4 {
+		topN = 4
+	}
+	if topN > len(sides) {
+		topN = len(sides)
 	}
 	if err := s.wipeBracketStage(bracketID); err != nil {
 		return 0, err
 	}
-	return s.persistMedalBracket(ev, bracketID, sides[:4])
+	// Top-4 uses the medal bracket (adds a 3rd-place / bronze game). Larger draws
+	// use a standard single-elimination bracket, seeded 1-vs-N with byes padding
+	// to the next power of two (the engine handles both).
+	if topN == 4 {
+		return s.persistMedalBracket(ev, bracketID, sides[:4])
+	}
+	return s.persistBracket(ev, bracketID, sides[:topN])
 }
 
 // seedTopTeams returns this division's teams ordered best-first by pool
@@ -1036,7 +1080,10 @@ func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID string) ([][]s
 		pairs := pairsFromRegs(regs)
 		rate := map[string]int{}
 		for _, st := range standings {
-			rate[st.PlayerID] = st.Wins*1000 + st.PointsFor
+			// Seed by record first, then point differential, then points scored —
+			// the same priority the standings table ranks by. Wide multipliers keep
+			// the tiers from bleeding into each other.
+			rate[st.PlayerID] = st.Wins*1_000_000 + st.PointDiff*1_000 + st.PointsFor
 		}
 		sort.SliceStable(pairs, func(i, j int) bool {
 			return pairScore(pairs[i], rate) > pairScore(pairs[j], rate)
@@ -1080,13 +1127,23 @@ func (s *Service) maybeSeedPlayoff(bracketID string) error {
 	if !ok1 || !ok2 {
 		return nil // no skeleton (e.g. fewer than 4 teams)
 	}
-	// Already seeded? (sf1 has participants)
+	// Already seeded? A pool re-score can change the standings, so re-seed — but
+	// ONLY while the playoff is still pristine. Once any semifinal is underway or
+	// played we leave the bracket alone (the organizer regenerates manually)
+	// rather than silently yanking teams out of a live playoff.
 	seeded, err := s.sb.Select("match_participants", "match_id=eq."+store.Q(sf1)+"&select=match_id")
 	if err != nil {
 		return err
 	}
-	if len(seeded) > 0 {
-		return nil
+	alreadySeeded := len(seeded) > 0
+	if alreadySeeded {
+		started, err := s.bracketStarted(bracketID)
+		if err != nil {
+			return err
+		}
+		if started {
+			return nil
+		}
 	}
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
@@ -1099,6 +1156,14 @@ func (s *Service) maybeSeedPlayoff(bracketID string) error {
 	if len(sides) < 4 {
 		return nil
 	}
+	// Drop any stale seeds before writing the fresh ones (re-seed path).
+	if alreadySeeded {
+		for _, sf := range []string{sf1, sf2} {
+			if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(sf)); err != nil {
+				return err
+			}
+		}
+	}
 	// SF1: seed 1 vs seed 4 ; SF2: seed 2 vs seed 3.
 	if err := s.insertSide(sf1, 1, sides[0]); err != nil {
 		return err
@@ -1110,6 +1175,23 @@ func (s *Service) maybeSeedPlayoff(bracketID string) error {
 		return err
 	}
 	return s.insertSide(sf2, 2, sides[2])
+}
+
+// bracketStarted reports whether any of a division's playoff matches are already
+// underway or completed (so a re-seed would disturb live play).
+func (s *Service) bracketStarted(bracketID string) (bool, error) {
+	rows, err := s.sb.Select("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket&select=status")
+	if err != nil {
+		return false, err
+	}
+	for _, m := range rows {
+		switch asStr(m, "status") {
+		case "in_progress", "completed":
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ----------------------------------------------------------- scoring
@@ -1173,6 +1255,9 @@ func (s *Service) applyScore(matchID string, t1, t2 int) error {
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winner,
 		"status": "completed", "completed_at": now(), "result_type": "normal",
+		// A real played result always counts toward differential — also resets a
+		// match that had previously been a forfeit/walkover (counts_for_diff=false).
+		"counts_for_diff": true,
 	})
 	if err != nil {
 		return err
@@ -1218,7 +1303,9 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if ev != nil && asBool(ev, "dupr_sanctioned") {
+	// Only real, played results are eligible for DUPR — forfeits, retirements and
+	// walkovers aren't submitted (no genuine head-to-head score).
+	if rt := asStr(m, "result_type"); ev != nil && asBool(ev, "dupr_sanctioned") && (rt == "" || rt == "normal") {
 		if err := s.queueDuprSubmission(matchID, eventID); err != nil {
 			return err
 		}
@@ -1230,7 +1317,7 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 // mid-match retirement, or a walkover. The winning team is credited a
 // conventional win (points_to_win to 0); kind labels how it ended. Bracket
 // advancement and playoff seeding run exactly as for a normal result.
-func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string) error {
+func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1Score, t2Score *int) error {
 	if winningTeam != 1 && winningTeam != 2 {
 		return errors.New("winning team must be 1 or 2")
 	}
@@ -1251,13 +1338,21 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string) err
 			ptw = g
 		}
 	}
+	// A retirement keeps the actual partial score (and counts toward point
+	// differential). Forfeits/walkovers fabricate a conventional points_to_win-0
+	// win that is excluded from differential.
 	t1, t2 := ptw, 0
 	if winningTeam == 2 {
 		t1, t2 = 0, ptw
 	}
+	countsForDiff := false
+	if kind == "retire" && t1Score != nil && t2Score != nil {
+		t1, t2, countsForDiff = *t1Score, *t2Score, true
+	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
 		"status": "completed", "completed_at": now(), "result_type": kind,
+		"counts_for_diff": countsForDiff,
 	})
 	if err != nil {
 		return err
@@ -1313,23 +1408,72 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 	}
 	fee := asInt(ev, "registration_fee_cents")
 	currency := asStr(ev, "currency")
+
+	// Free registration — nothing to charge, confirm immediately.
+	if fee <= 0 {
+		return s.recordPayment(registrationID, "free", "", 0, currency, "paid", "paid")
+	}
+
+	// Fee-bearing, but no real payment processor is wired up (the mock always
+	// "succeeds"). Marking the registration paid here would let anyone
+	// self-confirm payment from the public endpoint, so instead record a pending
+	// intent. The organizer confirms receipt via the owner-only mark-paid action
+	// (CollectPaymentManually), or a real gateway's webhook once one is added.
+	if !s.Pay.Live() {
+		return s.recordPayment(registrationID, provider, "", fee, currency, "pending", "pending")
+	}
+
 	res, err := s.Pay.Charge(registrationID, fee, currency, provider)
 	if err != nil {
 		return false, err
 	}
-	status, regStatus := "failed", "pending"
-	var ref, paidAt any
 	if res.OK {
-		status, regStatus = "paid", "paid"
-		ref, paidAt = res.ProviderRef, now()
+		return s.recordPayment(registrationID, provider, res.ProviderRef, fee, currency, "paid", "paid")
+	}
+	return s.recordPayment(registrationID, provider, "", fee, currency, "failed", "pending")
+}
+
+// CollectPaymentManually is the organizer's owner-only confirmation that a
+// fee-bearing registration was paid out of band (cash, e-transfer, etc.). It
+// marks the registration paid without going through the (mock) gateway.
+func (s *Service) CollectPaymentManually(registrationID string) error {
+	reg, err := s.sb.SelectOne("registrations", "id=eq."+store.Q(registrationID)+"&select=event_id")
+	if err != nil {
+		return err
+	}
+	if reg == nil {
+		return ErrNotFound
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(asStr(reg, "event_id"))+"&select=registration_fee_cents,currency")
+	if err != nil {
+		return err
+	}
+	fee, currency := 0, "usd"
+	if ev != nil {
+		fee, currency = asInt(ev, "registration_fee_cents"), asStr(ev, "currency")
+	}
+	_, err = s.recordPayment(registrationID, "manual", "", fee, currency, "paid", "paid")
+	return err
+}
+
+// recordPayment writes a payments row and syncs the registration's
+// payment_status. Returns whether the registration ended up paid.
+func (s *Service) recordPayment(registrationID, provider, ref string, fee int, currency, payStatus, regStatus string) (bool, error) {
+	var refVal, paidAt any
+	if ref != "" {
+		refVal = ref
+	}
+	if payStatus == "paid" {
+		paidAt = now()
 	}
 	if _, err := s.sb.Insert("payments", map[string]any{
 		"registration_id": registrationID,
 		"provider":        provider,
-		"provider_ref":    ref,
+		"provider_ref":    refVal,
 		"amount_cents":    fee,
 		"currency":        currency,
-		"status":          status,
+		"status":          payStatus,
 		"paid_at":         paidAt,
 	}); err != nil {
 		return false, err
@@ -1338,7 +1482,7 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 		map[string]any{"payment_status": regStatus}); err != nil {
 		return false, err
 	}
-	return res.OK, nil
+	return regStatus == "paid", nil
 }
 
 // SaveShirtOrder creates or updates the (optional) tournament-shirt order a
@@ -1609,14 +1753,26 @@ func digitsOnly(s string) string {
 	return b.String()
 }
 
+// normPhone reduces a phone string to comparable digits, dropping a leading
+// North-American "1" country code so "+1 (555) 100-0000" and "5551000000"
+// compare equal. Used for an EXACT match (not a suffix match) so a short or
+// partial number can't be used to fish for other registrants' names.
+func normPhone(s string) string {
+	d := digitsOnly(s)
+	if len(d) == 11 && d[0] == '1' {
+		return d[1:]
+	}
+	return d
+}
+
 // CheckInByPhone checks a player in by the phone number they registered with.
-// Returns the registration id and the player's display name. Matching is on
-// digits only and tolerates a country-code prefix (a suffix match), so
-// "+1 (555) 100-0000" matches a stored "5551000000".
+// Returns the registration id and the player's display name. Matching is EXACT
+// on the normalized number (country-code tolerant): a partial/short number
+// never matches, so this can't be used as an oracle to enumerate registrants.
 func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) {
-	want := digitsOnly(phone)
-	if len(want) < 7 {
-		return "", "", errors.New("enter the phone number you registered with")
+	want := normPhone(phone)
+	if len(want) < 10 {
+		return "", "", errors.New("enter the full phone number you registered with")
 	}
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+"&select=id,player:players!player_id(full_name,phone)")
@@ -1630,11 +1786,11 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 		if p == nil {
 			continue
 		}
-		have := digitsOnly(asStr(p, "phone"))
+		have := normPhone(asStr(p, "phone"))
 		if have == "" {
 			continue
 		}
-		if have == want || strings.HasSuffix(have, want) || strings.HasSuffix(want, have) {
+		if have == want {
 			matchID, matchName = asStr(r, "id"), asStr(p, "full_name")
 			found = true
 			break
@@ -1824,7 +1980,7 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 		subID := asStr(p, "id")
 		matchID := asStr(p, "match_id")
 		m, err := s.sb.SelectOne("matches",
-			"id=eq."+store.Q(matchID)+"&select=team1_score,team2_score,winning_team")
+			"id=eq."+store.Q(matchID)+"&select=team1_score,team2_score,winning_team,result_type")
 		if err != nil {
 			return sum, err
 		}
@@ -1834,6 +1990,13 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 		if m == nil || wt == nil || t1s == nil || t2s == nil {
 			s.markSubmission(subID, "failed", "", "match not completed")
 			sum.Failed++
+			continue
+		}
+		// Forfeits/retirements/walkovers aren't real played results — skip them
+		// (belt-and-suspenders; advanceAfterScore no longer queues them).
+		if rt := asStr(m, "result_type"); rt != "" && rt != "normal" {
+			s.markSubmission(subID, "skipped", "", "not a played result ("+rt+")")
+			sum.Skipped++
 			continue
 		}
 		parts, err := s.sb.Select("match_participants",
@@ -1862,6 +2025,13 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 		if missing != "" {
 			s.markSubmission(subID, "failed", "", "Missing DUPR id for "+missing)
 			sum.Failed++
+			continue
+		}
+		// A bye (one side empty) is not a real match — skip rather than submit a
+		// one-sided result to DUPR.
+		if len(t1) == 0 || len(t2) == 0 {
+			s.markSubmission(subID, "skipped", "", "bye / incomplete side")
+			sum.Skipped++
 			continue
 		}
 		res, err := s.Dupr.SubmitMatch(gateway.DuprPayload{
@@ -1902,6 +2072,13 @@ func (s *Service) markSubmission(id, status, ref, errMsg string) {
 // advanced into that exact (feed match, slot) so a re-scored match that flips
 // the result does not leave both teams' players on one side.
 func (s *Service) advanceTeam(matchID string, team int, feedsMatchID string, feedsSlot int) error {
+	// Who currently occupies the target slot — so we can tell whether this
+	// advancement actually CHANGES who moves on (a flipped result) versus a
+	// no-op re-score (e.g. fixing 11-5 to 11-6, same winner).
+	before, err := s.slotPlayers(feedsMatchID, feedsSlot)
+	if err != nil {
+		return err
+	}
 	// Clear any team previously advanced into this exact (feed match, slot) so a
 	// re-scored match that flips the result doesn't pile both teams onto one side.
 	if err := s.sb.Delete("match_participants",
@@ -1917,7 +2094,88 @@ func (s *Service) advanceTeam(matchID string, team int, feedsMatchID string, fee
 	for _, r := range rows {
 		side = append(side, asStr(r, "player_id"))
 	}
-	return s.insertSide(feedsMatchID, feedsSlot, side)
+	if err := s.insertSide(feedsMatchID, feedsSlot, side); err != nil {
+		return err
+	}
+	// If a DIFFERENT team now advances into this slot, any already-played match
+	// downstream is based on a stale participant — reset it and cascade. (When
+	// the same team advances we leave a played downstream game untouched.)
+	if !sameSet(before, side) {
+		return s.resetCompletedDownstream(feedsMatchID)
+	}
+	return nil
+}
+
+// resetCompletedDownstream reverts a bracket match that was already played but
+// whose participants just changed (a re-scored upstream result flipped). It
+// clears the score/winner back to unplayed, clears whatever it had advanced into
+// ITS own feeds, and recurses so a whole downstream chain unwinds. No-op when
+// the match wasn't completed.
+func (s *Service) resetCompletedDownstream(matchID string) error {
+	m, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+
+		"&select=status,feeds_match_id,feeds_slot,loser_feeds_match_id,loser_feeds_slot")
+	if err != nil {
+		return err
+	}
+	if m == nil || asStr(m, "status") != "completed" {
+		return nil
+	}
+	if _, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
+		"team1_score": nil, "team2_score": nil, "winning_team": nil,
+		"status": "scheduled", "completed_at": nil, "result_type": nil,
+	}); err != nil {
+		return err
+	}
+	for _, f := range []struct {
+		idKey, slotKey string
+	}{{"feeds_match_id", "feeds_slot"}, {"loser_feeds_match_id", "loser_feeds_slot"}} {
+		fm := asStrPtr(m, f.idKey)
+		if fm == nil {
+			continue
+		}
+		if err := s.sb.Delete("match_participants",
+			"match_id=eq."+store.Q(*fm)+"&team=eq."+strconv.Itoa(asInt(m, f.slotKey))); err != nil {
+			return err
+		}
+		if err := s.resetCompletedDownstream(*fm); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// slotPlayers returns the player ids occupying a match's team slot.
+func (s *Service) slotPlayers(matchID string, team int) ([]string, error) {
+	rows, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&team=eq."+strconv.Itoa(team)+"&select=player_id")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, asStr(r, "player_id"))
+	}
+	return out, nil
+}
+
+// sameSet reports whether a and b contain the same player ids (order-agnostic).
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, x := range a {
+		seen[x]++
+	}
+	for _, y := range b {
+		seen[y]--
+	}
+	for _, v := range seen {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // ----------------------------------------------------------- standings

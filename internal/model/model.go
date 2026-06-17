@@ -179,11 +179,16 @@ type ScoreRequest struct {
 	Team2Score int `json:"team2Score"`
 }
 
-// ForfeitRequest resolves a match without a played score (no-show / retire /
-// walkover). WinningTeam is the team credited the win.
+// ForfeitRequest resolves a match without a fully-played score (no-show /
+// retire / walkover). WinningTeam is the team credited the win. For a
+// retirement the partial score at the stoppage may be supplied — it is kept as
+// the real result and counts toward point differential. Forfeits/walkovers
+// ignore the scores (a conventional win is recorded and excluded from diff).
 type ForfeitRequest struct {
 	WinningTeam int    `json:"winningTeam"`
 	Kind        string `json:"kind"` // forfeit | retire | walkover
+	Team1Score  *int   `json:"team1Score,omitempty"`
+	Team2Score  *int   `json:"team2Score,omitempty"`
 }
 
 type PayRequest struct {

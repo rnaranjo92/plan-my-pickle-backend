@@ -606,7 +606,7 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+
 			"&select=id,event_id,player_id,bracket_id,payment_status,checked_in,check_in_token,"+
-			"player:players!player_id(full_name,phone,dupr_id,dupr_rating),"+
+			"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level),"+
 			"bracket:brackets(min_rating,max_rating)")
 	if err != nil {
 		return nil, err

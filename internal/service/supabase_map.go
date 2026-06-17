@@ -282,17 +282,28 @@ func mapRegistration(m map[string]any) model.Registration {
 		CheckedIn:     asBool(m, "checked_in"),
 		CheckInToken:  asStrPtr(m, "check_in_token"),
 	}
+	var skill *float64
 	if p := asMap(m, "player"); p != nil {
 		r.FullName = asStr(p, "full_name")
 		r.Phone = asStr(p, "phone")
 		r.DuprID = asStrPtr(p, "dupr_id")
 		r.DuprRating = asFloatPtr(p, "dupr_rating")
+		skill = asFloatPtr(p, "skill_level")
 	}
-	if b := asMap(m, "bracket"); b != nil && r.DuprRating != nil {
-		mn := asFloatPtr(b, "min_rating")
-		mx := asFloatPtr(b, "max_rating")
-		if (mn != nil && *r.DuprRating < *mn) || (mx != nil && *r.DuprRating > *mx) {
-			r.OutsideRating = true
+	// Effective rating: prefer DUPR, fall back to self-reported skill — the same
+	// precedence RegisterPlayer uses, so this list view's OUTSIDE-DIVISION flag
+	// matches the value computed at registration (incl. skill-only players).
+	if b := asMap(m, "bracket"); b != nil {
+		rating := r.DuprRating
+		if rating == nil {
+			rating = skill
+		}
+		if rating != nil {
+			mn := asFloatPtr(b, "min_rating")
+			mx := asFloatPtr(b, "max_rating")
+			if (mn != nil && *rating < *mn) || (mx != nil && *rating > *mx) {
+				r.OutsideRating = true
+			}
 		}
 	}
 	return r

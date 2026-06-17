@@ -576,12 +576,15 @@ func status(w http.ResponseWriter, err error) {
 	writeErr(w, http.StatusBadRequest, err)
 }
 
-// clientIP returns the caller's IP, preferring the first X-Forwarded-For hop
-// (Railway terminates TLS at a proxy, so RemoteAddr is the proxy's address).
+// clientIP returns the caller's IP for rate-limiting. It uses the RIGHTMOST
+// X-Forwarded-For hop — the address our single trusted edge proxy (Railway)
+// observed and appended. The leftmost entries are client-supplied and spoofable,
+// so trusting them would let an attacker rotate the header to dodge the limit;
+// we deliberately ignore them. Falls back to RemoteAddr when there's no XFF.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+		if i := strings.LastIndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[i+1:])
 		}
 		return strings.TrimSpace(xff)
 	}
@@ -602,7 +605,32 @@ type rateLimiter struct {
 }
 
 func newRateLimiter(limit int, windowSec int64) *rateLimiter {
-	return &rateLimiter{hits: map[string][]int64{}, limit: limit, window: windowSec}
+	rl := &rateLimiter{hits: map[string][]int64{}, limit: limit, window: windowSec}
+	go rl.sweep()
+	return rl
+}
+
+// sweep periodically drops keys whose newest attempt is older than the window,
+// so the map can't grow without bound (one entry per IP+event would otherwise
+// live for the whole process — and an attacker varying the key could pile them
+// up). Runs for the process lifetime.
+func (rl *rateLimiter) sweep() {
+	for range time.Tick(time.Duration(rl.window) * time.Second) {
+		cutoff := time.Now().Unix() - rl.window
+		rl.mu.Lock()
+		for k, ts := range rl.hits {
+			newest := int64(0)
+			for _, t := range ts {
+				if t > newest {
+					newest = t
+				}
+			}
+			if newest <= cutoff {
+				delete(rl.hits, k)
+			}
+		}
+		rl.mu.Unlock()
+	}
 }
 
 // allow records an attempt for key and reports whether it's within the limit.

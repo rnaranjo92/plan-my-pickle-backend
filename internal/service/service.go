@@ -1908,7 +1908,9 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 
 	sent := 0
 	for _, phone := range phones {
-		body := fmt.Sprintf("PlanMyPickle: You are up! Head to %s for round %d.", court, roundNumber)
+		// Wording mirrors the registered A2P sample; the STOP footer is required
+		// for compliance (the Messaging Service also auto-handles STOP/HELP).
+		body := fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Reply STOP to opt out.", court, roundNumber)
 		ins, err := s.sb.Insert("notifications", map[string]any{
 			"event_id": eventID, "match_id": matchID, "type": "game_starting",
 			"to_address": phone, "body": body,

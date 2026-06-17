@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/api"
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/service"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
@@ -37,7 +38,18 @@ func main() {
 	}
 	log.Printf("Supabase: configured (%s)", os.Getenv("SUPABASE_URL"))
 
-	handler := api.NewServer(service.New())
+	svc := service.New()
+	// Real SMS (game-starting alerts) only when Twilio is configured; otherwise
+	// the mock records notifications without sending. from = E.164 number or a
+	// Messaging Service SID (MG…). Secrets live in the platform env, never code.
+	if sid, tok, from := os.Getenv("TWILIO_ACCOUNT_SID"), os.Getenv("TWILIO_AUTH_TOKEN"), os.Getenv("TWILIO_FROM"); sid != "" && tok != "" && from != "" {
+		svc.Sms = gateway.NewTwilioSms(sid, tok, from)
+		log.Printf("SMS: Twilio configured (from %s)", from)
+	} else {
+		log.Printf("SMS: mock — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM to send real texts")
+	}
+
+	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,

@@ -20,11 +20,18 @@ type Server struct {
 	// phoneCheckin throttles the public phone check-in endpoint so it can't be
 	// brute-forced to enumerate registrants.
 	phoneCheckin *rateLimiter
+	// regLimiter throttles the public self-registration endpoint per event so a
+	// bot can't flood an event with fake players.
+	regLimiter *rateLimiter
 }
 
 // NewServer wires the routes and returns the HTTP handler.
 func NewServer(svc *service.Service) http.Handler {
-	s := &Server{svc: svc, phoneCheckin: newRateLimiter(60, 60)}
+	s := &Server{
+		svc:          svc,
+		phoneCheckin: newRateLimiter(60, 60),
+		regLimiter:   newRateLimiter(40, 60), // 40 self-registrations/min per event
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -154,6 +161,12 @@ func (s *Server) getBrackets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var req model.RegisterRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	// Per-event throttle so the public self-registration link can't be flooded
+	// with fake players. Generous enough for a real registration rush.
+	if !s.regLimiter.allow(r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many registrations right now, try again shortly"))
 		return
 	}
 	reg, err := s.svc.RegisterPlayer(r.PathValue("id"), req)

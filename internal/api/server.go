@@ -6,11 +6,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/service"
 )
@@ -23,6 +25,9 @@ type Server struct {
 	// regLimiter throttles the public self-registration endpoint per event so a
 	// bot can't flood an event with fake players.
 	regLimiter *rateLimiter
+	// captcha verifies a Turnstile token on PUBLIC (anonymous) self-registration.
+	// Active only when TURNSTILE_SECRET is set; otherwise it skips (fail-open).
+	captcha *gateway.Captcha
 }
 
 // NewServer wires the routes and returns the HTTP handler.
@@ -31,6 +36,7 @@ func NewServer(svc *service.Service) http.Handler {
 		svc:          svc,
 		phoneCheckin: newRateLimiter(60, 60),
 		regLimiter:   newRateLimiter(40, 60), // 40 self-registrations/min per event
+		captcha:      gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -167,6 +173,13 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	// with fake players. Generous enough for a real registration rush.
 	if !s.regLimiter.allow(r.PathValue("id")) {
 		writeErr(w, http.StatusTooManyRequests, errors.New("too many registrations right now, try again shortly"))
+		return
+	}
+	// Bot check on the PUBLIC form only: anonymous (no token) self-registration
+	// must pass Turnstile. An authenticated organizer adding a player is trusted
+	// and skips it. No-op unless TURNSTILE_SECRET is configured.
+	if userID(r) == "" && !s.captcha.Verify(req.CaptchaToken, "") {
+		writeErr(w, http.StatusForbidden, errors.New("please complete the human check and try again"))
 		return
 	}
 	reg, err := s.svc.RegisterPlayer(r.PathValue("id"), req)

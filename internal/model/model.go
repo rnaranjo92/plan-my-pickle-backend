@@ -172,6 +172,10 @@ type RegisterRequest struct {
 	DuprReliability *float64 `json:"duprReliability,omitempty"`
 	PartnerID       string   `json:"partnerId"`
 	BracketID       string   `json:"bracketId"`
+	// CaptchaToken is a Cloudflare Turnstile token sent only by the PUBLIC
+	// self-registration form (anonymous). The handler verifies it server-side;
+	// the service ignores it.
+	CaptchaToken string `json:"captchaToken,omitempty"`
 }
 
 type ScoreRequest struct {

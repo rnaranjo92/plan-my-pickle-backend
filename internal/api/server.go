@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,7 +24,7 @@ type Server struct {
 
 // NewServer wires the routes and returns the HTTP handler.
 func NewServer(svc *service.Service) http.Handler {
-	s := &Server{svc: svc, phoneCheckin: newRateLimiter(8, 60)}
+	s := &Server{svc: svc, phoneCheckin: newRateLimiter(60, 60)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -455,10 +454,15 @@ func (s *Server) checkinByPhone(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// Throttle per client IP + event so the public phone lookup can't be
-	// brute-forced to enumerate registrants' names.
-	if !s.phoneCheckin.allow(clientIP(r) + "|" + r.PathValue("id")) {
-		writeErr(w, http.StatusTooManyRequests, errors.New("too many attempts, try again in a minute"))
+	// Throttle this lookup PER EVENT (not per IP): behind Railway's proxy chain a
+	// client IP isn't reliably attributable — the leftmost X-Forwarded-For hop is
+	// client-spoofable and the rightmost can be a rotating internal hop — so an IP
+	// key is either bypassable or explodes. A per-event cap bounds total attempts
+	// regardless and, with the exact full-phone match this endpoint requires (the
+	// real anti-enumeration control), is enough to stop name harvesting. QR and
+	// organizer check-in are separate endpoints and unaffected.
+	if !s.phoneCheckin.allow(r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many attempts, try again shortly"))
 		return
 	}
 	regID, name, err := s.svc.CheckInByPhone(r.PathValue("id"), req.Phone)
@@ -574,24 +578,6 @@ func status(w http.ResponseWriter, err error) {
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err)
-}
-
-// clientIP returns the caller's IP for rate-limiting. It uses the RIGHTMOST
-// X-Forwarded-For hop — the address our single trusted edge proxy (Railway)
-// observed and appended. The leftmost entries are client-supplied and spoofable,
-// so trusting them would let an attacker rotate the header to dodge the limit;
-// we deliberately ignore them. Falls back to RemoteAddr when there's no XFF.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.LastIndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[i+1:])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 // rateLimiter is a small in-memory sliding-window limiter (best-effort; per

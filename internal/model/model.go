@@ -27,6 +27,9 @@ type Event struct {
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
 	EndsAt      *string `json:"endsAt,omitempty"`
 	Description *string `json:"description,omitempty"`
+	// SlotDurations maps a schedule time-block index -> game length (minutes),
+	// overriding GameDurationMinutes for that block. Empty/absent = all default.
+	SlotDurations map[string]int `json:"slotDurations,omitempty"`
 	// RegisteredCount is the number of players registered (filled on the
 	// dashboard list; 0 on single-event reads).
 	RegisteredCount int    `json:"registeredCount"`
@@ -108,7 +111,8 @@ type Match struct {
 	BracketRound *int     `json:"bracketRound,omitempty"`
 	BracketSlot  *int     `json:"bracketSlot,omitempty"`
 	CourtNumber  *int     `json:"courtNumber,omitempty"`
-	PlayOrder    *float64 `json:"playOrder,omitempty"` // within-court order, lower first
+	PlayOrder    *float64 `json:"playOrder,omitempty"`       // within-court order, lower first
+	DurationMinutes *int  `json:"durationMinutes,omitempty"` // per-match length override
 	Team1Score   *int     `json:"team1Score,omitempty"`
 	Team2Score   *int     `json:"team2Score,omitempty"`
 	WinningTeam  *int     `json:"winningTeam,omitempty"`

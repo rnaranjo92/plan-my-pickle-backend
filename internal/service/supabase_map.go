@@ -150,8 +150,27 @@ func mapEvent(m map[string]any) model.Event {
 		StartsAt:             asStrPtr(m, "starts_at"),
 		EndsAt:               asStrPtr(m, "ends_at"),
 		Description:          asStrPtr(m, "description"),
+		SlotDurations:        asIntMap(m, "slot_durations"),
 		Status:               asStr(m, "status"),
 	}
+}
+
+// asIntMap reads a jsonb object column of { "<key>": number } into map[string]int.
+func asIntMap(m map[string]any, k string) map[string]int {
+	raw, ok := m[k].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]int, len(raw))
+	for key, v := range raw {
+		if n, ok := v.(float64); ok {
+			out[key] = int(n)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func mapBracket(m map[string]any) model.Bracket {
@@ -215,7 +234,7 @@ func mapRoundView(m map[string]any) model.RoundView {
 // court number, round context, and participants (with player names) embedded —
 // so a match and its sides load in one round-trip instead of N+1 queries.
 const matchSelect = "id,bracket_id,stage,bracket_round,bracket_slot," +
-	"team1_score,team2_score,winning_team,status,result_type,play_order," +
+	"team1_score,team2_score,winning_team,status,result_type,play_order,duration_minutes," +
 	"court:courts!court_id(court_number)," +
 	"round:rounds!round_id(id,round_number,status)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
@@ -260,9 +279,10 @@ func mapMatch(m map[string]any) model.Match {
 		Team2Score:   asIntPtr(m, "team2_score"),
 		WinningTeam:  asIntPtr(m, "winning_team"),
 		Status:       asStr(m, "status"),
-		ResultType:   asStr(m, "result_type"),
-		PlayOrder:    asFloatPtr(m, "play_order"),
-		Sides:        mapSides(m),
+		ResultType:      asStr(m, "result_type"),
+		PlayOrder:       asFloatPtr(m, "play_order"),
+		DurationMinutes: asIntPtr(m, "duration_minutes"),
+		Sides:           mapSides(m),
 	}
 	if c := asMap(m, "court"); c != nil {
 		mt.CourtNumber = asIntPtr(c, "court_number")

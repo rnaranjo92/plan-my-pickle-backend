@@ -425,6 +425,32 @@ func (s *Service) SetGameDuration(eventID string, minutes int) (int, error) {
 	return m, err
 }
 
+// SetSlotDuration overrides the game length (minutes) for ONE schedule
+// time-block (slot index), leaving other blocks at the event default. Returns
+// the clamped value stored.
+func (s *Service) SetSlotDuration(eventID string, slot, minutes int) (int, error) {
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=slot_durations")
+	if err != nil {
+		return 0, err
+	}
+	durs := map[string]int{}
+	if ev != nil {
+		if raw, ok := ev["slot_durations"].(map[string]any); ok {
+			for k, v := range raw {
+				if n, ok := v.(float64); ok {
+					durs[k] = int(n)
+				}
+			}
+		}
+	}
+	m := clampGameDuration(minutes)
+	durs[strconv.Itoa(slot)] = m
+	_, err = s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"slot_durations": durs})
+	return m, err
+}
+
 // clampGameDuration bounds the per-game slot length to the form's 15..90 range,
 // defaulting an unset value to the researched 25-minute slot.
 func clampGameDuration(m int) int {
@@ -1185,6 +1211,10 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, er
 	if perr != nil {
 		return scheduled, perr
 	}
+	// Re-arranging reassigns slot indices, so any per-block duration overrides no
+	// longer line up with the same games — clear them (best-effort).
+	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"slot_durations": nil})
 	return scheduled, nil
 }
 
@@ -2883,6 +2913,20 @@ func (s *Service) nextPlayOrder(eventID, courtID string) (float64, error) {
 		return *po + 1, nil
 	}
 	return 0, nil
+}
+
+// SetMatchDuration overrides one game's length (minutes); minutes <= 0 clears it
+// back to the event default. Returns the clamped value (0 = cleared).
+func (s *Service) SetMatchDuration(matchID string, minutes int) (int, error) {
+	var val any // nil clears the override
+	out := 0
+	if minutes > 0 {
+		out = clampGameDuration(minutes)
+		val = out
+	}
+	_, err := s.sb.Update("matches", "id=eq."+store.Q(matchID),
+		map[string]any{"duration_minutes": val})
+	return out, err
 }
 
 // --------------------------------------------------------------- helpers

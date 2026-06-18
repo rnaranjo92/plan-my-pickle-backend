@@ -85,12 +85,14 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
+	mux.HandleFunc("POST /events/{id}/slot-duration", s.ownerOnly("event", "id", s.setSlotDuration))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
 	mux.HandleFunc("POST /matches/{id}/court", s.ownerOnly("match", "id", s.setMatchCourt))
+	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
@@ -358,6 +360,23 @@ func (s *Server) setGameDuration(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
 }
 
+// setSlotDuration overrides one time-block's game length (minutes). Owner-only.
+func (s *Server) setSlotDuration(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Slot    int `json:"slot"`
+		Minutes int `json:"minutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	m, err := s.svc.SetSlotDuration(r.PathValue("id"), req.Slot, req.Minutes)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
+}
+
 func (s *Server) standings(w http.ResponseWriter, r *http.Request) {
 	byWins := r.URL.Query().Get("by") != "points"
 	bracketID := r.URL.Query().Get("bracketId")
@@ -596,6 +615,22 @@ func (s *Server) setMatchCourt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "court-set"})
+}
+
+// setMatchDuration overrides one game's length (minutes); 0 clears it. Owner-only.
+func (s *Server) setMatchDuration(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Minutes int `json:"minutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	m, err := s.svc.SetMatchDuration(r.PathValue("id"), req.Minutes)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
 }
 
 func (s *Server) startRound(w http.ResponseWriter, r *http.Request) {

@@ -772,6 +772,43 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	return out, nil
 }
 
+// UpdateRegistrationDetails edits the player behind a registration (organizer
+// only) — the shared players row holds the name + rating, so this writes there.
+func (s *Service) UpdateRegistrationDetails(regID, fullName string, duprRating *float64) error {
+	if strings.TrimSpace(fullName) == "" {
+		return errors.New("name is required")
+	}
+	reg, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(regID)+"&select=player_id")
+	if err != nil {
+		return err
+	}
+	if reg == nil {
+		return ErrNotFound
+	}
+	playerID := asStr(reg, "player_id")
+	_, err = s.sb.Update("players", "id=eq."+store.Q(playerID), map[string]any{
+		"full_name":   strings.TrimSpace(fullName),
+		"dupr_rating": fOrNull(duprRating),
+	})
+	return err
+}
+
+// DeleteRegistration removes a player's registration from an event (organizer
+// only). The global players row is left intact (it may be used elsewhere); FK
+// cascades clean up this registration's payments/check-ins.
+func (s *Service) DeleteRegistration(regID string) error {
+	reg, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(regID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if reg == nil {
+		return ErrNotFound
+	}
+	return s.sb.Delete("registrations", "id=eq."+store.Q(regID))
+}
+
 // BusyCourts returns the distinct court numbers that currently have an
 // in-progress match in this event. The schedule UI uses this to dim other
 // scheduled matches assigned to a court that's already in play.
@@ -956,6 +993,123 @@ func (s *Service) spreadCourts(eventID string) error {
 		}
 	}
 	return nil
+}
+
+// AutoScheduleByRating lays every pool game onto courts + time-slots ordered by
+// division rating band (lowest first → highest last). Conflict-safety: each
+// (division, round) occupies its own slot(s), so two games that could share a
+// player are never put in the same slot — within a round all games are already
+// player-disjoint, and different rounds of a division land in different slots.
+// Games in a round fan out across the courts. play_order is the slot index, so
+// the calendar can place a game at day_start + slot*game_duration. Returns the
+// number of games scheduled.
+func (s *Service) AutoScheduleByRating(eventID string) (int, error) {
+	courtByNum, err := s.courtIDsByNumber(eventID)
+	if err != nil {
+		return 0, err
+	}
+	if len(courtByNum) == 0 {
+		return 0, errors.New("no courts for this event")
+	}
+	courtNums := make([]int, 0, len(courtByNum))
+	for n := range courtByNum {
+		courtNums = append(courtNums, n)
+	}
+	sort.Ints(courtNums)
+
+	// Division order: rated bands ascending by min_rating; unrated ("Open")
+	// divisions sort last; sort_order breaks ties.
+	brackets, err := s.sb.Select("brackets",
+		"event_id=eq."+store.Q(eventID)+"&select=id,min_rating,sort_order")
+	if err != nil {
+		return 0, err
+	}
+	type brk struct {
+		id   string
+		min  *float64
+		sort int
+	}
+	blist := make([]brk, 0, len(brackets))
+	for _, b := range brackets {
+		blist = append(blist, brk{id: asStr(b, "id"), min: asFloatPtr(b, "min_rating"), sort: asInt(b, "sort_order")})
+	}
+	sort.SliceStable(blist, func(i, j int) bool {
+		a, b := blist[i], blist[j]
+		aNull, bNull := a.min == nil, b.min == nil
+		if aNull != bNull {
+			return !aNull // rated divisions before unrated
+		}
+		if !aNull && !bNull && *a.min != *b.min {
+			return *a.min < *b.min
+		}
+		return a.sort < b.sort
+	})
+	rank := make(map[string]int, len(blist))
+	for i, b := range blist {
+		rank[b.id] = i
+	}
+
+	// Pool matches with their round number.
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	type mr struct {
+		id, bracket, created string
+		round                int
+	}
+	list := make([]mr, 0, len(rows))
+	for _, r := range rows {
+		round := 0
+		if rd := asMap(r, "round"); rd != nil {
+			round = asInt(rd, "round_number")
+		}
+		list = append(list, mr{
+			id: asStr(r, "id"), bracket: asStr(r, "bracket_id"),
+			created: asStr(r, "created_at"), round: round,
+		})
+	}
+	// Lowest division first, then round order, then a stable insertion tiebreak.
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		if ra, rb := rank[a.bracket], rank[b.bracket]; ra != rb {
+			return ra < rb
+		}
+		if a.round != b.round {
+			return a.round < b.round
+		}
+		return a.created < b.created
+	})
+
+	// Assign court + slot. Start a new slot at each (division, round) boundary
+	// and whenever a round overflows the available courts.
+	slot, courtIdx := 0, 0
+	prevKey := ""
+	scheduled := 0
+	for _, m := range list {
+		key := m.bracket + "|" + strconv.Itoa(m.round)
+		if prevKey != "" && key != prevKey {
+			slot++
+			courtIdx = 0
+		}
+		prevKey = key
+		if courtIdx == len(courtNums) {
+			slot++
+			courtIdx = 0
+		}
+		cid := courtByNum[courtNums[courtIdx]]
+		courtIdx++
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(m.id),
+			map[string]any{"court_id": cid, "play_order": float64(slot)}); err != nil {
+			return scheduled, err
+		}
+		scheduled++
+	}
+	return scheduled, nil
 }
 
 func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg, courtByNum map[int]string) (int, error) {

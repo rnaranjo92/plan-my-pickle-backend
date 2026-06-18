@@ -192,6 +192,13 @@ type RegisterRequest struct {
 	CaptchaToken string `json:"captchaToken,omitempty"`
 }
 
+// RegistrationDetailsRequest edits a registered player's details (organizer-only).
+// Writes the shared players row behind the registration.
+type RegistrationDetailsRequest struct {
+	FullName   string   `json:"fullName"`
+	DuprRating *float64 `json:"duprRating"`
+}
+
 type ScoreRequest struct {
 	Team1Score int `json:"team1Score"`
 	Team2Score int `json:"team2Score"`

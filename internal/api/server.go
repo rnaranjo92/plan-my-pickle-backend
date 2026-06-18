@@ -83,6 +83,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /checklist/{id}/check", s.ownerOnly("checklist", "id", s.setChecklistChecked))
 	mux.HandleFunc("DELETE /checklist/{id}", s.ownerOnly("checklist", "id", s.deleteChecklistItem))
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
+	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
@@ -93,6 +94,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
 	mux.HandleFunc("POST /registrations/{id}/mark-paid", s.ownerOnly("registration", "id", s.markPaid))
+	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
+	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
 
 	// --- Demo seeding: load a sample tournament owned by the signed-in user, so
 	// the "Load demo" buttons produce events the caller can actually manage.
@@ -326,6 +329,17 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"matches": n})
 }
 
+// autoSchedule lays the pool games onto courts + time-slots ordered by division
+// rating band (lowest first). Owner-only; powers "Build schedule by rating".
+func (s *Server) autoSchedule(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.AutoScheduleByRating(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"scheduled": n})
+}
+
 func (s *Server) standings(w http.ResponseWriter, r *http.Request) {
 	byWins := r.URL.Query().Get("by") != "points"
 	bracketID := r.URL.Query().Get("bracketId")
@@ -454,6 +468,28 @@ func (s *Server) markPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"paid": true})
+}
+
+// updateRegistrationDetails edits a registered player's name/rating (owner-only).
+func (s *Server) updateRegistrationDetails(w http.ResponseWriter, r *http.Request) {
+	var req model.RegistrationDetailsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.UpdateRegistrationDetails(r.PathValue("id"), req.FullName, req.DuprRating); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// deleteRegistration removes a player's registration from an event (owner-only).
+func (s *Server) deleteRegistration(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteRegistration(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) checkin(w http.ResponseWriter, r *http.Request) {

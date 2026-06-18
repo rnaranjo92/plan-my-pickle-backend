@@ -11,6 +11,7 @@ type Event struct {
 	NumCourts            int      `json:"numCourts"`
 	PointsToWin          int      `json:"pointsToWin"`
 	WinBy                int      `json:"winBy"`
+	GameDurationMinutes  int      `json:"gameDurationMinutes"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
 	Currency             string   `json:"currency"`
 	Location             *string  `json:"location,omitempty"`
@@ -22,9 +23,14 @@ type Event struct {
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
-	StartsAt    *string `json:"startsAt,omitempty"`
+	StartsAt *string `json:"startsAt,omitempty"`
+	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
+	EndsAt      *string `json:"endsAt,omitempty"`
 	Description *string `json:"description,omitempty"`
-	Status      string  `json:"status"`
+	// RegisteredCount is the number of players registered (filled on the
+	// dashboard list; 0 on single-event reads).
+	RegisteredCount int    `json:"registeredCount"`
+	Status          string `json:"status"`
 }
 
 type Bracket struct {
@@ -153,6 +159,7 @@ type CreateEventRequest struct {
 	NumCourts            int            `json:"numCourts"`
 	PointsToWin          int            `json:"pointsToWin"`
 	WinBy                int            `json:"winBy"`
+	GameDurationMinutes  int            `json:"gameDurationMinutes"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	Location             string         `json:"location"`
 	VenueName            string         `json:"venueName"`
@@ -163,6 +170,7 @@ type CreateEventRequest struct {
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
 	StartsAt             string         `json:"startsAt"` // RFC3339 UTC, "" = none
+	EndsAt               string         `json:"endsAt"`   // RFC3339 UTC, "" = none
 	Description          string         `json:"description"`
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`

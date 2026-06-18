@@ -136,6 +136,7 @@ func mapEvent(m map[string]any) model.Event {
 		NumCourts:            asInt(m, "num_courts"),
 		PointsToWin:          asInt(m, "points_to_win"),
 		WinBy:                asInt(m, "win_by"),
+		GameDurationMinutes:  asInt(m, "game_duration_minutes"),
 		RegistrationFeeCents: asInt(m, "registration_fee_cents"),
 		Currency:             asStr(m, "currency"),
 		Location:             asStrPtr(m, "location"),
@@ -147,6 +148,7 @@ func mapEvent(m map[string]any) model.Event {
 		VenueLng:             asFloatPtr(m, "venue_lng"),
 		DuprSanctioned:       asBool(m, "dupr_sanctioned"),
 		StartsAt:             asStrPtr(m, "starts_at"),
+		EndsAt:               asStrPtr(m, "ends_at"),
 		Description:          asStrPtr(m, "description"),
 		Status:               asStr(m, "status"),
 	}

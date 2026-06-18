@@ -175,6 +175,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if winBy < 1 {
 		winBy = 2
 	}
+	gameMin := clampGameDuration(req.GameDurationMinutes)
 
 	payload := map[string]any{
 		"name":                   req.Name,
@@ -185,6 +186,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"num_courts":             courts,
 		"points_to_win":          ptw,
 		"win_by":                 winBy,
+		"game_duration_minutes":  gameMin,
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"currency":               "USD",
 		"location":               orNull(req.Location),
@@ -204,6 +206,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	// and after the migration is applied.
 	if req.StartsAt != "" {
 		payload["starts_at"] = req.StartsAt
+	}
+	// ends_at column ships in migration 0015; only reference it when set.
+	if req.EndsAt != "" {
+		payload["ends_at"] = req.EndsAt
 	}
 	// description column ships in migration 0014; only reference it when set so
 	// creates work before and after the migration.
@@ -270,6 +276,29 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 	for _, r := range rows {
 		out = append(out, mapEvent(r))
 	}
+
+	// Attach registered-player counts in ONE batched query (idiomatic
+	// select-then-tally, no N+1 and no PostgREST count-embed): pull every
+	// registration's event_id for these events and group by it.
+	if len(out) > 0 {
+		ids := make([]string, len(out))
+		for i, e := range out {
+			ids[i] = e.ID
+		}
+		// Best-effort: a count failure must not blank the whole dashboard, so on
+		// error we leave the counts at 0 and still return the events.
+		regs, err := s.sb.Select("registrations",
+			"event_id=in.("+strings.Join(ids, ",")+")&select=event_id")
+		if err == nil {
+			counts := make(map[string]int, len(out))
+			for _, r := range regs {
+				counts[asStr(r, "event_id")]++
+			}
+			for i := range out {
+				out[i].RegisteredCount = counts[out[i].ID]
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -334,12 +363,14 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"num_courts":             courts,
 		"points_to_win":          ptw,
 		"win_by":                 winBy,
+		"game_duration_minutes":  clampGameDuration(req.GameDurationMinutes),
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"location":               orNull(req.Location),
 		"dupr_sanctioned":        req.DuprSanctioned,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
 		"starts_at":   orNull(req.StartsAt),
+		"ends_at":     orNull(req.EndsAt),
 		"description": orNull(req.Description),
 	}
 	if _, err = s.sb.Update("events", "id=eq."+store.Q(id), upd); err != nil {
@@ -383,6 +414,21 @@ func (s *Service) ensureCourts(eventID string, n int) error {
 	}
 	_, err = s.sb.Insert("courts", rows)
 	return err
+}
+
+// clampGameDuration bounds the per-game slot length to the form's 15..90 range,
+// defaulting an unset value to the researched 25-minute slot.
+func clampGameDuration(m int) int {
+	switch {
+	case m <= 0:
+		return 25
+	case m < 15:
+		return 15
+	case m > 90:
+		return 90
+	default:
+		return m
+	}
 }
 
 func ratingPtr(v float64) *float64 { return &v }

@@ -176,7 +176,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		winBy = 2
 	}
 
-	ev, err := s.sb.Insert("events", map[string]any{
+	payload := map[string]any{
 		"name":                   req.Name,
 		"format":                 format,
 		"partner_mode":           partner,
@@ -198,7 +198,14 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"venue_lat":              fOrNull(req.VenueLat),
 		"venue_lng":              fOrNull(req.VenueLng),
 		"status":                 "open",
-	})
+	}
+	// Only reference starts_at when the organizer set one. The column ships in
+	// migration 0012; a date-less create never touches it, so this works before
+	// and after the migration is applied.
+	if req.StartsAt != "" {
+		payload["starts_at"] = req.StartsAt
+	}
+	ev, err := s.sb.Insert("events", payload)
 	if err != nil {
 		return "", err
 	}

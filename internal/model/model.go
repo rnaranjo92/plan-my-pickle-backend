@@ -21,7 +21,9 @@ type Event struct {
 	VenueLat             *float64 `json:"venueLat,omitempty"`
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
-	Status               string   `json:"status"`
+	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
+	StartsAt *string `json:"startsAt,omitempty"`
+	Status   string  `json:"status"`
 }
 
 type Bracket struct {
@@ -158,6 +160,7 @@ type CreateEventRequest struct {
 	VenueLat             *float64       `json:"venueLat"`
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
+	StartsAt             string         `json:"startsAt"` // RFC3339 UTC, "" = none
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`
 }

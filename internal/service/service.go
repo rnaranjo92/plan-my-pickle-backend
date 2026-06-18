@@ -205,6 +205,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.StartsAt != "" {
 		payload["starts_at"] = req.StartsAt
 	}
+	// description column ships in migration 0014; only reference it when set so
+	// creates work before and after the migration.
+	if req.Description != "" {
+		payload["description"] = req.Description
+	}
 	ev, err := s.sb.Insert("events", payload)
 	if err != nil {
 		return "", err
@@ -247,8 +252,17 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	return id, nil
 }
 
-func (s *Service) ListEvents() ([]model.Event, error) {
-	rows, err := s.sb.Select("events", "select=*&order=created_at.desc")
+// ListEvents returns the events OWNED by ownerID (the organizer dashboard list),
+// newest first. An empty ownerID (anonymous caller) returns nothing — unowned
+// and other-organizers' events are never listed here, so the dashboard only ever
+// shows events the caller can actually manage. Spectators/registrants use
+// GetEvent (single) instead.
+func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
+	if ownerID == "" {
+		return []model.Event{}, nil
+	}
+	rows, err := s.sb.Select("events",
+		"owner_id=eq."+store.Q(ownerID)+"&select=*&order=created_at.desc")
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +296,93 @@ func (s *Service) DeleteEvent(id string) error {
 		return ErrNotFound
 	}
 	return s.sb.Delete("events", "id=eq."+store.Q(id))
+}
+
+// UpdateEvent edits an existing event's metadata (name, description, date,
+// venue/location, fee, courts, scoring, DUPR). It deliberately does NOT change
+// the structural format / tournament_format / brackets — those are fixed once
+// the draw/schedule exists. starts_at + description are only written when set
+// (their columns ship in migrations 0012/0014), so editing works before and
+// after those migrations.
+func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if ev == nil {
+		return ErrNotFound
+	}
+
+	ptw := req.PointsToWin
+	if ptw <= 0 {
+		ptw = 11
+	}
+	winBy := req.WinBy
+	if winBy != 1 {
+		winBy = 2
+	}
+	courts := req.NumCourts
+	if courts < 1 {
+		courts = 1
+	}
+
+	// Note: the structured venue_* columns are intentionally NOT updated here —
+	// EventDto doesn't carry them, so the edit form can't round-trip them, and
+	// blanking them would wipe the venue. `location` (free text) IS round-tripped.
+	upd := map[string]any{
+		"name":                   req.Name,
+		"num_courts":             courts,
+		"points_to_win":          ptw,
+		"win_by":                 winBy,
+		"registration_fee_cents": req.RegistrationFeeCents,
+		"location":               orNull(req.Location),
+		"dupr_sanctioned":        req.DuprSanctioned,
+		// On edit the form always sends these, so write them unconditionally —
+		// an empty value clears the field (orNull → SQL NULL).
+		"starts_at":   orNull(req.StartsAt),
+		"description": orNull(req.Description),
+	}
+	if _, err = s.sb.Update("events", "id=eq."+store.Q(id), upd); err != nil {
+		return err
+	}
+
+	// Reconcile the courts table so every lane the board renders (1..num_courts)
+	// maps to a real court row. Court rows are otherwise created only at event
+	// creation, so RAISING the count here would leave "phantom" lanes that reject
+	// a drag (SetMatchCourt looks courts up by court_number). We only ADD missing
+	// numbers; LOWERING the count leaves the extra rows in place — harmless, since
+	// the board hides out-of-range lanes and they may still hold played matches.
+	return s.ensureCourts(id, courts)
+}
+
+// ensureCourts inserts any missing court rows for numbers 1..n on the event so
+// the schedule board's lanes always resolve to a real court.
+func (s *Service) ensureCourts(eventID string, n int) error {
+	existing, err := s.sb.Select("courts",
+		"event_id=eq."+store.Q(eventID)+"&select=court_number")
+	if err != nil {
+		return err
+	}
+	have := make(map[int]bool, len(existing))
+	for _, c := range existing {
+		have[asInt(c, "court_number")] = true
+	}
+	rows := make([]map[string]any, 0, n)
+	for i := 1; i <= n; i++ {
+		if have[i] {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"event_id":     eventID,
+			"label":        "Court " + strconv.Itoa(i),
+			"court_number": i,
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	_, err = s.sb.Insert("courts", rows)
+	return err
 }
 
 func ratingPtr(v float64) *float64 { return &v }
@@ -2443,7 +2544,7 @@ func (s *Service) SwapMatchPlayer(matchID, outPlayerID, inPlayerID string) error
 // SetMatchCourt reassigns a match to the court with the given number within its
 // event (courtNumber <= 0 clears the assignment). Powers drag-to-reassign on
 // the schedule board.
-func (s *Service) SetMatchCourt(matchID string, courtNumber int) error {
+func (s *Service) SetMatchCourt(matchID string, courtNumber int, playOrder *float64) error {
 	m, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+"&select=event_id")
 	if err != nil {
 		return err
@@ -2467,8 +2568,11 @@ func (s *Service) SetMatchCourt(matchID string, courtNumber int) error {
 		courtID = asStr(c, "id")
 	}
 
-	_, err = s.sb.Update("matches", "id=eq."+store.Q(matchID),
-		map[string]any{"court_id": courtID})
+	upd := map[string]any{"court_id": courtID}
+	if playOrder != nil {
+		upd["play_order"] = *playOrder
+	}
+	_, err = s.sb.Update("matches", "id=eq."+store.Q(matchID), upd)
 	return err
 }
 

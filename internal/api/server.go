@@ -46,7 +46,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// reached from QR codes (register, pay, shirt order, self check-in). These
 	// intentionally need no account so players and spectators have zero
 	// friction. optionalAuth attaches the user when a token happens to be sent.
-	mux.HandleFunc("GET /events", s.listEvents)
+	// GET /events is the organizer DASHBOARD list — it returns only the caller's
+	// own events (optionalAuth attaches the user; anonymous callers get nothing).
+	// Spectator/registration flows use GET /events/{id} (single), not this list.
+	mux.HandleFunc("GET /events", optionalAuth(s.listEvents))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -69,6 +72,7 @@ func NewServer(svc *service.Service) http.Handler {
 
 	// --- Owner-only: management actions require a valid token AND that the
 	// caller owns the event behind the resource (see service.OwnerOf).
+	mux.HandleFunc("POST /events/{id}", s.ownerOnly("event", "id", s.updateEvent))
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
 	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
@@ -99,8 +103,8 @@ func NewServer(svc *service.Service) http.Handler {
 	return withCORS(mux)
 }
 
-func (s *Server) listEvents(w http.ResponseWriter, _ *http.Request) {
-	events, err := s.svc.ListEvents()
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
+	events, err := s.svc.ListEvents(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -119,6 +123,20 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// updateEvent edits an existing event's metadata (owner-only). Structural
+// format / brackets are intentionally not editable here.
+func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateEventRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.UpdateEvent(r.PathValue("id"), req); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
@@ -519,7 +537,7 @@ func (s *Server) setMatchCourt(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.SetMatchCourt(r.PathValue("id"), req.CourtNumber); err != nil {
+	if err := s.svc.SetMatchCourt(r.PathValue("id"), req.CourtNumber, req.PlayOrder); err != nil {
 		status(w, err)
 		return
 	}

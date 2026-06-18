@@ -22,8 +22,9 @@ type Event struct {
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
-	StartsAt *string `json:"startsAt,omitempty"`
-	Status   string  `json:"status"`
+	StartsAt    *string `json:"startsAt,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Status      string  `json:"status"`
 }
 
 type Bracket struct {
@@ -95,17 +96,18 @@ type ChecklistItemRequest struct {
 }
 
 type Match struct {
-	ID           string  `json:"id"`
-	BracketID    *string `json:"bracketId,omitempty"`
-	Stage        string  `json:"stage"` // pool | bracket
-	BracketRound *int    `json:"bracketRound,omitempty"`
-	BracketSlot  *int    `json:"bracketSlot,omitempty"`
-	CourtNumber  *int    `json:"courtNumber,omitempty"`
-	Team1Score   *int    `json:"team1Score,omitempty"`
-	Team2Score   *int    `json:"team2Score,omitempty"`
-	WinningTeam  *int    `json:"winningTeam,omitempty"`
-	Status       string  `json:"status"`
-	ResultType   string  `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
+	ID           string   `json:"id"`
+	BracketID    *string  `json:"bracketId,omitempty"`
+	Stage        string   `json:"stage"` // pool | bracket
+	BracketRound *int     `json:"bracketRound,omitempty"`
+	BracketSlot  *int     `json:"bracketSlot,omitempty"`
+	CourtNumber  *int     `json:"courtNumber,omitempty"`
+	PlayOrder    *float64 `json:"playOrder,omitempty"` // within-court order, lower first
+	Team1Score   *int     `json:"team1Score,omitempty"`
+	Team2Score   *int     `json:"team2Score,omitempty"`
+	WinningTeam  *int     `json:"winningTeam,omitempty"`
+	Status       string   `json:"status"`
+	ResultType   string   `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
 	// Round context — populated by the event-wide pool-matches query so the
 	// Game tab can group + filter every match from one stream.
 	RoundID     *string `json:"roundId,omitempty"`
@@ -161,6 +163,7 @@ type CreateEventRequest struct {
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
 	StartsAt             string         `json:"startsAt"` // RFC3339 UTC, "" = none
+	Description          string         `json:"description"`
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`
 }
@@ -220,9 +223,11 @@ type SwapRequest struct {
 	InPlayerID  string `json:"inPlayerId"`
 }
 
-// SetCourtRequest reassigns a match's court. CourtNumber <= 0 clears it.
+// SetCourtRequest reassigns a match's court and/or its within-court play order.
+// CourtNumber <= 0 clears the court; PlayOrder nil leaves the order untouched.
 type SetCourtRequest struct {
-	CourtNumber int `json:"courtNumber"`
+	CourtNumber int      `json:"courtNumber"`
+	PlayOrder   *float64 `json:"playOrder,omitempty"`
 }
 
 type PasscodeRequest struct {

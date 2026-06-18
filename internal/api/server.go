@@ -84,6 +84,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /checklist/{id}", s.ownerOnly("checklist", "id", s.deleteChecklistItem))
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
+	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
@@ -339,6 +340,22 @@ func (s *Server) autoSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"scheduled": n})
+}
+
+// setGameDuration updates the per-game slot length (minutes). Owner-only.
+func (s *Server) setGameDuration(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Minutes int `json:"minutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	m, err := s.svc.SetGameDuration(r.PathValue("id"), req.Minutes)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
 }
 
 func (s *Server) standings(w http.ResponseWriter, r *http.Request) {

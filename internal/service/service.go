@@ -416,6 +416,15 @@ func (s *Service) ensureCourts(eventID string, n int) error {
 	return err
 }
 
+// SetGameDuration updates just the per-game slot length (minutes) and returns
+// the clamped value actually stored.
+func (s *Service) SetGameDuration(eventID string, minutes int) (int, error) {
+	m := clampGameDuration(minutes)
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"game_duration_minutes": m})
+	return m, err
+}
+
 // clampGameDuration bounds the per-game slot length to the form's 15..90 range,
 // defaulting an unset value to the researched 25-minute slot.
 func clampGameDuration(m int) int {

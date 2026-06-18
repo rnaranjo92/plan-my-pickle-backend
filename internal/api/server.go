@@ -85,7 +85,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
-	mux.HandleFunc("POST /events/{id}/slot-duration", s.ownerOnly("event", "id", s.setSlotDuration))
+	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
@@ -360,21 +360,19 @@ func (s *Server) setGameDuration(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
 }
 
-// setSlotDuration overrides one time-block's game length (minutes). Owner-only.
-func (s *Server) setSlotDuration(w http.ResponseWriter, r *http.Request) {
+// setStartTime sets (or clears) the tournament start (RFC3339 UTC). Owner-only.
+func (s *Server) setStartTime(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Slot    int `json:"slot"`
-		Minutes int `json:"minutes"`
+		StartsAt string `json:"startsAt"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	m, err := s.svc.SetSlotDuration(r.PathValue("id"), req.Slot, req.Minutes)
-	if err != nil {
+	if err := s.svc.SetStartTime(r.PathValue("id"), req.StartsAt); err != nil {
 		status(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
 }
 
 func (s *Server) standings(w http.ResponseWriter, r *http.Request) {

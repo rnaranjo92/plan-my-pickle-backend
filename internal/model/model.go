@@ -27,9 +27,6 @@ type Event struct {
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
 	EndsAt      *string `json:"endsAt,omitempty"`
 	Description *string `json:"description,omitempty"`
-	// SlotDurations maps a schedule time-block index -> game length (minutes),
-	// overriding GameDurationMinutes for that block. Empty/absent = all default.
-	SlotDurations map[string]int `json:"slotDurations,omitempty"`
 	// RegisteredCount is the number of players registered (filled on the
 	// dashboard list; 0 on single-event reads).
 	RegisteredCount int    `json:"registeredCount"`

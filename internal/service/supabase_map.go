@@ -150,27 +150,8 @@ func mapEvent(m map[string]any) model.Event {
 		StartsAt:             asStrPtr(m, "starts_at"),
 		EndsAt:               asStrPtr(m, "ends_at"),
 		Description:          asStrPtr(m, "description"),
-		SlotDurations:        asIntMap(m, "slot_durations"),
 		Status:               asStr(m, "status"),
 	}
-}
-
-// asIntMap reads a jsonb object column of { "<key>": number } into map[string]int.
-func asIntMap(m map[string]any, k string) map[string]int {
-	raw, ok := m[k].(map[string]any)
-	if !ok {
-		return nil
-	}
-	out := make(map[string]int, len(raw))
-	for key, v := range raw {
-		if n, ok := v.(float64); ok {
-			out[key] = int(n)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 func mapBracket(m map[string]any) model.Bracket {

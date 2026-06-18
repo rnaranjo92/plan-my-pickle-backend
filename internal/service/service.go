@@ -416,38 +416,19 @@ func (s *Service) ensureCourts(eventID string, n int) error {
 	return err
 }
 
+// SetStartTime sets (or clears, when empty) the tournament start (RFC3339 UTC).
+func (s *Service) SetStartTime(eventID, startsAt string) error {
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"starts_at": orNull(startsAt)})
+	return err
+}
+
 // SetGameDuration updates just the per-game slot length (minutes) and returns
 // the clamped value actually stored.
 func (s *Service) SetGameDuration(eventID string, minutes int) (int, error) {
 	m := clampGameDuration(minutes)
 	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
 		map[string]any{"game_duration_minutes": m})
-	return m, err
-}
-
-// SetSlotDuration overrides the game length (minutes) for ONE schedule
-// time-block (slot index), leaving other blocks at the event default. Returns
-// the clamped value stored.
-func (s *Service) SetSlotDuration(eventID string, slot, minutes int) (int, error) {
-	ev, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(eventID)+"&select=slot_durations")
-	if err != nil {
-		return 0, err
-	}
-	durs := map[string]int{}
-	if ev != nil {
-		if raw, ok := ev["slot_durations"].(map[string]any); ok {
-			for k, v := range raw {
-				if n, ok := v.(float64); ok {
-					durs[k] = int(n)
-				}
-			}
-		}
-	}
-	m := clampGameDuration(minutes)
-	durs[strconv.Itoa(slot)] = m
-	_, err = s.sb.Update("events", "id=eq."+store.Q(eventID),
-		map[string]any{"slot_durations": durs})
 	return m, err
 }
 
@@ -1211,10 +1192,6 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, er
 	if perr != nil {
 		return scheduled, perr
 	}
-	// Re-arranging reassigns slot indices, so any per-block duration overrides no
-	// longer line up with the same games — clear them (best-effort).
-	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID),
-		map[string]any{"slot_durations": nil})
 	return scheduled, nil
 }
 

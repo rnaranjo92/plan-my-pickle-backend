@@ -190,6 +190,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"currency":               "USD",
 		"location":               orNull(req.Location),
+		"contact_phone":          orNull(req.ContactPhone),
 		"dupr_sanctioned":        req.DuprSanctioned,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
@@ -412,9 +413,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"dupr_sanctioned":        req.DuprSanctioned,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
-		"starts_at":   orNull(req.StartsAt),
-		"ends_at":     orNull(req.EndsAt),
-		"description": orNull(req.Description),
+		"contact_phone": orNull(req.ContactPhone),
+		"starts_at":     orNull(req.StartsAt),
+		"ends_at":       orNull(req.EndsAt),
+		"description":   orNull(req.Description),
 	}
 	if _, err = s.sb.Update("events", "id=eq."+store.Q(id), upd); err != nil {
 		return err

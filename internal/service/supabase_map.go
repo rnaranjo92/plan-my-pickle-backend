@@ -140,6 +140,7 @@ func mapEvent(m map[string]any) model.Event {
 		RegistrationFeeCents: asInt(m, "registration_fee_cents"),
 		Currency:             asStr(m, "currency"),
 		Location:             asStrPtr(m, "location"),
+		ContactPhone:         asStrPtr(m, "contact_phone"),
 		VenueName:            asStrPtr(m, "venue_name"),
 		VenueAddress:         asStrPtr(m, "venue_address"),
 		VenuePhone:           asStrPtr(m, "venue_phone"),

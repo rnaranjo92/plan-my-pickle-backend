@@ -2440,6 +2440,38 @@ func (s *Service) SwapMatchPlayer(matchID, outPlayerID, inPlayerID string) error
 	return nil
 }
 
+// SetMatchCourt reassigns a match to the court with the given number within its
+// event (courtNumber <= 0 clears the assignment). Powers drag-to-reassign on
+// the schedule board.
+func (s *Service) SetMatchCourt(matchID string, courtNumber int) error {
+	m, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+"&select=event_id")
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return ErrNotFound
+	}
+
+	var courtID any // nil => unassigned
+	if courtNumber > 0 {
+		eventID := asStr(m, "event_id")
+		c, err := s.sb.SelectOne("courts",
+			"event_id=eq."+store.Q(eventID)+
+				"&court_number=eq."+strconv.Itoa(courtNumber)+"&select=id")
+		if err != nil {
+			return err
+		}
+		if c == nil {
+			return errors.New("no such court for this event")
+		}
+		courtID = asStr(c, "id")
+	}
+
+	_, err = s.sb.Update("matches", "id=eq."+store.Q(matchID),
+		map[string]any{"court_id": courtID})
+	return err
+}
+
 // --------------------------------------------------------------- helpers
 type reg struct {
 	id        string

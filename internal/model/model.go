@@ -220,6 +220,11 @@ type SwapRequest struct {
 	InPlayerID  string `json:"inPlayerId"`
 }
 
+// SetCourtRequest reassigns a match's court. CourtNumber <= 0 clears it.
+type SetCourtRequest struct {
+	CourtNumber int `json:"courtNumber"`
+}
+
 type PasscodeRequest struct {
 	Code string `json:"code"`
 }

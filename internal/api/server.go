@@ -84,6 +84,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
+	mux.HandleFunc("POST /matches/{id}/court", s.ownerOnly("match", "id", s.setMatchCourt))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
@@ -509,6 +510,20 @@ func (s *Server) swapMatchPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "swapped"})
+}
+
+// setMatchCourt reassigns a match to a different court (courtNumber <= 0 = clear
+// the assignment). Owner-only; powers the drag-to-reassign schedule board.
+func (s *Server) setMatchCourt(w http.ResponseWriter, r *http.Request) {
+	var req model.SetCourtRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetMatchCourt(r.PathValue("id"), req.CourtNumber); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "court-set"})
 }
 
 func (s *Server) startRound(w http.ResponseWriter, r *http.Request) {

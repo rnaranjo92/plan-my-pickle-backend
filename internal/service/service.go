@@ -2389,6 +2389,31 @@ func (s *Service) StartMatch(matchID string) (int, error) {
 	return s.notifyMatchStart(matchID, eventID, court, rn)
 }
 
+// UnstartMatch reverts a match that was marked live (in_progress) back to
+// scheduled — e.g. the organizer tapped "start" by accident. A completed match
+// keeps its result; reset/regenerate the score to undo that instead.
+func (s *Service) UnstartMatch(matchID string) error {
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=status")
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return ErrNotFound
+	}
+	switch asStr(m, "status") {
+	case "in_progress":
+		_, err := s.sb.Update("matches",
+			"id=eq."+store.Q(matchID)+"&status=eq.in_progress",
+			map[string]any{"status": "scheduled"})
+		return err
+	case "completed":
+		return errors.New("this match already has a result — reset the score to undo it")
+	default:
+		return nil // already scheduled — nothing to do
+	}
+}
+
 // notifyMatchStart texts every player in a match that they're up, recording each
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {

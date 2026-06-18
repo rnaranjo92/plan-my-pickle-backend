@@ -354,7 +354,15 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	if row == nil {
 		return model.Event{}, ErrNotFound
 	}
-	return mapEvent(row), nil
+	ev := mapEvent(row)
+	// Best-effort registered-player count (mirrors ListEvents) so the event
+	// detail header shows the real number; a count failure must not fail the
+	// read — single reads otherwise leave RegisteredCount at 0.
+	if regs, rerr := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(id)+"&select=id"); rerr == nil {
+		ev.RegisteredCount = len(regs)
+	}
+	return ev, nil
 }
 
 // DeleteEvent removes an event and (via ON DELETE CASCADE) all its brackets,

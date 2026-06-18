@@ -25,7 +25,10 @@ import (
 
 type ctxKey int
 
-const userIDKey ctxKey = iota
+const (
+	userIDKey ctxKey = iota
+	userEmailKey
+)
 
 var (
 	// supabaseJWTSecret verifies legacy HS256 tokens (dashboard → Settings →
@@ -240,6 +243,12 @@ func userID(r *http.Request) string {
 	return id
 }
 
+// userEmail returns the authenticated user's verified email claim, or "".
+func userEmail(r *http.Request) string {
+	e, _ := r.Context().Value(userEmailKey).(string)
+	return e
+}
+
 // requireAuth rejects requests without a valid Supabase token (401) and stashes
 // the user id in context for the handler.
 func requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -249,7 +258,9 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userIDKey, c.Sub)))
+		ctx := context.WithValue(r.Context(), userIDKey, c.Sub)
+		ctx = context.WithValue(ctx, userEmailKey, c.Email)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -258,7 +269,9 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 func optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if c, err := verifyToken(bearer(r)); err == nil {
-			r = r.WithContext(context.WithValue(r.Context(), userIDKey, c.Sub))
+			ctx := context.WithValue(r.Context(), userIDKey, c.Sub)
+			ctx = context.WithValue(ctx, userEmailKey, c.Email)
+			r = r.WithContext(ctx)
 		}
 		next(w, r)
 	}

@@ -306,20 +306,45 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 // MyEvents returns the events the user is registered to PLAY in (via a player
 // row linked to their account), newest first. Empty if they have no linked
 // player or no registrations.
-func (s *Service) MyEvents(userID string) ([]model.Event, error) {
-	if userID == "" {
+// MyEvents returns the events the caller is registered to PLAY in. A
+// registration counts when its player is linked to the account (players.user_id)
+// OR its player's email matches the caller's verified account email — so signing
+// up with your login email surfaces the event here even if you weren't signed in
+// at registration time. (email comes from the verified JWT, so it can't be
+// spoofed to claim someone else's registrations.)
+func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
+	playerIDs := map[string]bool{}
+	if userID != "" {
+		pl, err := s.sb.SelectOne("players",
+			"user_id=eq."+store.Q(userID)+"&select=id")
+		if err != nil {
+			return nil, err
+		}
+		if pl != nil {
+			playerIDs[asStr(pl, "id")] = true
+		}
+	}
+	if email != "" {
+		// PostgREST ilike uses * as its only wildcard, so a raw email is a safe
+		// case-insensitive exact match.
+		pls, err := s.sb.Select("players",
+			"email=ilike."+store.Q(email)+"&select=id")
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range pls {
+			playerIDs[asStr(p, "id")] = true
+		}
+	}
+	if len(playerIDs) == 0 {
 		return []model.Event{}, nil
 	}
-	pl, err := s.sb.SelectOne("players",
-		"user_id=eq."+store.Q(userID)+"&select=id")
-	if err != nil {
-		return nil, err
-	}
-	if pl == nil {
-		return []model.Event{}, nil
+	pidList := make([]string, 0, len(playerIDs))
+	for id := range playerIDs {
+		pidList = append(pidList, id)
 	}
 	regs, err := s.sb.Select("registrations",
-		"player_id=eq."+store.Q(asStr(pl, "id"))+"&select=event_id")
+		"player_id=in.("+strings.Join(pidList, ",")+")&select=event_id")
 	if err != nil {
 		return nil, err
 	}

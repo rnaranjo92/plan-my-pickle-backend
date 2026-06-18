@@ -125,7 +125,7 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 
 // myEvents returns the events the signed-in user is registered to play in.
 func (s *Server) myEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.svc.MyEvents(userID(r))
+	events, err := s.svc.MyEvents(userID(r), userEmail(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

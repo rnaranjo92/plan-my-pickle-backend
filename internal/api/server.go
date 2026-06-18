@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -58,6 +59,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
+	mux.HandleFunc("GET /events/{id}/feed", s.feedList)
 	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
 	mux.HandleFunc("GET /courts/nearby", s.nearbyCourts)
@@ -89,6 +91,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
 	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
 	mux.HandleFunc("POST /events/{id}/fill-demo-players", s.ownerOnly("event", "id", s.fillRandomPlayers))
+	mux.HandleFunc("POST /events/{id}/feed", s.ownerOnly("event", "id", s.feedPost))
+	mux.HandleFunc("DELETE /feed/{id}", s.ownerOnly("feed_item", "id", s.feedDelete))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
@@ -233,6 +237,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if name := strings.TrimSpace(req.FullName); name != "" {
+		s.svc.AddFeedItem(r.PathValue("id"), "registered", name+" registered", reg.ID)
+	}
 	writeJSON(w, http.StatusCreated, reg)
 }
 
@@ -350,6 +357,10 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	if n > 0 {
+		s.svc.AddFeedItem(r.PathValue("id"), "schedule_posted",
+			fmt.Sprintf("Schedule posted — %d matches", n), "")
+	}
 	writeJSON(w, http.StatusOK, map[string]int{"matches": n})
 }
 
@@ -416,6 +427,9 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
+		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }
 
@@ -427,6 +441,9 @@ func (s *Server) forfeitMatch(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.ForfeitMatch(r.PathValue("id"), req.WinningTeam, req.Kind, req.Team1Score, req.Team2Score); err != nil {
 		status(w, err)
 		return
+	}
+	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
+		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }
@@ -675,7 +692,43 @@ func (s *Server) startMatch(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), false); txt != "" {
+		s.svc.AddFeedItem(eid, "match_live", txt, r.PathValue("id"))
+	}
 	writeJSON(w, http.StatusOK, map[string]int{"sent": n})
+}
+
+// feedList returns an event's activity feed (public — like the scoreboard).
+func (s *Server) feedList(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ListFeed(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// feedPost adds an organizer announcement to the feed (owner-only).
+func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
+	var req model.FeedPostRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.PostAnnouncement(r.PathValue("id"), req.Text, "Organizer")
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+// feedDelete removes a feed item (owner-only).
+func (s *Server) feedDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteFeedItem(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // fillRandomPlayers seeds the event with a day's worth of demo players spread

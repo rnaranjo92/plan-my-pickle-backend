@@ -273,3 +273,20 @@ type ShirtRequest struct {
 	Number      string `json:"number"`
 	Color       string `json:"color"`
 }
+
+// FeedItem is one entry in a tournament's activity feed (auto activity or an
+// organizer announcement, by Type).
+type FeedItem struct {
+	ID        string  `json:"id"`
+	EventID   string  `json:"eventId"`
+	Type      string  `json:"type"`
+	Text      string  `json:"text"`
+	ActorName *string `json:"actorName,omitempty"`
+	RefID     *string `json:"refId,omitempty"`
+	CreatedAt string  `json:"createdAt"`
+}
+
+// FeedPostRequest is an organizer announcement posted to the feed.
+type FeedPostRequest struct {
+	Text string `json:"text"`
+}

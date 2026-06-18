@@ -2366,6 +2366,130 @@ func (s *Service) DeleteChecklistItem(id string) error {
 	return s.sb.Delete("checklist_items", "id=eq."+store.Q(id))
 }
 
+// ------------------------------------------------------------------- Feed
+
+// AddFeedItem appends one activity row to a tournament's feed. BEST-EFFORT: a
+// feed write must never break the action that triggered it, so any error is
+// logged and swallowed.
+func (s *Service) AddFeedItem(eventID, typ, text, refID string) {
+	if eventID == "" || text == "" {
+		return
+	}
+	if _, err := s.sb.Insert("feed_items", map[string]any{
+		"event_id": eventID,
+		"type":     typ,
+		"text":     text,
+		"ref_id":   orNull(refID),
+	}); err != nil {
+		log.Printf("feed: add %q for %s failed: %v", typ, eventID, err)
+	}
+}
+
+// ListFeed returns an event's feed, newest first.
+func (s *Service) ListFeed(eventID string) ([]model.FeedItem, error) {
+	rows, err := s.sb.Select("feed_items",
+		"event_id=eq."+store.Q(eventID)+"&select=*&order=created_at.desc&limit=100")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.FeedItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapFeedItem(r))
+	}
+	return out, nil
+}
+
+// PostAnnouncement adds an organizer announcement to the feed.
+func (s *Service) PostAnnouncement(eventID, text, actorName string) (model.FeedItem, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return model.FeedItem{}, errors.New("post text is required")
+	}
+	if len(text) > 1000 {
+		text = text[:1000]
+	}
+	rows, err := s.sb.Insert("feed_items", map[string]any{
+		"event_id":   eventID,
+		"type":       "announcement",
+		"text":       text,
+		"actor_name": orNull(actorName),
+	})
+	if err != nil {
+		return model.FeedItem{}, err
+	}
+	if len(rows) == 0 {
+		return model.FeedItem{}, errors.New("feed insert returned no row")
+	}
+	return mapFeedItem(rows[0]), nil
+}
+
+func (s *Service) DeleteFeedItem(id string) error {
+	return s.sb.Delete("feed_items", "id=eq."+store.Q(id))
+}
+
+// MatchFeedText loads a match and composes the feed line for it going live or
+// finishing. Returns the event id (so the caller can file the feed item) and
+// the rendered text; either is "" if the match can't be read. Plain text only —
+// the UI adds the type icon.
+func (s *Service) MatchFeedText(matchID string, final bool) (eventID, text string) {
+	row, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event_id,"+matchSelect)
+	if err != nil || row == nil {
+		return "", ""
+	}
+	eventID = asStr(row, "event_id")
+	m := mapMatch(row)
+	team := func(t int) string {
+		for _, sd := range m.Sides {
+			if sd.Team == t {
+				if n := strings.Join(sd.Players, " & "); n != "" {
+					return n
+				}
+			}
+		}
+		return "TBD"
+	}
+	a, b := team(1), team(2)
+	if !final {
+		court := "a court"
+		if m.CourtNumber != nil {
+			court = fmt.Sprintf("Court %d", *m.CourtNumber)
+		}
+		return eventID, fmt.Sprintf("Now live on %s — %s vs %s", court, a, b)
+	}
+	wt := 0
+	if m.WinningTeam != nil {
+		wt = *m.WinningTeam
+	}
+	winner, loser := a, b
+	if wt == 2 {
+		winner, loser = b, a
+	}
+	s1, s2 := 0, 0
+	if m.Team1Score != nil {
+		s1 = *m.Team1Score
+	}
+	if m.Team2Score != nil {
+		s2 = *m.Team2Score
+	}
+	hi, lo := s1, s2
+	if s2 > s1 {
+		hi, lo = s2, s1
+	}
+	switch m.ResultType {
+	case "forfeit":
+		return eventID, fmt.Sprintf("%s win — %s forfeited", winner, loser)
+	case "walkover":
+		return eventID, fmt.Sprintf("%s advance on a walkover", winner)
+	case "retire":
+		return eventID, fmt.Sprintf("%s def. %s %d–%d (%s retired)", winner, loser, hi, lo, loser)
+	}
+	if wt == 0 {
+		return eventID, fmt.Sprintf("Final: %s vs %s, %d–%d", a, b, s1, s2)
+	}
+	return eventID, fmt.Sprintf("%s def. %s, %d–%d", winner, loser, hi, lo)
+}
+
 // CheckIn marks a registration checked in. (#1)
 func (s *Service) CheckIn(registrationID, method string) error {
 	if method == "" {

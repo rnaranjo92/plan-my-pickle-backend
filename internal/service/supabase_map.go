@@ -221,6 +221,18 @@ const matchSelect = "id,bracket_id,stage,bracket_round,bracket_slot," +
 	"round:rounds!round_id(id,round_number,status)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
 
+func mapFeedItem(m map[string]any) model.FeedItem {
+	return model.FeedItem{
+		ID:        asStr(m, "id"),
+		EventID:   asStr(m, "event_id"),
+		Type:      asStr(m, "type"),
+		Text:      asStr(m, "text"),
+		ActorName: asStrPtr(m, "actor_name"),
+		RefID:     asStrPtr(m, "ref_id"),
+		CreatedAt: asStr(m, "created_at"),
+	}
+}
+
 // mapSides turns the embedded match_participants array into ordered team sides.
 func mapSides(m map[string]any) []model.Side {
 	parts, _ := m["participants"].([]any)

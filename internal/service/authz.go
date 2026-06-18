@@ -15,6 +15,7 @@ var ownerKindTable = map[string]string{
 	"finance":      "finance_entries",
 	"checklist":    "checklist_items",
 	"registration": "registrations",
+	"feed_item":    "feed_items",
 }
 
 // OwnerOf returns the auth-user id (events.owner_id) of the event behind a

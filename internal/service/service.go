@@ -584,6 +584,127 @@ func (s *Service) registerDemoPlayers(eventID string) error {
 	return nil
 }
 
+// FillRandomPlayers seeds the given EXISTING event with a batch of demo players
+// spread across its divisions — enough to run a full day. Each player's rating
+// lands inside its bracket's band (so RegisterPlayer keeps it in that division),
+// and a deterministic slice are marked paid / checked-in so the roster shows a
+// realistic mix of states. Returns the number added. Temporary organizer
+// convenience for demos/testing.
+func (s *Service) FillRandomPlayers(eventID string) (int, error) {
+	bks, err := s.GetBrackets(eventID)
+	if err != nil {
+		return 0, err
+	}
+	existing, err := s.Registrations(eventID)
+	if err != nil {
+		return 0, err
+	}
+	// Offset names/phones past any prior demo fill so repeats stay distinct even
+	// after some seeded players were deleted — a HIGH-WATER MARK over the demo
+	// phone range, not the live count (which would regress and recycle values).
+	base := 0
+	for _, r := range existing {
+		if !strings.HasPrefix(r.Phone, "+15553") {
+			continue
+		}
+		if n, perr := strconv.Atoi(strings.TrimPrefix(r.Phone, "+1555")); perr == nil {
+			if seq := n - 3000000 + 1; seq > base {
+				base = seq
+			}
+		}
+	}
+
+	first := []string{
+		"Ava", "Noah", "Mia", "Liam", "Zoe", "Ethan", "Lucy", "Mason",
+		"Ella", "Owen", "Nina", "Cole", "Ruby", "Finn", "Tess", "Jude",
+		"Wren", "Reed", "Sage", "Beau", "Lena", "Tate", "Cleo", "Maya",
+		"Rhys", "Iris", "Knox", "Vera", "Dane", "Faye",
+	}
+	last := []string{
+		"Hill", "Ford", "Vance", "Pope", "Lane", "Cross", "Wells", "Dean",
+		"Boyd", "Reyes", "Knox", "Page", "Frye", "Sosa", "Hale", "Nash",
+		"Banks", "Cobb", "Diaz", "Estes", "Fox", "Gold", "Pratt", "Quill",
+		"Roth", "Sims", "True", "Vega", "Webb", "York",
+	}
+
+	const perDiv = 16
+	idx := 0
+	added := 0
+
+	regOne := func(bracketID string, rating float64) error {
+		rt := ratingPtr(rating)
+		reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+			FullName:        first[(base+idx)%len(first)] + " " + last[(base*3+idx*7)%len(last)],
+			Phone:           fmt.Sprintf("+1555%07d", 3000000+base+idx),
+			SkillLevel:      rt,
+			DuprID:          fmt.Sprintf("DUPR-%05d", 30000+base+idx),
+			DuprRating:      rt,
+			DuprReliability: ratingPtr(float64(50 + (idx%5)*10)),
+			BracketID:       bracketID,
+		}, "")
+		idx++
+		if err != nil {
+			return err
+		}
+		added++
+		// Realistic roster mix: ~1/3 paid, ~1/4 checked in (best-effort).
+		if idx%3 == 0 {
+			_ = s.CollectPaymentManually(reg.ID)
+		}
+		if idx%4 == 0 {
+			_ = s.CheckIn(reg.ID, "manual")
+		}
+		return nil
+	}
+
+	// Best-effort: one bad insert shouldn't abort the whole fill. Keep going and
+	// report how many landed; only surface an error if NOTHING could be added.
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	if len(bks) == 0 {
+		// No divisions yet — auto-assign across a general spread.
+		for i := 0; i < perDiv+8; i++ {
+			note(regOne("", 3.0+0.05*float64(i%20)))
+		}
+	} else {
+		for _, b := range bks {
+			for i := 0; i < perDiv; i++ {
+				note(regOne(b.ID, ratingInBand(b.MinRating, b.MaxRating, i, perDiv)))
+			}
+		}
+	}
+	if added == 0 && firstErr != nil {
+		return 0, firstErr
+	}
+	return added, nil
+}
+
+// ratingInBand returns a rating strictly inside [min,max] (defaults 2.5–5.0 when
+// a bound is open), spread by position i of n, rounded to 2 decimals.
+func ratingInBand(min, max *float64, i, n int) float64 {
+	lo, hi := 2.5, 5.0
+	if min != nil {
+		lo = *min
+	}
+	if max != nil {
+		hi = *max
+	}
+	if hi <= lo {
+		hi = lo + 0.5
+	}
+	denom := n - 1
+	if denom < 1 {
+		denom = 1
+	}
+	v := lo + (hi-lo)*(0.05+0.9*float64(i)/float64(denom))
+	return float64(int(v*100+0.5)) / 100
+}
+
 // seedTournament creates the event, registers the demo players, generates the
 // pool schedule, scores a `poolCompletion` fraction (0..1) of the pool matches,
 // and reconciles each round's status to match. Used by SeedDemo (round-robin).

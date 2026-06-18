@@ -100,6 +100,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
+	mux.HandleFunc("POST /registrations/{id}/uncheckin", s.ownerOnly("registration", "id", s.uncheckin))
 	mux.HandleFunc("POST /registrations/{id}/mark-paid", s.ownerOnly("registration", "id", s.markPaid))
 	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
@@ -557,6 +558,14 @@ func (s *Server) checkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "checked_in"})
+}
+
+func (s *Server) uncheckin(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.UncheckIn(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) saveShirt(w http.ResponseWriter, r *http.Request) {

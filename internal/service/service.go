@@ -2360,6 +2360,23 @@ func (s *Service) CheckIn(registrationID, method string) error {
 	return nil
 }
 
+// UncheckIn reverses a check-in (e.g. checked in by mistake), clearing the
+// timestamp + method.
+func (s *Service) UncheckIn(registrationID string) error {
+	out, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID), map[string]any{
+		"checked_in":      false,
+		"checked_in_at":   nil,
+		"check_in_method": nil,
+	})
+	if err != nil {
+		return err
+	}
+	if len(out) == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CheckInByToken redeems a player's QR/check-in token. Returns the registration id.
 func (s *Service) CheckInByToken(eventID, token string) (string, error) {
 	row, err := s.sb.SelectOne("registrations",

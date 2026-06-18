@@ -239,7 +239,8 @@ type SwapRequest struct {
 }
 
 // SetCourtRequest reassigns a match's court and/or its within-court play order.
-// CourtNumber <= 0 clears the court; PlayOrder nil leaves the order untouched.
+// PlayOrder set => use it; nil with a court => append to the end of that court's
+// queue; CourtNumber <= 0 => clear the court and the play order.
 type SetCourtRequest struct {
 	CourtNumber int      `json:"courtNumber"`
 	PlayOrder   *float64 `json:"playOrder,omitempty"`

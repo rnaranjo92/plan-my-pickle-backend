@@ -1003,7 +1003,7 @@ func (s *Service) spreadCourts(eventID string) error {
 // Games in a round fan out across the courts. play_order is the slot index, so
 // the calendar can place a game at day_start + slot*game_duration. Returns the
 // number of games scheduled.
-func (s *Service) AutoScheduleByRating(eventID string) (int, error) {
+func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, error) {
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {
 		return 0, err
@@ -1085,29 +1085,96 @@ func (s *Service) AutoScheduleByRating(eventID string) (int, error) {
 		return a.created < b.created
 	})
 
-	// Assign court + slot. Start a new slot at each (division, round) boundary
-	// and whenever a round overflows the available courts.
-	slot, courtIdx := 0, 0
-	prevKey := ""
-	scheduled := 0
+	// Group into division -> ordered rounds -> ordered match ids. `list` is
+	// already sorted by (bracketRank, round, created), so divOrder comes out in
+	// rating order and each division's rounds are in play order.
+	divOrder := make([]string, 0)
+	seenDiv := make(map[string]bool)
+	divRounds := make(map[string][][]string)
+	curKey := ""
 	for _, m := range list {
+		if !seenDiv[m.bracket] {
+			seenDiv[m.bracket] = true
+			divOrder = append(divOrder, m.bracket)
+		}
 		key := m.bracket + "|" + strconv.Itoa(m.round)
-		if prevKey != "" && key != prevKey {
-			slot++
-			courtIdx = 0
+		if key != curKey {
+			curKey = key
+			divRounds[m.bracket] = append(divRounds[m.bracket], []string{})
 		}
-		prevKey = key
-		if courtIdx == len(courtNums) {
-			slot++
-			courtIdx = 0
+		rs := divRounds[m.bracket]
+		rs[len(rs)-1] = append(rs[len(rs)-1], m.id)
+	}
+
+	scheduled := 0
+	var perr error
+	place := func(matchID string, courtNumber, slot int) {
+		if perr != nil {
+			return
 		}
-		cid := courtByNum[courtNums[courtIdx]]
-		courtIdx++
-		if _, err := s.sb.Update("matches", "id=eq."+store.Q(m.id),
-			map[string]any{"court_id": cid, "play_order": float64(slot)}); err != nil {
-			return scheduled, err
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(matchID),
+			map[string]any{"court_id": courtByNum[courtNumber], "play_order": float64(slot)}); err != nil {
+			perr = err
+			return
 		}
 		scheduled++
+	}
+
+	if interleave {
+		// Slot-filling: at each slot, fill courts division-by-division (lowest
+		// first) from each division's CURRENT round only — so a division never
+		// has two rounds in one slot (no double-booking), while idle courts get
+		// used by higher divisions, shortening the day.
+		roundIdx := make(map[string]int)
+		pos := make(map[string]int)
+		remaining := len(list)
+		slot := 0
+		for remaining > 0 && perr == nil {
+			courtCursor := 0
+			for _, div := range divOrder {
+				if courtCursor >= len(courtNums) {
+					break
+				}
+				rounds := divRounds[div]
+				ri := roundIdx[div]
+				if ri >= len(rounds) {
+					continue // division done
+				}
+				round := rounds[ri]
+				for pos[div] < len(round) && courtCursor < len(courtNums) {
+					place(round[pos[div]], courtNums[courtCursor], slot)
+					courtCursor++
+					pos[div]++
+					remaining--
+				}
+				if pos[div] >= len(round) {
+					roundIdx[div]++ // next round goes to a later slot
+					pos[div] = 0
+				}
+			}
+			slot++
+		}
+	} else {
+		// Sequential: each division fully before the next; each round gets its
+		// own slot(s) and spills to the next slot when it overflows the courts.
+		slot := 0
+		for _, div := range divOrder {
+			for _, round := range divRounds[div] {
+				courtIdx := 0
+				for _, mid := range round {
+					if courtIdx == len(courtNums) {
+						slot++
+						courtIdx = 0
+					}
+					place(mid, courtNums[courtIdx], slot)
+					courtIdx++
+				}
+				slot++
+			}
+		}
+	}
+	if perr != nil {
+		return scheduled, perr
 	}
 	return scheduled, nil
 }
@@ -2753,9 +2820,10 @@ func (s *Service) SetMatchCourt(matchID string, courtNumber int, playOrder *floa
 		return ErrNotFound
 	}
 
+	eventID := asStr(m, "event_id")
 	var courtID any // nil => unassigned
+	courtIDStr := ""
 	if courtNumber > 0 {
-		eventID := asStr(m, "event_id")
 		c, err := s.sb.SelectOne("courts",
 			"event_id=eq."+store.Q(eventID)+
 				"&court_number=eq."+strconv.Itoa(courtNumber)+"&select=id")
@@ -2765,15 +2833,47 @@ func (s *Service) SetMatchCourt(matchID string, courtNumber int, playOrder *floa
 		if c == nil {
 			return errors.New("no such court for this event")
 		}
-		courtID = asStr(c, "id")
+		courtIDStr = asStr(c, "id")
+		courtID = courtIDStr
 	}
 
 	upd := map[string]any{"court_id": courtID}
-	if playOrder != nil {
+	switch {
+	case playOrder != nil:
 		upd["play_order"] = *playOrder
+	case courtIDStr != "":
+		// A plain drag-to-court with no explicit order: append to the END of the
+		// target court's queue so the calendar never lands two games on the same
+		// court+slot (the stale-slot bug).
+		next, err := s.nextPlayOrder(eventID, courtIDStr)
+		if err != nil {
+			return err
+		}
+		upd["play_order"] = next
+	default:
+		// Unassigned: clear the slot so it reads as not-yet-scheduled.
+		upd["play_order"] = nil
 	}
 	_, err = s.sb.Update("matches", "id=eq."+store.Q(matchID), upd)
 	return err
+}
+
+// nextPlayOrder returns one past the highest play_order currently on a court, so
+// a game moved onto that court appends after its games (no calendar collision).
+func (s *Service) nextPlayOrder(eventID, courtID string) (float64, error) {
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
+			"&play_order=not.is.null&select=play_order&order=play_order.desc&limit=1")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	if po := asFloatPtr(rows[0], "play_order"); po != nil {
+		return *po + 1, nil
+	}
+	return 0, nil
 }
 
 // --------------------------------------------------------------- helpers

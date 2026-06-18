@@ -332,7 +332,8 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 // autoSchedule lays the pool games onto courts + time-slots ordered by division
 // rating band (lowest first). Owner-only; powers "Build schedule by rating".
 func (s *Server) autoSchedule(w http.ResponseWriter, r *http.Request) {
-	n, err := s.svc.AutoScheduleByRating(r.PathValue("id"))
+	interleave := r.URL.Query().Get("interleave") == "true"
+	n, err := s.svc.AutoScheduleByRating(r.PathValue("id"), interleave)
 	if err != nil {
 		status(w, err)
 		return

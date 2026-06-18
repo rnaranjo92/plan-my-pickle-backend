@@ -59,7 +59,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
-	mux.HandleFunc("GET /events/{id}/feed", s.feedList)
+	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
+	mux.HandleFunc("GET /feed/{id}/comments", optionalAuth(s.commentList))
 	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
 	mux.HandleFunc("GET /courts/nearby", s.nearbyCourts)
@@ -93,6 +94,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/fill-demo-players", s.ownerOnly("event", "id", s.fillRandomPlayers))
 	mux.HandleFunc("POST /events/{id}/feed", s.ownerOnly("event", "id", s.feedPost))
 	mux.HandleFunc("DELETE /feed/{id}", s.ownerOnly("feed_item", "id", s.feedDelete))
+	// Feed social — any signed-in user may react/comment (not just the owner).
+	mux.HandleFunc("POST /feed/{id}/react", requireAuth(s.feedReact))
+	mux.HandleFunc("POST /feed/{id}/comments", requireAuth(s.commentAdd))
+	mux.HandleFunc("DELETE /comments/{id}", requireAuth(s.commentDelete))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
@@ -699,13 +704,62 @@ func (s *Server) startMatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // feedList returns an event's activity feed (public — like the scoreboard).
+// optionalAuth so a signed-in caller's own reactions come back flagged.
 func (s *Server) feedList(w http.ResponseWriter, r *http.Request) {
-	items, err := s.svc.ListFeed(r.PathValue("id"))
+	items, err := s.svc.ListFeed(r.PathValue("id"), userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// feedReact toggles the signed-in user's reaction on a feed item.
+func (s *Server) feedReact(w http.ResponseWriter, r *http.Request) {
+	var req model.ReactionRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	res, err := s.svc.ToggleReaction(r.PathValue("id"), userID(r), req.Type)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// commentList returns a feed item's comments (public read; canDelete/mine
+// reflect the optional caller).
+func (s *Server) commentList(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ListComments(r.PathValue("id"), userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// commentAdd posts a comment as the signed-in user.
+func (s *Server) commentAdd(w http.ResponseWriter, r *http.Request) {
+	var req model.CommentRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	c, err := s.svc.AddComment(r.PathValue("id"), userID(r), userEmail(r), req.Text)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// commentDelete removes a comment (author or event owner).
+func (s *Server) commentDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteComment(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // feedPost adds an organizer announcement to the feed (owner-only).
@@ -822,6 +876,10 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 func status(w http.ResponseWriter, err error) {
 	if errors.Is(err, service.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if errors.Is(err, service.ErrForbidden) {
+		writeErr(w, http.StatusForbidden, err)
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err)

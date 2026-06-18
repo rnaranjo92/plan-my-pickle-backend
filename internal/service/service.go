@@ -134,6 +134,10 @@ func newID() string { return uuid.NewString() }
 
 var ErrNotFound = errors.New("not found")
 
+// ErrForbidden means the caller is authenticated but not allowed to act on the
+// resource (e.g. deleting someone else's comment when not the event owner).
+var ErrForbidden = errors.New("forbidden")
+
 // ErrScheduleHasResults guards against silently wiping recorded scores: a
 // re-generate is refused (409) once any match is completed, unless forced.
 var ErrScheduleHasResults = errors.New("schedule already has recorded results")
@@ -2435,17 +2439,200 @@ func (s *Service) AddFeedItem(eventID, typ, text, refID string) {
 }
 
 // ListFeed returns an event's feed, newest first.
-func (s *Service) ListFeed(eventID string) ([]model.FeedItem, error) {
+// ListFeed returns an event's feed (newest first) enriched with reaction counts,
+// the caller's own reactions (callerID may be "" for anonymous), and comment
+// counts.
+func (s *Service) ListFeed(eventID, callerID string) ([]model.FeedItem, error) {
 	rows, err := s.sb.Select("feed_items",
 		"event_id=eq."+store.Q(eventID)+"&select=*&order=created_at.desc&limit=100")
 	if err != nil {
 		return nil, err
 	}
 	out := make([]model.FeedItem, 0, len(rows))
+	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, mapFeedItem(r))
+		fi := mapFeedItem(r)
+		fi.ReactionCounts = map[string]int{}
+		fi.MyReactions = []string{}
+		out = append(out, fi)
+		ids = append(ids, fi.ID)
+	}
+	if len(ids) > 0 {
+		s.attachSocial(out, ids, callerID)
 	}
 	return out, nil
+}
+
+// attachSocial fills ReactionCounts/MyReactions/CommentCount for a set of feed
+// items in two batched queries (no N+1; best-effort).
+func (s *Service) attachSocial(items []model.FeedItem, ids []string, callerID string) {
+	inList := "in.(" + strings.Join(ids, ",") + ")"
+	idx := make(map[string]int, len(items))
+	for i := range items {
+		idx[items[i].ID] = i
+	}
+	if rows, err := s.sb.Select("feed_reactions",
+		"feed_item_id="+inList+"&select=feed_item_id,user_id,type"); err == nil {
+		for _, r := range rows {
+			i, ok := idx[asStr(r, "feed_item_id")]
+			if !ok {
+				continue
+			}
+			typ := asStr(r, "type")
+			items[i].ReactionCounts[typ]++
+			if callerID != "" && asStr(r, "user_id") == callerID {
+				items[i].MyReactions = append(items[i].MyReactions, typ)
+			}
+		}
+	}
+	if rows, err := s.sb.Select("feed_comments",
+		"feed_item_id="+inList+"&select=feed_item_id"); err == nil {
+		for _, r := range rows {
+			if i, ok := idx[asStr(r, "feed_item_id")]; ok {
+				items[i].CommentCount++
+			}
+		}
+	}
+}
+
+var validReactions = map[string]bool{"like": true, "love": true, "fire": true}
+
+// ToggleReaction adds or removes the caller's reaction of typ on a feed item and
+// returns the new reacted state + per-type counts.
+func (s *Service) ToggleReaction(feedItemID, userID, typ string) (model.ReactionResult, error) {
+	if userID == "" {
+		return model.ReactionResult{}, errors.New("sign in to react")
+	}
+	if !validReactions[typ] {
+		return model.ReactionResult{}, errors.New("unknown reaction type")
+	}
+	q := "feed_item_id=eq." + store.Q(feedItemID) + "&user_id=eq." + store.Q(userID) +
+		"&type=eq." + store.Q(typ)
+	existing, err := s.sb.Select("feed_reactions", q+"&select=id")
+	if err != nil {
+		return model.ReactionResult{}, err
+	}
+	reacted := false
+	if len(existing) > 0 {
+		if err := s.sb.Delete("feed_reactions", q); err != nil {
+			return model.ReactionResult{}, err
+		}
+	} else {
+		if _, err := s.sb.Insert("feed_reactions", map[string]any{
+			"feed_item_id": feedItemID,
+			"user_id":      userID,
+			"type":         typ,
+		}); err != nil {
+			return model.ReactionResult{}, err
+		}
+		reacted = true
+	}
+	counts := map[string]int{}
+	if rows, err := s.sb.Select("feed_reactions",
+		"feed_item_id=eq."+store.Q(feedItemID)+"&select=type"); err == nil {
+		for _, r := range rows {
+			counts[asStr(r, "type")]++
+		}
+	}
+	return model.ReactionResult{Reacted: reacted, Counts: counts}, nil
+}
+
+// ListComments returns a feed item's comments (oldest first), flagging which the
+// caller may delete (own comments, or any if they own the event).
+func (s *Service) ListComments(feedItemID, callerID string) ([]model.FeedComment, error) {
+	owner := s.feedItemOwner(feedItemID)
+	rows, err := s.sb.Select("feed_comments",
+		"feed_item_id=eq."+store.Q(feedItemID)+"&select=*&order=created_at.asc&limit=500")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.FeedComment, 0, len(rows))
+	for _, r := range rows {
+		c := mapFeedComment(r)
+		mine := callerID != "" && asStr(r, "user_id") == callerID
+		c.Mine = mine
+		c.CanDelete = mine || (callerID != "" && callerID == owner)
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// AddComment posts a comment as the signed-in user; the display name resolves to
+// their linked player name, else their email's local part.
+func (s *Service) AddComment(feedItemID, userID, email, text string) (model.FeedComment, error) {
+	if userID == "" {
+		return model.FeedComment{}, errors.New("sign in to comment")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return model.FeedComment{}, errors.New("comment text is required")
+	}
+	if len(text) > 1000 {
+		text = text[:1000]
+	}
+	rows, err := s.sb.Insert("feed_comments", map[string]any{
+		"feed_item_id": feedItemID,
+		"user_id":      userID,
+		"author_name":  s.resolveDisplayName(userID, email),
+		"text":         text,
+	})
+	if err != nil {
+		return model.FeedComment{}, err
+	}
+	if len(rows) == 0 {
+		return model.FeedComment{}, errors.New("comment insert returned no row")
+	}
+	c := mapFeedComment(rows[0])
+	c.Mine = true
+	c.CanDelete = true
+	return c, nil
+}
+
+// DeleteComment removes a comment if the caller authored it OR owns the event.
+func (s *Service) DeleteComment(commentID, userID string) error {
+	if userID == "" {
+		return ErrForbidden
+	}
+	row, err := s.sb.SelectOne("feed_comments",
+		"id=eq."+store.Q(commentID)+"&select=user_id,feed_item_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "user_id") != userID {
+		if owner := s.feedItemOwner(asStr(row, "feed_item_id")); owner == "" || owner != userID {
+			return ErrForbidden
+		}
+	}
+	return s.sb.Delete("feed_comments", "id=eq."+store.Q(commentID))
+}
+
+// feedItemOwner returns the auth-user id that owns the event behind a feed item,
+// or "" if it can't be resolved.
+func (s *Service) feedItemOwner(feedItemID string) string {
+	row, err := s.sb.SelectOne("feed_items", "id=eq."+store.Q(feedItemID)+"&select=event_id")
+	if err != nil || row == nil {
+		return ""
+	}
+	owner, _ := s.OwnerOf("event", asStr(row, "event_id"))
+	return owner
+}
+
+// resolveDisplayName picks a friendly author name for a commenter: their linked
+// player's full name, else the email's local part, else "Player".
+func (s *Service) resolveDisplayName(userID, email string) string {
+	if row, err := s.sb.SelectOne("players",
+		"user_id=eq."+store.Q(userID)+"&select=full_name&limit=1"); err == nil && row != nil {
+		if n := strings.TrimSpace(asStr(row, "full_name")); n != "" {
+			return n
+		}
+	}
+	if i := strings.IndexByte(email, '@'); i > 0 {
+		return email[:i]
+	}
+	return "Player"
 }
 
 // PostAnnouncement adds an organizer announcement to the feed.

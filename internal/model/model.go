@@ -292,9 +292,42 @@ type FeedItem struct {
 	ActorName *string `json:"actorName,omitempty"`
 	RefID     *string `json:"refId,omitempty"`
 	CreatedAt string  `json:"createdAt"`
+	// Social rollups (filled by ListFeed). ReactionCounts maps reaction type ->
+	// count; MyReactions are the types the calling user reacted with (empty when
+	// anonymous); CommentCount is the number of comments.
+	ReactionCounts map[string]int `json:"reactionCounts"`
+	MyReactions    []string       `json:"myReactions"`
+	CommentCount   int            `json:"commentCount"`
 }
 
 // FeedPostRequest is an organizer announcement posted to the feed.
 type FeedPostRequest struct {
+	Text string `json:"text"`
+}
+
+// ReactionRequest toggles a reaction of Type on a feed item.
+type ReactionRequest struct {
+	Type string `json:"type"` // like | love | fire
+}
+
+// ReactionResult is the new state after a toggle.
+type ReactionResult struct {
+	Reacted bool           `json:"reacted"` // is the caller now reacting with Type
+	Counts  map[string]int `json:"counts"`
+}
+
+// FeedComment is one comment on a feed item.
+type FeedComment struct {
+	ID         string `json:"id"`
+	FeedItemID string `json:"feedItemId"`
+	AuthorName string `json:"authorName"`
+	Text       string `json:"text"`
+	Mine       bool   `json:"mine"` // authored by the calling user
+	CanDelete  bool   `json:"canDelete"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+// CommentRequest adds a comment to a feed item.
+type CommentRequest struct {
 	Text string `json:"text"`
 }

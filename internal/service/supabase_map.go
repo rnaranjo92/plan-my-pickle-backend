@@ -233,6 +233,16 @@ func mapFeedItem(m map[string]any) model.FeedItem {
 	}
 }
 
+func mapFeedComment(m map[string]any) model.FeedComment {
+	return model.FeedComment{
+		ID:         asStr(m, "id"),
+		FeedItemID: asStr(m, "feed_item_id"),
+		AuthorName: asStr(m, "author_name"),
+		Text:       asStr(m, "text"),
+		CreatedAt:  asStr(m, "created_at"),
+	}
+}
+
 // mapSides turns the embedded match_participants array into ordered team sides.
 func mapSides(m map[string]any) []model.Side {
 	parts, _ := m["participants"].([]any)

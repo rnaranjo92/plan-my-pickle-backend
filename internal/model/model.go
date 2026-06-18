@@ -187,6 +187,10 @@ type RegisterRequest struct {
 	DuprReliability *float64 `json:"duprReliability,omitempty"`
 	PartnerID       string   `json:"partnerId"`
 	BracketID       string   `json:"bracketId"`
+	// Self is true only when a LOGGED-IN user is registering THEMSELVES (the
+	// self-registration flow). It links the player to their account
+	// (players.user_id); an organizer adding other players leaves it false.
+	Self bool `json:"self"`
 	// CaptchaToken is a Cloudflare Turnstile token sent only by the PUBLIC
 	// self-registration form (anonymous). The handler verifies it server-side;
 	// the service ignores it.

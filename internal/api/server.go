@@ -50,6 +50,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// own events (optionalAuth attaches the user; anonymous callers get nothing).
 	// Spectator/registration flows use GET /events/{id} (single), not this list.
 	mux.HandleFunc("GET /events", optionalAuth(s.listEvents))
+	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
+	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -111,6 +113,16 @@ func NewServer(svc *service.Service) http.Handler {
 
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.svc.ListEvents(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+// myEvents returns the events the signed-in user is registered to play in.
+func (s *Server) myEvents(w http.ResponseWriter, r *http.Request) {
+	events, err := s.svc.MyEvents(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -207,7 +219,13 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, errors.New("please complete the human check and try again"))
 		return
 	}
-	reg, err := s.svc.RegisterPlayer(r.PathValue("id"), req)
+	// Link the player to the caller's account ONLY when a logged-in user is
+	// registering themselves (req.Self). An organizer adding others does not.
+	linkUserID := ""
+	if req.Self {
+		linkUserID = userID(r)
+	}
+	reg, err := s.svc.RegisterPlayer(r.PathValue("id"), req, linkUserID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

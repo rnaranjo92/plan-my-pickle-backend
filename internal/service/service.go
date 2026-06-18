@@ -302,6 +302,49 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 	return out, nil
 }
 
+// MyEvents returns the events the user is registered to PLAY in (via a player
+// row linked to their account), newest first. Empty if they have no linked
+// player or no registrations.
+func (s *Service) MyEvents(userID string) ([]model.Event, error) {
+	if userID == "" {
+		return []model.Event{}, nil
+	}
+	pl, err := s.sb.SelectOne("players",
+		"user_id=eq."+store.Q(userID)+"&select=id")
+	if err != nil {
+		return nil, err
+	}
+	if pl == nil {
+		return []model.Event{}, nil
+	}
+	regs, err := s.sb.Select("registrations",
+		"player_id=eq."+store.Q(asStr(pl, "id"))+"&select=event_id")
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(regs))
+	seen := map[string]bool{}
+	for _, r := range regs {
+		if eid := asStr(r, "event_id"); eid != "" && !seen[eid] {
+			seen[eid] = true
+			ids = append(ids, eid)
+		}
+	}
+	if len(ids) == 0 {
+		return []model.Event{}, nil
+	}
+	rows, err := s.sb.Select("events",
+		"id=in.("+strings.Join(ids, ",")+")&select=*&order=created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Event, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapEvent(r))
+	}
+	return out, nil
+}
+
 func (s *Service) GetEvent(id string) (model.Event, error) {
 	row, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=*")
 	if err != nil {
@@ -523,7 +566,7 @@ func (s *Service) registerDemoPlayers(eventID string) error {
 			DuprID:          fmt.Sprintf("DUPR-%04d", 1000+idx),
 			DuprRating:      ratingPtr(skill),
 			DuprReliability: ratingPtr(float64(60 + (idx%4)*10)),
-		})
+		}, "")
 		idx++
 		return err
 	}
@@ -670,11 +713,15 @@ func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
 }
 
 // ------------------------------------------------------------ registration
-func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (model.Registration, error) {
+// RegisterPlayer files a registration. When linkUserID is non-empty (a
+// logged-in user registering THEMSELVES), the player is tied to that account
+// (players.user_id) — reusing the account's existing player row if it has one
+// (the user_id column is unique) rather than creating a duplicate.
+func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
 	}
-	pl, err := s.sb.Insert("players", map[string]any{
+	fields := map[string]any{
 		"full_name":        req.FullName,
 		"phone":            orNull(req.Phone),
 		"email":            orNull(req.Email),
@@ -682,14 +729,64 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 		"dupr_id":          orNull(req.DuprID),
 		"dupr_rating":      fOrNull(req.DuprRating),
 		"dupr_reliability": fOrNull(req.DuprReliability),
-	})
-	if err != nil {
-		return model.Registration{}, err
 	}
-	if len(pl) == 0 {
-		return model.Registration{}, errors.New("player insert returned no row")
+	var playerID string
+	if linkUserID != "" {
+		// Reuse this account's player row if it exists (unique user_id), else
+		// create one tagged with the account.
+		existing, err := s.sb.SelectOne("players",
+			"user_id=eq."+store.Q(linkUserID)+"&select=id")
+		if err != nil {
+			return model.Registration{}, err
+		}
+		if existing != nil {
+			playerID = asStr(existing, "id")
+			// Update the linked profile, but only with values actually provided so
+			// a registration with blank optional fields can't wipe a phone/rating
+			// saved from a prior event (one player row is shared across events).
+			upd := map[string]any{"full_name": req.FullName}
+			if req.Phone != "" {
+				upd["phone"] = req.Phone
+			}
+			if req.Email != "" {
+				upd["email"] = req.Email
+			}
+			if req.SkillLevel != nil {
+				upd["skill_level"] = *req.SkillLevel
+			}
+			if req.DuprID != "" {
+				upd["dupr_id"] = req.DuprID
+			}
+			if req.DuprRating != nil {
+				upd["dupr_rating"] = *req.DuprRating
+			}
+			if req.DuprReliability != nil {
+				upd["dupr_reliability"] = *req.DuprReliability
+			}
+			if _, err := s.sb.Update("players", "id=eq."+store.Q(playerID), upd); err != nil {
+				return model.Registration{}, err
+			}
+		} else {
+			fields["user_id"] = linkUserID
+			pl, err := s.sb.Insert("players", fields)
+			if err != nil {
+				return model.Registration{}, err
+			}
+			if len(pl) == 0 {
+				return model.Registration{}, errors.New("player insert returned no row")
+			}
+			playerID = asStr(pl[0], "id")
+		}
+	} else {
+		pl, err := s.sb.Insert("players", fields)
+		if err != nil {
+			return model.Registration{}, err
+		}
+		if len(pl) == 0 {
+			return model.Registration{}, errors.New("player insert returned no row")
+		}
+		playerID = asStr(pl[0], "id")
 	}
-	playerID := asStr(pl[0], "id")
 
 	// Resolve the division. An explicitly-chosen bracket must actually belong to
 	// this event (otherwise a crafted request could file a registration under
@@ -727,6 +824,18 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest) (mod
 		if (chosen.MinRating != nil && *playerRating < *chosen.MinRating) ||
 			(chosen.MaxRating != nil && *playerRating > *chosen.MaxRating) {
 			outside = true
+		}
+	}
+	// A linked account already registered for this event would collide on the
+	// unique (event_id, player_id) — surface a friendly message, not a raw 409.
+	if linkUserID != "" {
+		dup, err := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+"&select=id")
+		if err != nil {
+			return model.Registration{}, err
+		}
+		if dup != nil {
+			return model.Registration{}, errors.New("you're already registered for this event")
 		}
 	}
 	token := newID()

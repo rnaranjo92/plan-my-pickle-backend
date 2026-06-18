@@ -300,7 +300,55 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 			}
 		}
 	}
+	s.attachActivity(out)
 	return out, nil
+}
+
+// attachActivity fills LiveCount + LastActivity* for a slice of events in two
+// batched queries (no N+1). Best-effort: a failure leaves the fields at their
+// zero value so the dashboard still renders.
+func (s *Service) attachActivity(events []model.Event) {
+	if len(events) == 0 {
+		return
+	}
+	ids := make([]string, len(events))
+	for i, e := range events {
+		ids[i] = e.ID
+	}
+	inList := "in.(" + strings.Join(ids, ",") + ")"
+
+	// Newest feed item per event. Rows come back created_at-desc, so the first
+	// row seen for an event id is its latest activity.
+	if rows, err := s.sb.Select("feed_items",
+		"event_id="+inList+"&select=event_id,type,text,created_at&order=created_at.desc"); err == nil {
+		latest := make(map[string]map[string]any, len(events))
+		for _, r := range rows {
+			eid := asStr(r, "event_id")
+			if _, ok := latest[eid]; !ok {
+				latest[eid] = r
+			}
+		}
+		for i := range events {
+			if r, ok := latest[events[i].ID]; ok {
+				typ, txt, at := asStr(r, "type"), asStr(r, "text"), asStr(r, "created_at")
+				events[i].LastActivityType = &typ
+				events[i].LastActivity = &txt
+				events[i].LastActivityAt = &at
+			}
+		}
+	}
+
+	// Count of matches currently in progress per event (the "live" pill).
+	if rows, err := s.sb.Select("matches",
+		"event_id="+inList+"&status=eq.in_progress&select=event_id"); err == nil {
+		live := make(map[string]int, len(events))
+		for _, r := range rows {
+			live[asStr(r, "event_id")]++
+		}
+		for i := range events {
+			events[i].LiveCount = live[events[i].ID]
+		}
+	}
 }
 
 // MyEvents returns the events the user is registered to PLAY in (via a player
@@ -368,6 +416,7 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 	for _, r := range rows {
 		out = append(out, mapEvent(r))
 	}
+	s.attachActivity(out)
 	return out, nil
 }
 

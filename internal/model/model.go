@@ -32,6 +32,14 @@ type Event struct {
 	// dashboard list; 0 on single-event reads).
 	RegisteredCount int    `json:"registeredCount"`
 	Status          string `json:"status"`
+	// LiveCount is the number of matches currently in progress (filled on the
+	// dashboard/playing lists so cards can show a "live" pill).
+	LiveCount int `json:"liveCount"`
+	// LastActivity* mirror the newest feed item for this event (filled on the
+	// list endpoints) so a home card can preview recent activity.
+	LastActivity     *string `json:"lastActivity,omitempty"`
+	LastActivityType *string `json:"lastActivityType,omitempty"`
+	LastActivityAt   *string `json:"lastActivityAt,omitempty"`
 }
 
 type Bracket struct {

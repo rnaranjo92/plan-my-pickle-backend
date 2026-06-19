@@ -253,6 +253,14 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if name := strings.TrimSpace(req.FullName); name != "" {
 		s.svc.AddFeedItem(r.PathValue("id"), "registered", name+" registered", reg.ID)
 	}
+	// For anonymous self-registration, tell the client whether an account already
+	// exists for this email, so the thank-you screen nudges sign-in vs sign-up.
+	if userID(r) == "" {
+		if email := strings.TrimSpace(req.Email); email != "" {
+			exists := s.svc.AccountExists(email)
+			reg.AccountExists = &exists
+		}
+	}
 	writeJSON(w, http.StatusCreated, reg)
 }
 

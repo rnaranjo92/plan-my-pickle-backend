@@ -2698,6 +2698,22 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	return p
 }
 
+// AccountExists reports whether a Supabase auth account already exists for the
+// email (used to tailor the post-registration nudge: sign in vs sign up). Calls
+// the locked-down account_exists RPC. BEST-EFFORT — any error returns false, so
+// we just fall back to the "create account" path.
+func (s *Service) AccountExists(email string) bool {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return false
+	}
+	body, err := s.sb.RPC("account_exists", map[string]any{"p_email": email})
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(body)) == "true"
+}
+
 // PostAnnouncement adds an organizer announcement to the feed.
 func (s *Service) PostAnnouncement(eventID, text, actorName string) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)

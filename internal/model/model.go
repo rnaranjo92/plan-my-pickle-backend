@@ -71,6 +71,10 @@ type Registration struct {
 	// OutsideRating is true when the player's DUPR rating falls outside their
 	// chosen division's rating band (a soft flag, not a block).
 	OutsideRating bool `json:"outsideRating"`
+	// AccountExists is set ONLY on the self-registration response (anonymous):
+	// whether an app account already exists for the registrant's email, so the
+	// thank-you screen can nudge sign-in vs sign-up. nil otherwise.
+	AccountExists *bool `json:"accountExists,omitempty"`
 }
 
 type Side struct {

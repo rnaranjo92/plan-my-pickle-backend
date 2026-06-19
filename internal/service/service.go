@@ -1272,6 +1272,13 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 				return 0, err
 			}
 			total += n
+		} else if ev.TournamentFormat == "double_elim" {
+			sides := seedSides(sidesForBracket(ev, regs), skill)
+			n, err := s.persistDoubleElim(ev, b.ID, sides)
+			if err != nil {
+				return 0, err
+			}
+			total += n
 		} else {
 			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum)
 			if err != nil {
@@ -1879,6 +1886,75 @@ func (s *Service) persistMedalBracket(ev model.Event, bracketID string, sides []
 	return 4, nil
 }
 
+// persistDoubleElim lays down a full double-elimination draw: a winners bracket
+// (tier 'winners'), a losers/back-draw bracket ('losers'), and the grand final
+// ('grand_final'). All matches are inserted first to obtain ids, then winner
+// feeds (feeds_match_id) and the WB->LB loser feeds (loser_feeds_match_id) are
+// wired — both are plain match ids, so the existing advanceAfterScore routes
+// winners and losers across tiers unchanged. The conditional "if necessary"
+// reset game is created at score time, not here.
+func (s *Service) persistDoubleElim(ev model.Event, bracketID string, seededSides [][]string) (int, error) {
+	plan := engine.GenerateDoubleElim(seededSides)
+	dkey := func(tier string, r, slot int) string {
+		return tier + ":" + strconv.Itoa(r) + ":" + strconv.Itoa(slot)
+	}
+	idByKey := make(map[string]string, len(plan.Matches))
+
+	count := 0
+	for _, m := range plan.Matches {
+		row := map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+			"bracket_tier": m.Tier, "bracket_round": m.Round, "bracket_slot": m.Slot,
+			"status": "scheduled",
+		}
+		if m.ResolvedWinner != nil { // a WB bye — auto-complete it
+			row["status"] = "completed"
+			row["completed_at"] = now()
+			if m.Side1 != nil && !engine.IsBye(m.Side1) {
+				row["winning_team"] = 1
+			} else {
+				row["winning_team"] = 2
+			}
+		}
+		out, err := s.sb.Insert("matches", row)
+		if err != nil {
+			return 0, err
+		}
+		if len(out) == 0 {
+			return 0, errors.New("double-elim match insert returned no row")
+		}
+		mid := asStr(out[0], "id")
+		idByKey[dkey(m.Tier, m.Round, m.Slot)] = mid
+		if err := s.insertSide(mid, 1, m.Side1); err != nil {
+			return 0, err
+		}
+		if err := s.insertSide(mid, 2, m.Side2); err != nil {
+			return 0, err
+		}
+		count++
+	}
+
+	for _, m := range plan.Matches {
+		upd := map[string]any{}
+		if m.WinTier != "" {
+			upd["feeds_match_id"] = idByKey[dkey(m.WinTier, m.WinRound, m.WinSlot)]
+			upd["feeds_slot"] = m.WinTeam
+		}
+		// A bye WB match has no loser to drop.
+		if m.LoseTier != "" && m.ResolvedWinner == nil {
+			upd["loser_feeds_match_id"] = idByKey[dkey(m.LoseTier, m.LoseRound, m.LoseSlot)]
+			upd["loser_feeds_slot"] = m.LoseTeam
+		}
+		if len(upd) == 0 {
+			continue
+		}
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(idByKey[dkey(m.Tier, m.Round, m.Slot)]), upd); err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
 func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error) {
 	b, err := s.sb.SelectOne("brackets", "id=eq."+store.Q(bracketID)+"&select=event_id")
 	if err != nil {
@@ -2195,7 +2271,31 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 			return err
 		}
 	}
+	// Flip the event to "completed" once nothing is left to play (so it stops
+	// showing a live badge), or back to "in_progress" if a re-score/undo reopens
+	// a match. Best-effort — never fail a recorded result over a status sync.
+	s.syncEventStatus(eventID)
 	return nil
+}
+
+// syncEventStatus reconciles events.status with its matches: completed when no
+// match is unfinished, in_progress if a completed event has a match reopened.
+func (s *Service) syncEventStatus(eventID string) {
+	open, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&status=neq.completed&select=id&limit=1")
+	if err != nil {
+		return
+	}
+	if len(open) == 0 {
+		_, _ = s.sb.Update("events",
+			"id=eq."+store.Q(eventID)+"&status=neq.completed",
+			map[string]any{"status": "completed"})
+		return
+	}
+	// A match is unfinished — make sure a previously-completed event reopens.
+	_, _ = s.sb.Update("events",
+		"id=eq."+store.Q(eventID)+"&status=eq.completed",
+		map[string]any{"status": "in_progress"})
 }
 
 // ForfeitMatch resolves a match with no played score — a no-show forfeit, a

@@ -433,14 +433,51 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 		return model.Event{}, ErrNotFound
 	}
 	ev := mapEvent(row)
-	// Best-effort registered-player count (mirrors ListEvents) so the event
-	// detail header shows the real number; a count failure must not fail the
-	// read — single reads otherwise leave RegisteredCount at 0.
+	// Best-effort registered + checked-in counts (mirrors ListEvents) so the
+	// event-detail header shows the real numbers; a count failure must not fail
+	// the read — single reads otherwise leave the counts at 0.
 	if regs, rerr := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(id)+"&select=id"); rerr == nil {
+		"event_id=eq."+store.Q(id)+"&select=checked_in"); rerr == nil {
 		ev.RegisteredCount = len(regs)
+		for _, r := range regs {
+			if asBool(r, "checked_in") {
+				ev.CheckedInCount++
+			}
+		}
 	}
 	return ev, nil
+}
+
+// Roster returns the PUBLIC list of players who joined an event — names,
+// division, and check-in status only (no phone/email/DUPR) — in join order, so
+// players/spectators can see who's playing.
+func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&order=created_at.asc"+
+			"&select=checked_in,player:players!player_id(full_name),bracket:brackets!bracket_id(name)")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.RosterEntry, 0, len(rows))
+	for _, r := range rows {
+		name := ""
+		if p := asMap(r, "player"); p != nil {
+			name = strings.TrimSpace(asStr(p, "full_name"))
+		}
+		if name == "" {
+			continue
+		}
+		div := ""
+		if b := asMap(r, "bracket"); b != nil {
+			div = asStr(b, "name")
+		}
+		out = append(out, model.RosterEntry{
+			FullName:  name,
+			Division:  div,
+			CheckedIn: asBool(r, "checked_in"),
+		})
+	}
+	return out, nil
 }
 
 // DeleteEvent removes an event and (via ON DELETE CASCADE) all its brackets,
@@ -740,7 +777,7 @@ func (s *Service) FillRandomPlayers(eventID string) (int, error) {
 			_ = s.CollectPaymentManually(reg.ID)
 		}
 		if idx%4 == 0 {
-			_ = s.CheckIn(reg.ID, "manual")
+			_, _ = s.CheckIn(reg.ID, "manual")
 		}
 		return nil
 	}
@@ -2753,22 +2790,51 @@ func (s *Service) MatchFeedText(matchID string, final bool) (eventID, text strin
 }
 
 // CheckIn marks a registration checked in. (#1)
-func (s *Service) CheckIn(registrationID, method string) error {
+// CheckIn marks a registration checked in and reports whether this was a NEW
+// check-in (false if it was already checked in), so callers can post a one-time
+// feed update without duplicating it on a re-scan. (#1)
+func (s *Service) CheckIn(registrationID, method string) (bool, error) {
 	if method == "" {
 		method = "manual"
 	}
+	prior, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(registrationID)+"&select=checked_in")
+	if err != nil {
+		return false, err
+	}
+	if prior == nil {
+		return false, ErrNotFound
+	}
+	already := asBool(prior, "checked_in")
 	out, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID), map[string]any{
 		"checked_in":      true,
 		"checked_in_at":   now(),
 		"check_in_method": method,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(out) == 0 {
-		return ErrNotFound
+		return false, ErrNotFound
 	}
-	return nil
+	return !already, nil
+}
+
+// CheckinFeedText composes the feed line for a check-in ("<name> checked in").
+// Returns the event id + text, both "" if the registration can't be read.
+func (s *Service) CheckinFeedText(registrationID string) (eventID, text string) {
+	row, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(registrationID)+"&select=event_id,player:players!player_id(full_name)")
+	if err != nil || row == nil {
+		return "", ""
+	}
+	name := "A player"
+	if p := asMap(row, "player"); p != nil {
+		if n := strings.TrimSpace(asStr(p, "full_name")); n != "" {
+			name = n
+		}
+	}
+	return asStr(row, "event_id"), name + " checked in"
 }
 
 // UncheckIn reverses a check-in (e.g. checked in by mistake), clearing the
@@ -2799,7 +2865,13 @@ func (s *Service) CheckInByToken(eventID, token string) (string, error) {
 		return "", ErrNotFound
 	}
 	regID := asStr(row, "id")
-	return regID, s.CheckIn(regID, "qr")
+	changed, err := s.CheckIn(regID, "qr")
+	if err == nil && changed {
+		if eid, txt := s.CheckinFeedText(regID); txt != "" {
+			s.AddFeedItem(eid, "checked_in", txt, regID)
+		}
+	}
+	return regID, err
 }
 
 func digitsOnly(s string) string {
@@ -2860,7 +2932,13 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 	}
 	// "code" is the allowed check_in_method that fits a player self-identifying
 	// by entering their phone number (see the registrations CHECK constraint).
-	return matchID, matchName, s.CheckIn(matchID, "code")
+	changed, err := s.CheckIn(matchID, "code")
+	if err == nil && changed {
+		if eid, txt := s.CheckinFeedText(matchID); txt != "" {
+			s.AddFeedItem(eid, "checked_in", txt, matchID)
+		}
+	}
+	return matchID, matchName, err
 }
 
 // StartRound activates a round and texts each player their court. (#5)

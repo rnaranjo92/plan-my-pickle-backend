@@ -30,8 +30,11 @@ type Event struct {
 	Description *string `json:"description,omitempty"`
 	// RegisteredCount is the number of players registered (filled on the
 	// dashboard list; 0 on single-event reads).
-	RegisteredCount int    `json:"registeredCount"`
-	Status          string `json:"status"`
+	RegisteredCount int `json:"registeredCount"`
+	// CheckedInCount is how many of the registered players are checked in
+	// (filled on the event-detail read).
+	CheckedInCount int    `json:"checkedInCount"`
+	Status         string `json:"status"`
 	// LiveCount is the number of matches currently in progress (filled on the
 	// dashboard/playing lists so cards can show a "live" pill).
 	LiveCount int `json:"liveCount"`
@@ -330,6 +333,14 @@ type FeedComment struct {
 // CommentRequest adds a comment to a feed item.
 type CommentRequest struct {
 	Text string `json:"text"`
+}
+
+// RosterEntry is one player in an event's PUBLIC roster — name, division, and
+// check-in status only (NO phone/email/DUPR), safe to show players/spectators.
+type RosterEntry struct {
+	FullName  string `json:"fullName"`
+	Division  string `json:"division,omitempty"`
+	CheckedIn bool   `json:"checkedIn"`
 }
 
 // Profile is the signed-in user's saved player details, used to pre-fill the

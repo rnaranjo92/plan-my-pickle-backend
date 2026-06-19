@@ -61,6 +61,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
+	mux.HandleFunc("GET /events/{id}/roster", s.roster)
 	mux.HandleFunc("GET /feed/{id}/comments", optionalAuth(s.commentList))
 	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
@@ -582,9 +583,15 @@ func (s *Server) checkin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.CheckIn(r.PathValue("id"), req.Method); err != nil {
+	changed, err := s.svc.CheckIn(r.PathValue("id"), req.Method)
+	if err != nil {
 		status(w, err)
 		return
+	}
+	if changed {
+		if eid, txt := s.svc.CheckinFeedText(r.PathValue("id")); txt != "" {
+			s.svc.AddFeedItem(eid, "checked_in", txt, r.PathValue("id"))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "checked_in"})
 }
@@ -708,6 +715,16 @@ func (s *Server) startMatch(w http.ResponseWriter, r *http.Request) {
 		s.svc.AddFeedItem(eid, "match_live", txt, r.PathValue("id"))
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"sent": n})
+}
+
+// roster returns the public player list (names + division + check-in status).
+func (s *Server) roster(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.svc.Roster(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 // feedList returns an event's activity feed (public — like the scoreboard).

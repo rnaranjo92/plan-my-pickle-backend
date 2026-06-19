@@ -1274,11 +1274,6 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 			total += n
 		} else if ev.TournamentFormat == "double_elim" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
-			// Byes (non-power-of-two fields) aren't wired through the losers
-			// bracket yet, so restrict double-elim to clean power-of-two draws.
-			if len(sides) < 2 || len(sides)&(len(sides)-1) != 0 {
-				return 0, fmt.Errorf("double elimination currently requires a power-of-two field (2, 4, 8, 16, …); a division has %d entrants", len(sides))
-			}
 			n, err := s.persistDoubleElim(ev, b.ID, sides)
 			if err != nil {
 				return 0, err

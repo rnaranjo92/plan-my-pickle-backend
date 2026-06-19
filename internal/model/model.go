@@ -23,6 +23,9 @@ type Event struct {
 	VenueLat             *float64 `json:"venueLat,omitempty"`
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
+	// Consolation enables a consolation back-draw for single_elim (first-round
+	// losers play down to a consolation champion / bronze — USAP 12.J ≥2 matches).
+	Consolation bool `json:"consolation"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
 	StartsAt *string `json:"startsAt,omitempty"`
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
@@ -121,6 +124,9 @@ type Match struct {
 	ID           string   `json:"id"`
 	BracketID    *string  `json:"bracketId,omitempty"`
 	Stage        string   `json:"stage"` // pool | bracket
+	// BracketTier classifies a bracket match for rendering: main | consolation |
+	// winners | losers | grand_final. Empty/"main" for ordinary brackets.
+	BracketTier  string   `json:"bracketTier,omitempty"`
 	BracketRound *int     `json:"bracketRound,omitempty"`
 	BracketSlot  *int     `json:"bracketSlot,omitempty"`
 	CourtNumber  *int     `json:"courtNumber,omitempty"`
@@ -187,6 +193,7 @@ type CreateEventRequest struct {
 	VenueLat             *float64       `json:"venueLat"`
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
+	Consolation          bool           `json:"consolation"` // single_elim back-draw
 	StartsAt             string         `json:"startsAt"` // RFC3339 UTC, "" = none
 	EndsAt               string         `json:"endsAt"`   // RFC3339 UTC, "" = none
 	Description          string         `json:"description"`

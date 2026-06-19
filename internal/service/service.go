@@ -196,6 +196,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"location":               orNull(req.Location),
 		"contact_phone":          orNull(req.ContactPhone),
 		"dupr_sanctioned":        req.DuprSanctioned,
+		"consolation":            req.Consolation,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
 		"venue_name":             orNull(req.VenueName),
@@ -1266,7 +1267,7 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 		}
 		if ev.TournamentFormat == "single_elim" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
-			n, err := s.persistBracket(ev, b.ID, sides)
+			n, err := s.persistBracket(ev, b.ID, sides, ev.Consolation)
 			if err != nil {
 				return 0, err
 			}
@@ -1699,7 +1700,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	return count, nil
 }
 
-func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [][]string) (int, error) {
+func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [][]string, consolation bool) (int, error) {
 	plan := engine.GenerateBracket(seededSides)
 	idByKey := map[string]string{}
 	count := 0
@@ -1744,6 +1745,62 @@ func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [
 			"feeds_match_id": feedID, "feeds_slot": m.FeedsTeam,
 		}); err != nil {
 			return 0, err
+		}
+	}
+
+	// Consolation back-draw: first-round losers play down to a consolation
+	// champion (bronze). A main round-1 match that auto-completed at generation
+	// is a bye (no loser); GenerateConsolation routes the surviving losers past
+	// those byes and emits only matches that will have two real players.
+	if consolation {
+		bye := make(map[int]bool)
+		for _, m := range plan.Matches {
+			if m.Round == 1 && m.ResolvedWinner != nil {
+				bye[m.Slot] = true
+			}
+		}
+		cons := engine.GenerateConsolation(plan.Size, func(slot int) bool { return bye[slot] })
+		consID := map[string]string{}
+		for _, cm := range cons.Matches {
+			out, err := s.sb.Insert("matches", map[string]any{
+				"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+				"bracket_tier": "consolation", "bracket_round": cm.Round,
+				"bracket_slot": cm.Slot, "status": "scheduled",
+			})
+			if err != nil {
+				return 0, err
+			}
+			if len(out) == 0 {
+				return 0, errors.New("consolation match insert returned no row")
+			}
+			consID[key(cm.Round, cm.Slot)] = asStr(out[0], "id")
+			count++
+		}
+		// Winner advancement within the consolation tree.
+		for _, cm := range cons.Matches {
+			if cm.FeedsRound == 0 {
+				continue
+			}
+			if _, err := s.sb.Update("matches", "id=eq."+store.Q(consID[key(cm.Round, cm.Slot)]),
+				map[string]any{
+					"feeds_match_id": consID[key(cm.FeedsRound, cm.FeedsSlot)],
+					"feeds_slot":     cm.FeedsTeam,
+				}); err != nil {
+				return 0, err
+			}
+		}
+		// Each main round-1 match's LOSER drops into the consolation tree.
+		for _, d := range cons.Drops {
+			mainID := idByKey[key(1, d.MainSlot)]
+			if mainID == "" {
+				continue
+			}
+			if _, err := s.sb.Update("matches", "id=eq."+store.Q(mainID), map[string]any{
+				"loser_feeds_match_id": consID[key(d.Round, d.Slot)],
+				"loser_feeds_slot":     d.Team,
+			}); err != nil {
+				return 0, err
+			}
 		}
 	}
 	return count, nil
@@ -1874,7 +1931,9 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error
 	if topN == 4 {
 		return s.persistMedalBracket(ev, bracketID, sides[:4])
 	}
-	return s.persistBracket(ev, bracketID, sides[:topN])
+	// No consolation here: pool players already played >=2 games, so the playoff
+	// bracket doesn't need a back-draw to satisfy the 2-match guarantee.
+	return s.persistBracket(ev, bracketID, sides[:topN], false)
 }
 
 // seedTopTeams returns this division's teams ordered best-first by pool

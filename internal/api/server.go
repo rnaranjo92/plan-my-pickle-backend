@@ -53,6 +53,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events", optionalAuth(s.listEvents))
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
+	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -140,6 +141,12 @@ func (s *Server) myEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+// myProfile returns the signed-in user's saved player details to pre-fill the
+// registration form.
+func (s *Server) myProfile(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.MyProfile(userID(r), userEmail(r)))
 }
 
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {

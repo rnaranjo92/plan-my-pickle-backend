@@ -2635,6 +2635,32 @@ func (s *Service) resolveDisplayName(userID, email string) string {
 	return "Player"
 }
 
+// MyProfile returns the signed-in user's saved player details (from their linked
+// player row, if any) so the registration form can pre-fill. Email always comes
+// from the verified token; missing a player row just yields an email-only
+// profile. Best-effort — a lookup error still returns the email.
+func (s *Service) MyProfile(userID, email string) model.Profile {
+	p := model.Profile{Email: email}
+	if userID == "" {
+		return p
+	}
+	row, err := s.sb.SelectOne("players",
+		"user_id=eq."+store.Q(userID)+
+			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level&limit=1")
+	if err != nil || row == nil {
+		return p
+	}
+	p.FullName = asStr(row, "full_name")
+	p.Phone = asStr(row, "phone")
+	if e := asStr(row, "email"); e != "" {
+		p.Email = e
+	}
+	p.DuprID = asStr(row, "dupr_id")
+	p.DuprRating = asFloatPtr(row, "dupr_rating")
+	p.SkillLevel = asFloatPtr(row, "skill_level")
+	return p
+}
+
 // PostAnnouncement adds an organizer announcement to the feed.
 func (s *Service) PostAnnouncement(eventID, text, actorName string) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)

@@ -331,3 +331,14 @@ type FeedComment struct {
 type CommentRequest struct {
 	Text string `json:"text"`
 }
+
+// Profile is the signed-in user's saved player details, used to pre-fill the
+// registration form. Email always reflects the verified token.
+type Profile struct {
+	FullName   string   `json:"fullName"`
+	Phone      string   `json:"phone"`
+	Email      string   `json:"email"`
+	DuprID     string   `json:"duprId"`
+	DuprRating *float64 `json:"duprRating,omitempty"`
+	SkillLevel *float64 `json:"skillLevel,omitempty"`
+}

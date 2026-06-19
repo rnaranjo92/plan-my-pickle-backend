@@ -389,7 +389,14 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 // rating band (lowest first). Owner-only; powers "Build schedule by rating".
 func (s *Server) autoSchedule(w http.ResponseWriter, r *http.Request) {
 	interleave := r.URL.Query().Get("interleave") == "true"
-	n, err := s.svc.AutoScheduleByRating(r.PathValue("id"), interleave)
+	// Optional: in PACKED (interleave) mode, keep each player's matches >=
+	// minRestSlots time-slots apart. No effect in clean/sequential mode — there
+	// divisions already run in separate time blocks. 0 = no gap (default).
+	minRest, _ := strconv.Atoi(r.URL.Query().Get("minRestSlots"))
+	if minRest < 0 {
+		minRest = 0
+	}
+	n, err := s.svc.AutoScheduleByRating(r.PathValue("id"), interleave, minRest)
 	if err != nil {
 		status(w, err)
 		return

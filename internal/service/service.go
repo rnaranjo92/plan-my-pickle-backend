@@ -1374,7 +1374,7 @@ func (s *Service) spreadCourts(eventID string) error {
 // Games in a round fan out across the courts. play_order is the slot index, so
 // the calendar can place a game at day_start + slot*game_duration. Returns the
 // number of games scheduled.
-func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, error) {
+func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestSlots int) (int, error) {
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {
 		return 0, err
@@ -1477,6 +1477,70 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, er
 		rs[len(rs)-1] = append(rs[len(rs)-1], m.id)
 	}
 
+	// Player -> participants, for cross-division conflict avoidance: a player
+	// entered in TWO divisions must not be placed in the same time slot (a player
+	// can't be on two courts at once — USAP 12.K). Sequential mode is already
+	// conflict-free (divisions get separate slots); the interleave/packed path
+	// shares slots across divisions, so it needs this. minRestSlots additionally
+	// keeps a player's consecutive matches at least that many slots apart.
+	matchPlayers := map[string][]string{}
+	if len(list) > 0 {
+		mids := make([]string, len(list))
+		for i, m := range list {
+			mids[i] = m.id
+		}
+		// Fetch participants in CHUNKS: one in.(...) over a big event could exceed
+		// the URL length or PostgREST's default row cap (a silent 200 truncation),
+		// leaving matchPlayers partial — which would quietly disable conflict
+		// avoidance while still reporting success. Keep each chunk well under any
+		// row cap (<=100 matches => <=~400 participant rows) and PROPAGATE errors
+		// rather than scheduling on incomplete data. This runs before any match is
+		// placed, so an early return leaves play_order untouched.
+		const chunk = 100
+		for start := 0; start < len(mids); start += chunk {
+			end := start + chunk
+			if end > len(mids) {
+				end = len(mids)
+			}
+			parts, e := s.sb.Select("match_participants",
+				"match_id=in.("+strings.Join(mids[start:end], ",")+")&select=match_id,player_id")
+			if e != nil {
+				return 0, e
+			}
+			for _, p := range parts {
+				mid := asStr(p, "match_id")
+				matchPlayers[mid] = append(matchPlayers[mid], asStr(p, "player_id"))
+			}
+		}
+	}
+	occupied := map[int]map[string]bool{} // slot -> player ids playing that slot
+	lastSlot := map[string]int{}          // player id -> their latest placed slot
+	// conflictAt reports whether placing matchID at slot would double-book a
+	// player (hard) or violate the min-rest gap (soft — only when minRestSlots>0).
+	conflictAt := func(slot int, matchID string) bool {
+		occ := occupied[slot]
+		for _, pid := range matchPlayers[matchID] {
+			if occ != nil && occ[pid] {
+				return true
+			}
+			if minRestSlots > 0 {
+				if prev, ok := lastSlot[pid]; ok && slot-prev <= minRestSlots {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	markSlot := func(slot int, matchID string) {
+		if occupied[slot] == nil {
+			occupied[slot] = map[string]bool{}
+		}
+		for _, pid := range matchPlayers[matchID] {
+			occupied[slot][pid] = true
+			lastSlot[pid] = slot
+		}
+	}
+
 	scheduled := 0
 	var perr error
 	place := func(matchID string, courtNumber, slot int) {
@@ -1500,7 +1564,14 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, er
 		pos := make(map[string]int)
 		remaining := len(list)
 		slot := 0
-		for remaining > 0 && perr == nil {
+		// Conflicts (and the min-rest gap) ALWAYS self-resolve as `slot` grows: a
+		// fresh slot has no occupied players, and the rest gap widens with time. So
+		// the loop terminates and the hard double-booking check is never bypassed.
+		// maxSlots is only a defensive bound; if it were somehow hit (it can't for
+		// valid round-robin data), the few unplaced matches just stay un-arranged
+		// (play_order null) — never an infinite loop and never a double-booked slot.
+		maxSlots := len(list)*(minRestSlots+1) + len(courtNums) + 10
+		for remaining > 0 && perr == nil && slot <= maxSlots {
 			courtCursor := 0
 			for _, div := range divOrder {
 				if courtCursor >= len(courtNums) {
@@ -1513,7 +1584,16 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool) (int, er
 				}
 				round := rounds[ri]
 				for pos[div] < len(round) && courtCursor < len(courtNums) {
-					place(round[pos[div]], courtNums[courtCursor], slot)
+					mid := round[pos[div]]
+					// Defer this division if its next match would double-book a
+					// player at this slot (hard) or break the min-rest gap (soft);
+					// it retries at a later slot. Never bypassed — a player is never
+					// placed on two courts at once.
+					if conflictAt(slot, mid) {
+						break
+					}
+					place(mid, courtNums[courtCursor], slot)
+					markSlot(slot, mid)
 					courtCursor++
 					pos[div]++
 					remaining--

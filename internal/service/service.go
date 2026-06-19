@@ -1274,6 +1274,11 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 			total += n
 		} else if ev.TournamentFormat == "double_elim" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
+			// Byes (non-power-of-two fields) aren't wired through the losers
+			// bracket yet, so restrict double-elim to clean power-of-two draws.
+			if len(sides) < 2 || len(sides)&(len(sides)-1) != 0 {
+				return 0, fmt.Errorf("double elimination currently requires a power-of-two field (2, 4, 8, 16, …); a division has %d entrants", len(sides))
+			}
 			n, err := s.persistDoubleElim(ev, b.ID, sides)
 			if err != nil {
 				return 0, err
@@ -2252,6 +2257,14 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 				return err
 			}
 		}
+		// Double-elim grand final: the WB champion (team 1) is undefeated, so if
+		// they win game 1 they're champion; if the LB champion (team 2) wins, both
+		// have one loss and a deciding RESET game is played.
+		if asStr(m, "bracket_tier") == "grand_final" && asInt(m, "bracket_round") == 1 {
+			if err := s.resolveGrandFinal(m); err != nil {
+				return err
+			}
+		}
 	}
 	if stage == "pool" {
 		if bc := asStrPtr(m, "bracket_id"); bc != nil {
@@ -2276,6 +2289,120 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 	// a match. Best-effort — never fail a recorded result over a status sync.
 	s.syncEventStatus(eventID)
 	return nil
+}
+
+// resolveGrandFinal applies the "if necessary" rule after grand-final game 1.
+// gf1's team 1 is the winners-bracket champion (undefeated); team 2 is the
+// losers-bracket champion (one loss). If team 1 wins, they're the champion and
+// no reset is played; if team 2 wins, a deciding reset game (round 2) with the
+// same two teams is created. Re-scoring game 1 reconciles the reset game.
+func (s *Service) resolveGrandFinal(gf1 map[string]any) error {
+	eventID := asStr(gf1, "event_id")
+	// Scope the reset lookup to THIS bracket: separate divisions in one event each
+	// have their own grand_final round 2, all sharing the same tier+round, so an
+	// event-only query would collide across divisions.
+	bid := asStr(gf1, "bracket_id")
+	if bid == "" {
+		return errors.New("grand final has no bracket_id; cannot resolve the reset game")
+	}
+	winner := asInt(gf1, "winning_team")
+	q := "event_id=eq." + store.Q(eventID) +
+		"&bracket_id=eq." + store.Q(bid) +
+		"&bracket_tier=eq.grand_final&bracket_round=eq.2&select=id,status&limit=1"
+	existing, err := s.sb.Select("matches", q)
+	if err != nil {
+		return err
+	}
+
+	if winner == 1 {
+		// WB champion took it — no reset is played, so any round-2 reset must go,
+		// even if it was already played (a corrected game-1 result makes it moot).
+		if len(existing) > 0 {
+			id := asStr(existing[0], "id")
+			if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(id)); err != nil {
+				return err
+			}
+			return s.sb.Delete("matches", "id=eq."+store.Q(id))
+		}
+		return nil
+	}
+
+	// LB champion forced a reset — create game 2 (once) with the same two teams.
+	var gf2ID string
+	if len(existing) > 0 {
+		gf2ID = asStr(existing[0], "id")
+	} else {
+		// bid validated above — the reset shares the bracket so the UI (which
+		// filters by bracket_id) shows it.
+		row := map[string]any{
+			"event_id": eventID, "bracket_id": bid, "stage": "bracket",
+			"bracket_tier": "grand_final", "bracket_round": 2, "bracket_slot": 0,
+			"status": "scheduled",
+		}
+		out, err := s.sb.Insert("matches", row)
+		if err != nil {
+			return err
+		}
+		if len(out) == 0 {
+			return errors.New("reset game insert returned no row")
+		}
+		gf2ID = asStr(out[0], "id")
+	}
+	return s.copyGrandFinalTeams(asStr(gf1, "id"), gf2ID)
+}
+
+// copyGrandFinalTeams mirrors game 1's two sides into the reset game (same teams,
+// same team numbers). It no-ops when the reset already holds those exact sides,
+// so a re-score doesn't briefly empty the reset's roster for a concurrent reader.
+func (s *Service) copyGrandFinalTeams(fromID, toID string) error {
+	parts, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(fromID)+"&select=player_id,team")
+	if err != nil {
+		return err
+	}
+	cur, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(toID)+"&select=player_id,team")
+	if err != nil {
+		return err
+	}
+	if sameParticipants(parts, cur) {
+		return nil
+	}
+	if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(toID)); err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(parts))
+	for _, p := range parts {
+		rows = append(rows, map[string]any{
+			"match_id": toID, "player_id": asStr(p, "player_id"), "team": asInt(p, "team"),
+		})
+	}
+	_, err = s.sb.Upsert("match_participants", "match_id,player_id", rows)
+	return err
+}
+
+// sameParticipants reports whether two participant rows describe the same set of
+// (player_id, team) pairs.
+func sameParticipants(a, b []map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	key := func(p map[string]any) string {
+		return asStr(p, "player_id") + ":" + strconv.Itoa(asInt(p, "team"))
+	}
+	set := make(map[string]bool, len(a))
+	for _, p := range a {
+		set[key(p)] = true
+	}
+	for _, p := range b {
+		if !set[key(p)] {
+			return false
+		}
+	}
+	return true
 }
 
 // syncEventStatus reconciles events.status with its matches: completed when no

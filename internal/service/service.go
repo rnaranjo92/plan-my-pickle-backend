@@ -497,6 +497,38 @@ func (s *Service) DeleteEvent(id string) error {
 	return s.sb.Delete("events", "id=eq."+store.Q(id))
 }
 
+// DeleteAccount permanently erases a user: the events they organize (FK cascade
+// removes those events' brackets, matches, registrations and feed), their player
+// profile/registrations in OTHER organizers' events (anonymized + unlinked so
+// those events' draws stay valid), and finally their Supabase auth login. Order
+// matters: data first, login last, so a mid-way failure leaves an account the
+// user can still sign into and retry — never orphaned data with no owner. Idempotent,
+// so a retry after a partial failure is safe. Satisfies App Store Guideline 5.1.1(v).
+func (s *Service) DeleteAccount(userID string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return errors.New("not signed in")
+	}
+	// 1. Their tournaments. Cascade handles everything beneath each event.
+	if err := s.sb.Delete("events", "owner_id=eq."+store.Q(userID)); err != nil {
+		return err
+	}
+	// 2. Scrub PII from + unlink their player rows in events they DON'T own, so
+	//    those organizers' brackets/matches keep working. Best-effort: a hiccup
+	//    here must not block erasing the login (the part Apple checks).
+	if _, err := s.sb.Update("players", "user_id=eq."+store.Q(userID), map[string]any{
+		"full_name": "Former player",
+		"email":     nil,
+		"phone":     nil,
+		"dupr_id":   nil,
+		"user_id":   nil,
+	}); err != nil {
+		log.Printf("DeleteAccount: anonymize players for %s failed (continuing): %v", userID, err)
+	}
+	// 3. Erase the login last.
+	return s.sb.DeleteAuthUser(userID)
+}
+
 // UpdateEvent edits an existing event's metadata (name, description, date,
 // venue/location, fee, courts, scoring, DUPR). It deliberately does NOT change
 // the structural format / tournament_format / brackets — those are fixed once

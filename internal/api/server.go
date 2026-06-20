@@ -54,6 +54,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
+	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
+	// account + data. requireAuth scopes it to the authenticated user only.
+	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -189,6 +192,16 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.DeleteEvent(r.PathValue("id")); err != nil {
 		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// deleteMe erases the authenticated caller's own account + data (no path param —
+// the user id comes from the verified token, so a user can only delete themselves).
+func (s *Server) deleteMe(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteAccount(userID(r)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

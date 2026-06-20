@@ -183,6 +183,24 @@ func (c *Client) Delete(table, query string) error {
 	return nil
 }
 
+// DeleteAuthUser removes a Supabase auth user via the GoTrue Admin API (this
+// hits /auth/v1, not /rest/v1, and needs the service-role key the client holds).
+// Used by account deletion so a user can erase their login (Apple Guideline
+// 5.1.1(v)).
+func (c *Client) DeleteAuthUser(uid string) error {
+	resp, err := c.do(http.MethodDelete,
+		fmt.Sprintf("%s/auth/v1/admin/users/%s", c.baseURL, url.PathEscape(uid)), nil, "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return dbError("auth-delete", "users", resp.StatusCode, body)
+	}
+	return nil
+}
+
 // RPC calls a Postgres function at /rest/v1/rpc/<fn> and returns the raw JSON
 // result. Aggregations (standings) and multi-step atomic writes (schedule +
 // bracket generation, winner advancement) are implemented as plpgsql functions

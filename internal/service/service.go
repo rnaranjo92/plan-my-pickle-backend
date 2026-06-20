@@ -679,7 +679,7 @@ func (s *Service) SeedDemo(ownerID string) (string, error) {
 			{Name: "3.0-3.5", MinRating: ratingPtr(3.0), MaxRating: ratingPtr(3.5)},
 			{Name: "3.5-4.0 50+", MinRating: ratingPtr(3.5), MaxRating: ratingPtr(4.0), MinAge: agePtr(50)},
 		},
-	}, 0.6, ownerID)
+	}, 0.5, 6, ownerID)
 }
 
 // SeedPlayoffDemo creates a pools->playoff demo at the very first step: 16 players
@@ -704,16 +704,16 @@ func (s *Service) SeedPlayoffDemo(ownerID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.registerDemoPlayers(eid); err != nil {
+	if err := s.registerDemoPlayers(eid, 8); err != nil {
 		return "", err
 	}
 	return eid, nil
 }
 
-// registerDemoPlayers registers the 16 standard demo players, split cleanly 8/8
-// across the two rating divisions (first 8 at 3.0-3.35, next 8 at 3.55-3.90 —
-// strictly above 3.5 so the auto-assigner produces even, bye-free divisions).
-func (s *Service) registerDemoPlayers(eventID string) error {
+// registerDemoPlayers registers perDiv demo players into each of the two rating
+// divisions (3.0-3.5 and 3.5-4.0, strictly split so the auto-assigner produces
+// even, bye-free divisions). perDiv is clamped to the name pool (12/division).
+func (s *Service) registerDemoPlayers(eventID string, perDiv int) error {
 	// 12 players per division. Ratings keep each group inside its bracket's band
 	// (3.0-3.5 and 3.5-4.0) so RegisterPlayer auto-assigns the right division.
 	div1 := []string{ // 3.0-3.5
@@ -741,13 +741,22 @@ func (s *Service) registerDemoPlayers(eventID string) error {
 		return err
 	}
 
-	for i, n := range div1 {
-		if err := reg(n, 3.0+float64(i)*0.03); err != nil { // 3.00–3.33
+	// Cap each division at perDiv players so the round-robin demo (which also
+	// scores most of its pool) stays small enough to finish inside the request
+	// timeout; the playoff demo passes a larger perDiv.
+	if perDiv <= 0 || perDiv > len(div1) {
+		perDiv = len(div1)
+	}
+	if perDiv > len(div2) {
+		perDiv = len(div2)
+	}
+	for i := 0; i < perDiv; i++ {
+		if err := reg(div1[i], 3.0+float64(i)*0.03); err != nil { // 3.00–3.33
 			return err
 		}
 	}
-	for i, n := range div2 {
-		if err := reg(n, 3.55+float64(i)*0.03); err != nil { // 3.55–3.88
+	for i := 0; i < perDiv; i++ {
+		if err := reg(div2[i], 3.55+float64(i)*0.03); err != nil { // 3.55–3.88
 			return err
 		}
 	}
@@ -878,12 +887,12 @@ func ratingInBand(min, max *float64, i, n int) float64 {
 // seedTournament creates the event, registers the demo players, generates the
 // pool schedule, scores a `poolCompletion` fraction (0..1) of the pool matches,
 // and reconciles each round's status to match. Used by SeedDemo (round-robin).
-func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion float64, ownerID string) (string, error) {
+func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion float64, perDiv int, ownerID string) (string, error) {
 	eid, err := s.CreateEvent(req, ownerID)
 	if err != nil {
 		return "", err
 	}
-	if err := s.registerDemoPlayers(eid); err != nil {
+	if err := s.registerDemoPlayers(eid, perDiv); err != nil {
 		return "", err
 	}
 

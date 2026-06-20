@@ -136,6 +136,7 @@ func mapEvent(m map[string]any) model.Event {
 		NumCourts:            asInt(m, "num_courts"),
 		PointsToWin:          asInt(m, "points_to_win"),
 		WinBy:                asInt(m, "win_by"),
+		BestOf:               asInt(m, "best_of"),
 		GameDurationMinutes:  asInt(m, "game_duration_minutes"),
 		RegistrationFeeCents: asInt(m, "registration_fee_cents"),
 		Currency:             asStr(m, "currency"),
@@ -217,7 +218,7 @@ func mapRoundView(m map[string]any) model.RoundView {
 // court number, round context, and participants (with player names) embedded —
 // so a match and its sides load in one round-trip instead of N+1 queries.
 const matchSelect = "id,bracket_id,stage,bracket_tier,bracket_round,bracket_slot," +
-	"team1_score,team2_score,winning_team,status,result_type,play_order,duration_minutes," +
+	"team1_score,team2_score,winning_team,games,status,result_type,play_order,duration_minutes," +
 	"court:courts!court_id(court_number)," +
 	"round:rounds!round_id(id,round_number,status)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
@@ -273,6 +274,22 @@ func mapSides(m map[string]any) []model.Side {
 
 // mapMatch maps a match row (queried with matchSelect) to model.Match. Court and
 // round context populate only when those embeds are present in the row.
+// asGames decodes the matches.games jsonb (an array of {team1,team2}) into the
+// per-game model. Returns nil for legacy single-game matches with no games column.
+func asGames(m map[string]any, key string) []model.GameScore {
+	raw, ok := m[key].([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make([]model.GameScore, 0, len(raw))
+	for _, r := range raw {
+		if g, ok := r.(map[string]any); ok {
+			out = append(out, model.GameScore{Team1: asInt(g, "team1"), Team2: asInt(g, "team2")})
+		}
+	}
+	return out
+}
+
 func mapMatch(m map[string]any) model.Match {
 	mt := model.Match{
 		ID:           asStr(m, "id"),
@@ -284,6 +301,7 @@ func mapMatch(m map[string]any) model.Match {
 		Team1Score:   asIntPtr(m, "team1_score"),
 		Team2Score:   asIntPtr(m, "team2_score"),
 		WinningTeam:  asIntPtr(m, "winning_team"),
+		Games:        asGames(m, "games"),
 		Status:       asStr(m, "status"),
 		ResultType:      asStr(m, "result_type"),
 		PlayOrder:       asFloatPtr(m, "play_order"),

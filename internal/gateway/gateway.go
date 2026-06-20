@@ -79,8 +79,9 @@ type DuprPayload struct {
 	DuprEventID  string
 	Team1DuprIDs []string
 	Team2DuprIDs []string
-	Team1Score   int
+	Team1Score   int      // game 1 (legacy single-game field)
 	Team2Score   int
+	Games        [][2]int // per-game scores for a best-of-N match ([t1, t2] each)
 }
 
 type DuprResult struct {

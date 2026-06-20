@@ -179,6 +179,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if winBy < 1 {
 		winBy = 2
 	}
+	bestOf := normalizeBestOf(req.BestOf)
 	gameMin := clampGameDuration(req.GameDurationMinutes)
 
 	payload := map[string]any{
@@ -190,6 +191,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"num_courts":             courts,
 		"points_to_win":          ptw,
 		"win_by":                 winBy,
+		"best_of":                bestOf,
 		"game_duration_minutes":  gameMin,
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"currency":               "USD",
@@ -531,6 +533,7 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"num_courts":             courts,
 		"points_to_win":          ptw,
 		"win_by":                 winBy,
+		"best_of":                normalizeBestOf(req.BestOf),
 		"game_duration_minutes":  clampGameDuration(req.GameDurationMinutes),
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"location":               orNull(req.Location),
@@ -614,6 +617,15 @@ func clampGameDuration(m int) int {
 	default:
 		return m
 	}
+}
+
+// normalizeBestOf coerces the games-per-match setting to a supported odd value
+// (1 = single game, 3 = best of 3). Anything else defaults to a single game.
+func normalizeBestOf(n int) int {
+	if n == 3 {
+		return 3
+	}
+	return 1
 }
 
 func ratingPtr(v float64) *float64 { return &v }
@@ -2156,65 +2168,51 @@ func (s *Service) bracketStarted(bracketID string) (bool, error) {
 }
 
 // ----------------------------------------------------------- scoring
-func (s *Service) RecordScore(matchID string, t1, t2 int) error {
-	if t1 < 0 || t2 < 0 {
-		return errors.New("scores must be non-negative")
-	}
-	if t1 == t2 {
-		return errors.New("a pickleball game cannot end in a tie")
-	}
-	// Validate against the event's match format: the winner must reach
-	// points_to_win AND win by at least win_by (real pickleball rules).
-	// Defaults (11, win by 2) apply if the event predates the format columns.
-	ptw, winBy := 11, 2
-	if fmtRow, err := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=event:events!event_id(points_to_win,win_by)"); err != nil {
+// RecordSeries validates a best-of-N result for a match against the event's
+// format (points_to_win / win_by / best_of) and writes it. games holds the
+// per-game scores; the winner is decided by games won.
+func (s *Service) RecordSeries(matchID string, games []model.GameScore) error {
+	// Defaults (11, win by 2, single game) apply if the event predates a column.
+	ptw, winBy, bestOf := 11, 2, 1
+	fmtRow, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event:events!event_id(points_to_win,win_by,best_of)")
+	if err != nil {
 		return err
-	} else if fmtRow == nil {
+	}
+	if fmtRow == nil {
 		return ErrNotFound
-	} else if ev, ok := fmtRow["event"].(map[string]any); ok {
+	}
+	if ev, ok := fmtRow["event"].(map[string]any); ok {
 		if g := asInt(ev, "points_to_win"); g > 0 {
 			ptw = g
 		}
 		if w := asInt(ev, "win_by"); w > 0 {
 			winBy = w
 		}
-	}
-	hi, lo := t1, t2
-	if t2 > t1 {
-		hi, lo = t2, t1
-	}
-	if hi < ptw {
-		return fmt.Errorf("winning score must reach %d", ptw)
-	}
-	if hi-lo < winBy {
-		return fmt.Errorf("must win by %d (got %d–%d)", winBy, hi, lo)
-	}
-	// Deuce cap: a game can exceed points_to_win only by exactly win_by, out of
-	// deuce (e.g. 12–10) — never more (15–2 is impossible). With no win-by
-	// margin it ends at the target. Keeps the backend rule identical to the
-	// Flutter client's validatePickleballScore.
-	if winBy >= 2 {
-		if hi > ptw && (hi-lo != winBy || lo < ptw-1) {
-			return fmt.Errorf("past %d a game ends on a %d-point lead, e.g. %d–%d", ptw, winBy, ptw+winBy-1, ptw-1)
+		if b := asInt(ev, "best_of"); b > 0 {
+			bestOf = b
 		}
-	} else if hi > ptw {
-		return fmt.Errorf("a game to %d with no win-by margin ends at %d", ptw, ptw)
 	}
-	return s.applyScore(matchID, t1, t2)
+	winner, t1, t2, err := validateSeries(games, bestOf, ptw, winBy)
+	if err != nil {
+		return err
+	}
+	return s.applySeries(matchID, games, winner, t1, t2)
 }
 
-// applyScore writes a final score (winner = the higher), marks the match
-// completed, and runs advancement. It does NOT validate the match format —
-// callers that already trust the score (e.g. demo seeding) use it directly,
-// avoiding RecordScore's per-score format lookup.
-func (s *Service) applyScore(matchID string, t1, t2 int) error {
-	winner := 1
-	if t2 > t1 {
-		winner = 2
-	}
+// RecordScore records a single-game result (the best-of-1 / legacy path).
+func (s *Service) RecordScore(matchID string, t1, t2 int) error {
+	return s.RecordSeries(matchID, []model.GameScore{{Team1: t1, Team2: t2}})
+}
+
+// applySeries writes a validated result — per-game scores, the total points each
+// side scored (so standings differential stays correct), and the series winner —
+// marks the match completed and runs advancement. It does NOT validate; callers
+// that already trust the result (demo seeding via applyScore) use it directly.
+func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t1total, t2total int) error {
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
-		"team1_score": t1, "team2_score": t2, "winning_team": winner,
+		"team1_score": t1total, "team2_score": t2total, "winning_team": winner,
+		"games":  games,
 		"status": "completed", "completed_at": now(), "result_type": "normal",
 		// A real played result always counts toward differential — also resets a
 		// match that had previously been a forfeit/walkover (counts_for_diff=false).
@@ -2228,6 +2226,15 @@ func (s *Service) applyScore(matchID string, t1, t2 int) error {
 	}
 	// The updated row (return=representation) carries the routing columns.
 	return s.advanceAfterScore(out[0])
+}
+
+// applyScore writes a single-game result without format validation (demo seeding).
+func (s *Service) applyScore(matchID string, t1, t2 int) error {
+	winner := 1
+	if t2 > t1 {
+		winner = 2
+	}
+	return s.applySeries(matchID, []model.GameScore{{Team1: t1, Team2: t2}}, winner, t1, t2)
 }
 
 // advanceAfterScore runs the post-completion routing for a just-finished match
@@ -2458,6 +2465,9 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
+		// Clear any per-game scores from a prior played result — a forfeit/retire/
+		// walkover isn't a series, so the UI must not show game-by-game results.
+		"games":  nil,
 		"status": "completed", "completed_at": now(), "result_type": kind,
 		"counts_for_diff": countsForDiff,
 	})
@@ -3521,7 +3531,7 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 		subID := asStr(p, "id")
 		matchID := asStr(p, "match_id")
 		m, err := s.sb.SelectOne("matches",
-			"id=eq."+store.Q(matchID)+"&select=team1_score,team2_score,winning_team,result_type")
+			"id=eq."+store.Q(matchID)+"&select=team1_score,team2_score,winning_team,result_type,games")
 		if err != nil {
 			return sum, err
 		}
@@ -3575,10 +3585,21 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 			sum.Skipped++
 			continue
 		}
+		// Best-of-N: submit each game; the legacy single-game fields carry game 1
+		// (team1_score/team2_score are point TOTALS, not a valid single game).
+		games := asGames(m, "games")
+		g1t1, g1t2 := *t1s, *t2s
+		var pairs [][2]int
+		for _, gg := range games {
+			pairs = append(pairs, [2]int{gg.Team1, gg.Team2})
+		}
+		if len(games) > 0 {
+			g1t1, g1t2 = games[0].Team1, games[0].Team2
+		}
 		res, err := s.Dupr.SubmitMatch(gateway.DuprPayload{
 			EventID: eventID, DuprEventID: duprEventID,
 			Team1DuprIDs: t1, Team2DuprIDs: t2,
-			Team1Score: *t1s, Team2Score: *t2s,
+			Team1Score: g1t1, Team2Score: g1t2, Games: pairs,
 		})
 		if err != nil {
 			return sum, err

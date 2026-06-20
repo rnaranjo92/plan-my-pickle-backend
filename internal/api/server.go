@@ -451,7 +451,12 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.RecordScore(r.PathValue("id"), req.Team1Score, req.Team2Score); err != nil {
+	// Per-game scores (best-of-N) when present; otherwise the legacy single game.
+	games := req.Games
+	if len(games) == 0 {
+		games = []model.GameScore{{Team1: req.Team1Score, Team2: req.Team2Score}}
+	}
+	if err := s.svc.RecordSeries(r.PathValue("id"), games); err != nil {
 		status(w, err)
 		return
 	}

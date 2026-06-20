@@ -11,6 +11,7 @@ type Event struct {
 	NumCourts            int      `json:"numCourts"`
 	PointsToWin          int      `json:"pointsToWin"`
 	WinBy                int      `json:"winBy"`
+	BestOf               int      `json:"bestOf"` // games per match: 1 (single) or 3 (best of 3)
 	GameDurationMinutes  int      `json:"gameDurationMinutes"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
 	Currency             string   `json:"currency"`
@@ -132,9 +133,12 @@ type Match struct {
 	CourtNumber  *int     `json:"courtNumber,omitempty"`
 	PlayOrder    *float64 `json:"playOrder,omitempty"`       // within-court order, lower first
 	DurationMinutes *int  `json:"durationMinutes,omitempty"` // per-match length override
-	Team1Score   *int     `json:"team1Score,omitempty"`
+	Team1Score   *int     `json:"team1Score,omitempty"` // total points across all games
 	Team2Score   *int     `json:"team2Score,omitempty"`
-	WinningTeam  *int     `json:"winningTeam,omitempty"`
+	WinningTeam  *int     `json:"winningTeam,omitempty"` // series winner (games won)
+	// Games is the per-game breakdown for a best-of-N match (omitted for legacy
+	// single-game matches scored before per-game tracking).
+	Games        []GameScore `json:"games,omitempty"`
 	Status       string   `json:"status"`
 	ResultType   string   `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
 	// Round context — populated by the event-wide pool-matches query so the
@@ -182,6 +186,7 @@ type CreateEventRequest struct {
 	NumCourts            int            `json:"numCourts"`
 	PointsToWin          int            `json:"pointsToWin"`
 	WinBy                int            `json:"winBy"`
+	BestOf               int            `json:"bestOf"`
 	GameDurationMinutes  int            `json:"gameDurationMinutes"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	Location             string         `json:"location"`
@@ -228,9 +233,20 @@ type RegistrationDetailsRequest struct {
 	DuprRating *float64 `json:"duprRating"`
 }
 
+// GameScore is one game's result within a match. A best-of-1 match has a single
+// game; a best-of-3 match has 2 or 3.
+type GameScore struct {
+	Team1 int `json:"team1"`
+	Team2 int `json:"team2"`
+}
+
+// ScoreRequest records a match result. Games is the per-game scores for a
+// best-of-N match; Team1Score/Team2Score are the legacy single-game fields,
+// accepted when Games is empty (treated as one game).
 type ScoreRequest struct {
-	Team1Score int `json:"team1Score"`
-	Team2Score int `json:"team2Score"`
+	Team1Score int         `json:"team1Score"`
+	Team2Score int         `json:"team2Score"`
+	Games      []GameScore `json:"games,omitempty"`
 }
 
 // ForfeitRequest resolves a match without a fully-played score (no-show /

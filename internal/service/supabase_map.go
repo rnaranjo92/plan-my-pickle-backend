@@ -152,6 +152,8 @@ func mapEvent(m map[string]any) model.Event {
 		Consolation:          asBool(m, "consolation"),
 		StartsAt:             asStrPtr(m, "starts_at"),
 		EndsAt:               asStrPtr(m, "ends_at"),
+		Listed:               asBool(m, "listed"),
+		PosterURL:            asStrPtr(m, "poster_url"),
 		Description:          asStrPtr(m, "description"),
 		Status:               asStr(m, "status"),
 	}

@@ -47,6 +47,12 @@ type Event struct {
 	LastActivity     *string `json:"lastActivity,omitempty"`
 	LastActivityType *string `json:"lastActivityType,omitempty"`
 	LastActivityAt   *string `json:"lastActivityAt,omitempty"`
+	// Listed = organizer opted this event into the public "Nearby" discovery feed.
+	Listed bool `json:"listed"`
+	// PosterURL is the uploaded event poster (public Storage URL), or nil.
+	PosterURL *string `json:"posterUrl,omitempty"`
+	// DistanceKm is set only in Nearby results — km from the requester.
+	DistanceKm *float64 `json:"distanceKm,omitempty"`
 }
 
 type Bracket struct {
@@ -205,6 +211,8 @@ type CreateEventRequest struct {
 	Description          string         `json:"description"`
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`
+	Listed               bool           `json:"listed"`
+	PosterURL            string         `json:"posterUrl"`
 }
 
 type RegisterRequest struct {

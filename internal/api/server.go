@@ -64,6 +64,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
+	mux.HandleFunc("GET /events/nearby", s.nearbyEvents)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
@@ -777,6 +778,25 @@ func (s *Server) startMatch(w http.ResponseWriter, r *http.Request) {
 		s.svc.AddFeedItem(eid, "match_live", txt, r.PathValue("id"))
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"sent": n})
+}
+
+// nearbyEvents lists publicly-listed events sorted by distance from ?lat&lng,
+// paginated 10 per ?page (0-based). Public — anyone can discover open events.
+func (s *Server) nearbyEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
+	lng, errLng := strconv.ParseFloat(q.Get("lng"), 64)
+	if errLat != nil || errLng != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("lat and lng are required"))
+		return
+	}
+	page, _ := strconv.Atoi(q.Get("page"))
+	events, err := s.svc.NearbyEvents(lat, lng, page, 10)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 // roster returns the public player list (names + division + check-in status).

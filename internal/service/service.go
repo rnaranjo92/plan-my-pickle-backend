@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -201,6 +202,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"consolation":            req.Consolation,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
+		"listed":                 req.Listed,
+		"poster_url":             orNull(req.PosterURL),
 		"venue_name":             orNull(req.VenueName),
 		"venue_address":          orNull(req.VenueAddress),
 		"venue_phone":            orNull(req.VenuePhone),
@@ -535,6 +538,56 @@ func (s *Service) DeleteAccount(userID string) error {
 // the draw/schedule exists. starts_at + description are only written when set
 // (their columns ship in migrations 0012/0014), so editing works before and
 // after those migrations.
+// NearbyEvents returns publicly-listed events that have a venue location,
+// sorted by distance from (lat,lng) ascending, paginated (0-based page).
+func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Event, error) {
+	rows, err := s.sb.Select("events",
+		"listed=eq.true&venue_lat=not.is.null&venue_lng=not.is.null&select=*")
+	if err != nil {
+		return nil, err
+	}
+	type withDist struct {
+		e model.Event
+		d float64
+	}
+	list := make([]withDist, 0, len(rows))
+	for _, r := range rows {
+		e := mapEvent(r)
+		if e.VenueLat == nil || e.VenueLng == nil {
+			continue
+		}
+		d := haversineKm(lat, lng, *e.VenueLat, *e.VenueLng)
+		dd := d
+		e.DistanceKm = &dd
+		list = append(list, withDist{e, d})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].d < list[j].d })
+	start := page * pageSize
+	if start < 0 || start >= len(list) {
+		return []model.Event{}, nil
+	}
+	end := start + pageSize
+	if end > len(list) {
+		end = len(list)
+	}
+	out := make([]model.Event, 0, end-start)
+	for _, x := range list[start:end] {
+		out = append(out, x.e)
+	}
+	return out, nil
+}
+
+// haversineKm is the great-circle distance between two lat/lng points, in km.
+func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
+	const r = 6371.0
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLng := (lng2 - lng1) * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
+			math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * r * math.Asin(math.Sqrt(a))
+}
+
 func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=id")
 	if err != nil {
@@ -572,6 +625,8 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"dupr_sanctioned":        req.DuprSanctioned,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
+		"listed":        req.Listed,
+		"poster_url":    orNull(req.PosterURL),
 		"contact_phone": orNull(req.ContactPhone),
 		"starts_at":     orNull(req.StartsAt),
 		"ends_at":       orNull(req.EndsAt),

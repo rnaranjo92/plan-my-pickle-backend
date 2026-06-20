@@ -57,6 +57,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
+	// Aggregated activity feed across the user's events (powers the NewsFeed tab).
+	mux.HandleFunc("GET /me/feed", requireAuth(s.myFeed))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -151,6 +153,16 @@ func (s *Server) myEvents(w http.ResponseWriter, r *http.Request) {
 // registration form.
 func (s *Server) myProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.MyProfile(userID(r), userEmail(r)))
+}
+
+// myFeed returns the caller's cross-event activity stream (the NewsFeed tab).
+func (s *Server) myFeed(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.MyFeed(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {

@@ -322,6 +322,10 @@ type FeedItem struct {
 	ActorName *string `json:"actorName,omitempty"`
 	RefID     *string `json:"refId,omitempty"`
 	CreatedAt string  `json:"createdAt"`
+	// EventName is the parent event's name. Attached only by MyFeed (the app's
+	// NewsFeed aggregates activity across many events and needs the label);
+	// empty on the per-event feed where the event is already in context.
+	EventName string `json:"eventName,omitempty"`
 	// Social rollups (filled by ListFeed). ReactionCounts maps reaction type ->
 	// count; MyReactions are the types the calling user reacted with (empty when
 	// anonymous); CommentCount is the number of comments.

@@ -2903,6 +2903,63 @@ func (s *Service) ListFeed(eventID, callerID string) ([]model.FeedItem, error) {
 	return out, nil
 }
 
+// MyFeed returns a unified activity stream across every event the signed-in user
+// organizes or plays in, newest first, with each item's event name attached for
+// context. Powers the app's NewsFeed tab. Read-only + best-effort: a lookup miss
+// on one source still returns what we have.
+func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return []model.FeedItem{}, nil
+	}
+	idSet := map[string]struct{}{}
+	// Events they organize.
+	if rows, err := s.sb.Select("events", "owner_id=eq."+store.Q(userID)+"&select=id"); err == nil {
+		for _, r := range rows {
+			if id := asStr(r, "id"); id != "" {
+				idSet[id] = struct{}{}
+			}
+		}
+	}
+	// Events they're registered to play in.
+	if rows, err := s.sb.Select("players", "user_id=eq."+store.Q(userID)+"&select=event_id"); err == nil {
+		for _, r := range rows {
+			if id := asStr(r, "event_id"); id != "" {
+				idSet[id] = struct{}{}
+			}
+		}
+	}
+	if len(idSet) == 0 {
+		return []model.FeedItem{}, nil
+	}
+	ids := make([]string, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	inList := "in.(" + strings.Join(ids, ",") + ")"
+	// Event id -> name, for the context label on each item.
+	names := map[string]string{}
+	if rows, err := s.sb.Select("events", "id="+inList+"&select=id,name"); err == nil {
+		for _, r := range rows {
+			names[asStr(r, "id")] = asStr(r, "name")
+		}
+	}
+	rows, err := s.sb.Select("feed_items",
+		"event_id="+inList+"&select=*&order=created_at.desc&limit=60")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.FeedItem, 0, len(rows))
+	for _, r := range rows {
+		fi := mapFeedItem(r)
+		fi.ReactionCounts = map[string]int{}
+		fi.MyReactions = []string{}
+		fi.EventName = names[fi.EventID]
+		out = append(out, fi)
+	}
+	return out, nil
+}
+
 // attachSocial fills ReactionCounts/MyReactions/CommentCount for a set of feed
 // items in two batched queries (no N+1; best-effort).
 func (s *Service) attachSocial(items []model.FeedItem, ids []string, callerID string) {

@@ -122,25 +122,26 @@ type ChecklistItemRequest struct {
 }
 
 type Match struct {
-	ID           string   `json:"id"`
-	BracketID    *string  `json:"bracketId,omitempty"`
-	Stage        string   `json:"stage"` // pool | bracket
+	ID        string  `json:"id"`
+	BracketID *string `json:"bracketId,omitempty"`
+	Stage     string  `json:"stage"` // pool | bracket
 	// BracketTier classifies a bracket match for rendering: main | consolation |
 	// winners | losers | grand_final. Empty/"main" for ordinary brackets.
-	BracketTier  string   `json:"bracketTier,omitempty"`
-	BracketRound *int     `json:"bracketRound,omitempty"`
-	BracketSlot  *int     `json:"bracketSlot,omitempty"`
-	CourtNumber  *int     `json:"courtNumber,omitempty"`
-	PlayOrder    *float64 `json:"playOrder,omitempty"`       // within-court order, lower first
-	DurationMinutes *int  `json:"durationMinutes,omitempty"` // per-match length override
-	Team1Score   *int     `json:"team1Score,omitempty"` // total points across all games
-	Team2Score   *int     `json:"team2Score,omitempty"`
-	WinningTeam  *int     `json:"winningTeam,omitempty"` // series winner (games won)
+	BracketTier     string   `json:"bracketTier,omitempty"`
+	BracketRound    *int     `json:"bracketRound,omitempty"`
+	BracketSlot     *int     `json:"bracketSlot,omitempty"`
+	CourtNumber     *int     `json:"courtNumber,omitempty"`
+	PlayOrder       *float64 `json:"playOrder,omitempty"`       // within-court order, lower first
+	DurationMinutes *int     `json:"durationMinutes,omitempty"` // per-match length override
+	ScheduledDay    *int     `json:"scheduledDay,omitempty"`    // 0-based tournament day; null = auto-split
+	Team1Score      *int     `json:"team1Score,omitempty"`      // total points across all games
+	Team2Score      *int     `json:"team2Score,omitempty"`
+	WinningTeam     *int     `json:"winningTeam,omitempty"` // series winner (games won)
 	// Games is the per-game breakdown for a best-of-N match (omitted for legacy
 	// single-game matches scored before per-game tracking).
-	Games        []GameScore `json:"games,omitempty"`
-	Status       string   `json:"status"`
-	ResultType   string   `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
+	Games      []GameScore `json:"games,omitempty"`
+	Status     string      `json:"status"`
+	ResultType string      `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
 	// Round context — populated by the event-wide pool-matches query so the
 	// Game tab can group + filter every match from one stream.
 	RoundID     *string `json:"roundId,omitempty"`
@@ -199,8 +200,8 @@ type CreateEventRequest struct {
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
 	Consolation          bool           `json:"consolation"` // single_elim back-draw
-	StartsAt             string         `json:"startsAt"` // RFC3339 UTC, "" = none
-	EndsAt               string         `json:"endsAt"`   // RFC3339 UTC, "" = none
+	StartsAt             string         `json:"startsAt"`    // RFC3339 UTC, "" = none
+	EndsAt               string         `json:"endsAt"`      // RFC3339 UTC, "" = none
 	Description          string         `json:"description"`
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`

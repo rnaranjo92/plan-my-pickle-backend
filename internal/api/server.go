@@ -113,6 +113,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
 	mux.HandleFunc("POST /matches/{id}/court", s.ownerOnly("match", "id", s.setMatchCourt))
 	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
+	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
@@ -739,6 +740,22 @@ func (s *Server) setMatchDuration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
+}
+
+// setMatchDay assigns a match to a tournament day (0-based); a negative day
+// clears it (falls back to the auto split). Owner-only.
+func (s *Server) setMatchDay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Day int `json:"day"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetMatchDay(r.PathValue("id"), req.Day); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"day": req.Day})
 }
 
 func (s *Server) startRound(w http.ResponseWriter, r *http.Request) {

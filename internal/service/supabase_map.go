@@ -218,7 +218,7 @@ func mapRoundView(m map[string]any) model.RoundView {
 // court number, round context, and participants (with player names) embedded —
 // so a match and its sides load in one round-trip instead of N+1 queries.
 const matchSelect = "id,bracket_id,stage,bracket_tier,bracket_round,bracket_slot," +
-	"team1_score,team2_score,winning_team,games,status,result_type,play_order,duration_minutes," +
+	"team1_score,team2_score,winning_team,games,status,result_type,play_order,duration_minutes,scheduled_day," +
 	"court:courts!court_id(court_number)," +
 	"round:rounds!round_id(id,round_number,status)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
@@ -292,20 +292,21 @@ func asGames(m map[string]any, key string) []model.GameScore {
 
 func mapMatch(m map[string]any) model.Match {
 	mt := model.Match{
-		ID:           asStr(m, "id"),
-		BracketID:    asStrPtr(m, "bracket_id"),
-		Stage:        asStr(m, "stage"),
-		BracketTier:  asStr(m, "bracket_tier"),
-		BracketRound: asIntPtr(m, "bracket_round"),
-		BracketSlot:  asIntPtr(m, "bracket_slot"),
-		Team1Score:   asIntPtr(m, "team1_score"),
-		Team2Score:   asIntPtr(m, "team2_score"),
-		WinningTeam:  asIntPtr(m, "winning_team"),
-		Games:        asGames(m, "games"),
-		Status:       asStr(m, "status"),
+		ID:              asStr(m, "id"),
+		BracketID:       asStrPtr(m, "bracket_id"),
+		Stage:           asStr(m, "stage"),
+		BracketTier:     asStr(m, "bracket_tier"),
+		BracketRound:    asIntPtr(m, "bracket_round"),
+		BracketSlot:     asIntPtr(m, "bracket_slot"),
+		Team1Score:      asIntPtr(m, "team1_score"),
+		Team2Score:      asIntPtr(m, "team2_score"),
+		WinningTeam:     asIntPtr(m, "winning_team"),
+		Games:           asGames(m, "games"),
+		Status:          asStr(m, "status"),
 		ResultType:      asStr(m, "result_type"),
 		PlayOrder:       asFloatPtr(m, "play_order"),
 		DurationMinutes: asIntPtr(m, "duration_minutes"),
+		ScheduledDay:    asIntPtr(m, "scheduled_day"),
 		Sides:           mapSides(m),
 	}
 	if c := asMap(m, "court"); c != nil {

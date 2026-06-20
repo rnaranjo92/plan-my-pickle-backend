@@ -4161,6 +4161,18 @@ func (s *Service) nextPlayOrder(eventID, courtID string) (float64, error) {
 
 // SetMatchDuration overrides one game's length (minutes); minutes <= 0 clears it
 // back to the event default. Returns the clamped value (0 = cleared).
+// SetMatchDay assigns a match to a 0-based tournament day. A negative day clears
+// the assignment (the schedule falls back to its automatic even split).
+func (s *Service) SetMatchDay(matchID string, day int) error {
+	var val any // nil clears the assignment
+	if day >= 0 {
+		val = day
+	}
+	_, err := s.sb.Update("matches", "id=eq."+store.Q(matchID),
+		map[string]any{"scheduled_day": val})
+	return err
+}
+
 func (s *Service) SetMatchDuration(matchID string, minutes int) (int, error) {
 	var val any // nil clears the override
 	out := 0

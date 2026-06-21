@@ -1466,6 +1466,7 @@ func (s *Service) spreadCourts(eventID string) error {
 		return a.created < b.created
 	})
 
+	byCourt := map[string][]string{}
 	prevRound, idx := -1, 0
 	for _, m := range list {
 		if m.round != prevRound {
@@ -1474,9 +1475,23 @@ func (s *Service) spreadCourts(eventID string) error {
 		}
 		cid := courtByNum[courtNums[idx%len(courtNums)]]
 		idx++
-		if _, err := s.sb.Update("matches", "id=eq."+store.Q(m.id),
-			map[string]any{"court_id": cid}); err != nil {
-			return err
+		byCourt[cid] = append(byCourt[cid], m.id)
+	}
+	// One UPDATE per court (chunked to keep the id=in.(...) URL bounded) instead
+	// of one per match. A big field (e.g. 768 pool games) otherwise fires 768
+	// sequential round-trips and the request times out (502).
+	const chunk = 80
+	for cid, ids := range byCourt {
+		for i := 0; i < len(ids); i += chunk {
+			end := i + chunk
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if _, err := s.sb.Update("matches",
+				"id=in.("+strings.Join(ids[i:end], ",")+")",
+				map[string]any{"court_id": cid}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

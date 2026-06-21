@@ -39,6 +39,20 @@ func main() {
 	log.Printf("Supabase: configured (%s)", os.Getenv("SUPABASE_URL"))
 
 	svc := service.New()
+	// Real online payments (Stripe Connect) only when STRIPE_SECRET_KEY is set;
+	// otherwise the mock stays in place (Live()=false → fee events stay "pending"
+	// until the organizer confirms via mark-paid). The webhook secret verifies
+	// incoming Stripe callbacks. Secrets live in the platform env, never code.
+	if sk := os.Getenv("STRIPE_SECRET_KEY"); sk != "" {
+		svc.Pay = gateway.NewStripeGateway(sk, os.Getenv("STRIPE_WEBHOOK_SECRET"))
+		if os.Getenv("STRIPE_WEBHOOK_SECRET") == "" {
+			log.Printf("Payments: Stripe configured — WARNING STRIPE_WEBHOOK_SECRET unset, webhooks will be rejected")
+		} else {
+			log.Printf("Payments: Stripe Connect configured (destination charges)")
+		}
+	} else {
+		log.Printf("Payments: mock — set STRIPE_SECRET_KEY (+ STRIPE_WEBHOOK_SECRET) to take real payments")
+	}
 	// Real SMS (game-starting alerts) only when Twilio is configured; otherwise
 	// the mock records notifications without sending. from = E.164 number or a
 	// Messaging Service SID (MG…). Secrets live in the platform env, never code.

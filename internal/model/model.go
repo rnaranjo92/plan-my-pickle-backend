@@ -436,6 +436,38 @@ type CommentRequest struct {
 	Text string `json:"text"`
 }
 
+// ---- Stripe Connect (real online payments) ----
+
+// StripeConnectRequest starts/resumes an organizer's Stripe Connect onboarding.
+// returnUrl is where Stripe sends the organizer when onboarding completes;
+// refreshUrl when the (one-time) link expires. Both are required.
+type StripeConnectRequest struct {
+	ReturnURL  string `json:"returnUrl"`
+	RefreshURL string `json:"refreshUrl"`
+}
+
+// URLResponse carries a single Stripe-hosted URL (onboarding link or Checkout
+// session) for the client to redirect to.
+type URLResponse struct {
+	URL string `json:"url"`
+}
+
+// StripeStatusResponse reports an organizer's Stripe Connect onboarding state.
+type StripeStatusResponse struct {
+	Connected      bool `json:"connected"`
+	ChargesEnabled bool `json:"chargesEnabled"`
+}
+
+// CheckoutRequest starts a Stripe Checkout Session for a registration's entry
+// fee. token proves ownership of the registration (the check_in_token) for the
+// public/registrant path, mirroring PayRequest. successUrl/cancelUrl are where
+// Stripe returns the payer after paying or cancelling.
+type CheckoutRequest struct {
+	Token      string `json:"token,omitempty"`
+	SuccessURL string `json:"successUrl"`
+	CancelURL  string `json:"cancelUrl"`
+}
+
 // RosterEntry is one player in an event's PUBLIC roster — name, division, and
 // check-in status only (NO phone/email/DUPR), safe to show players/spectators.
 type RosterEntry struct {

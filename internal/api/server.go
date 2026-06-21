@@ -59,6 +59,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
 	// Aggregated activity feed across the user's events (powers the NewsFeed tab).
 	mux.HandleFunc("GET /me/feed", requireAuth(s.myFeed))
+	// Organizer Stripe Connect (real payouts): start/resume onboarding + read
+	// the connected-account status. Scoped to the authenticated organizer.
+	mux.HandleFunc("POST /me/stripe/connect", requireAuth(s.stripeConnect))
+	mux.HandleFunc("GET /me/stripe/status", requireAuth(s.stripeStatus))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -82,9 +86,20 @@ func NewServer(svc *service.Service) http.Handler {
 	// check_in_token (X-Registration-Token header or body). Gated by regLimiter too.
 	mux.HandleFunc("POST /registrations/{id}/pay", optionalAuth(s.pay))
 	mux.HandleFunc("POST /registrations/{id}/shirt", optionalAuth(s.saveShirt))
+	// Start a Stripe Checkout Session for a registration's entry fee. Same IDOR
+	// guard as /pay: the registrant proves ownership with the registration's
+	// check_in_token (X-Registration-Token header or body), or the event owner's
+	// JWT (optionalAuth). The id is harvestable from the public roster/feed, so a
+	// proof is required before opening a hosted payment page in their name.
+	mux.HandleFunc("POST /registrations/{id}/checkout", optionalAuth(s.checkout))
 	mux.HandleFunc("POST /events/{id}/checkin", s.checkinByToken)
 	mux.HandleFunc("POST /events/{id}/checkin-by-phone", s.checkinByPhone)
 	mux.HandleFunc("POST /events/{id}/verify-admin", s.verifyAdmin)
+	// Stripe webhook (server-to-server): NO auth wrapper — Stripe calls it and we
+	// authenticate it by verifying the signature against STRIPE_WEBHOOK_SECRET.
+	// The handler reads the RAW request body (signature is computed over the exact
+	// bytes), so it must not pass through decode().
+	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 
 	// --- Authenticated: creating an event stamps the caller as its owner.
 	mux.HandleFunc("POST /events", requireAuth(s.createEvent))
@@ -761,6 +776,94 @@ func (s *Server) markPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"paid": true})
+}
+
+// stripeConnect starts (or resumes) the authenticated organizer's Stripe
+// Connect onboarding and returns a Stripe-hosted account-link URL to redirect
+// to. requireAuth scopes it to the caller; the account is keyed by their user id.
+func (s *Server) stripeConnect(w http.ResponseWriter, r *http.Request) {
+	var req model.StripeConnectRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.ReturnURL) == "" || strings.TrimSpace(req.RefreshURL) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("returnUrl and refreshUrl are required"))
+		return
+	}
+	url, err := s.svc.StripeConnectStart(userID(r), req.ReturnURL, req.RefreshURL)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// stripeStatus reports the authenticated organizer's Stripe Connect state
+// (connected + chargesEnabled), refreshed from Stripe when an account exists.
+func (s *Server) stripeStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.StripeAccountStatus(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.StripeStatusResponse{
+		Connected:      st.Connected,
+		ChargesEnabled: st.ChargesEnabled,
+	})
+}
+
+// checkout opens a Stripe Checkout Session for a registration's entry fee and
+// returns the hosted Checkout URL. Same IDOR guard as /pay (token or owner JWT).
+func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
+	var req model.CheckoutRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.authorizeRegistration(w, r, req.Token) {
+		return
+	}
+	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("successUrl and cancelUrl are required"))
+		return
+	}
+	url, err := s.svc.CreateCheckoutSession(r.PathValue("id"), req.SuccessURL, req.CancelURL)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) || errors.Is(err, service.ErrOrganizerNotConnected) {
+		// Payments not available for this event yet — the client should fall back
+		// to the existing manual/pending flow.
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// stripeWebhook handles Stripe's server-to-server callbacks. NO auth wrapper —
+// it's authenticated by the Stripe-Signature header verified against
+// STRIPE_WEBHOOK_SECRET. It reads the RAW body (the signature is computed over
+// the exact bytes), capped for DoS safety, and never routes through decode().
+func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("could not read request body"))
+		return
+	}
+	if err := s.svc.HandleStripeWebhook(payload, r.Header.Get("Stripe-Signature")); err != nil {
+		if errors.Is(err, service.ErrPaymentsNotConfigured) {
+			writeErr(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		// A verification/processing failure is a 400 so Stripe retries.
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // updateRegistrationDetails edits a registered player's name/rating (owner-only).

@@ -155,6 +155,7 @@ func mapEvent(m map[string]any) model.Event {
 		Listed:               asBool(m, "listed"),
 		PosterURL:            asStrPtr(m, "poster_url"),
 		ScheduleBreaks:       mapBreaks(m),
+		DayCapMinutes:        asIntPtr(m, "day_cap_minutes"),
 		Description:          asStrPtr(m, "description"),
 		Status:               asStr(m, "status"),
 	}

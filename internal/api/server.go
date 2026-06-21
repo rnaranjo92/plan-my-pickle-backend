@@ -116,6 +116,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
 	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
+	mux.HandleFunc("POST /events/{id}/day-cap", s.ownerOnly("event", "id", s.setDayCap))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
@@ -757,6 +758,21 @@ func (s *Server) setEventBreaks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"breaks": len(req.Breaks)})
+}
+
+// setDayCap sets the day cap (latest start time-of-day, minutes). Owner-only.
+func (s *Server) setDayCap(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DayCapMinutes int `json:"dayCapMinutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetDayCap(r.PathValue("id"), req.DayCapMinutes); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"dayCapMinutes": req.DayCapMinutes})
 }
 
 // setMatchDay assigns a match to a tournament day (0-based); a negative day

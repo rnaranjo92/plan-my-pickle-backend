@@ -56,6 +56,9 @@ type Event struct {
 	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the
 	// schedule timeline skips. Minutes from midnight; applied to each day.
 	ScheduleBreaks []ScheduleBreak `json:"scheduleBreaks"`
+	// DayCapMinutes: if set, no games start past this time-of-day; the rest roll
+	// to the next tournament day. Minutes from midnight; nil = no cap.
+	DayCapMinutes *int `json:"dayCapMinutes,omitempty"`
 }
 
 // ScheduleBreak is a blocked time range (minutes from midnight) the schedule

@@ -4232,6 +4232,18 @@ func (s *Service) SetEventBreaks(eventID string, breaks []model.ScheduleBreak) e
 	return err
 }
 
+// SetDayCap sets the latest time-of-day games may start (minutes from midnight);
+// a negative value clears it. Past the cap, games roll to the next day.
+func (s *Service) SetDayCap(eventID string, cap int) error {
+	var val any
+	if cap >= 0 {
+		val = cap
+	}
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"day_cap_minutes": val})
+	return err
+}
+
 // SetMatchDay assigns a match to a 0-based tournament day. A negative day clears
 // the assignment (the schedule falls back to its automatic even split).
 func (s *Service) SetMatchDay(matchID string, day int) error {

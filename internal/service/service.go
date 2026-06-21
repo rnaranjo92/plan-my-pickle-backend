@@ -1674,15 +1674,13 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 
 	scheduled := 0
 	var perr error
+	// Record placements in memory; flush them in batched UPDATEs after the loops
+	// (grouped by court + slot) instead of one UPDATE per match — a big field
+	// (768 games) otherwise fires 768 round-trips and the request times out (502).
+	type placement struct{ court, slot int }
+	placements := map[string]placement{}
 	place := func(matchID string, courtNumber, slot int) {
-		if perr != nil {
-			return
-		}
-		if _, err := s.sb.Update("matches", "id=eq."+store.Q(matchID),
-			map[string]any{"court_id": courtByNum[courtNumber], "play_order": float64(slot)}); err != nil {
-			perr = err
-			return
-		}
+		placements[matchID] = placement{courtNumber, slot}
 		scheduled++
 	}
 
@@ -1753,6 +1751,39 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 				}
 				slot++
 			}
+		}
+	}
+	// Flush placements in batched UPDATEs: one per court (court_id) + one per slot
+	// (play_order), chunked to bound the id=in.(...) URL — replaces one UPDATE per
+	// match so a big field doesn't fire hundreds of round-trips and time out.
+	byCourt := map[int][]string{}
+	bySlot := map[int][]string{}
+	for mid, p := range placements {
+		byCourt[p.court] = append(byCourt[p.court], mid)
+		bySlot[p.slot] = append(bySlot[p.slot], mid)
+	}
+	const flushChunk = 80
+	flush := func(ids []string, data map[string]any) error {
+		for i := 0; i < len(ids); i += flushChunk {
+			end := i + flushChunk
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if _, err := s.sb.Update("matches",
+				"id=in.("+strings.Join(ids[i:end], ",")+")", data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for courtNumber, ids := range byCourt {
+		if err := flush(ids, map[string]any{"court_id": courtByNum[courtNumber]}); err != nil {
+			return scheduled, err
+		}
+	}
+	for slot, ids := range bySlot {
+		if err := flush(ids, map[string]any{"play_order": float64(slot)}); err != nil {
+			return scheduled, err
 		}
 	}
 	if perr != nil {

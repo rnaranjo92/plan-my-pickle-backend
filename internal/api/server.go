@@ -122,6 +122,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/unstart", s.ownerOnly("match", "id", s.unstartMatch))
 	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
+	// Cross-match swap spans two matches, so ownerOnly (one path id) won't fit:
+	// requireAuth + verify the caller owns both matches' events in the handler.
+	mux.HandleFunc("POST /matches/swap-cross", requireAuth(s.swapMatchPlayersCross))
 	mux.HandleFunc("POST /matches/{id}/court", s.ownerOnly("match", "id", s.setMatchCourt))
 	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
@@ -775,6 +778,46 @@ func (s *Server) swapMatchPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "swapped"})
+}
+
+// swapMatchPlayersCross exchanges two players who sit in two DIFFERENT matches.
+// Because it spans two matches, ownerOnly (single path id) doesn't fit: it's
+// requireAuth-gated and verifies the caller owns BOTH matches' events here.
+func (s *Server) swapMatchPlayersCross(w http.ResponseWriter, r *http.Request) {
+	var req model.SwapCrossRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.MatchA == "" || req.MatchB == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("matchA and matchB are required"))
+		return
+	}
+	uid := userID(r)
+	for _, mid := range []string{req.MatchA, req.MatchB} {
+		owner, err := s.svc.OwnerOf("match", mid)
+		if errors.Is(err, service.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if owner == "" || owner != uid {
+			writeErr(w, http.StatusForbidden, errForbidden)
+			return
+		}
+	}
+	warning, err := s.svc.SwapPlayersAcrossMatches(req.MatchA, req.PlayerA, req.MatchB, req.PlayerB)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	resp := map[string]any{"status": "swapped"}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // setMatchCourt reassigns a match to a different court (courtNumber <= 0 = clear

@@ -309,6 +309,16 @@ type SwapRequest struct {
 	InPlayerID  string `json:"inPlayerId"`
 }
 
+// SwapCrossRequest exchanges two players who are each in a DIFFERENT match:
+// PlayerA (in MatchA) trades places with PlayerB (in MatchB). Team slots are
+// preserved on each side. Used by drag-a-player-onto-another in the schedule.
+type SwapCrossRequest struct {
+	MatchA  string `json:"matchA"`
+	PlayerA string `json:"playerA"`
+	MatchB  string `json:"matchB"`
+	PlayerB string `json:"playerB"`
+}
+
 // SetCourtRequest reassigns a match's court and/or its within-court play order.
 // PlayOrder set => use it; nil with a court => append to the end of that court's
 // queue; CourtNumber <= 0 => clear the court and the play order.

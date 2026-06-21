@@ -4485,6 +4485,123 @@ func (s *Service) SwapMatchPlayer(matchID, outPlayerID, inPlayerID string) error
 	return nil
 }
 
+// SwapPlayersAcrossMatches exchanges two players who each sit in a DIFFERENT
+// match: playerA (currently in matchA) takes playerB's match/team slot and
+// vice-versa. Each player keeps the OTHER's team number on the destination side
+// (i.e. team slots stay filled). Both matches must be un-scored.
+//
+// It returns a non-empty warning string (with a nil error) when the swap leaves
+// a player double-booked in the same time slot — the swap is still performed so
+// organizers can fix scheduling in steps. A non-nil error means nothing changed.
+func (s *Service) SwapPlayersAcrossMatches(matchA, playerA, matchB, playerB string) (string, error) {
+	if matchA == "" || playerA == "" || matchB == "" || playerB == "" {
+		return "", errors.New("matchA, playerA, matchB and playerB are required")
+	}
+	if matchA == matchB {
+		return "", errors.New("both players are in the same match; use the same-match swap instead")
+	}
+	if playerA == playerB {
+		return "", errors.New("cannot swap a player with themselves")
+	}
+
+	// Both matches must exist and be un-scored. Block once either is completed.
+	rowA, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchA)+"&select=id,status,scheduled_day,play_order")
+	if err != nil {
+		return "", err
+	}
+	if rowA == nil {
+		return "", ErrNotFound
+	}
+	rowB, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchB)+"&select=id,status,scheduled_day,play_order")
+	if err != nil {
+		return "", err
+	}
+	if rowB == nil {
+		return "", ErrNotFound
+	}
+	if asStr(rowA, "status") == "completed" || asStr(rowB, "status") == "completed" {
+		return "", errors.New("cannot swap players in a match that already has a recorded score")
+	}
+
+	// Each player must currently be in their stated match (read their team slot).
+	partA, err := s.sb.SelectOne("match_participants",
+		"match_id=eq."+store.Q(matchA)+"&player_id=eq."+store.Q(playerA)+"&select=team")
+	if err != nil {
+		return "", err
+	}
+	if partA == nil {
+		return "", ErrNotFound
+	}
+	partB, err := s.sb.SelectOne("match_participants",
+		"match_id=eq."+store.Q(matchB)+"&player_id=eq."+store.Q(playerB)+"&select=team")
+	if err != nil {
+		return "", err
+	}
+	if partB == nil {
+		return "", ErrNotFound
+	}
+	teamA := asInt(partA, "team")
+	teamB := asInt(partB, "team")
+
+	// Reject if a player would end up in a match they're already in (would create
+	// a duplicate participant row / collapse the unique (match,player) key).
+	dupA, err := s.sb.SelectOne("match_participants",
+		"match_id=eq."+store.Q(matchB)+"&player_id=eq."+store.Q(playerA)+"&select=match_id")
+	if err != nil {
+		return "", err
+	}
+	if dupA != nil {
+		return "", errors.New("that player is already in the other match")
+	}
+	dupB, err := s.sb.SelectOne("match_participants",
+		"match_id=eq."+store.Q(matchA)+"&player_id=eq."+store.Q(playerB)+"&select=match_id")
+	if err != nil {
+		return "", err
+	}
+	if dupB != nil {
+		return "", errors.New("that player is already in the other match")
+	}
+
+	// Perform the exchange. playerA -> matchB on playerB's old team slot; playerB
+	// -> matchA on playerA's old team slot. Two-step to dodge the unique
+	// (match_id,player_id) constraint mid-swap: move A out to matchB first, then B.
+	if _, err := s.sb.Update("match_participants",
+		"match_id=eq."+store.Q(matchA)+"&player_id=eq."+store.Q(playerA),
+		map[string]any{"match_id": matchB, "team": teamB}); err != nil {
+		return "", err
+	}
+	if _, err := s.sb.Update("match_participants",
+		"match_id=eq."+store.Q(matchB)+"&player_id=eq."+store.Q(playerB),
+		map[string]any{"match_id": matchA, "team": teamA}); err != nil {
+		// Best-effort rollback of the first move so we don't leave a half-swap.
+		_, _ = s.sb.Update("match_participants",
+			"match_id=eq."+store.Q(matchB)+"&player_id=eq."+store.Q(playerA),
+			map[string]any{"match_id": matchA, "team": teamA})
+		return "", err
+	}
+
+	// Soft conflict: if the two matches share a (day, slot) the swapped player is
+	// now double-booked. Warn but don't fail — organizers fix this in steps.
+	if sameSlot(rowA, rowB) {
+		return "heads up: these matches are in the same time slot, so a player may now be double-booked", nil
+	}
+	return "", nil
+}
+
+// sameSlot reports whether two match rows occupy the same scheduling slot
+// (same tournament day and same within-court play order), in which case any
+// player shared between them is double-booked. Rows must carry scheduled_day
+// and play_order.
+func sameSlot(a, b map[string]any) bool {
+	pa, pb := asFloatPtr(a, "play_order"), asFloatPtr(b, "play_order")
+	if pa == nil || pb == nil || *pa != *pb {
+		return false
+	}
+	return asInt(a, "scheduled_day") == asInt(b, "scheduled_day")
+}
+
 // SetMatchCourt reassigns a match to the court with the given number within its
 // event (courtNumber <= 0 clears the assignment). Powers drag-to-reassign on
 // the schedule board.

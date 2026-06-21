@@ -868,7 +868,11 @@ func (s *Service) FillRandomPlayers(eventID string) (int, error) {
 	regOne := func(bracketID string, rating float64) error {
 		rt := ratingPtr(rating)
 		reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
-			FullName:        first[(base+idx)%len(first)] + " " + last[(base*3+idx*7)%len(last)],
+			// Append the running player number so demo names stay unique: the
+			// name arrays wrap at len(first)/len(last), so without this, player
+			// #1 in one division and #31 in another collide on the same name and
+			// look like one player appearing in two divisions.
+			FullName:        first[(base+idx)%len(first)] + " " + last[(base*3+idx*7)%len(last)] + " " + fmt.Sprintf("%d", base+idx+1),
 			Phone:           fmt.Sprintf("+1555%07d", 3000000+base+idx),
 			SkillLevel:      rt,
 			DuprID:          fmt.Sprintf("DUPR-%05d", 30000+base+idx),
@@ -3679,18 +3683,31 @@ func (s *Service) UnstartMatch(matchID string) error {
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
 	prows, err := s.sb.Select("match_participants",
-		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(phone)")
+		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(phone,user_id)")
 	if err != nil {
 		return 0, err
 	}
 	var phones []string
+	var userIDs []string // OneSignal external_ids = Supabase user ids
+	seenUser := map[string]bool{}
 	for _, r := range prows {
 		if p := asMap(r, "player"); p != nil {
 			if ph := asStr(p, "phone"); ph != "" {
 				phones = append(phones, ph)
 			}
+			// Players with a linked account get a push too; skip those without
+			// a user_id, and de-dupe (a user could be on both teams in odd setups).
+			if uid := asStr(p, "user_id"); uid != "" && !seenUser[uid] {
+				seenUser[uid] = true
+				userIDs = append(userIDs, uid)
+			}
 		}
 	}
+
+	// One bulk push per match for players with a linked account — best-effort,
+	// alongside the SMS below. sendPush logs and swallows its own errors.
+	_ = s.sendPush(userIDs, "Match starting",
+		fmt.Sprintf("You're up on %s", court), "")
 
 	sent := 0
 	for _, phone := range phones {

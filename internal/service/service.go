@@ -1779,40 +1779,78 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	}
 	schedule := engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds)
 
-	count := 0
+	// Batch every insert (rounds, matches, participants) into 3 bulk calls
+	// instead of ~3 per match. A big round-robin (e.g. 96 games) otherwise fires
+	// hundreds of sequential PostgREST calls and the request times out (502).
+	// PostgREST returns bulk-inserted rows in input order, so we zip ids by index.
+	roundRows := make([]map[string]any, 0, len(schedule))
 	for _, round := range schedule {
-		rd, err := s.sb.Insert("rounds", map[string]any{
-			"event_id": ev.ID, "bracket_id": bracketID, "round_number": round.RoundNumber,
+		roundRows = append(roundRows, map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID,
+			"round_number": round.RoundNumber,
 		})
-		if err != nil {
-			return 0, err
-		}
-		if len(rd) == 0 {
-			return 0, errors.New("round insert returned no row")
-		}
-		roundID := asStr(rd[0], "id")
+	}
+	if len(roundRows) == 0 {
+		return 0, nil
+	}
+	insRounds, err := s.sb.Insert("rounds", roundRows)
+	if err != nil {
+		return 0, err
+	}
+	roundIDByNum := make(map[int]string, len(insRounds))
+	for _, r := range insRounds {
+		roundIDByNum[asInt(r, "round_number")] = asStr(r, "id")
+	}
+
+	type pend struct{ t1, t2 []string }
+	matchRows := make([]map[string]any, 0)
+	pending := make([]pend, 0)
+	for _, round := range schedule {
+		rid := roundIDByNum[round.RoundNumber]
 		for _, m := range round.Matches {
-			mt, err := s.sb.Insert("matches", map[string]any{
-				"event_id": ev.ID, "bracket_id": bracketID, "round_id": roundID,
+			matchRows = append(matchRows, map[string]any{
+				"event_id": ev.ID, "bracket_id": bracketID, "round_id": rid,
 				"court_id": orNull(courtByNum[m.CourtNumber]), "stage": "pool",
 			})
-			if err != nil {
-				return 0, err
-			}
-			if len(mt) == 0 {
-				return 0, errors.New("match insert returned no row")
-			}
-			matchID := asStr(mt[0], "id")
-			if err := s.insertSide(matchID, 1, m.Team1); err != nil {
-				return 0, err
-			}
-			if err := s.insertSide(matchID, 2, m.Team2); err != nil {
-				return 0, err
-			}
-			count++
+			pending = append(pending, pend{m.Team1, m.Team2})
 		}
 	}
-	return count, nil
+	if len(matchRows) == 0 {
+		return 0, nil
+	}
+	insMatches, err := s.sb.Insert("matches", matchRows)
+	if err != nil {
+		return 0, err
+	}
+	if len(insMatches) != len(pending) {
+		return 0, errors.New("match insert count mismatch")
+	}
+
+	partRows := make([]map[string]any, 0)
+	for i, im := range insMatches {
+		mid := asStr(im, "id")
+		sides := []struct {
+			team int
+			side []string
+		}{{1, pending[i].t1}, {2, pending[i].t2}}
+		for _, sd := range sides {
+			if len(sd.side) == 0 || engine.IsBye(sd.side) {
+				continue
+			}
+			for _, pid := range sd.side {
+				partRows = append(partRows, map[string]any{
+					"match_id": mid, "player_id": pid, "team": sd.team,
+				})
+			}
+		}
+	}
+	if len(partRows) > 0 {
+		if _, err := s.sb.Upsert("match_participants", "match_id,player_id",
+			partRows); err != nil {
+			return 0, err
+		}
+	}
+	return len(insMatches), nil
 }
 
 func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [][]string, consolation bool) (int, error) {

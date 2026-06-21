@@ -4216,6 +4216,22 @@ func (s *Service) nextPlayOrder(eventID, courtID string) (float64, error) {
 
 // SetMatchDuration overrides one game's length (minutes); minutes <= 0 clears it
 // back to the event default. Returns the clamped value (0 = cleared).
+// SetEventBreaks replaces an event's blocked time ranges (e.g. lunch). The
+// schedule timeline skips over these.
+func (s *Service) SetEventBreaks(eventID string, breaks []model.ScheduleBreak) error {
+	arr := make([]map[string]any, 0, len(breaks))
+	for _, b := range breaks {
+		arr = append(arr, map[string]any{
+			"startMin": b.StartMin,
+			"endMin":   b.EndMin,
+			"label":    b.Label,
+		})
+	}
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"schedule_breaks": arr})
+	return err
+}
+
 // SetMatchDay assigns a match to a 0-based tournament day. A negative day clears
 // the assignment (the schedule falls back to its automatic even split).
 func (s *Service) SetMatchDay(matchID string, day int) error {

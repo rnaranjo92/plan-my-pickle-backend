@@ -115,6 +115,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/court", s.ownerOnly("match", "id", s.setMatchCourt))
 	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
+	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
@@ -741,6 +742,21 @@ func (s *Server) setMatchDuration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"minutes": m})
+}
+
+// setEventBreaks replaces an event's blocked time ranges (lunch, etc.). Owner-only.
+func (s *Server) setEventBreaks(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Breaks []model.ScheduleBreak `json:"breaks"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetEventBreaks(r.PathValue("id"), req.Breaks); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"breaks": len(req.Breaks)})
 }
 
 // setMatchDay assigns a match to a tournament day (0-based); a negative day

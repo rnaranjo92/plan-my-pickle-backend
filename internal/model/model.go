@@ -53,6 +53,17 @@ type Event struct {
 	PosterURL *string `json:"posterUrl,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
 	DistanceKm *float64 `json:"distanceKm,omitempty"`
+	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the
+	// schedule timeline skips. Minutes from midnight; applied to each day.
+	ScheduleBreaks []ScheduleBreak `json:"scheduleBreaks"`
+}
+
+// ScheduleBreak is a blocked time range (minutes from midnight) the schedule
+// timeline skips over — e.g. a lunch break.
+type ScheduleBreak struct {
+	StartMin int    `json:"startMin"`
+	EndMin   int    `json:"endMin"`
+	Label    string `json:"label"`
 }
 
 type Bracket struct {

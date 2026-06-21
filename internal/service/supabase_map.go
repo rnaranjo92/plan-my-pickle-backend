@@ -154,9 +154,31 @@ func mapEvent(m map[string]any) model.Event {
 		EndsAt:               asStrPtr(m, "ends_at"),
 		Listed:               asBool(m, "listed"),
 		PosterURL:            asStrPtr(m, "poster_url"),
+		ScheduleBreaks:       mapBreaks(m),
 		Description:          asStrPtr(m, "description"),
 		Status:               asStr(m, "status"),
 	}
+}
+
+// mapBreaks parses the events.schedule_breaks jsonb array into typed breaks.
+func mapBreaks(m map[string]any) []model.ScheduleBreak {
+	raw, ok := m["schedule_breaks"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]model.ScheduleBreak, 0, len(raw))
+	for _, r := range raw {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, model.ScheduleBreak{
+			StartMin: asInt(rm, "startMin"),
+			EndMin:   asInt(rm, "endMin"),
+			Label:    asStr(rm, "label"),
+		})
+	}
+	return out
 }
 
 func mapBracket(m map[string]any) model.Bracket {

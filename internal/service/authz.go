@@ -21,11 +21,23 @@ var ownerKindTable = map[string]string{
 // OwnerOf returns the auth-user id (events.owner_id) of the event behind a
 // resource, so a handler can verify the caller owns it before mutating.
 //
-// kind is "event" or one of match|bracket|round|finance|checklist; id is that
-// resource's id. Returns ErrNotFound if the resource (or its event) is missing,
-// and "" with a nil error when the event has no owner (legacy/unowned events) —
-// callers should treat an empty owner as "nobody may mutate it".
+// kind is "event", "league", or one of match|bracket|round|finance|checklist;
+// id is that resource's id. Returns ErrNotFound if the resource (or its event)
+// is missing, and "" with a nil error when the event has no owner (legacy/unowned
+// events) — callers should treat an empty owner as "nobody may mutate it".
 func (s *Service) OwnerOf(kind, id string) (string, error) {
+	// A league carries owner_id directly (it has no event_id), so resolve it on
+	// its own table rather than walking through events.
+	if kind == "league" {
+		row, err := s.sb.SelectOne("leagues", "id=eq."+store.Q(id)+"&select=owner_id")
+		if err != nil {
+			return "", err
+		}
+		if row == nil {
+			return "", ErrNotFound
+		}
+		return asStr(row, "owner_id"), nil
+	}
 	eventID := id
 	if kind != "event" {
 		table, ok := ownerKindTable[kind]

@@ -89,6 +89,15 @@ func NewServer(svc *service.Service) http.Handler {
 	// --- Authenticated: creating an event stamps the caller as its owner.
 	mux.HandleFunc("POST /events", requireAuth(s.createEvent))
 
+	// --- Leagues (season / recurring play): owner-scoped, like events. Creating
+	// a league stamps the caller as its owner; listing returns only the caller's.
+	mux.HandleFunc("POST /leagues", requireAuth(s.createLeague))
+	mux.HandleFunc("GET /leagues", requireAuth(s.listLeagues))
+	mux.HandleFunc("GET /leagues/{id}", s.ownerOnly("league", "id", s.getLeague))
+	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
+	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
+	mux.HandleFunc("GET /leagues/{id}/standings", s.ownerOnly("league", "id", s.leagueStandings))
+
 	// --- Owner-only: management actions require a valid token AND that the
 	// caller owns the event behind the resource (see service.OwnerOf).
 	mux.HandleFunc("POST /events/{id}", s.ownerOnly("event", "id", s.updateEvent))
@@ -193,6 +202,93 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// createLeague creates a league owned by the authenticated caller.
+func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateLeagueRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	id, err := s.svc.CreateLeague(userID(r), req.Name, req.Description)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// listLeagues returns the leagues owned by the authenticated caller.
+func (s *Server) listLeagues(w http.ResponseWriter, r *http.Request) {
+	leagues, err := s.svc.ListLeagues(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, leagues)
+}
+
+// getLeague returns a league plus its sessions (events), ordered by start date.
+func (s *Server) getLeague(w http.ResponseWriter, r *http.Request) {
+	detail, err := s.svc.GetLeague(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+// addEventToLeague links an existing event into the league. ownerOnly("league")
+// proves the caller owns the league; here we ALSO verify the caller owns the
+// event being added, so an organizer can't pull a stranger's event into their league.
+func (s *Server) addEventToLeague(w http.ResponseWriter, r *http.Request) {
+	var req model.AddEventToLeagueRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.EventID) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("eventId is required"))
+		return
+	}
+	owner, err := s.svc.OwnerOf("event", req.EventID)
+	if errors.Is(err, service.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if owner == "" || owner != userID(r) {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return
+	}
+	if err := s.svc.AddEventToLeague(r.PathValue("id"), req.EventID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
+}
+
+// removeEventFromLeague unlinks an event from the league (owner-only via the
+// league path id; the event must currently belong to this league).
+func (s *Server) removeEventFromLeague(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveEventFromLeague(r.PathValue("id"), r.PathValue("eventId")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// leagueStandings returns the cumulative standings across all the league's
+// events' completed matches (owner-only).
+func (s *Server) leagueStandings(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.LeagueStandings(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // updateEvent edits an existing event's metadata (owner-only). Structural

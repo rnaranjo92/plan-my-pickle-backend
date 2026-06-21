@@ -157,7 +157,18 @@ func mapEvent(m map[string]any) model.Event {
 		ScheduleBreaks:       mapBreaks(m),
 		DayCapMinutes:        asIntPtr(m, "day_cap_minutes"),
 		Description:          asStrPtr(m, "description"),
+		LeagueID:             asStrPtr(m, "league_id"),
 		Status:               asStr(m, "status"),
+	}
+}
+
+func mapLeague(m map[string]any) model.League {
+	return model.League{
+		ID:          asStr(m, "id"),
+		OwnerID:     asStr(m, "owner_id"),
+		Name:        asStr(m, "name"),
+		Description: asStrPtr(m, "description"),
+		CreatedAt:   asStr(m, "created_at"),
 	}
 }
 

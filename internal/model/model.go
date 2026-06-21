@@ -59,6 +59,37 @@ type Event struct {
 	// DayCapMinutes: if set, no games start past this time-of-day; the rest roll
 	// to the next tournament day. Minutes from midnight; nil = no cap.
 	DayCapMinutes *int `json:"dayCapMinutes,omitempty"`
+	// LeagueID links this event to a league (season/recurring play) it belongs to,
+	// or nil for a standalone event.
+	LeagueID *string `json:"leagueId,omitempty"`
+}
+
+// League groups multiple EXISTING events (each event = a session) for recurring
+// or season play; standings aggregate every player's record across all of them.
+// Owner-scoped (OwnerID = the organizer's auth user id), like events.
+type League struct {
+	ID          string  `json:"id"`
+	OwnerID     string  `json:"ownerId"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	CreatedAt   string  `json:"createdAt"`
+}
+
+// CreateLeagueRequest is the create-payload for a league.
+type CreateLeagueRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// AddEventToLeagueRequest links an existing (caller-owned) event into a league.
+type AddEventToLeagueRequest struct {
+	EventID string `json:"eventId"`
+}
+
+// LeagueDetail is a league plus its sessions (events, ordered by start date).
+type LeagueDetail struct {
+	League
+	Events []Event `json:"events"`
 }
 
 // ScheduleBreak is a blocked time range (minutes from midnight) the schedule

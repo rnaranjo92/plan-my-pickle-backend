@@ -202,6 +202,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"location":               orNull(req.Location),
 		"contact_phone":          orNull(req.ContactPhone),
 		"dupr_sanctioned":        req.DuprSanctioned,
+		"cash_prize":             req.CashPrize,
+		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
 		"consolation":            req.Consolation,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
@@ -245,14 +247,21 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	}
 	brackets := make([]map[string]any, 0, len(divs))
 	for i, d := range divs {
+		dt := d.DivisionType
+		if dt == "" {
+			dt = "open"
+		}
 		brackets = append(brackets, map[string]any{
-			"event_id":   id,
-			"name":       d.Name,
-			"min_rating": fOrNull(d.MinRating),
-			"max_rating": fOrNull(d.MaxRating),
-			"min_age":    iOrNull(d.MinAge),
-			"max_age":    iOrNull(d.MaxAge),
-			"sort_order": i,
+			"event_id":      id,
+			"name":          d.Name,
+			"min_rating":    fOrNull(d.MinRating),
+			"max_rating":    fOrNull(d.MaxRating),
+			"min_age":       iOrNull(d.MinAge),
+			"max_age":       iOrNull(d.MaxAge),
+			"division_type": dt,
+			"dupr_min":      fOrNull(d.DuprMin),
+			"dupr_max":      fOrNull(d.DuprMax),
+			"sort_order":    i,
 		})
 	}
 	if _, err := s.sb.Insert("brackets", brackets); err != nil {
@@ -314,6 +323,66 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 		}
 	}
 	s.attachActivity(out)
+	return out, nil
+}
+
+// PublicEvents returns up to `limit` publicly-listed events (listed=eq.true),
+// ordered by scheduled start, mapped to the SAFE public projection for the
+// planmypickle.com marketing feed. No owner scoping, no PII — anyone may read it.
+// Registered counts are attached with the same batched select-then-tally as
+// ListEvents (no N+1); a count failure is best-effort and leaves counts at 0.
+func (s *Service) PublicEvents(limit int) ([]model.PublicEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	// starts_at NULLs sort last so dated tournaments lead the feed. Order by
+	// start ascending (soonest first), then created_at desc as a stable tiebreak
+	// for events that have no scheduled start yet.
+	rows, err := s.sb.Select("events",
+		"listed=eq.true&select=*&order=starts_at.asc.nullslast,created_at.desc&limit="+strconv.Itoa(limit))
+	if err != nil {
+		return nil, err
+	}
+	events := make([]model.Event, 0, len(rows))
+	for _, r := range rows {
+		events = append(events, mapEvent(r))
+	}
+
+	// Batched registered-player counts (mirrors ListEvents): one query for every
+	// event id, grouped client-side. Best-effort — a failure leaves counts at 0.
+	if len(events) > 0 {
+		ids := make([]string, len(events))
+		for i, e := range events {
+			ids[i] = e.ID
+		}
+		if regs, err := s.sb.Select("registrations",
+			"event_id=in.("+strings.Join(ids, ",")+")&select=event_id"); err == nil {
+			counts := make(map[string]int, len(events))
+			for _, r := range regs {
+				counts[asStr(r, "event_id")]++
+			}
+			for i := range events {
+				events[i].RegisteredCount = counts[events[i].ID]
+			}
+		}
+	}
+
+	out := make([]model.PublicEvent, 0, len(events))
+	for _, e := range events {
+		out = append(out, model.PublicEvent{
+			ID:               e.ID,
+			Name:             e.Name,
+			TournamentFormat: e.TournamentFormat,
+			Format:           e.Format,
+			StartsAt:         e.StartsAt,
+			EndsAt:           e.EndsAt,
+			Location:         e.Location,
+			VenueName:        e.VenueName,
+			PosterURL:        e.PosterURL,
+			DuprSanctioned:   e.DuprSanctioned,
+			RegisteredCount:  e.RegisteredCount,
+		})
+	}
 	return out, nil
 }
 

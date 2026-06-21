@@ -24,6 +24,9 @@ type Event struct {
 	VenueLat             *float64 `json:"venueLat,omitempty"`
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
+	// CashPrize flags a cash-prize event; CashPrizeAmount is the optional pot size.
+	CashPrize       bool     `json:"cashPrize"`
+	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
 	// Consolation enables a consolation back-draw for single_elim (first-round
 	// losers play down to a consolation champion / bronze — USAP 12.J ≥2 matches).
 	Consolation bool `json:"consolation"`
@@ -64,6 +67,24 @@ type Event struct {
 	LeagueID *string `json:"leagueId,omitempty"`
 }
 
+// PublicEvent is the SAFE, public-facing projection of an Event served at
+// GET /events/public (the planmypickle.com marketing feed). It deliberately
+// omits every private field — no owner_id, passcode, registrant PII, finance,
+// or contact phone — so it can be read with no auth and from any origin.
+type PublicEvent struct {
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	TournamentFormat string  `json:"tournamentFormat"` // round_robin | single_elim | pools_playoff
+	Format           string  `json:"format"`           // singles | doubles
+	StartsAt         *string `json:"startsAt,omitempty"`
+	EndsAt           *string `json:"endsAt,omitempty"`
+	Location         *string `json:"location,omitempty"`
+	VenueName        *string `json:"venueName,omitempty"`
+	PosterURL        *string `json:"posterUrl,omitempty"`
+	DuprSanctioned   bool    `json:"duprSanctioned"`
+	RegisteredCount  int     `json:"registeredCount"`
+}
+
 // League groups multiple EXISTING events (each event = a session) for recurring
 // or season play; standings aggregate every player's record across all of them.
 // Owner-scoped (OwnerID = the organizer's auth user id), like events.
@@ -75,12 +96,42 @@ type League struct {
 	CreatedAt   string  `json:"createdAt"`
 	// PosterURL is the uploaded league banner (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
+	// LeagueType: round_robin | ladder | team. DayType: single | multi.
+	LeagueType string `json:"leagueType"`
+	DayType    string `json:"dayType"`
+	// Sanctioned flags an officially sanctioned league.
+	Sanctioned bool `json:"sanctioned"`
+	// CashPrize flags a cash-prize league; CashPrizeAmount is the optional pot.
+	CashPrize       bool     `json:"cashPrize"`
+	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
 }
 
 // CreateLeagueRequest is the create-payload for a league.
 type CreateLeagueRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	LeagueType      string   `json:"leagueType"` // round_robin | ladder | team (default round_robin)
+	DayType         string   `json:"dayType"`    // single | multi (default multi)
+	Sanctioned      bool     `json:"sanctioned"`
+	CashPrize       bool     `json:"cashPrize"`
+	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
+	// Divisions are the league's brackets (skill/age/DUPR bands). Empty creates
+	// a single "Open" division by default (mirrors event creation).
+	Divisions []LeagueBracketInput `json:"divisions"`
+}
+
+// LeagueBracketInput is one division to create under a league (mirrors
+// BracketInput but for a league). DivisionType defaults to "open" when empty.
+type LeagueBracketInput struct {
+	Name         string   `json:"name"`
+	DivisionType string   `json:"divisionType"` // default "open" (see LeagueBracket)
+	MinRating    *float64 `json:"minRating,omitempty"`
+	MaxRating    *float64 `json:"maxRating,omitempty"`
+	MinAge       *int     `json:"minAge,omitempty"`
+	MaxAge       *int     `json:"maxAge,omitempty"`
+	DuprMin      *float64 `json:"duprMin,omitempty"`
+	DuprMax      *float64 `json:"duprMax,omitempty"`
+	SortOrder    int      `json:"sortOrder"`
 }
 
 // AddEventToLeagueRequest links an existing (caller-owned) event into a league.
@@ -88,10 +139,12 @@ type AddEventToLeagueRequest struct {
 	EventID string `json:"eventId"`
 }
 
-// LeagueDetail is a league plus its sessions (events, ordered by start date).
+// LeagueDetail is a league plus its sessions (events, ordered by start date)
+// and its divisions (brackets, ordered by sort_order).
 type LeagueDetail struct {
 	League
-	Events []Event `json:"events"`
+	Events   []Event         `json:"events"`
+	Brackets []LeagueBracket `json:"brackets"`
 }
 
 // ScheduleBreak is a blocked time range (minutes from midnight) the schedule
@@ -111,6 +164,29 @@ type Bracket struct {
 	MinAge    *int     `json:"minAge,omitempty"`
 	MaxAge    *int     `json:"maxAge,omitempty"`
 	SortOrder int      `json:"sortOrder"`
+	// DivisionType: open | mens_doubles | womens_doubles | mixed_doubles |
+	// singles | team_play (defaults to "open").
+	DivisionType string `json:"divisionType"`
+	// DuprMin/DuprMax are the optional DUPR rating band (distinct from the
+	// self-rated skill band in MinRating/MaxRating).
+	DuprMin *float64 `json:"duprMin,omitempty"`
+	DuprMax *float64 `json:"duprMax,omitempty"`
+}
+
+// LeagueBracket is a division within a league, mirroring Bracket but keyed on a
+// league instead of an event.
+type LeagueBracket struct {
+	ID           string   `json:"id"`
+	LeagueID     string   `json:"leagueId"`
+	Name         string   `json:"name"`
+	DivisionType string   `json:"divisionType"`
+	MinRating    *float64 `json:"minRating,omitempty"`
+	MaxRating    *float64 `json:"maxRating,omitempty"`
+	MinAge       *int     `json:"minAge,omitempty"`
+	MaxAge       *int     `json:"maxAge,omitempty"`
+	DuprMin      *float64 `json:"duprMin,omitempty"`
+	DuprMax      *float64 `json:"duprMax,omitempty"`
+	SortOrder    int      `json:"sortOrder"`
 }
 
 type Registration struct {
@@ -224,11 +300,14 @@ type Standing struct {
 // ---- request DTOs ----
 
 type BracketInput struct {
-	Name      string   `json:"name"`
-	MinRating *float64 `json:"minRating,omitempty"`
-	MaxRating *float64 `json:"maxRating,omitempty"`
-	MinAge    *int     `json:"minAge,omitempty"`
-	MaxAge    *int     `json:"maxAge,omitempty"`
+	Name         string   `json:"name"`
+	MinRating    *float64 `json:"minRating,omitempty"`
+	MaxRating    *float64 `json:"maxRating,omitempty"`
+	MinAge       *int     `json:"minAge,omitempty"`
+	MaxAge       *int     `json:"maxAge,omitempty"`
+	DivisionType string   `json:"divisionType"` // default "open" (see Bracket)
+	DuprMin      *float64 `json:"duprMin,omitempty"`
+	DuprMax      *float64 `json:"duprMax,omitempty"`
 }
 
 type CreateEventRequest struct {
@@ -252,6 +331,8 @@ type CreateEventRequest struct {
 	VenueLat             *float64       `json:"venueLat"`
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
+	CashPrize            bool           `json:"cashPrize"`
+	CashPrizeAmount      *float64       `json:"cashPrizeAmount,omitempty"`
 	Consolation          bool           `json:"consolation"` // single_elim back-draw
 	StartsAt             string         `json:"startsAt"`    // RFC3339 UTC, "" = none
 	EndsAt               string         `json:"endsAt"`      // RFC3339 UTC, "" = none

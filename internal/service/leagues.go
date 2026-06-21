@@ -11,17 +11,30 @@ import (
 
 // CreateLeague creates an owner-scoped league (season/recurring play). Returns
 // the new league's id.
-func (s *Service) CreateLeague(ownerID, name, description string) (string, error) {
+func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (string, error) {
 	if strings.TrimSpace(ownerID) == "" {
 		return "", errors.New("an owner is required")
 	}
-	if strings.TrimSpace(name) == "" {
+	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
 	}
+	leagueType := req.LeagueType
+	if leagueType == "" {
+		leagueType = "round_robin"
+	}
+	dayType := req.DayType
+	if dayType == "" {
+		dayType = "multi"
+	}
 	rows, err := s.sb.Insert("leagues", map[string]any{
-		"owner_id":    ownerID,
-		"name":        name,
-		"description": orNull(description),
+		"owner_id":          ownerID,
+		"name":              req.Name,
+		"description":       orNull(req.Description),
+		"league_type":       leagueType,
+		"day_type":          dayType,
+		"sanctioned":        req.Sanctioned,
+		"cash_prize":        req.CashPrize,
+		"cash_prize_amount": fOrNull(req.CashPrizeAmount),
 	})
 	if err != nil {
 		return "", err
@@ -29,7 +42,42 @@ func (s *Service) CreateLeague(ownerID, name, description string) (string, error
 	if len(rows) == 0 {
 		return "", errors.New("league insert returned no row")
 	}
-	return asStr(rows[0], "id"), nil
+	id := asStr(rows[0], "id")
+
+	// Batch-insert the league's divisions (mirrors event→brackets in
+	// CreateEvent): default to a single "Open" division when none supplied, and
+	// default an empty division_type to "open".
+	divs := req.Divisions
+	if len(divs) == 0 {
+		divs = []model.LeagueBracketInput{{Name: "Open"}}
+	}
+	brackets := make([]map[string]any, 0, len(divs))
+	for i, d := range divs {
+		dt := d.DivisionType
+		if dt == "" {
+			dt = "open"
+		}
+		name := d.Name
+		if strings.TrimSpace(name) == "" {
+			name = "Open"
+		}
+		brackets = append(brackets, map[string]any{
+			"league_id":     id,
+			"name":          name,
+			"division_type": dt,
+			"min_rating":    fOrNull(d.MinRating),
+			"max_rating":    fOrNull(d.MaxRating),
+			"min_age":       iOrNull(d.MinAge),
+			"max_age":       iOrNull(d.MaxAge),
+			"dupr_min":      fOrNull(d.DuprMin),
+			"dupr_max":      fOrNull(d.DuprMax),
+			"sort_order":    i,
+		})
+	}
+	if _, err := s.sb.Insert("league_brackets", brackets); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // ListLeagues returns the leagues OWNED by ownerID, newest first. An empty
@@ -61,6 +109,19 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 		return model.LeagueDetail{}, ErrNotFound
 	}
 	detail := model.LeagueDetail{League: mapLeague(row)}
+
+	// Attach the league's divisions (brackets), ordered by sort_order so the
+	// detail payload carries them for LeagueDto to read.
+	bkRows, err := s.sb.Select("league_brackets",
+		"league_id=eq."+store.Q(id)+"&select=*&order=sort_order")
+	if err != nil {
+		return model.LeagueDetail{}, err
+	}
+	brackets := make([]model.LeagueBracket, 0, len(bkRows))
+	for _, r := range bkRows {
+		brackets = append(brackets, mapLeagueBracket(r))
+	}
+	detail.Brackets = brackets
 
 	// nullsfirst=false keeps date-less sessions at the bottom; created_at breaks
 	// ties so the order is stable.

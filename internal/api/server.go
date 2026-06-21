@@ -69,6 +69,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
 	mux.HandleFunc("GET /events/nearby", s.nearbyEvents)
+	// Public marketing feed for planmypickle.com: recent/upcoming publicly-listed
+	// events in a SAFE projection (no auth, no PII). Served cross-origin.
+	mux.HandleFunc("GET /events/public", s.publicEvents)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
@@ -232,7 +235,7 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	id, err := s.svc.CreateLeague(userID(r), req.Name, req.Description)
+	id, err := s.svc.CreateLeague(userID(r), req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -1175,6 +1178,18 @@ func (s *Server) nearbyEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
+// publicEvents serves the planmypickle.com marketing feed: up to 20 recent /
+// upcoming publicly-listed events in a safe, PII-free projection. No auth — it's
+// read cross-origin from the apex marketing site.
+func (s *Server) publicEvents(w http.ResponseWriter, r *http.Request) {
+	events, err := s.svc.PublicEvents(20)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
 // roster returns the public player list (names + division + check-in status).
 func (s *Server) roster(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.svc.Roster(r.PathValue("id"))
@@ -1486,8 +1501,26 @@ func (rl *rateLimiter) allow(key string) bool {
 	return true
 }
 
+// corsAllowedOrigins are the first-party browser origins that read this API:
+// the Flutter app, the apex marketing site (planmypickle.com — the public
+// tournaments feed), and localhost for dev. The API carries no cookies or
+// credentials, so it currently answers every origin with "*" (see withCORS);
+// this list documents the intended first-party callers and lets the policy be
+// tightened to an explicit allow-list without code archaeology.
+var corsAllowedOrigins = []string{
+	"https://app.planmypickle.com",  // Flutter app
+	"https://planmypickle.com",      // apex marketing site (public feed)
+	"https://www.planmypickle.com",  // www marketing site (public feed)
+	"http://localhost:3000",
+	"http://localhost:8080",
+}
+
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The marketing feed (GET /events/public) and every spectator read are
+		// fetched cross-origin from planmypickle.com / www.planmypickle.com (see
+		// corsAllowedOrigins). The API holds no cookies/credentials, so "*" safely
+		// covers those apex origins plus the app and any spectator's browser.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		// DELETE is used by events/finance/checklist; without it a browser's
 		// preflight blocks those calls. Origin "*" is safe — the API carries no

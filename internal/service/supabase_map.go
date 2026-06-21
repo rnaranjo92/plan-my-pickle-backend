@@ -149,6 +149,8 @@ func mapEvent(m map[string]any) model.Event {
 		VenueLat:             asFloatPtr(m, "venue_lat"),
 		VenueLng:             asFloatPtr(m, "venue_lng"),
 		DuprSanctioned:       asBool(m, "dupr_sanctioned"),
+		CashPrize:            asBool(m, "cash_prize"),
+		CashPrizeAmount:      asFloatPtr(m, "cash_prize_amount"),
 		Consolation:          asBool(m, "consolation"),
 		StartsAt:             asStrPtr(m, "starts_at"),
 		EndsAt:               asStrPtr(m, "ends_at"),
@@ -164,12 +166,17 @@ func mapEvent(m map[string]any) model.Event {
 
 func mapLeague(m map[string]any) model.League {
 	return model.League{
-		ID:          asStr(m, "id"),
-		OwnerID:     asStr(m, "owner_id"),
-		Name:        asStr(m, "name"),
-		Description: asStrPtr(m, "description"),
-		CreatedAt:   asStr(m, "created_at"),
-		PosterURL:   asStrPtr(m, "poster_url"),
+		ID:              asStr(m, "id"),
+		OwnerID:         asStr(m, "owner_id"),
+		Name:            asStr(m, "name"),
+		Description:     asStrPtr(m, "description"),
+		CreatedAt:       asStr(m, "created_at"),
+		PosterURL:       asStrPtr(m, "poster_url"),
+		LeagueType:      asStr(m, "league_type"),
+		DayType:         asStr(m, "day_type"),
+		Sanctioned:      asBool(m, "sanctioned"),
+		CashPrize:       asBool(m, "cash_prize"),
+		CashPrizeAmount: asFloatPtr(m, "cash_prize_amount"),
 	}
 }
 
@@ -196,14 +203,33 @@ func mapBreaks(m map[string]any) []model.ScheduleBreak {
 
 func mapBracket(m map[string]any) model.Bracket {
 	return model.Bracket{
-		ID:        asStr(m, "id"),
-		EventID:   asStr(m, "event_id"),
-		Name:      asStr(m, "name"),
-		MinRating: asFloatPtr(m, "min_rating"),
-		MaxRating: asFloatPtr(m, "max_rating"),
-		MinAge:    asIntPtr(m, "min_age"),
-		MaxAge:    asIntPtr(m, "max_age"),
-		SortOrder: asInt(m, "sort_order"),
+		ID:           asStr(m, "id"),
+		EventID:      asStr(m, "event_id"),
+		Name:         asStr(m, "name"),
+		MinRating:    asFloatPtr(m, "min_rating"),
+		MaxRating:    asFloatPtr(m, "max_rating"),
+		MinAge:       asIntPtr(m, "min_age"),
+		MaxAge:       asIntPtr(m, "max_age"),
+		SortOrder:    asInt(m, "sort_order"),
+		DivisionType: asStr(m, "division_type"),
+		DuprMin:      asFloatPtr(m, "dupr_min"),
+		DuprMax:      asFloatPtr(m, "dupr_max"),
+	}
+}
+
+func mapLeagueBracket(m map[string]any) model.LeagueBracket {
+	return model.LeagueBracket{
+		ID:           asStr(m, "id"),
+		LeagueID:     asStr(m, "league_id"),
+		Name:         asStr(m, "name"),
+		DivisionType: asStr(m, "division_type"),
+		MinRating:    asFloatPtr(m, "min_rating"),
+		MaxRating:    asFloatPtr(m, "max_rating"),
+		MinAge:       asIntPtr(m, "min_age"),
+		MaxAge:       asIntPtr(m, "max_age"),
+		DuprMin:      asFloatPtr(m, "dupr_min"),
+		DuprMax:      asFloatPtr(m, "dupr_max"),
+		SortOrder:    asInt(m, "sort_order"),
 	}
 }
 

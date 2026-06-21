@@ -616,6 +616,9 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// Note: the structured venue_* columns are intentionally NOT updated here —
 	// EventDto doesn't carry them, so the edit form can't round-trip them, and
 	// blanking them would wipe the venue. `location` (free text) IS round-tripped.
+	// poster_url is ALSO intentionally NOT updated here: the poster is set/cleared
+	// only via the dedicated POST /events/{id}/poster endpoint, so a metadata edit
+	// (which always sends posterUrl="") never erases an uploaded banner.
 	upd := map[string]any{
 		"name":                   req.Name,
 		"num_courts":             courts,
@@ -629,7 +632,6 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
 		"listed":        req.Listed,
-		"poster_url":    orNull(req.PosterURL),
 		"contact_phone": orNull(req.ContactPhone),
 		"starts_at":     orNull(req.StartsAt),
 		"ends_at":       orNull(req.EndsAt),
@@ -682,6 +684,23 @@ func (s *Service) ensureCourts(eventID string, n int) error {
 func (s *Service) SetStartTime(eventID, startsAt string) error {
 	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
 		map[string]any{"starts_at": orNull(startsAt)})
+	return err
+}
+
+// SetEventPoster sets (or clears, when empty) the event's banner/poster URL — the
+// public Supabase Storage URL the client uploaded the image to. An empty url
+// stores SQL NULL, removing the banner.
+func (s *Service) SetEventPoster(eventID, posterURL string) error {
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"poster_url": orNull(posterURL)})
+	return err
+}
+
+// SetLeaguePoster sets (or clears, when empty) the league's banner/poster URL.
+// An empty url stores SQL NULL, removing the banner.
+func (s *Service) SetLeaguePoster(leagueID, posterURL string) error {
+	_, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+		map[string]any{"poster_url": orNull(posterURL)})
 	return err
 }
 

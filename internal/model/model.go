@@ -73,6 +73,8 @@ type League struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description,omitempty"`
 	CreatedAt   string  `json:"createdAt"`
+	// PosterURL is the uploaded league banner (public Storage URL), or nil.
+	PosterURL *string `json:"posterUrl,omitempty"`
 }
 
 // CreateLeagueRequest is the create-payload for a league.

@@ -169,6 +169,7 @@ func mapLeague(m map[string]any) model.League {
 		Name:        asStr(m, "name"),
 		Description: asStrPtr(m, "description"),
 		CreatedAt:   asStr(m, "created_at"),
+		PosterURL:   asStrPtr(m, "poster_url"),
 	}
 }
 

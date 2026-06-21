@@ -112,10 +112,17 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
 	mux.HandleFunc("GET /leagues/{id}/standings", s.ownerOnly("league", "id", s.leagueStandings))
+	// Set/clear the league banner (the client uploaded the image to Storage; this
+	// just persists the public URL on the league row). Owner-only.
+	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
 
 	// --- Owner-only: management actions require a valid token AND that the
 	// caller owns the event behind the resource (see service.OwnerOf).
 	mux.HandleFunc("POST /events/{id}", s.ownerOnly("event", "id", s.updateEvent))
+	// Set/clear the event banner (the client uploaded the image to Storage; this
+	// just persists the public URL on the event row). Kept separate from the
+	// metadata edit so an edit never wipes the poster. Owner-only.
+	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
 	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
@@ -318,6 +325,39 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// setEventPoster sets (or clears, when posterUrl is empty) the event's banner
+// URL — the public Storage URL the client uploaded the image to. Owner-only;
+// kept separate from updateEvent so a metadata edit never touches the poster.
+func (s *Server) setEventPoster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PosterURL string `json:"posterUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetEventPoster(r.PathValue("id"), req.PosterURL); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
+}
+
+// setLeaguePoster sets (or clears, when posterUrl is empty) the league's banner
+// URL. Owner-only (via the league path id).
+func (s *Server) setLeaguePoster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PosterURL string `json:"posterUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetLeaguePoster(r.PathValue("id"), req.PosterURL); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
 }
 
 func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {

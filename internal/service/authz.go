@@ -50,3 +50,17 @@ func (s *Service) OwnerOf(kind, id string) (string, error) {
 	}
 	return asStr(ev, "owner_id"), nil
 }
+
+// EventIDOfMatch returns the event_id a match belongs to, or ErrNotFound if the
+// match is missing. Used by the scorekeeper auth path (ownerOrPasscode) to map a
+// match to the event whose admin passcode it must validate.
+func (s *Service) EventIDOfMatch(matchID string) (string, error) {
+	row, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+"&select=event_id")
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", ErrNotFound
+	}
+	return asStr(row, "event_id"), nil
+}

@@ -74,8 +74,14 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /courts/nearby", s.nearbyCourts)
 	mux.HandleFunc("GET /geocode", s.geocode)
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
-	mux.HandleFunc("POST /registrations/{id}/pay", s.pay)
-	mux.HandleFunc("POST /registrations/{id}/shirt", s.saveShirt)
+	// /pay and /shirt are public self-service (a registrant has no account), but
+	// must prove ownership of the registration — the registration id is harvestable
+	// from the public feed/roster, so without a check the endpoints are an IDOR
+	// (mark anyone paid / overwrite anyone's shirt). optionalAuth attaches the event
+	// owner's JWT when present; otherwise the caller must send the registration's
+	// check_in_token (X-Registration-Token header or body). Gated by regLimiter too.
+	mux.HandleFunc("POST /registrations/{id}/pay", optionalAuth(s.pay))
+	mux.HandleFunc("POST /registrations/{id}/shirt", optionalAuth(s.saveShirt))
 	mux.HandleFunc("POST /events/{id}/checkin", s.checkinByToken)
 	mux.HandleFunc("POST /events/{id}/checkin-by-phone", s.checkinByPhone)
 	mux.HandleFunc("POST /events/{id}/verify-admin", s.verifyAdmin)
@@ -89,6 +95,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
 	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
+	// Downloadable results export (standings + matches) for the organizer.
+	mux.HandleFunc("GET /events/{id}/results.csv", s.ownerOnly("event", "id", s.resultsCSV))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -107,7 +115,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /feed/{id}/comments", requireAuth(s.commentAdd))
 	mux.HandleFunc("DELETE /comments/{id}", requireAuth(s.commentDelete))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
-	mux.HandleFunc("POST /matches/{id}/score", s.ownerOnly("match", "id", s.recordScore))
+	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
+	// admin passcode (X-Event-Passcode) may record a match score.
+	mux.HandleFunc("POST /matches/{id}/score", s.ownerOrPasscode("match", "id", s.recordScore))
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/unstart", s.ownerOnly("match", "id", s.unstartMatch))
@@ -300,6 +310,19 @@ func (s *Server) financeEntries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// resultsCSV streams the event's results export as a CSV download (owner-only).
+func (s *Server) resultsCSV(w http.ResponseWriter, r *http.Request) {
+	data, err := s.svc.ResultsCSV(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="results.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) addFinanceEntry(w http.ResponseWriter, r *http.Request) {
@@ -586,12 +609,48 @@ func (s *Server) pay(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if !s.authorizeRegistration(w, r, req.Token) {
+		return
+	}
 	ok, err := s.svc.CollectPayment(r.PathValue("id"), req.Provider)
 	if err != nil {
 		status(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"paid": ok})
+}
+
+// authorizeRegistration gates the public self-service registration endpoints
+// (pay / shirt) against IDOR. It rate-limits per registration id and then
+// requires proof of ownership: the event owner's JWT (attached by optionalAuth)
+// OR the registration's check_in_token, taken from the bodyToken arg or the
+// X-Registration-Token header. Writes the error response and returns false when
+// the caller is not allowed.
+func (s *Server) authorizeRegistration(w http.ResponseWriter, r *http.Request, bodyToken string) bool {
+	regID := r.PathValue("id")
+	// Per-registration throttle so a harvested id can't be brute-forced.
+	if !s.regLimiter.allow("reg-action:" + regID) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many requests right now, try again shortly"))
+		return false
+	}
+	token := strings.TrimSpace(bodyToken)
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("X-Registration-Token"))
+	}
+	allowed, err := s.svc.AuthorizeRegistrationAction(regID, token, userID(r))
+	if errors.Is(err, service.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return false
+	}
+	if !allowed {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return false
+	}
+	return true
 }
 
 // markPaid is the organizer confirming, owner-only, that a fee-bearing
@@ -656,6 +715,9 @@ func (s *Server) uncheckin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveShirt(w http.ResponseWriter, r *http.Request) {
 	var req model.ShirtRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	if !s.authorizeRegistration(w, r, req.Token) {
 		return
 	}
 	order, err := s.svc.SaveShirtOrder(r.PathValue("id"), req)
@@ -991,7 +1053,67 @@ func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.Han
 	})
 }
 
+// ownerOrPasscode guards a handler so it's reachable by EITHER the event owner
+// (a valid JWT, exactly like ownerOnly) OR a client holding the event's admin
+// passcode in the X-Event-Passcode header. This is the scorekeeper path: an
+// organizer hands a volunteer the passcode so they can record scores without a
+// full account/login.
+//
+// kind/idParam identify the resource (currently only "match"); the passcode is
+// validated against THAT resource's event via VerifyAdminPasscode. Rules: a
+// valid owner JWT always wins; otherwise a correct passcode for the match's
+// event is required; anything else is 403. A missing/blank passcode with no
+// owner JWT is rejected.
+func (s *Server) ownerOrPasscode(kind, idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return optionalAuth(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue(idParam)
+		// Owner path: same check as ownerOnly. A valid JWT that owns the event wins.
+		owner, err := s.svc.OwnerOf(kind, id)
+		if errors.Is(err, service.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if uid := userID(r); uid != "" && owner != "" && owner == uid {
+			next(w, r)
+			return
+		}
+		// Passcode path: require a non-blank X-Event-Passcode, validated against the
+		// resource's event. (Only "match" is wired today.)
+		code := strings.TrimSpace(r.Header.Get("X-Event-Passcode"))
+		if code == "" || kind != "match" {
+			writeErr(w, http.StatusForbidden, errForbidden)
+			return
+		}
+		eventID, err := s.svc.EventIDOfMatch(id)
+		if errors.Is(err, service.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		ok, err := s.svc.VerifyAdminPasscode(eventID, code)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !ok {
+			writeErr(w, http.StatusForbidden, errForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	// Cap the request body (DoS hardening): a JSON payload over 1 MiB is rejected
+	// rather than buffered. No legitimate request here is that large.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	// Tolerate an empty body so optional-field endpoints (pay, checkin) work
 	// with no JSON; fields fall back to their service-side defaults.
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil && err != io.EOF {
@@ -1090,8 +1212,11 @@ func withCORS(next http.Handler) http.Handler {
 		// cookies/credentials (the Supabase service key is server-side only).
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		// Authorization carries the user's bearer token; without it the browser
-		// preflight blocks every authenticated request.
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		// preflight blocks every authenticated request. X-Registration-Token
+		// (registrant self-service pay/shirt) and X-Event-Passcode (scorekeeper
+		// auth) are custom headers, so they must be allow-listed too.
+		w.Header().Set("Access-Control-Allow-Headers",
+			"Content-Type,Authorization,X-Registration-Token,X-Event-Passcode")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

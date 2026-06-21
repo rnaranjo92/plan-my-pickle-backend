@@ -55,6 +55,9 @@ func main() {
 		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
+		// Cap request headers (DoS hardening); the default is 1 MB but we set it
+		// explicitly. Bodies are bounded per-request in decode() via MaxBytesReader.
+		MaxHeaderBytes: 1 << 20,
 	}
 	log.Printf("PlanMyPickle API listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil {

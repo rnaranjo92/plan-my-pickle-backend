@@ -90,6 +90,62 @@ func (c *Client) Select(table, query string) ([]map[string]any, error) {
 	return rows, nil
 }
 
+// selectPageSize is the row window SelectAll requests per page via the HTTP
+// Range header. PostgREST silently caps a single response at its configured
+// max-rows (1000 by default), so an unbounded Select can truncate a large fetch
+// without erroring. SelectAll pages around that cap.
+const selectPageSize = 1000
+
+// SelectAll is Select with pagination: it fetches successive Range windows
+// (0-999, 1000-1999, …) and concatenates them until a short/empty page, so large
+// result sets aren't silently truncated at PostgREST's max-rows cap. Use it for
+// reads whose size scales with the tournament (all matches/participants/players);
+// for a known-small or already-limited query, plain Select is fine.
+//
+// The query must NOT carry its own limit/offset — SelectAll owns the windowing.
+func (c *Client) SelectAll(table, query string) ([]map[string]any, error) {
+	var all []map[string]any
+	for offset := 0; ; offset += selectPageSize {
+		from := offset
+		to := offset + selectPageSize - 1
+		url := fmt.Sprintf("%s/rest/v1/%s?%s", c.baseURL, table, query)
+		resp, err := c.doRange(http.MethodGet, url, fmt.Sprintf("%d-%d", from, to))
+		if err != nil {
+			return nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return nil, dbError("select", table, resp.StatusCode, body)
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return nil, dbDecodeError("select", table, body)
+		}
+		all = append(all, rows...)
+		// A short page (fewer than a full window) means we've reached the end.
+		if len(rows) < selectPageSize {
+			break
+		}
+	}
+	return all, nil
+}
+
+// doRange issues a request with a PostgREST Range header (row window), used by
+// SelectAll to page through large result sets.
+func (c *Client) doRange(method, fullURL, rangeHeader string) (*http.Response, error) {
+	req, err := http.NewRequest(method, fullURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", c.serviceKey)
+	req.Header.Set("Authorization", "Bearer "+c.serviceKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Range-Unit", "items")
+	req.Header.Set("Range", rangeHeader)
+	return c.httpClient.Do(req)
+}
+
 // SelectOne returns the first matching row, or (nil, nil) when none match.
 func (c *Client) SelectOne(table, query string) (map[string]any, error) {
 	rows, err := c.Select(table, query+"&limit=1")

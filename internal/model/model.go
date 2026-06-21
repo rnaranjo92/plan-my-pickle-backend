@@ -286,6 +286,9 @@ type ForfeitRequest struct {
 
 type PayRequest struct {
 	Provider string `json:"provider"` // stripe | paypal | venmo | manual
+	// Token is the registration's check_in_token, proving the caller owns this
+	// registration (alternative to the X-Registration-Token header or event-owner JWT).
+	Token string `json:"token"`
 }
 
 type CheckinRequest struct {
@@ -333,6 +336,9 @@ type ShirtRequest struct {
 	NameOnShirt string `json:"nameOnShirt"`
 	Number      string `json:"number"`
 	Color       string `json:"color"`
+	// Token is the registration's check_in_token, proving the caller owns this
+	// registration (alternative to the X-Registration-Token header or event-owner JWT).
+	Token string `json:"token"`
 }
 
 // FeedItem is one entry in a tournament's activity feed (auto activity or an

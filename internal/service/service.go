@@ -4,6 +4,9 @@
 package service
 
 import (
+	"bytes"
+	"crypto/subtle"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1438,7 +1441,9 @@ func (s *Service) spreadCourts(eventID string) error {
 	}
 	sort.Ints(courtNums)
 
-	rows, err := s.sb.Select("matches",
+	// SelectAll: a big field can have hundreds of pool matches — an unbounded
+	// Select would truncate at PostgREST's row cap and leave matches unspread.
+	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
 	if err != nil {
 		return err
@@ -1555,8 +1560,10 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 		rank[b.id] = i
 	}
 
-	// Pool matches with their round number.
-	rows, err := s.sb.Select("matches",
+	// Pool matches with their round number. SelectAll so a big field's pool games
+	// aren't truncated at PostgREST's row cap (which would silently skip placing
+	// the dropped matches onto courts/slots).
+	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
 	if err != nil {
 		return 0, err
@@ -1905,8 +1912,13 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 
 func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [][]string, consolation bool) (int, error) {
 	plan := engine.GenerateBracket(seededSides)
-	idByKey := map[string]string{}
-	count := 0
+
+	// Mirror persistRoundRobin's batching: collect every match row, do ONE bulk
+	// Insert (PostgREST returns rows in input order, so we zip ids by index), then
+	// bulk-Upsert all participants and bulk-Update the feed links. A 64-team draw
+	// otherwise fires 250+ sequential PostgREST calls and times out (502), leaving
+	// a half-built bracket.
+	matchRows := make([]map[string]any, 0, len(plan.Matches))
 	for _, m := range plan.Matches {
 		row := map[string]any{
 			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
@@ -1921,34 +1933,52 @@ func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [
 				row["winning_team"] = 2
 			}
 		}
-		out, err := s.sb.Insert("matches", row)
-		if err != nil {
-			return 0, err
-		}
-		if len(out) == 0 {
-			return 0, errors.New("bracket match insert returned no row")
-		}
-		mid := asStr(out[0], "id")
-		idByKey[key(m.Round, m.Slot)] = mid
-		if err := s.insertSide(mid, 1, m.Side1); err != nil {
-			return 0, err
-		}
-		if err := s.insertSide(mid, 2, m.Side2); err != nil {
-			return 0, err
-		}
-		count++
+		matchRows = append(matchRows, row)
 	}
+	if len(matchRows) == 0 {
+		return 0, nil
+	}
+	insMatches, err := s.sb.Insert("matches", matchRows)
+	if err != nil {
+		return 0, err
+	}
+	if len(insMatches) != len(plan.Matches) {
+		return 0, errors.New("bracket match insert count mismatch")
+	}
+	idByKey := make(map[string]string, len(plan.Matches))
+	for i, m := range plan.Matches {
+		idByKey[key(m.Round, m.Slot)] = asStr(insMatches[i], "id")
+	}
+	count := len(insMatches)
+
+	// All participants (both sides of every match) in ONE upsert. insertSide's
+	// skip rules (empty side / bye) are inlined here.
+	partRows := make([]map[string]any, 0)
+	for i, m := range plan.Matches {
+		mid := asStr(insMatches[i], "id")
+		partRows = appendSideParts(partRows, mid, 1, m.Side1)
+		partRows = appendSideParts(partRows, mid, 2, m.Side2)
+	}
+	if len(partRows) > 0 {
+		if _, err := s.sb.Upsert("match_participants", "match_id,player_id", partRows); err != nil {
+			return 0, err
+		}
+	}
+
+	// Winner-feed links, grouped so matches that feed the SAME (feeds_match_id,
+	// feeds_slot) target share one Update (id=in.(...)) instead of one per match.
+	feeds := newFeedUpdates()
 	for _, m := range plan.Matches {
 		if m.FeedsRound == 0 {
 			continue
 		}
-		mid := idByKey[key(m.Round, m.Slot)]
-		feedID := idByKey[key(m.FeedsRound, m.FeedsSlot)]
-		if _, err := s.sb.Update("matches", "id=eq."+store.Q(mid), map[string]any{
-			"feeds_match_id": feedID, "feeds_slot": m.FeedsTeam,
-		}); err != nil {
-			return 0, err
-		}
+		feeds.add(idByKey[key(m.Round, m.Slot)], map[string]any{
+			"feeds_match_id": idByKey[key(m.FeedsRound, m.FeedsSlot)],
+			"feeds_slot":     m.FeedsTeam,
+		})
+	}
+	if err := feeds.flush(s); err != nil {
+		return 0, err
 	}
 
 	// Consolation back-draw: first-round losers play down to a consolation
@@ -1963,47 +1993,56 @@ func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [
 			}
 		}
 		cons := engine.GenerateConsolation(plan.Size, func(slot int) bool { return bye[slot] })
-		consID := map[string]string{}
+		consRows := make([]map[string]any, 0, len(cons.Matches))
 		for _, cm := range cons.Matches {
-			out, err := s.sb.Insert("matches", map[string]any{
+			consRows = append(consRows, map[string]any{
 				"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
 				"bracket_tier": "consolation", "bracket_round": cm.Round,
 				"bracket_slot": cm.Slot, "status": "scheduled",
 			})
+		}
+		consID := map[string]string{}
+		if len(consRows) > 0 {
+			insCons, err := s.sb.Insert("matches", consRows)
 			if err != nil {
 				return 0, err
 			}
-			if len(out) == 0 {
-				return 0, errors.New("consolation match insert returned no row")
+			if len(insCons) != len(cons.Matches) {
+				return 0, errors.New("consolation match insert count mismatch")
 			}
-			consID[key(cm.Round, cm.Slot)] = asStr(out[0], "id")
-			count++
+			for i, cm := range cons.Matches {
+				consID[key(cm.Round, cm.Slot)] = asStr(insCons[i], "id")
+			}
+			count += len(insCons)
 		}
 		// Winner advancement within the consolation tree.
+		consFeeds := newFeedUpdates()
 		for _, cm := range cons.Matches {
 			if cm.FeedsRound == 0 {
 				continue
 			}
-			if _, err := s.sb.Update("matches", "id=eq."+store.Q(consID[key(cm.Round, cm.Slot)]),
-				map[string]any{
-					"feeds_match_id": consID[key(cm.FeedsRound, cm.FeedsSlot)],
-					"feeds_slot":     cm.FeedsTeam,
-				}); err != nil {
-				return 0, err
-			}
+			consFeeds.add(consID[key(cm.Round, cm.Slot)], map[string]any{
+				"feeds_match_id": consID[key(cm.FeedsRound, cm.FeedsSlot)],
+				"feeds_slot":     cm.FeedsTeam,
+			})
+		}
+		if err := consFeeds.flush(s); err != nil {
+			return 0, err
 		}
 		// Each main round-1 match's LOSER drops into the consolation tree.
+		dropFeeds := newFeedUpdates()
 		for _, d := range cons.Drops {
 			mainID := idByKey[key(1, d.MainSlot)]
 			if mainID == "" {
 				continue
 			}
-			if _, err := s.sb.Update("matches", "id=eq."+store.Q(mainID), map[string]any{
+			dropFeeds.add(mainID, map[string]any{
 				"loser_feeds_match_id": consID[key(d.Round, d.Slot)],
 				"loser_feeds_slot":     d.Team,
-			}); err != nil {
-				return 0, err
-			}
+			})
+		}
+		if err := dropFeeds.flush(s); err != nil {
+			return 0, err
 		}
 	}
 	return count, nil
@@ -2096,7 +2135,10 @@ func (s *Service) persistDoubleElim(ev model.Event, bracketID string, seededSide
 	}
 	idByKey := make(map[string]string, len(plan.Matches))
 
-	count := 0
+	// Batch like persistRoundRobin/persistBracket: ONE bulk Insert (ids zipped back
+	// by input order), one bulk participant Upsert, grouped feed Updates. A large
+	// double-elim draw otherwise fires hundreds of sequential calls (502 timeout).
+	matchRows := make([]map[string]any, 0, len(plan.Matches))
 	for _, m := range plan.Matches {
 		row := map[string]any{
 			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
@@ -2112,24 +2154,39 @@ func (s *Service) persistDoubleElim(ev model.Event, bracketID string, seededSide
 				row["winning_team"] = 2
 			}
 		}
-		out, err := s.sb.Insert("matches", row)
-		if err != nil {
+		matchRows = append(matchRows, row)
+	}
+	if len(matchRows) == 0 {
+		return 0, nil
+	}
+	insMatches, err := s.sb.Insert("matches", matchRows)
+	if err != nil {
+		return 0, err
+	}
+	if len(insMatches) != len(plan.Matches) {
+		return 0, errors.New("double-elim match insert count mismatch")
+	}
+	for i, m := range plan.Matches {
+		idByKey[dkey(m.Tier, m.Round, m.Slot)] = asStr(insMatches[i], "id")
+	}
+	count := len(insMatches)
+
+	partRows := make([]map[string]any, 0)
+	for i, m := range plan.Matches {
+		mid := asStr(insMatches[i], "id")
+		partRows = appendSideParts(partRows, mid, 1, m.Side1)
+		partRows = appendSideParts(partRows, mid, 2, m.Side2)
+	}
+	if len(partRows) > 0 {
+		if _, err := s.sb.Upsert("match_participants", "match_id,player_id", partRows); err != nil {
 			return 0, err
 		}
-		if len(out) == 0 {
-			return 0, errors.New("double-elim match insert returned no row")
-		}
-		mid := asStr(out[0], "id")
-		idByKey[dkey(m.Tier, m.Round, m.Slot)] = mid
-		if err := s.insertSide(mid, 1, m.Side1); err != nil {
-			return 0, err
-		}
-		if err := s.insertSide(mid, 2, m.Side2); err != nil {
-			return 0, err
-		}
-		count++
 	}
 
+	// Winner + loser feed links. Both go in ONE payload per match (so the bulk
+	// Update grouping keys on the combined fields, matching the original per-match
+	// single PATCH that set whichever links applied).
+	feeds := newFeedUpdates()
 	for _, m := range plan.Matches {
 		upd := map[string]any{}
 		if m.WinTier != "" {
@@ -2144,9 +2201,10 @@ func (s *Service) persistDoubleElim(ev model.Event, bracketID string, seededSide
 		if len(upd) == 0 {
 			continue
 		}
-		if _, err := s.sb.Update("matches", "id=eq."+store.Q(idByKey[dkey(m.Tier, m.Round, m.Slot)]), upd); err != nil {
-			return 0, err
-		}
+		feeds.add(idByKey[dkey(m.Tier, m.Round, m.Slot)], upd)
+	}
+	if err := feeds.flush(s); err != nil {
+		return 0, err
 	}
 	return count, nil
 }
@@ -2685,6 +2743,42 @@ func (s *Service) VerifyAdminPasscode(eventID, code string) (bool, error) {
 		return true, nil
 	}
 	return pass == strings.TrimSpace(code), nil
+}
+
+// AuthorizeRegistrationAction reports whether a caller may mutate a registration
+// via the public self-service endpoints (pay / shirt). Access is granted when
+// EITHER the caller proves possession of the registration's check_in_token (the
+// value handed to the registrant at registration, same secret checkinByToken
+// uses) OR the caller is the authenticated owner of the registration's event.
+// Returns ErrNotFound if the registration (or its event) is missing.
+func (s *Service) AuthorizeRegistrationAction(registrationID, token, userID string) (bool, error) {
+	row, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(registrationID)+"&select=event_id,check_in_token")
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, ErrNotFound
+	}
+	// Token match (constant-time) — the registrant's own proof of ownership.
+	if tok := asStr(row, "check_in_token"); tok != "" && token != "" &&
+		subtle.ConstantTimeCompare([]byte(tok), []byte(strings.TrimSpace(token))) == 1 {
+		return true, nil
+	}
+	// Otherwise fall back to event ownership (the organizer acting on a registrant).
+	if userID == "" {
+		return false, nil
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(asStr(row, "event_id"))+"&select=owner_id")
+	if err != nil {
+		return false, err
+	}
+	if ev == nil {
+		return false, ErrNotFound
+	}
+	owner := asStr(ev, "owner_id")
+	return owner != "" && owner == userID, nil
 }
 
 // CollectPayment charges the registration fee via the payment gateway. (#4)
@@ -4090,7 +4184,9 @@ func (s *Service) headToHead(eventID, bracketID string) (map[string]map[string]i
 	if bracketID != "" {
 		q += "&bracket_id=eq." + store.Q(bracketID)
 	}
-	rows, err := s.sb.Select("matches", q)
+	// SelectAll: across a full division the completed-pool-match count can pass the
+	// row cap; truncation would drop head-to-head results and mis-break standings ties.
+	rows, err := s.sb.SelectAll("matches", q)
 	if err != nil {
 		return nil, err
 	}
@@ -4142,6 +4238,148 @@ func (s *Service) BracketMatches(bracketID string) ([]model.Match, error) {
 		out = append(out, mapMatch(r))
 	}
 	return out, nil
+}
+
+// ResultsCSV builds a downloadable results export for an event: a per-division
+// standings section (rank, players, GP/W/L, points for/against, diff) followed
+// by a matches section (division, round/stage, both teams, score, winner). It
+// reuses the same Standings + matches queries the live dashboard uses, so the
+// export matches what organizers see on screen. Returns the CSV bytes.
+func (s *Service) ResultsCSV(eventID string) ([]byte, error) {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return nil, err
+	}
+	brackets, err := s.GetBrackets(eventID)
+	if err != nil {
+		return nil, err
+	}
+	// Division name lookup for the matches section (matches carry a bracket id).
+	divName := make(map[string]string, len(brackets))
+	for _, b := range brackets {
+		divName[b.ID] = b.Name
+	}
+
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
+	write := func(rec ...string) error { return cw.Write(rec) }
+
+	if err := write("PlanMyPickle Results", ev.Name); err != nil {
+		return nil, err
+	}
+	_ = write() // blank separator line
+
+	// ---- Standings, one block per division (in dashboard sort order). ----
+	if err := write("STANDINGS"); err != nil {
+		return nil, err
+	}
+	for _, b := range brackets {
+		st, err := s.Standings(eventID, b.ID, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := write("Division", b.Name); err != nil {
+			return nil, err
+		}
+		if err := write("Rank", "Player", "GP", "W", "L", "PF", "PA", "Diff"); err != nil {
+			return nil, err
+		}
+		for i, row := range st {
+			if err := write(
+				strconv.Itoa(i+1), row.FullName,
+				strconv.Itoa(row.GamesPlayed), strconv.Itoa(row.Wins), strconv.Itoa(row.Losses),
+				strconv.Itoa(row.PointsFor), strconv.Itoa(row.PointsAgainst), strconv.Itoa(row.PointDiff),
+			); err != nil {
+				return nil, err
+			}
+		}
+		_ = write()
+	}
+
+	// ---- Matches: every pool game + every bracket game, across divisions. ----
+	if err := write("MATCHES"); err != nil {
+		return nil, err
+	}
+	if err := write("Division", "Round/Stage", "Team 1", "Team 2", "Score", "Winner"); err != nil {
+		return nil, err
+	}
+	pool, err := s.EventPoolMatches(eventID)
+	if err != nil {
+		return nil, err
+	}
+	all := pool
+	for _, b := range brackets {
+		bm, err := s.BracketMatches(b.ID)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, bm...)
+	}
+	for _, m := range all {
+		div := ""
+		if m.BracketID != nil {
+			div = divName[*m.BracketID]
+		}
+		if err := write(
+			div, matchStageLabel(m),
+			teamNames(m, 1), teamNames(m, 2),
+			matchScoreText(m), matchWinnerText(m),
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// matchStageLabel describes where a match sits: a pool round number, or the
+// bracket tier + round for a playoff match.
+func matchStageLabel(m model.Match) string {
+	if m.Stage == "pool" {
+		if m.RoundNumber != nil {
+			return "Pool R" + strconv.Itoa(*m.RoundNumber)
+		}
+		return "Pool"
+	}
+	tier := m.BracketTier
+	if tier == "" {
+		tier = "main"
+	}
+	if m.BracketRound != nil {
+		return tier + " R" + strconv.Itoa(*m.BracketRound)
+	}
+	return tier
+}
+
+// teamNames joins the display names of a match's side (team 1 or 2). Empty for a
+// TBD / bye side.
+func teamNames(m model.Match, team int) string {
+	for _, sd := range m.Sides {
+		if sd.Team == team {
+			return strings.Join(sd.Players, " / ")
+		}
+	}
+	return ""
+}
+
+// matchScoreText renders the recorded score ("11-7"), blank when unplayed.
+func matchScoreText(m model.Match) string {
+	if m.Team1Score == nil || m.Team2Score == nil {
+		return ""
+	}
+	return strconv.Itoa(*m.Team1Score) + "-" + strconv.Itoa(*m.Team2Score)
+}
+
+// matchWinnerText returns the winning team's player names, or "" if undecided.
+func matchWinnerText(m model.Match) string {
+	if m.WinningTeam == nil {
+		return ""
+	}
+	return teamNames(m, *m.WinningTeam)
 }
 
 func (s *Service) Rounds(eventID string) ([]model.RoundView, error) {
@@ -4394,7 +4632,9 @@ func (s *Service) bracketRegs(eventID, bracketID string) ([]reg, error) {
 }
 
 func (s *Service) playerSkills() (map[string]float64, error) {
-	rows, err := s.sb.Select("players", "select=id,skill_level")
+	// SelectAll: the players table grows across all events, so an unbounded Select
+	// would truncate at PostgREST's row cap and skew skill lookups.
+	rows, err := s.sb.SelectAll("players", "select=id,skill_level")
 	if err != nil {
 		return nil, err
 	}
@@ -4433,6 +4673,78 @@ func (s *Service) insertSide(matchID string, team int, side []string) error {
 	// same (match_id,player_id) is a no-op rather than a unique-constraint error.
 	_, err := s.sb.Upsert("match_participants", "match_id,player_id", rows)
 	return err
+}
+
+// appendSideParts appends one match_participants row per player on a side,
+// applying insertSide's skip rules (empty side / bye). Used by the batched
+// bracket builders to collect every participant for a single bulk Upsert.
+func appendSideParts(rows []map[string]any, matchID string, team int, side []string) []map[string]any {
+	if len(side) == 0 || engine.IsBye(side) {
+		return rows
+	}
+	for _, pid := range side {
+		rows = append(rows, map[string]any{"match_id": matchID, "player_id": pid, "team": team})
+	}
+	return rows
+}
+
+// feedUpdates batches the bracket feed-link writes. Many matches feed the same
+// target (feeds_match_id/feeds_slot or loser_feeds_*), so it groups match ids by
+// an identical update payload and issues ONE Update per distinct payload, joining
+// the ids with id=in.(...) (chunked to keep the URL bounded). This replaces the
+// old per-match Update loop that fired hundreds of sequential PostgREST calls.
+type feedUpdates struct {
+	order  []string                  // payload keys, in first-seen order (stable)
+	fields map[string]map[string]any // payload key -> the update fields
+	ids    map[string][]string       // payload key -> match ids to apply it to
+}
+
+func newFeedUpdates() *feedUpdates {
+	return &feedUpdates{fields: map[string]map[string]any{}, ids: map[string][]string{}}
+}
+
+func (f *feedUpdates) add(matchID string, fields map[string]any) {
+	if matchID == "" {
+		return
+	}
+	// Stable key for identical payloads: sorted "k=v" pairs. Values here are match
+	// ids (string) and small ints, so %v is a faithful, collision-safe encoding.
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, fields[k]))
+	}
+	pk := strings.Join(parts, "&")
+	if _, ok := f.fields[pk]; !ok {
+		f.fields[pk] = fields
+		f.order = append(f.order, pk)
+	}
+	f.ids[pk] = append(f.ids[pk], matchID)
+}
+
+// flush issues one chunked Update per distinct payload. Chunk size matches the
+// established spreadCourts limit so the id=in.(...) URL stays bounded.
+func (f *feedUpdates) flush(s *Service) error {
+	const chunk = 80
+	for _, pk := range f.order {
+		ids := f.ids[pk]
+		fields := f.fields[pk]
+		for i := 0; i < len(ids); i += chunk {
+			end := i + chunk
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if _, err := s.sb.Update("matches",
+				"id=in.("+strings.Join(ids[i:end], ",")+")", fields); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // wipeAllMatches clears an event's schedule. Deleting matches/rounds cascades to

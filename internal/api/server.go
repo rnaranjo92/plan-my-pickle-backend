@@ -233,6 +233,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /registrations/{id}/uncheckin", s.ownerOnly("registration", "id", s.uncheckin))
 	mux.HandleFunc("POST /registrations/{id}/mark-paid", s.ownerOnly("registration", "id", s.markPaid))
 	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
+	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
 
 	// --- Demo seeding: load a sample tournament owned by the signed-in user, so
@@ -1194,6 +1195,26 @@ func (s *Server) updateRegistrationDetails(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// setPartner pairs a doubles registration with a partner (a registered player
+// via partnerRegistrationId, or a free-text partnerName), or clears it when both
+// are empty. Returns scheduleStale=true when a schedule already exists and a
+// real pairing changed (so the client can prompt a regenerate).
+func (s *Server) setPartner(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PartnerRegistrationID string `json:"partnerRegistrationId"`
+		PartnerName           string `json:"partnerName"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	stale, err := s.svc.SetPartner(r.PathValue("id"), req.PartnerRegistrationID, req.PartnerName)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"scheduleStale": stale})
 }
 
 // deleteRegistration removes a player's registration from an event (owner-only).

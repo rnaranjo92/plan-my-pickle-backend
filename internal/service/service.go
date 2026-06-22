@@ -1436,20 +1436,171 @@ func (s *Service) autoAssignBracket(eventID string, rating *float64) (string, er
 
 func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	// registrations has two FKs to players (player_id, partner_id) so the embed
-	// must name the FK column; alias both embeds to stable keys.
-	rows, err := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(eventID)+
-			"&select=id,event_id,player_id,bracket_id,payment_status,checked_in,check_in_token,"+
-			"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level),"+
-			"bracket:brackets(min_rating,max_rating)")
+	// must name the FK column; alias both embeds to stable keys. partner is the
+	// registered partner's player row (for paired doubles); partner_name is the
+	// free-text partner column.
+	base := "event_id=eq." + store.Q(eventID) +
+		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,%s" +
+		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level)," +
+		"partner:players!partner_id(full_name)," +
+		"bracket:brackets(min_rating,max_rating)"
+	rows, err := s.sb.Select("registrations", fmt.Sprintf(base, "partner_name,"))
 	if err != nil {
-		return nil, err
+		// Tolerate the partner_name column not existing yet (pre-migration): retry
+		// without it so the roster never breaks. Free-text partner notes simply
+		// don't appear until the migration runs.
+		rows, err = s.sb.Select("registrations", fmt.Sprintf(base, ""))
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := make([]model.Registration, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, mapRegistration(r))
 	}
 	return out, nil
+}
+
+// eventHasMatches reports whether a schedule has already been generated for the
+// event (any match row). Used to warn that changing a pairing leaves the live
+// schedule stale until it's regenerated.
+func (s *Service) eventHasMatches(eventID string) (bool, error) {
+	m, err := s.sb.SelectOne("matches", "event_id=eq."+store.Q(eventID)+"&select=id")
+	if err != nil {
+		return false, err
+	}
+	return m != nil, nil
+}
+
+type partnerRegRow struct {
+	id, eventID, playerID, bracketID, partnerID string
+}
+
+func (s *Service) loadPartnerRegRow(regID string) (partnerRegRow, error) {
+	row, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(regID)+"&select=id,event_id,player_id,bracket_id,partner_id")
+	if err != nil {
+		return partnerRegRow{}, err
+	}
+	if row == nil {
+		return partnerRegRow{}, errors.New("registration not found")
+	}
+	return partnerRegRow{
+		id:        asStr(row, "id"),
+		eventID:   asStr(row, "event_id"),
+		playerID:  asStr(row, "player_id"),
+		bracketID: asStr(row, "bracket_id"),
+		partnerID: asStr(row, "partner_id"),
+	}, nil
+}
+
+// unlinkPartnerOf clears partner_id/partner_name on whichever registration in
+// the event currently points BACK at playerID — i.e. the other side of a mutual
+// link — so re-pairing or clearing never leaves a dangling one-way link.
+func (s *Service) unlinkPartnerOf(eventID, playerID string) error {
+	if playerID == "" {
+		return nil
+	}
+	_, err := s.sb.Update("registrations",
+		"event_id=eq."+store.Q(eventID)+"&partner_id=eq."+store.Q(playerID),
+		map[string]any{"partner_id": nil, "partner_name": nil})
+	return err
+}
+
+// SetPartner sets a doubles registration's partner and returns whether the
+// event's schedule is now stale (a schedule already exists and a real pairing
+// changed). Modes:
+//   - partnerRegID set: pair two REGISTERED players. Both must be in the same
+//     event + division; writes partner_id mutually on both, clears free-text
+//     notes, and flips the event to fixed partners so the schedule keeps the
+//     pair together.
+//   - partnerName set (partnerRegID empty): record a free-text partner note for
+//     an un-registered partner (no schedule effect, no mode change).
+//   - both empty: clear the registration's partner.
+func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, error) {
+	reg, err := s.loadPartnerRegRow(regID)
+	if err != nil {
+		return false, err
+	}
+	ev, err := s.GetEvent(reg.eventID)
+	if err != nil {
+		return false, err
+	}
+	if ev.Format != "doubles" {
+		return false, errors.New("partners can only be set on doubles events")
+	}
+	partnerName = strings.TrimSpace(partnerName)
+	hasMatches, err := s.eventHasMatches(reg.eventID)
+	if err != nil {
+		return false, err
+	}
+
+	switch {
+	case partnerRegID != "":
+		if partnerRegID == regID {
+			return false, errors.New("a player can't be their own partner")
+		}
+		other, err := s.loadPartnerRegRow(partnerRegID)
+		if err != nil {
+			return false, err
+		}
+		if other.eventID != reg.eventID {
+			return false, errors.New("partner is not registered for this event")
+		}
+		if other.bracketID != reg.bracketID {
+			return false, errors.New("partners must be in the same division")
+		}
+		// Break any prior mutual links on either side before re-pairing.
+		if reg.partnerID != "" && reg.partnerID != other.playerID {
+			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
+				return false, err
+			}
+		}
+		if other.partnerID != "" && other.partnerID != reg.playerID {
+			if err := s.unlinkPartnerOf(reg.eventID, other.playerID); err != nil {
+				return false, err
+			}
+		}
+		if _, err := s.sb.Update("registrations", "id=eq."+store.Q(reg.id),
+			map[string]any{"partner_id": other.playerID, "partner_name": nil}); err != nil {
+			return false, err
+		}
+		if _, err := s.sb.Update("registrations", "id=eq."+store.Q(other.id),
+			map[string]any{"partner_id": reg.playerID, "partner_name": nil}); err != nil {
+			return false, err
+		}
+		if ev.PartnerMode != "fixed" {
+			if _, err := s.sb.Update("events", "id=eq."+store.Q(reg.eventID),
+				map[string]any{"partner_mode": "fixed"}); err != nil {
+				return false, err
+			}
+		}
+		return hasMatches, nil
+
+	case partnerName != "":
+		if reg.partnerID != "" {
+			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
+				return false, err
+			}
+		}
+		if _, err := s.sb.Update("registrations", "id=eq."+store.Q(reg.id),
+			map[string]any{"partner_id": nil, "partner_name": partnerName}); err != nil {
+			return false, err
+		}
+		return hasMatches && reg.partnerID != "", nil
+
+	default:
+		if reg.partnerID != "" {
+			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
+				return false, err
+			}
+		}
+		if _, err := s.sb.Update("registrations", "id=eq."+store.Q(reg.id),
+			map[string]any{"partner_id": nil, "partner_name": nil}); err != nil {
+			return false, err
+		}
+		return hasMatches && reg.partnerID != "", nil
+	}
 }
 
 // UpdateRegistrationDetails edits the player behind a registration (organizer

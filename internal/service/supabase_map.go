@@ -452,6 +452,10 @@ func mapRegistration(m map[string]any) model.Registration {
 		PaymentStatus: asStr(m, "payment_status"),
 		CheckedIn:     asBool(m, "checked_in"),
 		CheckInToken:  asStrPtr(m, "check_in_token"),
+		PartnerID:     asStrPtr(m, "partner_id"),
+		// partner_name may be absent (column added by a later migration); asStrPtr
+		// returns nil when the key is missing, so this is safe pre-migration.
+		PartnerNote: asStrPtr(m, "partner_name"),
 	}
 	var skill *float64
 	if p := asMap(m, "player"); p != nil {
@@ -460,6 +464,10 @@ func mapRegistration(m map[string]any) model.Registration {
 		r.DuprID = asStrPtr(p, "dupr_id")
 		r.DuprRating = asFloatPtr(p, "dupr_rating")
 		skill = asFloatPtr(p, "skill_level")
+	}
+	// Resolved name of a registered partner (via the partner_id FK embed).
+	if pp := asMap(m, "partner"); pp != nil {
+		r.PartnerName = asStrPtr(pp, "full_name")
 	}
 	// Effective rating: prefer DUPR, fall back to self-reported skill — the same
 	// precedence RegisterPlayer uses, so this list view's OUTSIDE-DIVISION flag

@@ -337,6 +337,14 @@ type Registration struct {
 	// OutsideRating is true when the player's DUPR rating falls outside their
 	// chosen division's rating band (a soft flag, not a block).
 	OutsideRating bool `json:"outsideRating"`
+	// Partner pairing (doubles). PartnerID is the partner's PLAYER id when paired
+	// with a registered player (set mutually on both registrations); PartnerName
+	// is that partner's resolved display name. PartnerNote holds a free-text
+	// partner name when the partner isn't a registered player. All nil for an
+	// unpaired or singles registration.
+	PartnerID   *string `json:"partnerId,omitempty"`
+	PartnerName *string `json:"partnerName,omitempty"`
+	PartnerNote *string `json:"partnerNote,omitempty"`
 	// AccountExists is set ONLY on the self-registration response (anonymous):
 	// whether an app account already exists for the registrant's email, so the
 	// thank-you screen can nudge sign-in vs sign-up. nil otherwise.

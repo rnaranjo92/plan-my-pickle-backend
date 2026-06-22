@@ -95,7 +95,14 @@ func (s *Service) AddLadderEntrant(leagueBracketID string, req model.AddLadderEn
 	if err != nil {
 		return model.LadderEntrant{}, err
 	}
-	pos := len(existing) + 1
+	// Bottom slot = (highest existing position) + 1, NOT count+1: if a prior
+	// removal's compaction partially failed it can leave a gap, and count+1 would
+	// then collide with a surviving higher position. ListLadder is ordered
+	// position.asc, so the last entry holds the max.
+	pos := 1
+	if len(existing) > 0 {
+		pos = existing[len(existing)-1].Position + 1
+	}
 	rows, err := s.sb.Insert("ladder_entrants", map[string]any{
 		"league_bracket_id": leagueBracketID,
 		"display_name":      strings.TrimSpace(req.DisplayName),

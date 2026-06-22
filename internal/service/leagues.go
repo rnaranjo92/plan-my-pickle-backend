@@ -18,6 +18,21 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
 	}
+	// Reject obviously-bad numbers so they can't poison standings / UI math.
+	if req.CashPrizeAmount != nil && *req.CashPrizeAmount < 0 {
+		return "", errors.New("cashPrizeAmount cannot be negative")
+	}
+	for _, d := range req.Divisions {
+		if d.MinRating != nil && d.MaxRating != nil && *d.MinRating > *d.MaxRating {
+			return "", errors.New("a division's minRating cannot exceed its maxRating")
+		}
+		if d.MinAge != nil && d.MaxAge != nil && *d.MinAge > *d.MaxAge {
+			return "", errors.New("a division's minAge cannot exceed its maxAge")
+		}
+		if d.DuprMin != nil && d.DuprMax != nil && *d.DuprMin > *d.DuprMax {
+			return "", errors.New("a division's duprMin cannot exceed its duprMax")
+		}
+	}
 	leagueType := req.LeagueType
 	if leagueType == "" {
 		leagueType = "round_robin"

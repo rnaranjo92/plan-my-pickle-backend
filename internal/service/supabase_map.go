@@ -256,6 +256,27 @@ func mapLadderMatch(m map[string]any) model.LadderMatch {
 	}
 }
 
+func mapTeam(m map[string]any) model.Team {
+	return model.Team{
+		ID:              asStr(m, "id"),
+		LeagueBracketID: asStr(m, "league_bracket_id"),
+		Name:            asStr(m, "name"),
+		PlayerID:        asStrPtr(m, "player_id"),
+	}
+}
+
+func mapTeamFixture(m map[string]any) model.TeamFixture {
+	return model.TeamFixture{
+		ID:              asStr(m, "id"),
+		LeagueBracketID: asStr(m, "league_bracket_id"),
+		TeamAID:         asStr(m, "team_a_id"),
+		TeamBID:         asStr(m, "team_b_id"),
+		WinnerTeamID:    asStr(m, "winner_team_id"),
+		Score:           asStr(m, "score"),
+		PlayedAt:        asStr(m, "played_at"),
+	}
+}
+
 func mapFinanceEntry(m map[string]any) model.FinanceEntry {
 	return model.FinanceEntry{
 		ID:          asStr(m, "id"),

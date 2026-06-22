@@ -135,6 +135,22 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /ladder-entrants/{id}",
 		s.ladderEntrantOwner("id", s.removeLadderEntrant))
 
+	// --- Team League (organizer-driven, SIMPLE single-fixture model): a
+	// division's (league_bracket) teams + recorded fixtures. Standings (W-L +
+	// win %) are computed from the fixtures on read, not stored. All writes are
+	// gated on the owning league via custom guards (resources are keyed on a
+	// division/team, not the league id, so ownerOnly doesn't fit).
+	mux.HandleFunc("GET /league-brackets/{id}/teams",
+		s.teamDivisionOwner("id", s.listTeamStandings))
+	mux.HandleFunc("GET /league-brackets/{id}/teams/fixtures",
+		s.teamDivisionOwner("id", s.teamFixtures))
+	mux.HandleFunc("POST /league-brackets/{id}/teams",
+		s.teamDivisionOwner("id", s.addTeam))
+	mux.HandleFunc("POST /league-brackets/{id}/teams/fixtures",
+		s.teamDivisionOwner("id", s.recordFixture))
+	mux.HandleFunc("DELETE /teams/{id}",
+		s.teamOwnerOfTeam("id", s.removeTeam))
+
 	// --- Owner-only: management actions require a valid token AND that the
 	// caller owns the event behind the resource (see service.OwnerOf).
 	mux.HandleFunc("POST /events/{id}", s.ownerOnly("event", "id", s.updateEvent))
@@ -385,6 +401,66 @@ func (s *Server) ladderHistory(w http.ResponseWriter, r *http.Request) {
 // removeLadderEntrant deletes an entrant and closes the ladder gap below it.
 func (s *Server) removeLadderEntrant(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.RemoveLadderEntrant(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// listTeamStandings returns a division's teams with their computed W-L record
+// and win %, ordered by wins (then win %). This is the standings view (computed
+// from the fixtures, not stored). Owner-gated.
+func (s *Server) listTeamStandings(w http.ResponseWriter, r *http.Request) {
+	standings, err := s.svc.ListTeamStandings(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, standings)
+}
+
+// addTeam registers a team on a division.
+func (s *Server) addTeam(w http.ResponseWriter, r *http.Request) {
+	var req model.AddTeamRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	team, err := s.svc.AddTeam(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, team)
+}
+
+// recordFixture records a single fixture result between two teams. Returns the
+// recorded fixture; standings recompute on the next read.
+func (s *Server) recordFixture(w http.ResponseWriter, r *http.Request) {
+	var req model.RecordFixtureRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	f, err := s.svc.RecordFixture(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, f)
+}
+
+// teamFixtures returns a division's recorded fixtures, newest first.
+func (s *Server) teamFixtures(w http.ResponseWriter, r *http.Request) {
+	fixtures, err := s.svc.TeamFixtures(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, fixtures)
+}
+
+// removeTeam deletes a team; its fixture history cascade-deletes.
+func (s *Server) removeTeam(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveTeam(r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}
@@ -1444,6 +1520,32 @@ func (s *Server) ladderDivisionOwner(idParam string, next http.HandlerFunc) http
 func (s *Server) ladderEntrantOwner(idParam string, next http.HandlerFunc) http.HandlerFunc {
 	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		owner, err := s.svc.LadderOwnerOfEntrant(r.PathValue(idParam))
+		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// teamDivisionOwner guards a team-league handler keyed on a league_bracket
+// (division) path id: it requires a valid token AND that the caller owns the
+// league behind that division (division → league → owner via service.TeamOwner).
+// Mirrors ladderDivisionOwner.
+func (s *Server) teamDivisionOwner(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.TeamOwner(r.PathValue(idParam))
+		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// teamOwnerOfTeam is teamDivisionOwner for handlers keyed on a team id (resolves
+// team → division → league → owner via service.TeamOwnerOfTeam).
+func (s *Server) teamOwnerOfTeam(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.TeamOwnerOfTeam(r.PathValue(idParam))
 		if !ladderOwnerOK(w, r, owner, err) {
 			return
 		}

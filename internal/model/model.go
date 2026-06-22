@@ -237,6 +237,61 @@ type RecordLadderResultRequest struct {
 	PlayedAt string `json:"playedAt"`
 }
 
+// Team is one team on a league division (Team League — the SIMPLE single-fixture
+// model). Name is the display name; PlayerID optionally links to a real app
+// player (e.g. the captain) — the roster is minimal and NOT required to score.
+// Team leagues (leagues.league_type == 'team') are organizer-driven.
+type Team struct {
+	ID              string  `json:"id"`
+	LeagueBracketID string  `json:"leagueBracketId"`
+	Name            string  `json:"name"`
+	PlayerID        *string `json:"playerId,omitempty"`
+}
+
+// TeamFixture is one recorded result between two teams on a division (the
+// immutable history). WinnerTeamID is whichever of A/B won; Score is free-form
+// ("3-1" games won, or "11-7, 9-11, 11-5") — the single-fixture model keeps it
+// as one optional string with NO per-line detail.
+type TeamFixture struct {
+	ID              string `json:"id"`
+	LeagueBracketID string `json:"leagueBracketId"`
+	TeamAID         string `json:"teamAId"`
+	TeamBID         string `json:"teamBId"`
+	WinnerTeamID    string `json:"winnerTeamId"`
+	Score           string `json:"score,omitempty"`
+	PlayedAt        string `json:"playedAt"`
+}
+
+// TeamStanding is a team's computed record on a division: fixtures won/lost and
+// win %. NOT stored — computed in Go from the recorded fixtures (no leapfrog),
+// ordered by wins then win %.
+type TeamStanding struct {
+	TeamID string `json:"teamId"`
+	Name   string `json:"name"`
+	Wins   int    `json:"wins"`
+	Losses int    `json:"losses"`
+	Played int    `json:"played"`
+	// WinPct is wins / played in [0,1]; 0 when the team has no fixtures.
+	WinPct float64 `json:"winPct"`
+}
+
+// AddTeamRequest adds a team to a division. PlayerID is optional (roster link).
+type AddTeamRequest struct {
+	Name     string  `json:"name"`
+	PlayerID *string `json:"playerId,omitempty"`
+}
+
+// RecordFixtureRequest records a fixture between two teams. WinnerTeamID must be
+// one of A/B. Score is optional free-text.
+type RecordFixtureRequest struct {
+	TeamAID      string `json:"teamAId"`
+	TeamBID      string `json:"teamBId"`
+	WinnerTeamID string `json:"winnerTeamId"`
+	Score        string `json:"score"`
+	// PlayedAt is an optional ISO-8601 timestamp; empty defaults to now().
+	PlayedAt string `json:"playedAt"`
+}
+
 type Registration struct {
 	ID            string   `json:"id"`
 	EventID       string   `json:"eventId"`

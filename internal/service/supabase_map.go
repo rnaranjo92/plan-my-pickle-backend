@@ -277,6 +277,19 @@ func mapTeamFixture(m map[string]any) model.TeamFixture {
 	}
 }
 
+func mapFlexMatchup(m map[string]any) model.FlexMatchup {
+	return model.FlexMatchup{
+		ID:              asStr(m, "id"),
+		LeagueBracketID: asStr(m, "league_bracket_id"),
+		TeamAID:         asStr(m, "team_a_id"),
+		TeamBID:         asStr(m, "team_b_id"),
+		WinnerTeamID:    asStr(m, "winner_team_id"),
+		Score:           asStr(m, "score"),
+		Status:          asStr(m, "status"),
+		PlayedAt:        asStr(m, "played_at"),
+	}
+}
+
 func mapFinanceEntry(m map[string]any) model.FinanceEntry {
 	return model.FinanceEntry{
 		ID:          asStr(m, "id"),

@@ -151,6 +151,27 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /teams/{id}",
 		s.teamOwnerOfTeam("id", s.removeTeam))
 
+	// --- Flex League (organizer-driven, SELF-SCHEDULED round-robin): a division's
+	// (league_bracket) fixed-partner teams (REUSING the `teams` table) + a
+	// pre-generated round-robin SCHEDULE of matchups. Teams play on their own time;
+	// the organizer records each matchup's result and standings (W-L + win %) are
+	// computed from the COMPLETED matchups on read, not stored. All writes are
+	// gated on the owning league via custom guards (resources are keyed on a
+	// division/team/matchup, not the league id, so ownerOnly doesn't fit). Teams
+	// are added/removed via the shared /teams routes above (Flex reuses that table).
+	mux.HandleFunc("GET /league-brackets/{id}/flex/teams",
+		s.flexDivisionOwner("id", s.listFlexStandings))
+	mux.HandleFunc("GET /league-brackets/{id}/flex/matchups",
+		s.flexDivisionOwner("id", s.listFlexMatchups))
+	mux.HandleFunc("POST /league-brackets/{id}/flex/teams",
+		s.flexDivisionOwner("id", s.addFlexTeam))
+	mux.HandleFunc("POST /league-brackets/{id}/flex/generate",
+		s.flexDivisionOwner("id", s.generateFlexSchedule))
+	mux.HandleFunc("POST /league-brackets/{id}/flex/matchups/{matchupId}/result",
+		s.flexDivisionOwner("id", s.recordFlexResult))
+	mux.HandleFunc("DELETE /flex-teams/{id}",
+		s.flexOwnerOfTeam("id", s.removeFlexTeam))
+
 	// --- Owner-only: management actions require a valid token AND that the
 	// caller owns the event behind the resource (see service.OwnerOf).
 	mux.HandleFunc("POST /events/{id}", s.ownerOnly("event", "id", s.updateEvent))
@@ -461,6 +482,80 @@ func (s *Server) teamFixtures(w http.ResponseWriter, r *http.Request) {
 // removeTeam deletes a team; its fixture history cascade-deletes.
 func (s *Server) removeTeam(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.RemoveTeam(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// listFlexStandings returns a Flex division's teams with their computed W-L
+// record and win %, ordered by wins (then win %) — computed from the COMPLETED
+// matchups, not stored. Owner-gated.
+func (s *Server) listFlexStandings(w http.ResponseWriter, r *http.Request) {
+	standings, err := s.svc.ListFlexStandings(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, standings)
+}
+
+// listFlexMatchups returns a Flex division's full generated schedule (pending +
+// completed matchups). Owner-gated.
+func (s *Server) listFlexMatchups(w http.ResponseWriter, r *http.Request) {
+	matchups, err := s.svc.ListFlexMatchups(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, matchups)
+}
+
+// addFlexTeam registers a team on a Flex division (reuses the `teams` table).
+func (s *Server) addFlexTeam(w http.ResponseWriter, r *http.Request) {
+	var req model.AddTeamRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	team, err := s.svc.AddFlexTeam(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, team)
+}
+
+// generateFlexSchedule creates the division's round-robin schedule (every team
+// pair → a pending matchup), idempotently. Returns the count created.
+func (s *Server) generateFlexSchedule(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.GenerateFlexSchedule(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"matchups": n})
+}
+
+// recordFlexResult records the result of a pending matchup (score + winner),
+// flipping it to completed. The path carries both the division id and the
+// matchup id; the service binds the matchup to that division before writing.
+func (s *Server) recordFlexResult(w http.ResponseWriter, r *http.Request) {
+	var req model.RecordFlexResultRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	m, err := s.svc.RecordFlexResult(r.PathValue("id"), r.PathValue("matchupId"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// removeFlexTeam deletes a Flex team; its matchups cascade-delete and standings
+// recompute on the next read.
+func (s *Server) removeFlexTeam(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveFlexTeam(r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}
@@ -1544,6 +1639,33 @@ func (s *Server) teamDivisionOwner(idParam string, next http.HandlerFunc) http.H
 // teamOwnerOfTeam is teamDivisionOwner for handlers keyed on a team id (resolves
 // team → division → league → owner via service.TeamOwnerOfTeam).
 func (s *Server) teamOwnerOfTeam(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.TeamOwnerOfTeam(r.PathValue(idParam))
+		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// flexDivisionOwner guards a Flex-league handler keyed on a league_bracket
+// (division) path id: it requires a valid token AND that the caller owns the
+// league behind that division (division → league → owner via service.FlexOwner).
+// Mirrors teamDivisionOwner.
+func (s *Server) flexDivisionOwner(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.FlexOwner(r.PathValue(idParam))
+		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// flexOwnerOfTeam is flexDivisionOwner for handlers keyed on a team id (resolves
+// team → division → league → owner via service.TeamOwnerOfTeam — Flex reuses the
+// `teams` table, so the same ownership chain applies).
+func (s *Server) flexOwnerOfTeam(idParam string, next http.HandlerFunc) http.HandlerFunc {
 	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		owner, err := s.svc.TeamOwnerOfTeam(r.PathValue(idParam))
 		if !ladderOwnerOK(w, r, owner, err) {

@@ -292,6 +292,36 @@ type RecordFixtureRequest struct {
 	PlayedAt string `json:"playedAt"`
 }
 
+// FlexMatchup is one team-pair matchup in a Flex league division's generated
+// round-robin schedule (Flex League — the self-scheduled season). It reuses the
+// `teams` table for entrants. A matchup starts pending (generated, not yet
+// played); recording a result sets WinnerTeamID (one of A/B), an optional
+// free-text Score, PlayedAt, and flips Status to "completed". Standings are
+// computed in Go from the COMPLETED matchups (reusing the Team-league math).
+type FlexMatchup struct {
+	ID              string `json:"id"`
+	LeagueBracketID string `json:"leagueBracketId"`
+	TeamAID         string `json:"teamAId"`
+	TeamBID         string `json:"teamBId"`
+	// WinnerTeamID is whichever of A/B won, or "" while the matchup is pending.
+	WinnerTeamID string `json:"winnerTeamId,omitempty"`
+	Score        string `json:"score,omitempty"`
+	// Status: pending | completed.
+	Status string `json:"status"`
+	// PlayedAt is set only once the matchup is completed; "" while pending.
+	PlayedAt string `json:"playedAt,omitempty"`
+}
+
+// RecordFlexResultRequest records the result of a pending Flex matchup, flipping
+// it to completed. WinnerTeamID must be one of the matchup's two teams. Score is
+// optional free-text.
+type RecordFlexResultRequest struct {
+	WinnerTeamID string `json:"winnerTeamId"`
+	Score        string `json:"score"`
+	// PlayedAt is an optional ISO-8601 timestamp; empty defaults to now().
+	PlayedAt string `json:"playedAt"`
+}
+
 type Registration struct {
 	ID            string   `json:"id"`
 	EventID       string   `json:"eventId"`

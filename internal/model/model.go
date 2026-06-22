@@ -257,6 +257,10 @@ type Match struct {
 	// BracketTier classifies a bracket match for rendering: main | consolation |
 	// winners | losers | grand_final. Empty/"main" for ordinary brackets.
 	BracketTier     string   `json:"bracketTier,omitempty"`
+	// BracketGroup tags a Compass Draw match's direction (east | west | north |
+	// south | east_r5 | …) so the UI can split the draw into per-direction
+	// brackets. Empty/absent for every non-compass match.
+	BracketGroup    string   `json:"bracketGroup,omitempty"`
 	BracketRound    *int     `json:"bracketRound,omitempty"`
 	BracketSlot     *int     `json:"bracketSlot,omitempty"`
 	CourtNumber     *int     `json:"courtNumber,omitempty"`

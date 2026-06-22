@@ -1482,6 +1482,13 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 				return 0, err
 			}
 			total += n
+		} else if ev.TournamentFormat == "compass" {
+			sides := seedSides(sidesForBracket(ev, regs), skill)
+			n, err := s.persistCompass(ev, b.ID, sides)
+			if err != nil {
+				return 0, err
+			}
+			total += n
 		} else {
 			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum)
 			if err != nil {
@@ -2290,6 +2297,96 @@ func (s *Service) persistDoubleElim(ev model.Event, bracketID string, seededSide
 			continue
 		}
 		feeds.add(idByKey[dkey(m.Tier, m.Round, m.Slot)], upd)
+	}
+	if err := feeds.flush(s); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// persistCompass lays down a Compass Draw: one EAST single-elimination bracket
+// plus one single-elim CONSOLATION bracket per East losing round (West / North /
+// South / East-R{n}). Every match is tagged with its compass direction in
+// matches.bracket_group; all stay bracket_tier='main' (East and the
+// consolations are all single-elim trees, so the existing 'main' medal/header
+// rendering applies per direction). Mirrors persistDoubleElim's batching: ONE
+// bulk match Insert (ids zipped by input order), one bulk participant Upsert, and
+// grouped feed Updates. Winner feeds (feeds_match_id) advance within a bracket;
+// East loser drops (loser_feeds_match_id) route a beaten team into its
+// consolation — both are plain match ids, so the generic advanceAfterScore /
+// advanceTeam path (incl. its re-score cascade) routes winners and losers across
+// brackets unchanged.
+func (s *Service) persistCompass(ev model.Event, bracketID string, seededSides [][]string) (int, error) {
+	plan := engine.GenerateCompass(seededSides)
+	ckey := func(group string, r, slot int) string {
+		return group + ":" + strconv.Itoa(r) + ":" + strconv.Itoa(slot)
+	}
+	idByKey := make(map[string]string, len(plan.Matches))
+
+	matchRows := make([]map[string]any, 0, len(plan.Matches))
+	for _, m := range plan.Matches {
+		row := map[string]any{
+			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+			"bracket_tier": "main", "bracket_group": m.Group,
+			"bracket_round": m.Round, "bracket_slot": m.Slot,
+			"status": "scheduled",
+		}
+		if m.ResolvedWinner != nil { // an East round-1 bye — auto-complete it
+			row["status"] = "completed"
+			row["completed_at"] = now()
+			if m.Side1 != nil && !engine.IsBye(m.Side1) {
+				row["winning_team"] = 1
+			} else {
+				row["winning_team"] = 2
+			}
+		}
+		matchRows = append(matchRows, row)
+	}
+	if len(matchRows) == 0 {
+		return 0, nil
+	}
+	insMatches, err := s.sb.Insert("matches", matchRows)
+	if err != nil {
+		return 0, err
+	}
+	if len(insMatches) != len(plan.Matches) {
+		return 0, errors.New("compass match insert count mismatch")
+	}
+	for i, m := range plan.Matches {
+		idByKey[ckey(m.Group, m.Round, m.Slot)] = asStr(insMatches[i], "id")
+	}
+	count := len(insMatches)
+
+	partRows := make([]map[string]any, 0)
+	for i, m := range plan.Matches {
+		mid := asStr(insMatches[i], "id")
+		partRows = appendSideParts(partRows, mid, 1, m.Side1)
+		partRows = appendSideParts(partRows, mid, 2, m.Side2)
+	}
+	if len(partRows) > 0 {
+		if _, err := s.sb.Upsert("match_participants", "match_id,player_id", partRows); err != nil {
+			return 0, err
+		}
+	}
+
+	// Winner feeds (within a bracket) + East loser drops (into a consolation), one
+	// payload per match so the bulk Update grouping keys on the combined fields.
+	feeds := newFeedUpdates()
+	for _, m := range plan.Matches {
+		upd := map[string]any{}
+		if m.FeedsRound != 0 {
+			upd["feeds_match_id"] = idByKey[ckey(m.Group, m.FeedsRound, m.FeedsSlot)]
+			upd["feeds_slot"] = m.FeedsTeam
+		}
+		// A bye East match has no loser to drop.
+		if m.LoserGroup != "" && m.ResolvedWinner == nil {
+			upd["loser_feeds_match_id"] = idByKey[ckey(m.LoserGroup, m.LoserRound, m.LoserSlot)]
+			upd["loser_feeds_slot"] = m.LoserTeam
+		}
+		if len(upd) == 0 {
+			continue
+		}
+		feeds.add(idByKey[ckey(m.Group, m.Round, m.Slot)], upd)
 	}
 	if err := feeds.flush(s); err != nil {
 		return 0, err

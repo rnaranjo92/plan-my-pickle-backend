@@ -233,6 +233,29 @@ func mapLeagueBracket(m map[string]any) model.LeagueBracket {
 	}
 }
 
+func mapLadderEntrant(m map[string]any) model.LadderEntrant {
+	return model.LadderEntrant{
+		ID:              asStr(m, "id"),
+		LeagueBracketID: asStr(m, "league_bracket_id"),
+		DisplayName:     asStr(m, "display_name"),
+		PlayerID:        asStrPtr(m, "player_id"),
+		IsTeam:          asBool(m, "is_team"),
+		Position:        asInt(m, "position"),
+	}
+}
+
+func mapLadderMatch(m map[string]any) model.LadderMatch {
+	return model.LadderMatch{
+		ID:              asStr(m, "id"),
+		LeagueBracketID: asStr(m, "league_bracket_id"),
+		EntrantAID:      asStr(m, "entrant_a_id"),
+		EntrantBID:      asStr(m, "entrant_b_id"),
+		WinnerEntrantID: asStr(m, "winner_entrant_id"),
+		Score:           asStr(m, "score"),
+		PlayedAt:        asStr(m, "played_at"),
+	}
+}
+
 func mapFinanceEntry(m map[string]any) model.FinanceEntry {
 	return model.FinanceEntry{
 		ID:          asStr(m, "id"),

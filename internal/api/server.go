@@ -119,6 +119,22 @@ func NewServer(svc *service.Service) http.Handler {
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
 
+	// --- Ladder League (organizer-driven): a division's (league_bracket) ladder
+	// is an ordered ranking of entrants; recording a result applies the leapfrog
+	// reorder. All writes are gated on the owning league via custom guards (the
+	// resources are keyed on a division/entrant, not the league id, so ownerOnly
+	// doesn't fit). Player self-service challenges are a FUTURE v2.
+	mux.HandleFunc("GET /league-brackets/{id}/ladder",
+		s.ladderDivisionOwner("id", s.listLadder))
+	mux.HandleFunc("GET /league-brackets/{id}/ladder/history",
+		s.ladderDivisionOwner("id", s.ladderHistory))
+	mux.HandleFunc("POST /league-brackets/{id}/ladder/entrants",
+		s.ladderDivisionOwner("id", s.addLadderEntrant))
+	mux.HandleFunc("POST /league-brackets/{id}/ladder/results",
+		s.ladderDivisionOwner("id", s.recordLadderResult))
+	mux.HandleFunc("DELETE /ladder-entrants/{id}",
+		s.ladderEntrantOwner("id", s.removeLadderEntrant))
+
 	// --- Owner-only: management actions require a valid token AND that the
 	// caller owns the event behind the resource (see service.OwnerOf).
 	mux.HandleFunc("POST /events/{id}", s.ownerOnly("event", "id", s.updateEvent))
@@ -314,6 +330,65 @@ func (s *Server) leagueStandings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// listLadder returns a division's ladder, ordered by position (1 = top). This is
+// also the standings — the ladder order IS the ranking. Owner-gated.
+func (s *Server) listLadder(w http.ResponseWriter, r *http.Request) {
+	entrants, err := s.svc.ListLadder(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entrants)
+}
+
+// addLadderEntrant appends an entrant to the BOTTOM of a division's ladder.
+func (s *Server) addLadderEntrant(w http.ResponseWriter, r *http.Request) {
+	var req model.AddLadderEntrantRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	entrant, err := s.svc.AddLadderEntrant(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, entrant)
+}
+
+// recordLadderResult records a match between two entrants and applies the
+// leapfrog reorder atomically. Returns the recorded match.
+func (s *Server) recordLadderResult(w http.ResponseWriter, r *http.Request) {
+	var req model.RecordLadderResultRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	m, err := s.svc.RecordLadderResult(req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// ladderHistory returns a division's recorded matches, newest first.
+func (s *Server) ladderHistory(w http.ResponseWriter, r *http.Request) {
+	matches, err := s.svc.LadderHistory(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, matches)
+}
+
+// removeLadderEntrant deletes an entrant and closes the ladder gap below it.
+func (s *Server) removeLadderEntrant(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveLadderEntrant(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 // updateEvent edits an existing event's metadata (owner-only). Structural
@@ -1348,6 +1423,50 @@ func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.Han
 		}
 		next(w, r)
 	})
+}
+
+// ladderDivisionOwner guards a ladder handler keyed on a league_bracket
+// (division) path id: it requires a valid token AND that the caller owns the
+// league behind that division. Mirrors ownerOnly, but resolves ownership via the
+// division → league → owner chain (service.LadderOwner).
+func (s *Server) ladderDivisionOwner(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.LadderOwner(r.PathValue(idParam))
+		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// ladderEntrantOwner is ladderDivisionOwner for handlers keyed on an entrant id
+// (resolves entrant → division → league → owner via service.LadderOwnerOfEntrant).
+func (s *Server) ladderEntrantOwner(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner, err := s.svc.LadderOwnerOfEntrant(r.PathValue(idParam))
+		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// ladderOwnerOK writes the appropriate error and returns false when the owner
+// lookup failed or the caller isn't the owner; true means proceed.
+func ladderOwnerOK(w http.ResponseWriter, r *http.Request, owner string, err error) bool {
+	if errors.Is(err, service.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return false
+	}
+	if owner == "" || owner != userID(r) {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return false
+	}
+	return true
 }
 
 // ownerOrPasscode guards a handler so it's reachable by EITHER the event owner

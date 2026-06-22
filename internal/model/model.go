@@ -189,6 +189,54 @@ type LeagueBracket struct {
 	SortOrder    int      `json:"sortOrder"`
 }
 
+// LadderEntrant is one competitor on a league division's ladder. Position is the
+// 1-based rank (1 = top of the ladder). PlayerID optionally links to a real app
+// player; otherwise the entrant is just a free-text display name the organizer
+// typed. Ladder leagues (leagues.league_type == 'ladder') are organizer-driven —
+// player self-service challenges are an explicit FUTURE v2.
+type LadderEntrant struct {
+	ID              string  `json:"id"`
+	LeagueBracketID string  `json:"leagueBracketId"`
+	DisplayName     string  `json:"displayName"`
+	PlayerID        *string `json:"playerId,omitempty"`
+	IsTeam          bool    `json:"isTeam"`
+	Position        int     `json:"position"`
+}
+
+// LadderMatch is one recorded result between two entrants on a division's ladder
+// (the immutable history). WinnerEntrantID is whichever of A/B won; Score is
+// free-form ("11-7" / "11-9, 7-11, 11-5") so 1-day, multi-day and best-of-N all
+// fit. The leapfrog reorder (applied when a lower-ranked entrant wins) is a
+// side-effect of recording the match, not stored on this row.
+type LadderMatch struct {
+	ID              string `json:"id"`
+	LeagueBracketID string `json:"leagueBracketId"`
+	EntrantAID      string `json:"entrantAId"`
+	EntrantBID      string `json:"entrantBId"`
+	WinnerEntrantID string `json:"winnerEntrantId"`
+	Score           string `json:"score,omitempty"`
+	PlayedAt        string `json:"playedAt"`
+}
+
+// AddLadderEntrantRequest adds an entrant to a division's ladder. A new entrant
+// joins at the BOTTOM (the service computes its position). PlayerID is optional.
+type AddLadderEntrantRequest struct {
+	DisplayName string  `json:"displayName"`
+	PlayerID    *string `json:"playerId,omitempty"`
+	IsTeam      bool    `json:"isTeam"`
+}
+
+// RecordLadderResultRequest records a match between two entrants and applies the
+// leapfrog reorder. WinnerEntrantID must be one of A/B. Score is optional.
+type RecordLadderResultRequest struct {
+	EntrantAID      string `json:"entrantAId"`
+	EntrantBID      string `json:"entrantBId"`
+	WinnerEntrantID string `json:"winnerEntrantId"`
+	Score           string `json:"score"`
+	// PlayedAt is an optional ISO-8601 timestamp; empty defaults to now().
+	PlayedAt string `json:"playedAt"`
+}
+
 type Registration struct {
 	ID            string   `json:"id"`
 	EventID       string   `json:"eventId"`

@@ -2709,9 +2709,11 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 	// Only real, played results are eligible for DUPR — forfeits, retirements and
 	// walkovers aren't submitted (no genuine head-to-head score).
 	if rt := asStr(m, "result_type"); ev != nil && asBool(ev, "dupr_sanctioned") && (rt == "" || rt == "normal") {
-		if err := s.queueDuprSubmission(matchID, eventID); err != nil {
-			return err
-		}
+		// Best-effort: this only ENQUEUES a row for the organizer's later DUPR
+		// import (the real submit is SubmitPendingToDupr) — never fail an
+		// already-committed score over the deferred queue write, mirroring the
+		// syncEventStatus best-effort treatment below.
+		_ = s.queueDuprSubmission(matchID, eventID)
 	}
 	// Flip the event to "completed" once nothing is left to play (so it stops
 	// showing a live badge), or back to "in_progress" if a re-score/undo reopens
@@ -3883,10 +3885,10 @@ func (s *Service) StartRound(roundID string) (int, error) {
 				court = l
 			}
 		}
-		n, err := s.notifyMatchStart(asStr(m, "id"), asStr(m, "event_id"), court, roundNumber)
-		if err != nil {
-			return 0, err
-		}
+		// Best-effort per match: the round is already active and its matches are
+		// marked in_progress — a failed text/notification must NOT fail the whole
+		// start (the organizer would re-tap and double-notify everyone else).
+		n, _ := s.notifyMatchStart(asStr(m, "id"), asStr(m, "event_id"), court, roundNumber)
 		sent += n
 	}
 	return sent, nil
@@ -3930,7 +3932,10 @@ func (s *Service) StartMatch(matchID string) (int, error) {
 	if r := asMap(m, "round"); r != nil {
 		rn = asInt(r, "round_number")
 	}
-	return s.notifyMatchStart(matchID, eventID, court, rn)
+	// Best-effort: the match is already live; a failed text/notification must not
+	// report the start as failed (the organizer would re-tap, double-notifying).
+	n, _ := s.notifyMatchStart(matchID, eventID, court, rn)
+	return n, nil
 }
 
 // UnstartMatch reverts a match that was marked live (in_progress) back to
@@ -4633,12 +4638,26 @@ func (s *Service) SwapMatchPlayer(matchID, outPlayerID, inPlayerID string) error
 	if outPlayerID == inPlayerID {
 		return nil
 	}
-	pl, err := s.sb.SelectOne("players", "id=eq."+store.Q(inPlayerID)+"&select=id")
+	// The replacement must be REGISTERED in THIS match's event — not merely an
+	// existing player row. Player rows are shared across events, so without
+	// binding the body-supplied in-player to the path match's event an organizer
+	// could swap in another organizer's player (cross-event IDOR / confused
+	// deputy — same class as the ladder/team fixes).
+	mrow, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+"&select=event_id")
 	if err != nil {
 		return err
 	}
-	if pl == nil {
-		return errors.New("replacement player not found")
+	if mrow == nil {
+		return ErrNotFound
+	}
+	reg, err := s.sb.SelectOne("registrations",
+		"event_id=eq."+store.Q(asStr(mrow, "event_id"))+
+			"&player_id=eq."+store.Q(inPlayerID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if reg == nil {
+		return errors.New("replacement player is not registered in this event")
 	}
 	// The player being swapped out must currently be in the match.
 	cur, err := s.sb.SelectOne("match_participants",

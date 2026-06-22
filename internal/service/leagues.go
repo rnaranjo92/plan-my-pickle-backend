@@ -113,6 +113,160 @@ func (s *Service) ListLeagues(ownerID string) ([]model.League, error) {
 	return out, nil
 }
 
+// leagueIDsForUser returns the set of league ids the caller PARTICIPATES in
+// (not owns) — the shared "what leagues am I connected to as a player" rule,
+// used by both MyLeagues and IsLeagueParticipant so the definition lives in one
+// place. A participant is:
+//
+//   - registered for an event whose league_id is set (reuse the MyEvents
+//     registration-matching: caller's player rows → registrations → events with
+//     a non-null league_id → their league), and/or
+//   - an entrant in a league bracket: a ladder_entrants / teams row whose
+//     player_id matches one of the caller's player rows → league_bracket →
+//     league.
+//
+// Returns a deduped set keyed by league id. An empty caller (no player rows)
+// yields an empty set.
+func (s *Service) leagueIDsForUser(userID, email string) (map[string]bool, error) {
+	out := map[string]bool{}
+	pidList, err := s.playerIDsForUser(userID, email)
+	if err != nil {
+		return nil, err
+	}
+	if len(pidList) == 0 {
+		return out, nil
+	}
+	pids := strings.Join(pidList, ",")
+
+	// (a) Registered for an event that belongs to a league. Two steps (mirrors
+	// MyEvents): the caller's registrations → their event ids → the events that
+	// have a non-null league_id → those leagues.
+	regs, err := s.sb.Select("registrations",
+		"player_id=in.("+pids+")&select=event_id")
+	if err != nil {
+		return nil, err
+	}
+	evIDs := map[string]bool{}
+	for _, r := range regs {
+		if eid := asStr(r, "event_id"); eid != "" {
+			evIDs[eid] = true
+		}
+	}
+	if len(evIDs) > 0 {
+		ids := make([]string, 0, len(evIDs))
+		for id := range evIDs {
+			ids = append(ids, id)
+		}
+		evs, err := s.sb.Select("events",
+			"id=in.("+strings.Join(ids, ",")+")&league_id=not.is.null&select=league_id")
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range evs {
+			if lid := asStr(e, "league_id"); lid != "" {
+				out[lid] = true
+			}
+		}
+	}
+
+	// (b) An entrant in a league bracket — a ladder_entrants or teams row whose
+	// player_id matches the caller. Resolve each row's league_bracket_id → the
+	// owning league via league_brackets.
+	bracketIDs := map[string]bool{}
+	for _, table := range []string{"ladder_entrants", "teams"} {
+		rows, err := s.sb.Select(table,
+			"player_id=in.("+pids+")&select=league_bracket_id")
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if bid := asStr(r, "league_bracket_id"); bid != "" {
+				bracketIDs[bid] = true
+			}
+		}
+	}
+	if len(bracketIDs) > 0 {
+		bids := make([]string, 0, len(bracketIDs))
+		for id := range bracketIDs {
+			bids = append(bids, id)
+		}
+		bks, err := s.sb.Select("league_brackets",
+			"id=in.("+strings.Join(bids, ",")+")&select=league_id")
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range bks {
+			if lid := asStr(b, "league_id"); lid != "" {
+				out[lid] = true
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// IsLeagueParticipant reports whether the caller participates in a league —
+// the gate (alongside ownership) for league READ access. Same participant
+// definition as MyLeagues (leagueIDsForUser): registered for one of the
+// league's events, or an entrant in one of its brackets.
+func (s *Service) IsLeagueParticipant(leagueID, userID, email string) (bool, error) {
+	ids, err := s.leagueIDsForUser(userID, email)
+	if err != nil {
+		return false, err
+	}
+	return ids[leagueID], nil
+}
+
+// MyLeagues returns the DISTINCT leagues the caller is connected to: the ones
+// they OWN (owner_id) UNION the ones they PARTICIPATE in (leagueIDsForUser —
+// registered for a league's event, or an entrant in a league's bracket). The
+// result is the deduped union, newest first.
+func (s *Service) MyLeagues(userID, email string) ([]model.League, error) {
+	byID := map[string]model.League{}
+
+	// OWNED — reuse the owner-scoped list.
+	owned, err := s.ListLeagues(userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range owned {
+		byID[l.ID] = l
+	}
+
+	// PARTICIPANT — the league ids the caller plays in, fetched and merged.
+	partIDs, err := s.leagueIDsForUser(userID, email)
+	if err != nil {
+		return nil, err
+	}
+	missing := make([]string, 0, len(partIDs))
+	for id := range partIDs {
+		if _, ok := byID[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		rows, err := s.sb.Select("leagues",
+			"id=in.("+strings.Join(missing, ",")+")&select=*")
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			l := mapLeague(r)
+			byID[l.ID] = l
+		}
+	}
+
+	out := make([]model.League, 0, len(byID))
+	for _, l := range byID {
+		out = append(out, l)
+	}
+	// Newest first (created_at desc), matching ListLeagues' order.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	return out, nil
+}
+
 // GetLeague returns a league plus its sessions (events), ordered by start date
 // (events without a start date sort last, then by creation).
 func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {

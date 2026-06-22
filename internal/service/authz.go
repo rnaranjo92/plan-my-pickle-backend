@@ -63,6 +63,22 @@ func (s *Service) OwnerOf(kind, id string) (string, error) {
 	return asStr(ev, "owner_id"), nil
 }
 
+// LeagueIDOfDivision returns the league id behind a division (league_bracket),
+// or ErrNotFound if the division is missing. Used by the leagueViewer gate to
+// authorize ladder/team/flex READS keyed on a division id: it maps the division
+// to its league so ownership/participation can be checked against that league.
+func (s *Service) LeagueIDOfDivision(leagueBracketID string) (string, error) {
+	row, err := s.sb.SelectOne("league_brackets",
+		"id=eq."+store.Q(leagueBracketID)+"&select=league_id")
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", ErrNotFound
+	}
+	return asStr(row, "league_id"), nil
+}
+
 // EventIDOfMatch returns the event_id a match belongs to, or ErrNotFound if the
 // match is missing. Used by the scorekeeper auth path (ownerOrPasscode) to map a
 // match to the event whose admin passcode it must validate.

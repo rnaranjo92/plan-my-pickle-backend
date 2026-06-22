@@ -107,14 +107,20 @@ func NewServer(svc *service.Service) http.Handler {
 	// --- Authenticated: creating an event stamps the caller as its owner.
 	mux.HandleFunc("POST /events", requireAuth(s.createEvent))
 
-	// --- Leagues (season / recurring play): owner-scoped, like events. Creating
-	// a league stamps the caller as its owner; listing returns only the caller's.
+	// --- Leagues (season / recurring play): owner-scoped WRITES, but READS are
+	// open to participants too. Creating a league stamps the caller as its owner;
+	// GET /leagues lists only the caller's OWNED leagues (organizer dashboard),
+	// while GET /my-leagues returns owned ∪ participant (the player's view).
 	mux.HandleFunc("POST /leagues", requireAuth(s.createLeague))
 	mux.HandleFunc("GET /leagues", requireAuth(s.listLeagues))
-	mux.HandleFunc("GET /leagues/{id}", s.ownerOnly("league", "id", s.getLeague))
+	// The leagues the caller owns OR participates in (registered for a session, or
+	// an entrant in a bracket) — the Play tab's "My leagues".
+	mux.HandleFunc("GET /my-leagues", requireAuth(s.myLeagues))
+	// READS: owner OR participant (leagueViewer). WRITES below stay owner-only.
+	mux.HandleFunc("GET /leagues/{id}", s.leagueViewer("id", s.getLeague))
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
-	mux.HandleFunc("GET /leagues/{id}/standings", s.ownerOnly("league", "id", s.leagueStandings))
+	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
 	// Set/clear the league banner (the client uploaded the image to Storage; this
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
@@ -124,10 +130,12 @@ func NewServer(svc *service.Service) http.Handler {
 	// reorder. All writes are gated on the owning league via custom guards (the
 	// resources are keyed on a division/entrant, not the league id, so ownerOnly
 	// doesn't fit). Player self-service challenges are a FUTURE v2.
+	// READS (ladder list/history) are open to participants via leagueBracketViewer;
+	// WRITES stay owner-gated below.
 	mux.HandleFunc("GET /league-brackets/{id}/ladder",
-		s.ladderDivisionOwner("id", s.listLadder))
+		s.leagueBracketViewer("id", s.listLadder))
 	mux.HandleFunc("GET /league-brackets/{id}/ladder/history",
-		s.ladderDivisionOwner("id", s.ladderHistory))
+		s.leagueBracketViewer("id", s.ladderHistory))
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/entrants",
 		s.ladderDivisionOwner("id", s.addLadderEntrant))
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/results",
@@ -140,10 +148,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// win %) are computed from the fixtures on read, not stored. All writes are
 	// gated on the owning league via custom guards (resources are keyed on a
 	// division/team, not the league id, so ownerOnly doesn't fit).
+	// READS (standings + fixtures) open to participants; WRITES stay owner-gated.
 	mux.HandleFunc("GET /league-brackets/{id}/teams",
-		s.teamDivisionOwner("id", s.listTeamStandings))
+		s.leagueBracketViewer("id", s.listTeamStandings))
 	mux.HandleFunc("GET /league-brackets/{id}/teams/fixtures",
-		s.teamDivisionOwner("id", s.teamFixtures))
+		s.leagueBracketViewer("id", s.teamFixtures))
 	mux.HandleFunc("POST /league-brackets/{id}/teams",
 		s.teamDivisionOwner("id", s.addTeam))
 	mux.HandleFunc("POST /league-brackets/{id}/teams/fixtures",
@@ -159,10 +168,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// gated on the owning league via custom guards (resources are keyed on a
 	// division/team/matchup, not the league id, so ownerOnly doesn't fit). Teams
 	// are added/removed via the shared /teams routes above (Flex reuses that table).
+	// READS (standings + schedule) open to participants; WRITES stay owner-gated.
 	mux.HandleFunc("GET /league-brackets/{id}/flex/teams",
-		s.flexDivisionOwner("id", s.listFlexStandings))
+		s.leagueBracketViewer("id", s.listFlexStandings))
 	mux.HandleFunc("GET /league-brackets/{id}/flex/matchups",
-		s.flexDivisionOwner("id", s.listFlexMatchups))
+		s.leagueBracketViewer("id", s.listFlexMatchups))
 	mux.HandleFunc("POST /league-brackets/{id}/flex/teams",
 		s.flexDivisionOwner("id", s.addFlexTeam))
 	mux.HandleFunc("POST /league-brackets/{id}/flex/generate",
@@ -299,6 +309,18 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 // listLeagues returns the leagues owned by the authenticated caller.
 func (s *Server) listLeagues(w http.ResponseWriter, r *http.Request) {
 	leagues, err := s.svc.ListLeagues(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, leagues)
+}
+
+// myLeagues returns the leagues the authenticated caller owns OR participates in
+// (registered for a session, or an entrant in a bracket) — the Play tab's
+// "My leagues".
+func (s *Server) myLeagues(w http.ResponseWriter, r *http.Request) {
+	leagues, err := s.svc.MyLeagues(userID(r), userEmail(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1594,6 +1616,72 @@ func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.Han
 		}
 		next(w, r)
 	})
+}
+
+// leagueViewer guards a league READ handler keyed on a league path id so it's
+// reachable by the league's OWNER or a PARTICIPANT (registered for one of its
+// sessions, or an entrant in one of its brackets — service.IsLeagueParticipant).
+// READ-ONLY: every league WRITE stays behind ownerOnly. Mirrors ownerOnly's
+// shape but widens the allow check from owner-only to owner-OR-participant.
+func (s *Server) leagueViewer(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowLeagueRead(w, r, r.PathValue(idParam)) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// leagueBracketViewer is leagueViewer for the ladder/team/flex READ handlers,
+// which are keyed on a division (league_bracket) id: it resolves the division to
+// its league, then applies the same owner-OR-participant check. READ-ONLY — the
+// matching WRITE handlers stay on the owner guards (ladder/team/flexDivisionOwner).
+func (s *Server) leagueBracketViewer(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		leagueID, err := s.svc.LeagueIDOfDivision(r.PathValue(idParam))
+		if errors.Is(err, service.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !s.allowLeagueRead(w, r, leagueID) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// allowLeagueRead reports whether the authenticated caller may READ the given
+// league: true when they own it OR participate in it. It writes the appropriate
+// error response (404 for a missing league, 403 otherwise) and returns false
+// when access is denied. Shared by leagueViewer and leagueBracketViewer.
+func (s *Server) allowLeagueRead(w http.ResponseWriter, r *http.Request, leagueID string) bool {
+	owner, err := s.svc.OwnerOf("league", leagueID)
+	if errors.Is(err, service.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return false
+	}
+	uid := userID(r)
+	if uid != "" && owner == uid {
+		return true
+	}
+	ok, err := s.svc.IsLeagueParticipant(leagueID, uid, userEmail(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return false
+	}
+	if !ok {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return false
+	}
+	return true
 }
 
 // ladderDivisionOwner guards a ladder handler keyed on a league_bracket

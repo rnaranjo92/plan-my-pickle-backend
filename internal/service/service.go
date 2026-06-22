@@ -452,7 +452,14 @@ func (s *Service) attachActivity(events []model.Event) {
 // up with your login email surfaces the event here even if you weren't signed in
 // at registration time. (email comes from the verified JWT, so it can't be
 // spoofed to claim someone else's registrations.)
-func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
+// playerIDsForUser resolves the set of player rows that belong to the caller:
+// a player linked to the account (players.user_id) PLUS any player whose email
+// matches the caller's VERIFIED account email — so signing up with your login
+// email surfaces your registrations even when you weren't signed in at the time.
+// (email comes from the verified JWT, so it can't be spoofed to claim someone
+// else's player rows.) Shared by MyEvents, MyLeagues and IsLeagueParticipant so
+// the "what is mine" rule is defined in exactly one place.
+func (s *Service) playerIDsForUser(userID, email string) ([]string, error) {
 	playerIDs := map[string]bool{}
 	if userID != "" {
 		pl, err := s.sb.SelectOne("players",
@@ -476,12 +483,20 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 			playerIDs[asStr(p, "id")] = true
 		}
 	}
-	if len(playerIDs) == 0 {
-		return []model.Event{}, nil
-	}
-	pidList := make([]string, 0, len(playerIDs))
+	out := make([]string, 0, len(playerIDs))
 	for id := range playerIDs {
-		pidList = append(pidList, id)
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
+	pidList, err := s.playerIDsForUser(userID, email)
+	if err != nil {
+		return nil, err
+	}
+	if len(pidList) == 0 {
+		return []model.Event{}, nil
 	}
 	regs, err := s.sb.Select("registrations",
 		"player_id=in.("+strings.Join(pidList, ",")+")&select=event_id")

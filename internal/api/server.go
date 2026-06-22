@@ -1559,7 +1559,9 @@ func (s *Server) feedDelete(w http.ResponseWriter, r *http.Request) {
 // fillRandomPlayers seeds the event with a day's worth of demo players spread
 // across its divisions (owner-only). Temporary organizer convenience.
 func (s *Server) fillRandomPlayers(w http.ResponseWriter, r *http.Request) {
-	n, err := s.svc.FillRandomPlayers(r.PathValue("id"))
+	// Optional ?bracket=<id> seeds only that division (the one the organizer is
+	// viewing in the Players tab); empty spreads across all divisions.
+	n, err := s.svc.FillRandomPlayers(r.PathValue("id"), r.URL.Query().Get("bracket"))
 	if err != nil {
 		status(w, err)
 		return

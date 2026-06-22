@@ -951,10 +951,25 @@ func (s *Service) registerDemoPlayers(eventID string, perDiv int) error {
 // and a deterministic slice are marked paid / checked-in so the roster shows a
 // realistic mix of states. Returns the number added. Temporary organizer
 // convenience for demos/testing.
-func (s *Service) FillRandomPlayers(eventID string) (int, error) {
+func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 	bks, err := s.GetBrackets(eventID)
 	if err != nil {
 		return 0, err
+	}
+	// When a specific division is requested (the Players tab passes the division
+	// the organizer is viewing), seed ONLY into it; otherwise spread across all.
+	if bracketID != "" {
+		var only []model.Bracket
+		for _, b := range bks {
+			if b.ID == bracketID {
+				only = append(only, b)
+				break
+			}
+		}
+		if len(only) == 0 {
+			return 0, errors.New("division not found for this event")
+		}
+		bks = only
 	}
 	existing, err := s.Registrations(eventID)
 	if err != nil {

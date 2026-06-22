@@ -142,6 +142,18 @@ func (s *Service) RecordFixture(leagueBracketID string, req model.RecordFixtureR
 	if w != a && w != b {
 		return model.TeamFixture{}, errors.New("winnerTeamId must be teamAId or teamBId")
 	}
+	// Both teams must belong to the authorized (path) division — the row's
+	// league_bracket_id is trusted from the path, but the team ids come from the
+	// body, so verify they aren't another organizer's teams (cross-division ref).
+	for _, id := range []string{a, b} {
+		div, derr := s.divisionOfTeam(id)
+		if derr != nil {
+			return model.TeamFixture{}, derr
+		}
+		if div != leagueBracketID {
+			return model.TeamFixture{}, errors.New("team does not belong to this division")
+		}
+	}
 
 	payload := map[string]any{
 		"league_bracket_id": leagueBracketID,

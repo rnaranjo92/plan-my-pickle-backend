@@ -380,7 +380,7 @@ func (s *Server) recordLadderResult(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	m, err := s.svc.RecordLadderResult(req)
+	m, err := s.svc.RecordLadderResult(r.PathValue("id"), req)
 	if err != nil {
 		status(w, err)
 		return

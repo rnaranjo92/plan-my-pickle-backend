@@ -158,7 +158,7 @@ func (s *Service) RemoveLadderEntrant(entrantID string) error {
 // RecordLadderResult records a match between two entrants and applies the
 // leapfrog reorder ATOMICALLY via the apply_ladder_result() plpgsql function
 // (one transaction). WinnerEntrantID must be one of A/B. Returns the new match.
-func (s *Service) RecordLadderResult(req model.RecordLadderResultRequest) (model.LadderMatch, error) {
+func (s *Service) RecordLadderResult(leagueBracketID string, req model.RecordLadderResultRequest) (model.LadderMatch, error) {
 	a := strings.TrimSpace(req.EntrantAID)
 	b := strings.TrimSpace(req.EntrantBID)
 	w := strings.TrimSpace(req.WinnerEntrantID)
@@ -170,6 +170,20 @@ func (s *Service) RecordLadderResult(req model.RecordLadderResultRequest) (model
 	}
 	if w != a && w != b {
 		return model.LadderMatch{}, errors.New("winnerEntrantId must be entrantAId or entrantBId")
+	}
+	// Bind the mutation to the authorized (path) division: BOTH entrants must
+	// belong to it. Authorization is gated on the path division id, but the RPC
+	// derives the division from the caller-supplied entrant ids — without this
+	// check an owner of any ladder could reorder a different organizer's ladder
+	// by passing their entrant ids (IDOR / confused deputy).
+	for _, id := range []string{a, b} {
+		div, derr := s.divisionOfEntrant(id)
+		if derr != nil {
+			return model.LadderMatch{}, derr
+		}
+		if div != leagueBracketID {
+			return model.LadderMatch{}, errors.New("entrant does not belong to this division")
+		}
 	}
 	loser := a
 	if w == a {

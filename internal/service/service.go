@@ -1199,6 +1199,52 @@ func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
 }
 
 // ------------------------------------------------------------ registration
+
+// ErrAlreadyRegistered is returned when the same person is already registered
+// for the event (matched by linked account, or by phone/email). The HTTP layer
+// maps it to 409 Conflict so the client can show a friendly "already
+// registered" message instead of a generic error.
+var ErrAlreadyRegistered = errors.New("already registered for this event")
+
+// registrationExistsByContact reports whether this event already has a
+// registration whose player shares the given phone or email. Used to block
+// silent duplicates from the organizer-add and anonymous self-register flows,
+// where every submit creates a fresh player row (so there's no account/player
+// collision to rely on). Registrations has two FKs to players (player_id +
+// partner_id), which makes a PostgREST embed ambiguous — so we resolve the
+// matching player ids first, then look for a registration that uses one.
+func (s *Service) registrationExistsByContact(eventID string, req model.RegisterRequest) (bool, error) {
+	check := func(col, val string) (bool, error) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return false, nil
+		}
+		players, err := s.sb.Select("players", col+"=eq."+store.Q(val)+"&select=id")
+		if err != nil {
+			return false, err
+		}
+		ids := make([]string, 0, len(players))
+		for _, p := range players {
+			if id := asStr(p, "id"); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			return false, nil
+		}
+		dup, err := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=in.("+strings.Join(ids, ",")+")&select=id")
+		if err != nil {
+			return false, err
+		}
+		return dup != nil, nil
+	}
+	if ok, err := check("phone", req.Phone); err != nil || ok {
+		return ok, err
+	}
+	return check("email", req.Email)
+}
+
 // RegisterPlayer files a registration. When linkUserID is non-empty (a
 // logged-in user registering THEMSELVES), the player is tied to that account
 // (players.user_id) — reusing the account's existing player row if it has one
@@ -1206,6 +1252,14 @@ func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
 func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
+	}
+	// Block a duplicate up front (before creating a player row): someone already
+	// registered for this event with the same phone/email. The linked-account
+	// path is also guarded below via the unique (event_id, player_id).
+	if dup, err := s.registrationExistsByContact(eventID, req); err != nil {
+		return model.Registration{}, err
+	} else if dup {
+		return model.Registration{}, ErrAlreadyRegistered
 	}
 	fields := map[string]any{
 		"full_name":        req.FullName,
@@ -1321,7 +1375,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			return model.Registration{}, err
 		}
 		if dup != nil {
-			return model.Registration{}, errors.New("you're already registered for this event")
+			return model.Registration{}, ErrAlreadyRegistered
 		}
 	}
 	token := newID()

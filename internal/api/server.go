@@ -711,6 +711,12 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	reg, err := s.svc.RegisterPlayer(r.PathValue("id"), req, linkUserID)
 	if err != nil {
+		// A duplicate registration is a 409 so the client can show a friendly
+		// "already registered" message rather than a generic error.
+		if errors.Is(err, service.ErrAlreadyRegistered) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

@@ -186,6 +186,16 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	bestOf := normalizeBestOf(req.BestOf)
 	gameMin := clampGameDuration(req.GameDurationMinutes)
 
+	// Auto-geocode: if the organizer typed a text location but didn't pick a
+	// venue on the map (no coords), resolve the text to a point so the event can
+	// surface in Nearby. Best-effort — never fails the create.
+	venueLat, venueLng := req.VenueLat, req.VenueLng
+	if venueLat == nil && venueLng == nil {
+		if lat, lng := bestEffortGeocode(req.Location); lat != nil && lng != nil {
+			venueLat, venueLng = lat, lng
+		}
+	}
+
 	payload := map[string]any{
 		"name":                   req.Name,
 		"format":                 format,
@@ -213,8 +223,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"venue_address":          orNull(req.VenueAddress),
 		"venue_phone":            orNull(req.VenuePhone),
 		"venue_website":          orNull(req.VenueWebsite),
-		"venue_lat":              fOrNull(req.VenueLat),
-		"venue_lng":              fOrNull(req.VenueLng),
+		"venue_lat":              fOrNull(venueLat),
+		"venue_lng":              fOrNull(venueLng),
 		"status":                 "open",
 	}
 	// Only reference starts_at when the organizer set one. The column ships in
@@ -661,7 +671,8 @@ func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 }
 
 func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
-	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=id")
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(id)+"&select=id,venue_lat,venue_lng")
 	if err != nil {
 		return err
 	}
@@ -705,6 +716,16 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"starts_at":     orNull(req.StartsAt),
 		"ends_at":       orNull(req.EndsAt),
 		"description":   orNull(req.Description),
+	}
+	// Auto-geocode on edit: ONLY when the event has no coords yet (a map-picked
+	// venue is left untouched — we can't distinguish it from a prior geocode, so
+	// we never overwrite existing coords) and the organizer has a text location.
+	// Best-effort: a failure leaves coords as-is and never fails the update.
+	if asFloatPtr(ev, "venue_lat") == nil && asFloatPtr(ev, "venue_lng") == nil {
+		if lat, lng := bestEffortGeocode(req.Location); lat != nil && lng != nil {
+			upd["venue_lat"] = *lat
+			upd["venue_lng"] = *lng
+		}
 	}
 	if _, err = s.sb.Update("events", "id=eq."+store.Q(id), upd); err != nil {
 		return err

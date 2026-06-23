@@ -445,6 +445,9 @@ type Standing struct {
 // ---- request DTOs ----
 
 type BracketInput struct {
+	// ID is set ONLY by the edit-tournament sync flow to update an EXISTING
+	// division; empty means "create a new division". Ignored on create.
+	ID           string   `json:"id,omitempty"`
 	Name         string   `json:"name"`
 	MinRating    *float64 `json:"minRating,omitempty"`
 	MaxRating    *float64 `json:"maxRating,omitempty"`

@@ -188,6 +188,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Set/clear the event banner (the client uploaded the image to Storage; this
 	// just persists the public URL on the event row). Kept separate from the
 	// metadata edit so an edit never wipes the poster. Owner-only.
+	mux.HandleFunc("POST /events/{id}/divisions", s.ownerOnly("event", "id", s.syncDivisions))
 	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
@@ -597,6 +598,28 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// syncDivisions reconciles an event's divisions with the provided list (edit
+// flow): updates existing (by id), inserts new (no id), deletes removed empties.
+// Returns the names of divisions that COULDN'T be deleted (they still have
+// players or matches) so the client can explain.
+func (s *Server) syncDivisions(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Divisions []model.BracketInput `json:"divisions"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	blocked, err := s.svc.SyncDivisions(r.PathValue("id"), req.Divisions)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if blocked == nil {
+		blocked = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blocked": blocked})
 }
 
 // setEventPoster sets (or clears, when posterUrl is empty) the event's banner

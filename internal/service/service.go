@@ -1200,6 +1200,108 @@ func (s *Service) listPoolMatchIDs(eventID string) ([]string, error) {
 	return ids, nil
 }
 
+// bracketHasRows reports whether any row in [table] references this bracket
+// (used to guard division deletion — registrations or matches).
+func (s *Service) bracketHasRows(table, bracketID string) (bool, error) {
+	row, err := s.sb.SelectOne(table,
+		"bracket_id=eq."+store.Q(bracketID)+"&select=id")
+	if err != nil {
+		return false, err
+	}
+	return row != nil, nil
+}
+
+// SyncDivisions reconciles an event's divisions (brackets) with [divs] — the
+// edit-tournament flow. Each input WITH an ID updates that bracket; inputs
+// without an ID are inserted; existing brackets absent from [divs] are DELETED,
+// but ONLY when empty (no registrations and no matches). Non-empty divisions are
+// kept and their names returned in `blocked` so the UI can explain why. Never
+// leaves the event with zero divisions (re-creates an "Open" if all are gone).
+func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]string, error) {
+	existing, err := s.sb.Select("brackets",
+		"event_id=eq."+store.Q(eventID)+"&select=id,name")
+	if err != nil {
+		return nil, err
+	}
+	existingName := map[string]string{}
+	for _, b := range existing {
+		existingName[asStr(b, "id")] = asStr(b, "name")
+	}
+	keep := map[string]bool{}
+
+	for i, d := range divs {
+		dt := d.DivisionType
+		if dt == "" {
+			dt = "open"
+		}
+		fields := map[string]any{
+			"name":          d.Name,
+			"min_rating":    fOrNull(d.MinRating),
+			"max_rating":    fOrNull(d.MaxRating),
+			"min_age":       iOrNull(d.MinAge),
+			"max_age":       iOrNull(d.MaxAge),
+			"division_type": dt,
+			"dupr_min":      fOrNull(d.DuprMin),
+			"dupr_max":      fOrNull(d.DuprMax),
+			"sort_order":    i,
+		}
+		if d.ID != "" {
+			if _, ok := existingName[d.ID]; !ok {
+				return nil, errors.New("division does not belong to this event")
+			}
+			keep[d.ID] = true
+			if _, err := s.sb.Update("brackets",
+				"id=eq."+store.Q(d.ID)+"&event_id=eq."+store.Q(eventID), fields); err != nil {
+				return nil, err
+			}
+		} else {
+			fields["event_id"] = eventID
+			if _, err := s.sb.Insert("brackets", fields); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	var blocked []string
+	for id, name := range existingName {
+		if keep[id] {
+			continue
+		}
+		hasRegs, err := s.bracketHasRows("registrations", id)
+		if err != nil {
+			return nil, err
+		}
+		hasMatches, err := s.bracketHasRows("matches", id)
+		if err != nil {
+			return nil, err
+		}
+		if hasRegs || hasMatches {
+			blocked = append(blocked, name)
+			continue
+		}
+		if err := s.sb.Delete("brackets",
+			"id=eq."+store.Q(id)+"&event_id=eq."+store.Q(eventID)); err != nil {
+			return nil, err
+		}
+	}
+
+	// Never leave the event with zero divisions.
+	remaining, err := s.sb.Select("brackets",
+		"event_id=eq."+store.Q(eventID)+"&select=id")
+	if err != nil {
+		return nil, err
+	}
+	if len(remaining) == 0 {
+		if _, err := s.sb.Insert("brackets", map[string]any{
+			"event_id": eventID, "name": "Open", "division_type": "open",
+			"sort_order": 0,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return blocked, nil
+}
+
 func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
 	rows, err := s.sb.Select("brackets",
 		"event_id=eq."+store.Q(eventID)+"&select=*&order=sort_order")

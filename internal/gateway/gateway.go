@@ -100,6 +100,7 @@ type DuprRating struct {
 	Doubles            float64
 	SinglesProvisional bool
 	DoublesProvisional bool
+	Raw                string // raw /user response (debug; smoke endpoint only)
 }
 
 type DuprGateway interface {

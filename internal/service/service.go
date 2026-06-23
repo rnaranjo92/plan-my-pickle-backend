@@ -2069,10 +2069,18 @@ func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
 		return errors.New("DUPR connection did not return a DUPR id")
 	}
 	doubles, singles := in.DoublesRating, in.SinglesRating
-	// Now that the user consented, prefer authoritative ratings from DUPR.
+	// Now that the user consented, prefer authoritative ratings from DUPR. Only
+	// override with > 0 values — an unrated (NR) account comes back as 0, which
+	// we leave null rather than show as "0.00".
 	if r, err := s.Dupr.GetPlayerRating(duprID); err == nil && r.Found {
-		d, sg := r.Doubles, r.Singles
-		doubles, singles = &d, &sg
+		if r.Doubles > 0 {
+			d := r.Doubles
+			doubles = &d
+		}
+		if r.Singles > 0 {
+			sg := r.Singles
+			singles = &sg
+		}
 	}
 	row := map[string]any{
 		"user_id":        userID,

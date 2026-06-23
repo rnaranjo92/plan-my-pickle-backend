@@ -643,6 +643,7 @@ func (s *Server) duprPlayer(w http.ResponseWriter, r *http.Request) {
 		"doubles":            rating.Doubles,
 		"singlesProvisional": rating.SinglesProvisional,
 		"doublesProvisional": rating.DoublesProvisional,
+		"raw":                rating.Raw,
 	})
 }
 

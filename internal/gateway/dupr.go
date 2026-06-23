@@ -183,13 +183,16 @@ func (d *RealDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 		return DuprRating{}, err
 	}
 	return DuprRating{
-		Found:              res.DuprID != "",
-		DuprID:             res.DuprID,
+		// DUPR's /user response omits duprId; a present fullName (or a rating)
+		// signals a real, consented user. Echo the requested id.
+		Found:              res.FullName != "" || res.SinglesRating > 0 || res.DoublesRating > 0,
+		DuprID:             duprID,
 		FullName:           res.FullName,
 		Singles:            res.SinglesRating,
 		Doubles:            res.DoublesRating,
 		SinglesProvisional: res.SinglesProvisional,
 		DoublesProvisional: res.DoublesProvisional,
+		Raw:                string(raw),
 	}, nil
 }
 

@@ -79,6 +79,7 @@ type DuprPayload struct {
 	DuprEventID  string
 	EventName    string
 	MatchID      string // unique per-match idempotency identifier
+	MatchCode    string // existing DUPR matchCode, for UpdateMatch
 	MatchDate    string // when the match was played (yyyy-MM-dd); empty = today
 	Team1DuprIDs []string
 	Team2DuprIDs []string
@@ -107,6 +108,10 @@ type DuprRating struct {
 
 type DuprGateway interface {
 	SubmitMatch(p DuprPayload) (DuprResult, error)
+	// UpdateMatch revises a previously-submitted match (p.MatchCode identifies it).
+	UpdateMatch(p DuprPayload) (DuprResult, error)
+	// DeleteMatch removes a submitted match from DUPR (reverses its rating impact).
+	DeleteMatch(matchCode, identifier string) error
 	// GetPlayerRating looks up a player's current ratings by DUPR id, for
 	// verifying a registrant's real rating against a division's band.
 	GetPlayerRating(duprID string) (DuprRating, error)
@@ -137,6 +142,17 @@ func (m *MockDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 	m.Submitted = append(m.Submitted, p)
 	return DuprResult{OK: true, DuprMatchID: fmt.Sprintf("mock_dupr_%d", m.seq)}, nil
 }
+
+func (m *MockDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
+	ref := p.MatchCode
+	if ref == "" {
+		m.seq++
+		ref = fmt.Sprintf("mock_dupr_%d", m.seq)
+	}
+	return DuprResult{OK: true, DuprMatchID: ref}, nil
+}
+
+func (m *MockDupr) DeleteMatch(matchCode, identifier string) error { return nil }
 
 func (m *MockDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 	if duprID == "" {

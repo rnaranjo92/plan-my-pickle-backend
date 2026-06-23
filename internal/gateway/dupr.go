@@ -250,7 +250,8 @@ func parseDuprRating(raw json.RawMessage) float64 {
 	return f
 }
 
-func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
+// matchBody builds the shared create/update request body from a payload.
+func (d *RealDupr) matchBody(p DuprPayload) map[string]any {
 	team := func(ids []string, games [][2]int, side int) map[string]any {
 		t := map[string]any{}
 		if len(ids) > 0 {
@@ -308,16 +309,11 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 			body["clubId"] = d.clubID
 		}
 	}
-	raw, code, err := d.authed(http.MethodPost,
-		fmt.Sprintf("/match/%s/create", d.version), body)
-	if err != nil {
-		// Best-effort: a DUPR hiccup must never fail the score that triggered it.
-		return DuprResult{OK: false, Error: err.Error()}, nil
-	}
-	if code < 200 || code >= 300 {
-		log.Printf("dupr: match create http %d: %s", code, string(raw))
-		return DuprResult{OK: false, Error: fmt.Sprintf("dupr http %d", code)}, nil
-	}
+	return body
+}
+
+// parseMatchResult pulls the match code out of a create/update response.
+func parseMatchResult(raw []byte) DuprResult {
 	var env duprEnvelope
 	_ = json.Unmarshal(raw, &env)
 	var res struct {
@@ -330,5 +326,58 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 	if ref == "" {
 		ref = res.HashedMatchCode
 	}
-	return DuprResult{OK: true, DuprMatchID: ref}, nil
+	return DuprResult{OK: true, DuprMatchID: ref}
+}
+
+func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
+	raw, code, err := d.authed(http.MethodPost,
+		fmt.Sprintf("/match/%s/create", d.version), d.matchBody(p))
+	if err != nil {
+		// Best-effort: a DUPR hiccup must never fail the score that triggered it.
+		return DuprResult{OK: false, Error: err.Error()}, nil
+	}
+	if code < 200 || code >= 300 {
+		log.Printf("dupr: match create http %d: %s", code, string(raw))
+		return DuprResult{OK: false, Error: fmt.Sprintf("dupr http %d", code)}, nil
+	}
+	return parseMatchResult(raw), nil
+}
+
+// UpdateMatch revises a previously-submitted match (e.g. a corrected score).
+// matchId in the body = the stored matchCode (p.MatchCode).
+func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
+	body := d.matchBody(p)
+	body["matchId"] = p.MatchCode
+	raw, code, err := d.authed(http.MethodPost,
+		fmt.Sprintf("/match/%s/update", d.version), body)
+	if err != nil {
+		return DuprResult{OK: false, Error: err.Error()}, nil
+	}
+	if code < 200 || code >= 300 {
+		log.Printf("dupr: match update http %d: %s", code, string(raw))
+		return DuprResult{OK: false, Error: fmt.Sprintf("dupr http %d", code)}, nil
+	}
+	res := parseMatchResult(raw)
+	if res.DuprMatchID == "" {
+		res.DuprMatchID = p.MatchCode // keep the existing code on update
+	}
+	return res, nil
+}
+
+// DeleteMatch removes a submitted match from DUPR (reverses its rating impact).
+// Both the matchCode and the original identifier must match.
+func (d *RealDupr) DeleteMatch(matchCode, identifier string) error {
+	if strings.TrimSpace(matchCode) == "" {
+		return nil
+	}
+	raw, code, err := d.authed(http.MethodDelete,
+		fmt.Sprintf("/match/%s/delete", d.version),
+		map[string]any{"matchCode": matchCode, "identifier": identifier})
+	if err != nil {
+		return err
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("dupr delete http %d: %s", code, string(raw))
+	}
+	return nil
 }

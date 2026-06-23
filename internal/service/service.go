@@ -4749,7 +4749,7 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 	}
 
 	pendings, err := s.sb.Select("dupr_submissions",
-		"event_id=eq."+store.Q(eventID)+"&status=eq.pending&select=id,match_id")
+		"event_id=eq."+store.Q(eventID)+"&status=eq.pending&select=id,match_id,provider_ref")
 	if err != nil {
 		return DuprImportSummary{}, err
 	}
@@ -4828,12 +4828,21 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 		if c := asStr(m, "completed_at"); len(c) >= 10 {
 			matchDate = c[:10] // RFC3339 → yyyy-MM-dd
 		}
-		res, err := s.Dupr.SubmitMatch(gateway.DuprPayload{
+		existingCode := asStr(p, "provider_ref")
+		payload := gateway.DuprPayload{
 			EventID: eventID, DuprEventID: duprEventID,
-			EventName: ev.Name, MatchID: matchID, MatchDate: matchDate,
+			EventName: ev.Name, MatchID: matchID, MatchCode: existingCode,
+			MatchDate:    matchDate,
 			Team1DuprIDs: t1, Team2DuprIDs: t2,
 			Team1Score: g1t1, Team2Score: g1t2, Games: pairs,
-		})
+		}
+		// Already submitted (re-scored) → update the DUPR match; else create it.
+		var res gateway.DuprResult
+		if existingCode != "" {
+			res, err = s.Dupr.UpdateMatch(payload)
+		} else {
+			res, err = s.Dupr.SubmitMatch(payload)
+		}
 		if err != nil {
 			return sum, err
 		}
@@ -5766,10 +5775,34 @@ func (f *feedUpdates) flush(s *Service) error {
 // wipeAllMatches clears an event's schedule. Deleting matches/rounds cascades to
 // match_participants via the FK ON DELETE CASCADE, so no explicit child delete.
 func (s *Service) wipeAllMatches(eventID string) error {
+	// Snapshot any results already pushed to DUPR so we can reverse them after the
+	// local wipe (best-effort, async — never block/​slow regeneration).
+	var toDelete [][2]string // {matchCode, identifier}
+	if subs, err := s.sb.Select("dupr_submissions",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=match_id,provider_ref"); err == nil {
+		for _, sub := range subs {
+			if code := asStr(sub, "provider_ref"); code != "" {
+				toDelete = append(toDelete, [2]string{code, asStr(sub, "match_id")})
+			}
+		}
+	}
+	_ = s.sb.Delete("dupr_submissions", "event_id=eq."+store.Q(eventID))
 	if err := s.sb.Delete("matches", "event_id=eq."+store.Q(eventID)); err != nil {
 		return err
 	}
-	return s.sb.Delete("rounds", "event_id=eq."+store.Q(eventID))
+	if err := s.sb.Delete("rounds", "event_id=eq."+store.Q(eventID)); err != nil {
+		return err
+	}
+	if len(toDelete) > 0 {
+		go func() {
+			for _, d := range toDelete {
+				if e := s.Dupr.DeleteMatch(d[0], d[1]); e != nil {
+					log.Printf("dupr: delete match %s on wipe failed: %v", d[0], e)
+				}
+			}
+		}()
+	}
+	return nil
 }
 
 func (s *Service) wipeBracketStage(bracketID string) error {

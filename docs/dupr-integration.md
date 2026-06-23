@@ -31,11 +31,13 @@ Required to go live (UAT defaults shown):
 3. **User entitlement gating** — ⚠️ Partial. Match submission relies on DUPR's
    own BASIC_L1 enforcement (DUPR rejects ineligible players); platform access
    isn't DUPR-entitlement-gated. Confirm with DUPR whether this is sufficient.
-4. **Match create / update / delete, owner-only** — ⚠️ Create ✅ (owner-only:
-   the organizer flushes results via "Import to DUPR" → `SubmitPendingToDupr`;
-   players can't submit). **Update + delete NOT yet implemented** — a corrected
-   or deleted score does not propagate to DUPR. **This is the main gate before
-   submitting for review.**
+4. **Match create / update / delete, owner-only** — ✅ Done.
+   - Create: organizer "Import to DUPR" → `SubmitPendingToDupr` (players can't submit).
+   - Update: re-scoring an already-submitted match re-queues it; the flush calls
+     `UpdateMatch` (POST /match/{v}/update) using the stored matchCode, so a
+     corrected score propagates instead of duplicating.
+   - Delete: regenerating the schedule (`wipeAllMatches`) reverses any submitted
+     matches via `DeleteMatch` (DELETE /match/{v}/delete) before discarding them.
 
 ## Architecture notes
 - One submission path: scoring queues a row (`dupr_submissions`); the organizer
@@ -46,12 +48,13 @@ Required to go live (UAT defaults shown):
   already-connected `dupr_id`.
 
 ## Remaining before requesting production keys
-1. **Build match update + delete** (req #4) — gateway UpdateMatch/DeleteMatch
-   (using the stored `dupr_submissions.provider_ref`), call UpdateMatch when an
-   already-submitted match is re-scored, DeleteMatch when a match is deleted.
-2. Set `DUPR_WEBHOOK_SECRET` + run `add_dupr_connections_unique.sql`.
-3. (Hardening) verify the SSO userToken actually owns the submitted duprId on
-   connect; derive `matchType` from event scoring (currently SIDEOUT).
+1. Set `DUPR_WEBHOOK_SECRET` + run `add_dupr_connections_unique.sql`.
+2. Verify end-to-end on UAT (needs a RATED, connected test account): rating
+   webhook updates the Profile card; submit a sanctioned result; correct it
+   (→ UpdateMatch); confirm `matchType`/`matchId`/`format` field names are
+   accepted (these were built to the docs but not yet round-tripped live).
+3. (Hardening, optional) verify the SSO userToken actually owns the submitted
+   duprId on connect; derive `matchType` from event scoring (currently SIDEOUT).
 
 ## Review-submission email (draft — send to tech@mydupr.com, subject incl. Client ID 7673785325)
 > Platform: https://app.planmypickle.com (organizer flow on the web app).

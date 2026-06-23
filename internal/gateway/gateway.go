@@ -90,8 +90,23 @@ type DuprResult struct {
 	Error       string
 }
 
+// DuprRating is a player's current DUPR ratings, looked up by DUPR id. Found is
+// false (with a nil error) when the id isn't known to DUPR.
+type DuprRating struct {
+	Found              bool
+	DuprID             string
+	FullName           string
+	Singles            float64
+	Doubles            float64
+	SinglesProvisional bool
+	DoublesProvisional bool
+}
+
 type DuprGateway interface {
 	SubmitMatch(p DuprPayload) (DuprResult, error)
+	// GetPlayerRating looks up a player's current ratings by DUPR id, for
+	// verifying a registrant's real rating against a division's band.
+	GetPlayerRating(duprID string) (DuprRating, error)
 }
 
 type MockDupr struct {
@@ -109,4 +124,15 @@ func (m *MockDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 	}
 	m.Submitted = append(m.Submitted, p)
 	return DuprResult{OK: true, DuprMatchID: fmt.Sprintf("mock_dupr_%d", m.seq)}, nil
+}
+
+func (m *MockDupr) GetPlayerRating(duprID string) (DuprRating, error) {
+	if duprID == "" {
+		return DuprRating{Found: false}, nil
+	}
+	// Deterministic stub so dev flows have a rating to work with.
+	return DuprRating{
+		Found: true, DuprID: duprID, FullName: "Mock Player",
+		Doubles: 3.5, Singles: 3.5,
+	}, nil
 }

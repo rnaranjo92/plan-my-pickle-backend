@@ -54,6 +54,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
+	// Smoke-test the DUPR partner integration: look up a player's live rating by
+	// DUPR id (returns mock data until the DUPR_* env vars are set).
+	mux.HandleFunc("GET /dupr/player/{duprId}", requireAuth(s.duprPlayer))
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
@@ -606,6 +609,25 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 // flow): updates existing (by id), inserts new (no id), deletes removed empties.
 // Returns the names of divisions that COULDN'T be deleted (they still have
 // players or matches) so the client can explain.
+// duprPlayer looks up a player's live DUPR ratings by DUPR id — a smoke test for
+// the partner integration (mock data until the DUPR_* env vars are configured).
+func (s *Server) duprPlayer(w http.ResponseWriter, r *http.Request) {
+	rating, err := s.svc.Dupr.GetPlayerRating(r.PathValue("duprId"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"found":              rating.Found,
+		"duprId":             rating.DuprID,
+		"fullName":           rating.FullName,
+		"singles":            rating.Singles,
+		"doubles":            rating.Doubles,
+		"singlesProvisional": rating.SinglesProvisional,
+		"doublesProvisional": rating.DoublesProvisional,
+	})
+}
+
 // setDivisionOrder reorders the event's divisions so the organizer controls
 // which one the scheduler lays down first. Body: {"order": ["bracketId", ...]}.
 func (s *Server) setDivisionOrder(w http.ResponseWriter, r *http.Request) {

@@ -62,6 +62,17 @@ func main() {
 	} else {
 		log.Printf("SMS: mock — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM to send real texts")
 	}
+	// Real DUPR (rating verification + sanctioned-match submission) only when the
+	// partner Client Key + Secret are set; otherwise the mock stands in. Base URL
+	// defaults to UAT — set DUPR_BASE_URL=https://api.dupr.com/api for production.
+	// DUPR_API_VERSION / DUPR_CLUB_ID are optional. Secrets live in the env, never code.
+	if ck, cs := os.Getenv("DUPR_CLIENT_KEY"), os.Getenv("DUPR_CLIENT_SECRET"); ck != "" && cs != "" {
+		svc.Dupr = gateway.NewRealDupr(ck, cs,
+			os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_API_VERSION"), os.Getenv("DUPR_CLUB_ID"))
+		log.Printf("DUPR: partner API configured")
+	} else {
+		log.Printf("DUPR: mock — set DUPR_CLIENT_KEY, DUPR_CLIENT_SECRET to verify ratings + submit matches")
+	}
 
 	handler := api.NewServer(svc)
 	srv := &http.Server{

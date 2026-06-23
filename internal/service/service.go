@@ -1383,6 +1383,16 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	} else if dup {
 		return model.Registration{}, ErrAlreadyRegistered
 	}
+	// DUPR id/rating are never typed by hand (DUPR forbids it) — for a signed-in
+	// user, attach them from their SSO-connected DUPR account, the source of truth.
+	if linkUserID != "" {
+		if c, err := s.DuprConnection(linkUserID); err == nil && c.Connected {
+			req.DuprID = c.DuprID
+			if c.DoublesRating != nil {
+				req.DuprRating = c.DoublesRating
+			}
+		}
+	}
 	fields := map[string]any{
 		"full_name":        req.FullName,
 		"phone":            orNull(req.Phone),

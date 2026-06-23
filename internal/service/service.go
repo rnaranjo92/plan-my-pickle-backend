@@ -2041,6 +2041,22 @@ func (s *Service) spreadCourts(eventID string) error {
 // Games in a round fan out across the courts. play_order is the slot index, so
 // the calendar can place a game at day_start + slot*game_duration. Returns the
 // number of games scheduled.
+// SetDivisionOrder sets each division's sort_order to its position in the given
+// list, so the organizer controls which division the auto-scheduler lays down
+// first. Each id is bound to the event (the backend bypasses RLS, so app code
+// is the only guard against a cross-event write). Ids omitted from the list keep
+// their existing sort_order and fall after the listed ones at schedule time.
+func (s *Service) SetDivisionOrder(eventID string, orderedIDs []string) error {
+	for i, id := range orderedIDs {
+		if _, err := s.sb.Update("brackets",
+			"id=eq."+store.Q(id)+"&event_id=eq."+store.Q(eventID),
+			map[string]any{"sort_order": i}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestSlots int) (int, error) {
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {
@@ -2055,8 +2071,10 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	}
 	sort.Ints(courtNums)
 
-	// Division order: rated bands ascending by min_rating; unrated ("Open")
-	// divisions sort last; sort_order breaks ties.
+	// Division order: the organizer's chosen order (sort_order) wins, so they
+	// control which division the scheduler lays down first. Rating only breaks
+	// ties — rated bands ascending by min_rating, unrated ("Open") last — which
+	// is also the default order divisions are created in.
 	brackets, err := s.sb.Select("brackets",
 		"event_id=eq."+store.Q(eventID)+"&select=id,min_rating,sort_order")
 	if err != nil {
@@ -2073,6 +2091,9 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	}
 	sort.SliceStable(blist, func(i, j int) bool {
 		a, b := blist[i], blist[j]
+		if a.sort != b.sort {
+			return a.sort < b.sort
+		}
 		aNull, bNull := a.min == nil, b.min == nil
 		if aNull != bNull {
 			return !aNull // rated divisions before unrated
@@ -2080,7 +2101,7 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 		if !aNull && !bNull && *a.min != *b.min {
 			return *a.min < *b.min
 		}
-		return a.sort < b.sort
+		return false
 	})
 	rank := make(map[string]int, len(blist))
 	for i, b := range blist {

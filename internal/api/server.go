@@ -189,6 +189,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// just persists the public URL on the event row). Kept separate from the
 	// metadata edit so an edit never wipes the poster. Owner-only.
 	mux.HandleFunc("POST /events/{id}/divisions", s.ownerOnly("event", "id", s.syncDivisions))
+	mux.HandleFunc("POST /events/{id}/division-order", s.ownerOnly("event", "id", s.setDivisionOrder))
 	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
@@ -605,6 +606,22 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 // flow): updates existing (by id), inserts new (no id), deletes removed empties.
 // Returns the names of divisions that COULDN'T be deleted (they still have
 // players or matches) so the client can explain.
+// setDivisionOrder reorders the event's divisions so the organizer controls
+// which one the scheduler lays down first. Body: {"order": ["bracketId", ...]}.
+func (s *Server) setDivisionOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Order []string `json:"order"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetDivisionOrder(r.PathValue("id"), req.Order); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) syncDivisions(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Divisions []model.BracketInput `json:"divisions"`

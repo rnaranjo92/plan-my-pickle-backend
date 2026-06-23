@@ -25,6 +25,7 @@ type RealDupr struct {
 	clientKey    string
 	clientSecret string
 	baseURL      string // no trailing slash
+	ssoBase      string // SSO iframe host, e.g. https://uat.dupr.gg
 	version      string // path version segment, e.g. v1.0
 	clubID       string // optional club to attribute submitted matches to
 	http         *http.Client
@@ -36,9 +37,12 @@ type RealDupr struct {
 
 // NewRealDupr builds the live gateway. baseURL/version/clubID may be empty to
 // take the UAT defaults (so production only needs the base URL overridden).
-func NewRealDupr(clientKey, clientSecret, baseURL, version, clubID string) *RealDupr {
+func NewRealDupr(clientKey, clientSecret, baseURL, ssoBase, version, clubID string) *RealDupr {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = "https://uat.mydupr.com/api"
+	}
+	if strings.TrimSpace(ssoBase) == "" {
+		ssoBase = "https://uat.dupr.gg"
 	}
 	if strings.TrimSpace(version) == "" {
 		version = "v1.0"
@@ -47,10 +51,18 @@ func NewRealDupr(clientKey, clientSecret, baseURL, version, clubID string) *Real
 		clientKey:    strings.TrimSpace(clientKey),
 		clientSecret: strings.TrimSpace(clientSecret),
 		baseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		ssoBase:      strings.TrimRight(strings.TrimSpace(ssoBase), "/"),
 		version:      strings.Trim(strings.TrimSpace(version), "/"),
 		clubID:       strings.TrimSpace(clubID),
 		http:         &http.Client{Timeout: 8 * time.Second},
 	}
+}
+
+// SsoURL returns the iframe URL a user is sent to to connect their DUPR account
+// (base64(clientKey) embedded) plus the origin to validate the postMessage from.
+func (d *RealDupr) SsoURL() (string, string) {
+	enc := base64.StdEncoding.EncodeToString([]byte(d.clientKey))
+	return d.ssoBase + "/login-external-app/" + enc, d.ssoBase
 }
 
 // duprEnvelope is DUPR's standard response wrapper ({status, message, result}).

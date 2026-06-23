@@ -107,6 +107,10 @@ type DuprGateway interface {
 	// GetPlayerRating looks up a player's current ratings by DUPR id, for
 	// verifying a registrant's real rating against a division's band.
 	GetPlayerRating(duprID string) (DuprRating, error)
+	// SsoURL returns the iframe URL a user is sent to to connect (consent) their
+	// DUPR account — base64(clientKey) embedded — plus the origin to validate the
+	// postMessage from. Empty when DUPR isn't configured.
+	SsoURL() (url string, origin string)
 }
 
 type MockDupr struct {
@@ -136,3 +140,6 @@ func (m *MockDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 		Doubles: 3.5, Singles: 3.5,
 	}, nil
 }
+
+// SsoURL is empty for the mock — the connect UI shows "DUPR not configured".
+func (m *MockDupr) SsoURL() (string, string) { return "", "" }

@@ -57,6 +57,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// Smoke-test the DUPR partner integration: look up a player's live rating by
 	// DUPR id (returns mock data until the DUPR_* env vars are set).
 	mux.HandleFunc("GET /dupr/player/{duprId}", requireAuth(s.duprPlayer))
+	// DUPR account connection (SSO consent flow): the iframe URL, the callback
+	// that stores the user's link, and the caller's connection status.
+	mux.HandleFunc("GET /me/dupr/sso-url", requireAuth(s.duprSsoURL))
+	mux.HandleFunc("POST /me/dupr/connect", requireAuth(s.duprConnect))
+	mux.HandleFunc("GET /me/dupr/connection", requireAuth(s.duprConnection))
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
@@ -639,6 +644,41 @@ func (s *Server) duprPlayer(w http.ResponseWriter, r *http.Request) {
 		"singlesProvisional": rating.SinglesProvisional,
 		"doublesProvisional": rating.DoublesProvisional,
 	})
+}
+
+// duprSsoURL returns the iframe URL (+ origin) for the DUPR account-connect flow.
+func (s *Server) duprSsoURL(w http.ResponseWriter, r *http.Request) {
+	url, origin := s.svc.DuprSsoURL()
+	writeJSON(w, http.StatusOK, map[string]any{"url": url, "origin": origin})
+}
+
+// duprConnect stores the caller's DUPR link captured by the SSO iframe, then
+// returns the resulting (token-free) connection for display.
+func (s *Server) duprConnect(w http.ResponseWriter, r *http.Request) {
+	var in model.DuprConnectInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.svc.ConnectDupr(userID(r), in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	conn, err := s.svc.DuprConnection(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, conn)
+}
+
+// duprConnection returns the caller's DUPR connection status (token-free).
+func (s *Server) duprConnection(w http.ResponseWriter, r *http.Request) {
+	conn, err := s.svc.DuprConnection(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, conn)
 }
 
 // setDivisionOrder reorders the event's divisions so the organizer controls

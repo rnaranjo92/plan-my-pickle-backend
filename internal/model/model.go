@@ -491,6 +491,26 @@ type ScheduleResult struct {
 	Unscheduled []string `json:"unscheduled"`
 }
 
+// DuprConnectInput is what the frontend sends after the SSO iframe posts back —
+// the user's DUPR id + tokens (and any ratings carried in the SSO `stats`).
+type DuprConnectInput struct {
+	DuprID        string   `json:"duprId"`
+	UserToken     string   `json:"userToken"`
+	RefreshToken  string   `json:"refreshToken"`
+	DoublesRating *float64 `json:"doublesRating"`
+	SinglesRating *float64 `json:"singlesRating"`
+}
+
+// DuprConnection is the public (token-free) view of a user's DUPR link, for
+// showing "DUPR connected" + the rating on their profile.
+type DuprConnection struct {
+	Connected     bool     `json:"connected"`
+	DuprID        string   `json:"duprId,omitempty"`
+	DoublesRating *float64 `json:"doublesRating,omitempty"`
+	SinglesRating *float64 `json:"singlesRating,omitempty"`
+	ConnectedAt   string   `json:"connectedAt,omitempty"`
+}
+
 type CreateEventRequest struct {
 	Name                 string         `json:"name"`
 	Format               string         `json:"format"`           // singles|doubles (default doubles)

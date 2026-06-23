@@ -68,7 +68,8 @@ func main() {
 	// DUPR_API_VERSION / DUPR_CLUB_ID are optional. Secrets live in the env, never code.
 	if ck, cs := os.Getenv("DUPR_CLIENT_KEY"), os.Getenv("DUPR_CLIENT_SECRET"); ck != "" && cs != "" {
 		svc.Dupr = gateway.NewRealDupr(ck, cs,
-			os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_API_VERSION"), os.Getenv("DUPR_CLUB_ID"))
+			os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_SSO_BASE"),
+			os.Getenv("DUPR_API_VERSION"), os.Getenv("DUPR_CLUB_ID"))
 		log.Printf("DUPR: partner API configured")
 	} else {
 		log.Printf("DUPR: mock — set DUPR_CLIENT_KEY, DUPR_CLIENT_SECRET to verify ratings + submit matches")

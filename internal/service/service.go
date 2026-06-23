@@ -2057,6 +2057,71 @@ func (s *Service) SetDivisionOrder(eventID string, orderedIDs []string) error {
 	return nil
 }
 
+// ConnectDupr upserts a user's DUPR account link captured by the SSO flow, then
+// best-effort pulls authoritative ratings via the partner API (the user has now
+// consented). userID is the authenticated caller.
+func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
+	if userID == "" {
+		return errors.New("must be signed in to connect DUPR")
+	}
+	duprID := strings.TrimSpace(in.DuprID)
+	if duprID == "" {
+		return errors.New("DUPR connection did not return a DUPR id")
+	}
+	doubles, singles := in.DoublesRating, in.SinglesRating
+	// Now that the user consented, prefer authoritative ratings from DUPR.
+	if r, err := s.Dupr.GetPlayerRating(duprID); err == nil && r.Found {
+		d, sg := r.Doubles, r.Singles
+		doubles, singles = &d, &sg
+	}
+	row := map[string]any{
+		"user_id":        userID,
+		"dupr_id":        duprID,
+		"user_token":     orNull(in.UserToken),
+		"refresh_token":  orNull(in.RefreshToken),
+		"doubles_rating": fOrNull(doubles),
+		"singles_rating": fOrNull(singles),
+		"updated_at":     now(),
+	}
+	existing, err := s.sb.SelectOne("dupr_connections",
+		"user_id=eq."+store.Q(userID)+"&select=user_id")
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		_, err = s.sb.Update("dupr_connections", "user_id=eq."+store.Q(userID), row)
+		return err
+	}
+	row["connected_at"] = now()
+	_, err = s.sb.Insert("dupr_connections", row)
+	return err
+}
+
+// DuprConnection returns the caller's DUPR link (token-free) for profile display.
+func (s *Service) DuprConnection(userID string) (model.DuprConnection, error) {
+	if userID == "" {
+		return model.DuprConnection{}, nil
+	}
+	row, err := s.sb.SelectOne("dupr_connections",
+		"user_id=eq."+store.Q(userID)+"&select=dupr_id,doubles_rating,singles_rating,connected_at")
+	if err != nil {
+		return model.DuprConnection{}, err
+	}
+	if row == nil {
+		return model.DuprConnection{Connected: false}, nil
+	}
+	return model.DuprConnection{
+		Connected:     true,
+		DuprID:        asStr(row, "dupr_id"),
+		DoublesRating: asFloatPtr(row, "doubles_rating"),
+		SinglesRating: asFloatPtr(row, "singles_rating"),
+		ConnectedAt:   asStr(row, "connected_at"),
+	}, nil
+}
+
+// DuprSsoURL returns the iframe URL (+ origin to validate) for the connect flow.
+func (s *Service) DuprSsoURL() (string, string) { return s.Dupr.SsoURL() }
+
 func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestSlots int) (int, error) {
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {

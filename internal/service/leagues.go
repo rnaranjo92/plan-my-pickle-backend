@@ -264,7 +264,69 @@ func (s *Service) MyLeagues(userID, email string) ([]model.League, error) {
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].CreatedAt > out[j].CreatedAt
 	})
+	if err := s.attachLeagueSessionDates(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// attachLeagueSessionDates fills FirstSessionAt / LastSessionAt on each league
+// from its sessions (events), in ONE batched query, so the home screen can
+// group leagues by lifecycle without a per-league read. Best-effort shape:
+// first = earliest starts_at; last = latest ends_at (falling back to starts_at).
+func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
+	if len(leagues) == 0 {
+		return nil
+	}
+	ids := make([]string, len(leagues))
+	for i, l := range leagues {
+		ids[i] = l.ID
+	}
+	rows, err := s.sb.Select("events",
+		"league_id=in.("+strings.Join(ids, ",")+")&select=league_id,starts_at,ends_at")
+	if err != nil {
+		return err
+	}
+	type span struct{ first, last string }
+	byLeague := map[string]*span{}
+	for _, r := range rows {
+		lid := asStr(r, "league_id")
+		if lid == "" {
+			continue
+		}
+		start := asStr(r, "starts_at")
+		end := asStr(r, "ends_at")
+		if end == "" {
+			end = start // single-day session: end == start
+		}
+		sp := byLeague[lid]
+		if sp == nil {
+			sp = &span{first: start, last: end}
+			byLeague[lid] = sp
+		}
+		// RFC3339 UTC strings compare lexically in time order.
+		if start != "" && (sp.first == "" || start < sp.first) {
+			sp.first = start
+		}
+		if end != "" && (sp.last == "" || end > sp.last) {
+			sp.last = end
+		}
+	}
+	for i := range leagues {
+		sp := byLeague[leagues[i].ID]
+		if sp == nil {
+			continue
+		}
+		if sp.first != "" {
+			f := sp.first
+			leagues[i].FirstSessionAt = &f
+		}
+		if sp.last != "" {
+			l := sp.last
+			leagues[i].LastSessionAt = &l
+		}
+	}
+	return nil
 }
 
 // GetLeague returns a league plus its sessions (events), ordered by start date

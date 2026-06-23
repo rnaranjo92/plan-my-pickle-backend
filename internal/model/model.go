@@ -104,6 +104,12 @@ type League struct {
 	// CashPrize flags a cash-prize league; CashPrizeAmount is the optional pot.
 	CashPrize       bool     `json:"cashPrize"`
 	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
+	// FirstSessionAt / LastSessionAt are the earliest start and latest end (or
+	// start) across the league's sessions (events), RFC3339 UTC — populated on
+	// the MyLeagues list so the home screen can group leagues by lifecycle
+	// (Happening now / Upcoming / Past). Nil when the league has no dated session.
+	FirstSessionAt *string `json:"firstSessionAt,omitempty"`
+	LastSessionAt  *string `json:"lastSessionAt,omitempty"`
 }
 
 // CreateLeagueRequest is the create-payload for a league.

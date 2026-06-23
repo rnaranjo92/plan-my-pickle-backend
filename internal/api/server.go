@@ -228,6 +228,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
 	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
 	mux.HandleFunc("POST /events/{id}/day-cap", s.ownerOnly("event", "id", s.setDayCap))
+	mux.HandleFunc("GET /brackets/{id}/playoff-seed", s.ownerOnly("bracket", "id", s.playoffSeed))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
 	mux.HandleFunc("POST /registrations/{id}/checkin", s.ownerOnly("registration", "id", s.checkin))
@@ -989,13 +990,33 @@ func (s *Server) forfeitMatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) playoff(w http.ResponseWriter, r *http.Request) {
-	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
-	n, err := s.svc.GeneratePlayoffBracket(r.PathValue("id"), topN)
+	var req struct {
+		TopN    int        `json:"topN"`
+		Seeding string     `json:"seeding"`
+		Sides   [][]string `json:"sides"`
+	}
+	// Body is optional (legacy callers passed ?topN= only); tolerate no body.
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.TopN == 0 {
+		req.TopN, _ = strconv.Atoi(r.URL.Query().Get("topN"))
+	}
+	n, err := s.svc.GeneratePlayoffBracket(r.PathValue("id"), req.TopN, req.Seeding, req.Sides)
 	if err != nil {
 		status(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"matches": n})
+}
+
+// playoffSeed returns the division's teams in seed order (with names + record)
+// so the Build-playoff dialog can show them for review / manual reordering.
+func (s *Server) playoffSeed(w http.ResponseWriter, r *http.Request) {
+	seeds, err := s.svc.PlayoffSeedTeams(r.PathValue("id"), r.URL.Query().Get("seeding"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, seeds)
 }
 
 func (s *Server) bracketMatches(w http.ResponseWriter, r *http.Request) {

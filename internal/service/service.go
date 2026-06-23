@@ -1856,7 +1856,7 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 			// pools_playoff: lay down the (empty) medal bracket now so it shows
 			// in the Standings tab immediately; it auto-seeds when pools finish.
 			if ev.TournamentFormat == "pools_playoff" {
-				seeds, err := s.seedTopTeams(ev, eventID, b.ID)
+				seeds, err := s.seedTopTeams(ev, eventID, b.ID, "wins")
 				if err != nil {
 					return 0, err
 				}
@@ -2752,7 +2752,7 @@ func (s *Service) persistCompass(ev model.Event, bracketID string, seededSides [
 	return count, nil
 }
 
-func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error) {
+func (s *Service) GeneratePlayoffBracket(bracketID string, topN int, seeding string, manualSides [][]string) (int, error) {
 	b, err := s.sb.SelectOne("brackets", "id=eq."+store.Q(bracketID)+"&select=event_id")
 	if err != nil {
 		return 0, err
@@ -2780,9 +2780,23 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error
 	if err != nil {
 		return 0, err
 	}
-	sides, err := s.seedTopTeams(ev, eventID, bracketID)
-	if err != nil {
-		return 0, err
+	var sides [][]string
+	if seeding == "manual" && len(manualSides) > 0 {
+		// Honor the organizer's chosen order, but validate every team is a real
+		// team in this division (no fabricated/duplicated pairs).
+		valid, verr := s.seedTopTeams(ev, eventID, bracketID, "wins")
+		if verr != nil {
+			return 0, verr
+		}
+		if verr := validateManualSides(manualSides, valid); verr != nil {
+			return 0, verr
+		}
+		sides = manualSides
+	} else {
+		sides, err = s.seedTopTeams(ev, eventID, bracketID, seeding)
+		if err != nil {
+			return 0, err
+		}
 	}
 	if len(sides) < 4 {
 		return 0, errors.New("need at least 4 teams in this division to build the playoff")
@@ -2809,12 +2823,102 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int) (int, error
 	return s.persistBracket(ev, bracketID, sides[:topN], false)
 }
 
+// validateManualSides ensures every team in [manual] is a real team in [valid]
+// (matched as an unordered player set) and that none repeats — so a manual
+// playoff seed can reorder/trim teams but never invent or duplicate one.
+func validateManualSides(manual, valid [][]string) error {
+	key := func(t []string) string {
+		c := append([]string(nil), t...)
+		sort.Strings(c)
+		return strings.Join(c, "|")
+	}
+	want := map[string]bool{}
+	for _, t := range valid {
+		want[key(t)] = true
+	}
+	seen := map[string]bool{}
+	for _, t := range manual {
+		k := key(t)
+		if !want[k] {
+			return errors.New("manual seeding includes a team that isn't in this division")
+		}
+		if seen[k] {
+			return errors.New("manual seeding lists the same team twice")
+		}
+		seen[k] = true
+	}
+	return nil
+}
+
+// PlayoffSeedTeams returns this division's teams in seed order (seeding: "wins"
+// default | "points"), each with its players' names and the team's combined
+// pool record — so the organizer can review and reorder them before building
+// the playoff.
+func (s *Service) PlayoffSeedTeams(bracketID, seeding string) ([]model.PlayoffSeed, error) {
+	b, err := s.sb.SelectOne("brackets", "id=eq."+store.Q(bracketID)+"&select=event_id")
+	if err != nil {
+		return nil, err
+	}
+	if b == nil {
+		return nil, ErrNotFound
+	}
+	eventID := asStr(b, "event_id")
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return nil, err
+	}
+	sides, err := s.seedTopTeams(ev, eventID, bracketID, seeding)
+	if err != nil {
+		return nil, err
+	}
+	regs, err := s.Registrations(eventID)
+	if err != nil {
+		return nil, err
+	}
+	nameByPlayer := map[string]string{}
+	for _, r := range regs {
+		nameByPlayer[r.PlayerID] = r.FullName
+	}
+	standings, err := s.Standings(eventID, bracketID, true)
+	if err != nil {
+		return nil, err
+	}
+	type rec struct{ wins, diff, pf int }
+	recByPlayer := map[string]rec{}
+	for _, st := range standings {
+		recByPlayer[st.PlayerID] = rec{st.Wins, st.PointDiff, st.PointsFor}
+	}
+	out := make([]model.PlayoffSeed, 0, len(sides))
+	for _, side := range sides {
+		seed := model.PlayoffSeed{PlayerIDs: side}
+		for _, pid := range side {
+			n := nameByPlayer[pid]
+			if n == "" {
+				n = "Player"
+			}
+			seed.Names = append(seed.Names, n)
+			r := recByPlayer[pid]
+			seed.Wins += r.wins
+			seed.PointDiff += r.diff
+			seed.PointsFor += r.pf
+		}
+		out = append(out, seed)
+	}
+	return out, nil
+}
+
 // seedTopTeams returns this division's teams ordered best-first by pool
 // standings. Before any pools are played the order is arbitrary but the team
 // SET is complete, so callers can use len() to gate (>= 4 for a medal bracket)
 // and take the top 4 once standings exist.
-func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID string) ([][]string, error) {
-	standings, err := s.Standings(eventID, bracketID, true)
+// seedTopTeams orders the division's teams best-first. seeding == "points" ranks
+// by total points scored (then differential, then wins); anything else ("wins",
+// the default) ranks by record (wins, then differential, then points).
+func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID, seeding string) ([][]string, error) {
+	byPoints := seeding == "points"
+	// Standings already orders by wins (byWins=true) or by points (false); reuse
+	// that for the singles seed order.
+	standings, err := s.Standings(eventID, bracketID, !byPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -2838,10 +2942,15 @@ func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID string) ([][]s
 		pairs := pairsFromRegs(regs)
 		rate := map[string]int{}
 		for _, st := range standings {
-			// Seed by record first, then point differential, then points scored —
-			// the same priority the standings table ranks by. Wide multipliers keep
-			// the tiers from bleeding into each other.
-			rate[st.PlayerID] = st.Wins*1_000_000 + st.PointDiff*1_000 + st.PointsFor
+			if byPoints {
+				// Total points scored first, then differential, then wins.
+				rate[st.PlayerID] = st.PointsFor*1_000_000 + st.PointDiff*1_000 + st.Wins
+			} else {
+				// Record first, then differential, then points scored — the same
+				// priority the standings table ranks by. Wide multipliers keep the
+				// tiers from bleeding into each other.
+				rate[st.PlayerID] = st.Wins*1_000_000 + st.PointDiff*1_000 + st.PointsFor
+			}
 		}
 		sort.SliceStable(pairs, func(i, j int) bool {
 			return pairScore(pairs[i], rate) > pairScore(pairs[j], rate)
@@ -2907,7 +3016,7 @@ func (s *Service) maybeSeedPlayoff(bracketID string) error {
 	if err != nil {
 		return err
 	}
-	sides, err := s.seedTopTeams(ev, eventID, bracketID)
+	sides, err := s.seedTopTeams(ev, eventID, bracketID, "wins")
 	if err != nil {
 		return err
 	}

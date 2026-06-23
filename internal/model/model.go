@@ -458,6 +458,16 @@ type BracketInput struct {
 	DuprMax      *float64 `json:"duprMax,omitempty"`
 }
 
+// PlayoffSeed is one team in playoff seed order — its players (ids + names) and
+// combined pool record — so the organizer can review/reorder before building.
+type PlayoffSeed struct {
+	PlayerIDs []string `json:"playerIds"`
+	Names     []string `json:"names"`
+	Wins      int      `json:"wins"`
+	PointDiff int      `json:"pointDiff"`
+	PointsFor int      `json:"pointsFor"`
+}
+
 type CreateEventRequest struct {
 	Name                 string         `json:"name"`
 	Format               string         `json:"format"`           // singles|doubles (default doubles)

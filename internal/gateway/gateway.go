@@ -77,6 +77,7 @@ func (m *MockSms) Send(to, body string) (SmsResult, error) {
 type DuprPayload struct {
 	EventID      string
 	DuprEventID  string
+	EventName    string
 	Team1DuprIDs []string
 	Team2DuprIDs []string
 	Team1Score   int      // game 1 (legacy single-game field)

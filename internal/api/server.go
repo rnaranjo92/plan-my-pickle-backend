@@ -1113,6 +1113,9 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
 		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
 	}
+	// Submit to DUPR for sanctioned events (best-effort, async — no-op otherwise).
+	// Owner-only by construction: only the organizer/scorekeeper records scores.
+	go s.svc.SubmitMatchToDupr(r.PathValue("id"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }
 

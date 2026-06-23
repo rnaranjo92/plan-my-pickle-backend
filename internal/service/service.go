@@ -2148,6 +2148,83 @@ func (s *Service) RegisterDuprWebhook(url string) error {
 	return s.Dupr.RegisterWebhook(url)
 }
 
+// SubmitMatchToDupr submits a completed, DUPR-sanctioned match to DUPR (called
+// best-effort + async from the score handler — never blocks scoring). No-op when
+// the event isn't sanctioned, the match isn't completed, it's already submitted,
+// or any player isn't DUPR-connected. Stores the returned matchCode so we never
+// double-submit and can update/delete it later.
+func (s *Service) SubmitMatchToDupr(matchID string) {
+	row, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+
+		"&select=id,status,games,team1_score,team2_score,dupr_match_code,event:events!event_id(dupr_sanctioned,name)")
+	if err != nil || row == nil {
+		return
+	}
+	if asStr(row, "status") != "completed" || asStr(row, "dupr_match_code") != "" {
+		return
+	}
+	ev := asMap(row, "event")
+	if ev == nil || !asBool(ev, "dupr_sanctioned") {
+		return
+	}
+	// Each player's DUPR id by team (1/2) — all must be present (connected).
+	parts, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&select=team,player:players!player_id(dupr_id)")
+	if err != nil {
+		return
+	}
+	var team1, team2 []string
+	missing := false
+	for _, p := range parts {
+		did := ""
+		if pl := asMap(p, "player"); pl != nil {
+			did = asStr(pl, "dupr_id")
+		}
+		if did == "" {
+			missing = true
+			continue
+		}
+		if asInt(p, "team") == 2 {
+			team2 = append(team2, did)
+		} else {
+			team1 = append(team1, did)
+		}
+	}
+	if missing || len(team1) == 0 || len(team2) == 0 {
+		log.Printf("dupr: match %s not submitted — a player isn't DUPR-connected", matchID)
+		return
+	}
+	// Per-game scores, falling back to the recorded totals.
+	var games [][2]int
+	if gv, ok := row["games"].([]any); ok {
+		for _, g := range gv {
+			if gm, ok := g.(map[string]any); ok {
+				games = append(games, [2]int{asInt(gm, "team1"), asInt(gm, "team2")})
+			}
+		}
+	}
+	if len(games) == 0 {
+		games = [][2]int{{asInt(row, "team1_score"), asInt(row, "team2_score")}}
+	}
+	res, err := s.Dupr.SubmitMatch(gateway.DuprPayload{
+		EventID:      matchID,
+		DuprEventID:  matchID, // idempotency identifier
+		EventName:    asStr(ev, "name"),
+		Team1DuprIDs: team1,
+		Team2DuprIDs: team2,
+		Games:        games,
+	})
+	if err != nil || !res.OK {
+		log.Printf("dupr: submit match %s failed: %v %s", matchID, err, res.Error)
+		return
+	}
+	if res.DuprMatchID != "" {
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(matchID),
+			map[string]any{"dupr_match_code": res.DuprMatchID}); err != nil {
+			log.Printf("dupr: store match code for %s failed: %v", matchID, err)
+		}
+	}
+}
+
 // DuprConnection returns the caller's DUPR link (token-free) for profile display.
 func (s *Service) DuprConnection(userID string) (model.DuprConnection, error) {
 	if userID == "" {

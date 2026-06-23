@@ -278,14 +278,27 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 		identifier = p.EventID
 	}
 	body := map[string]any{
-		"identifier":  identifier,
-		"matchDate":   time.Now().Format("2006-01-02"),
+		"identifier": identifier,
+		"matchDate":  time.Now().Format("2006-01-02"),
+		// Send both names — the partner saveMatch doc uses "format", the OpenAPI
+		// spec calls it "matchFormat"; unknown fields are ignored server-side.
+		"format":      format,
 		"matchFormat": format,
+		"matchType":   "SIDEOUT", // traditional pickleball side-out scoring
 		"teamA":       team(p.Team1DuprIDs, games, 0),
 		"teamB":       team(p.Team2DuprIDs, games, 1),
 	}
+	if p.EventName != "" {
+		body["event"] = p.EventName
+	}
+	// Submit as a club match when a club is configured (clubId must be numeric).
 	if d.clubID != "" {
-		body["clubId"] = d.clubID
+		body["matchSource"] = "CLUB"
+		if id, e := strconv.ParseInt(d.clubID, 10, 64); e == nil {
+			body["clubId"] = id
+		} else {
+			body["clubId"] = d.clubID
+		}
 	}
 	raw, code, err := d.authed(http.MethodPost,
 		fmt.Sprintf("/match/%s/create", d.version), body)

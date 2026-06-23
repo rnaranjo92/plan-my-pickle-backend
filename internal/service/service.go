@@ -607,15 +607,16 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+"&order=created_at.asc"+
-			"&select=checked_in,player:players!player_id(full_name),bracket:brackets!bracket_id(name)")
+			"&select=checked_in,player:players!player_id(id,full_name),bracket:brackets!bracket_id(name)")
 	if err != nil {
 		return nil, err
 	}
 	out := make([]model.RosterEntry, 0, len(rows))
 	for _, r := range rows {
-		name := ""
+		name, pid := "", ""
 		if p := asMap(r, "player"); p != nil {
 			name = strings.TrimSpace(asStr(p, "full_name"))
+			pid = asStr(p, "id")
 		}
 		if name == "" {
 			continue
@@ -625,12 +626,105 @@ func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 			div = asStr(b, "name")
 		}
 		out = append(out, model.RosterEntry{
+			PlayerID:  pid,
 			FullName:  name,
 			Division:  div,
 			CheckedIn: asBool(r, "checked_in"),
 		})
 	}
 	return out, nil
+}
+
+// PlayerProfile builds the PUBLIC profile for a player: their DUPR id/ratings
+// (when connected) plus an across-events box score aggregated from every
+// completed match they've played. Returns ErrNotFound for an unknown player.
+func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
+	prof := model.PlayerProfile{PlayerID: playerID, RecentEvents: []string{}}
+	prow, err := s.sb.SelectOne("players",
+		"id=eq."+store.Q(playerID)+"&select=id,full_name,dupr_id,user_id")
+	if err != nil {
+		return prof, err
+	}
+	if prow == nil {
+		return prof, ErrNotFound
+	}
+	prof.FullName = strings.TrimSpace(asStr(prow, "full_name"))
+	prof.DuprID = asStr(prow, "dupr_id")
+
+	// Ratings live on the DUPR connection (keyed by the linked auth user), kept
+	// fresh by the rating webhook — only present for players who connected DUPR.
+	if uid := asStr(prow, "user_id"); uid != "" {
+		if c, _ := s.sb.SelectOne("dupr_connections",
+			"user_id=eq."+store.Q(uid)+"&select=doubles_rating,singles_rating"); c != nil {
+			prof.DoublesRating = asFloatPtr(c, "doubles_rating")
+			prof.SinglesRating = asFloatPtr(c, "singles_rating")
+		}
+	}
+
+	// Box score: every completed match this player took part in, attributed to
+	// the side they played on.
+	parts, err := s.sb.Select("match_participants",
+		"player_id=eq."+store.Q(playerID)+"&select=team,match_id")
+	if err != nil {
+		return prof, err
+	}
+	teamByMatch := map[string]int{}
+	mids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if mid := asStr(p, "match_id"); mid != "" {
+			teamByMatch[mid] = asInt(p, "team")
+			mids = append(mids, mid)
+		}
+	}
+	if len(mids) > 0 {
+		rows, err := s.sb.Select("matches",
+			"id=in.("+strings.Join(mids, ",")+")&status=eq.completed"+
+				"&select=id,team1_score,team2_score,winning_team")
+		if err != nil {
+			return prof, err
+		}
+		for _, m := range rows {
+			t1, t2 := asIntPtr(m, "team1_score"), asIntPtr(m, "team2_score")
+			if t1 == nil || t2 == nil {
+				continue // a bye is a completed match with no score — not a game
+			}
+			team := teamByMatch[asStr(m, "id")]
+			mine, opp := *t2, *t1
+			if team == 1 {
+				mine, opp = *t1, *t2
+			}
+			prof.GamesPlayed++
+			prof.PointsFor += mine
+			prof.PointsAgainst += opp
+			if wt := asIntPtr(m, "winning_team"); wt != nil && *wt == team {
+				prof.Wins++
+			} else {
+				prof.Losses++
+			}
+		}
+	}
+
+	// Tournaments played (most recent first) come from their registrations.
+	regs, err := s.sb.Select("registrations",
+		"player_id=eq."+store.Q(playerID)+"&order=created_at.desc"+
+			"&select=event:events!event_id(name)")
+	if err != nil {
+		return prof, err
+	}
+	seen := map[string]bool{}
+	for _, r := range regs {
+		if e := asMap(r, "event"); e != nil {
+			n := strings.TrimSpace(asStr(e, "name"))
+			if n != "" && !seen[n] {
+				seen[n] = true
+				if len(prof.RecentEvents) < 8 {
+					prof.RecentEvents = append(prof.RecentEvents, n)
+				}
+			}
+		}
+	}
+	prof.EventsPlayed = len(seen)
+	return prof, nil
 }
 
 // DeleteEvent removes an event and (via ON DELETE CASCADE) all its brackets,

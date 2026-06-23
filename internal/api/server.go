@@ -86,6 +86,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
+	// Public, PII-free player profile (rating + across-events box score).
+	mux.HandleFunc("GET /players/{id}/profile", s.playerProfile)
 	mux.HandleFunc("GET /feed/{id}/comments", optionalAuth(s.commentList))
 	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
@@ -1661,6 +1663,15 @@ func (s *Server) roster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) playerProfile(w http.ResponseWriter, r *http.Request) {
+	prof, err := s.svc.PlayerProfile(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prof)
 }
 
 // feedList returns an event's activity feed (public — like the scoreboard).

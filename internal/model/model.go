@@ -758,10 +758,30 @@ type CheckoutRequest struct {
 
 // RosterEntry is one player in an event's PUBLIC roster — name, division, and
 // check-in status only (NO phone/email/DUPR), safe to show players/spectators.
+// PlayerID links to the public player profile (it's an opaque id, not PII).
 type RosterEntry struct {
+	PlayerID  string `json:"playerId,omitempty"`
 	FullName  string `json:"fullName"`
 	Division  string `json:"division,omitempty"`
 	CheckedIn bool   `json:"checkedIn"`
+}
+
+// PlayerProfile is a PUBLIC player page: name + DUPR id/ratings (when the player
+// has connected DUPR) and their across-events box score (wins/losses, points,
+// tournaments played). No contact PII — safe for spectators/opponents.
+type PlayerProfile struct {
+	PlayerID      string   `json:"playerId"`
+	FullName      string   `json:"fullName"`
+	DuprID        string   `json:"duprId,omitempty"`
+	DoublesRating *float64 `json:"doublesRating,omitempty"`
+	SinglesRating *float64 `json:"singlesRating,omitempty"`
+	EventsPlayed  int      `json:"eventsPlayed"`
+	Wins          int      `json:"wins"`
+	Losses        int      `json:"losses"`
+	GamesPlayed   int      `json:"gamesPlayed"`
+	PointsFor     int      `json:"pointsFor"`
+	PointsAgainst int      `json:"pointsAgainst"`
+	RecentEvents  []string `json:"recentEvents"`
 }
 
 // Profile is the signed-in user's saved player details, used to pre-fill the

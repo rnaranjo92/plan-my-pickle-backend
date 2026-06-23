@@ -242,6 +242,14 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.Description != "" {
 		payload["description"] = req.Description
 	}
+	// venue_notes / waiver_url ship in add_venue_info.sql — same migration-safe
+	// pattern (only reference when set).
+	if req.VenueNotes != "" {
+		payload["venue_notes"] = req.VenueNotes
+	}
+	if req.WaiverURL != "" {
+		payload["waiver_url"] = req.WaiverURL
+	}
 	ev, err := s.sb.Insert("events", payload)
 	if err != nil {
 		return "", err
@@ -731,6 +739,8 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"starts_at":     orNull(req.StartsAt),
 		"ends_at":       orNull(req.EndsAt),
 		"description":   orNull(req.Description),
+		"venue_notes":   orNull(req.VenueNotes),
+		"waiver_url":    orNull(req.WaiverURL),
 	}
 	// Auto-geocode on edit: ONLY when the event has no coords yet (a map-picked
 	// venue is left untouched — we can't distinguish it from a prior geocode, so

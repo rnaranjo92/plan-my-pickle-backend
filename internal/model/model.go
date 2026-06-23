@@ -17,6 +17,8 @@ type Event struct {
 	Currency             string   `json:"currency"`
 	Location             *string  `json:"location,omitempty"`
 	ContactPhone         *string  `json:"contactPhone,omitempty"`
+	VenueNotes           *string  `json:"venueNotes,omitempty"`
+	WaiverURL            *string  `json:"waiverUrl,omitempty"`
 	VenueName            *string  `json:"venueName,omitempty"`
 	VenueAddress         *string  `json:"venueAddress,omitempty"`
 	VenuePhone           *string  `json:"venuePhone,omitempty"`
@@ -525,6 +527,8 @@ type CreateEventRequest struct {
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	Location             string         `json:"location"`
 	ContactPhone         string         `json:"contactPhone"`
+	VenueNotes           string         `json:"venueNotes"`
+	WaiverURL            string         `json:"waiverUrl"`
 	VenueName            string         `json:"venueName"`
 	VenueAddress         string         `json:"venueAddress"`
 	VenuePhone           string         `json:"venuePhone"`

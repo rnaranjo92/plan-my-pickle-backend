@@ -739,8 +739,16 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"starts_at":     orNull(req.StartsAt),
 		"ends_at":       orNull(req.EndsAt),
 		"description":   orNull(req.Description),
-		"venue_notes":   orNull(req.VenueNotes),
-		"waiver_url":    orNull(req.WaiverURL),
+	}
+	// venue_notes / waiver_url ship in add_venue_info.sql — reference them only
+	// when set so an event edit never breaks before the migration is applied (and
+	// so it can't fail app-wide if that manual step is missed). Trade-off: blanking
+	// them won't clear an existing value (acceptable until the column is live).
+	if req.VenueNotes != "" {
+		upd["venue_notes"] = req.VenueNotes
+	}
+	if req.WaiverURL != "" {
+		upd["waiver_url"] = req.WaiverURL
 	}
 	// Auto-geocode on edit: ONLY when the event has no coords yet (a map-picked
 	// venue is left untouched — we can't distinguish it from a prior geocode, so
@@ -1311,25 +1319,30 @@ func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]st
 	}
 
 	// Keep events.format in sync with the divisions' play type — the scheduler
-	// reads events.format (singles vs doubles), NOT division_type. Singles only
-	// when every division is a singles play type; anything else (open / doubles
-	// variants / team) means doubles play.
-	format := "doubles"
-	if len(divs) > 0 {
-		allSingles := true
-		for _, d := range divs {
-			if d.DivisionType != "singles" {
-				allSingles = false
-				break
-			}
+	// reads events.format (singles vs doubles), NOT division_type. Only divisions
+	// with an EXPLICIT play type carry a signal; "open"/blank do not, so when none
+	// are typed we leave events.format exactly as the organizer set it (otherwise a
+	// routine edit of a singles event with a default "Open" division would silently
+	// flip it to doubles). Singles only when every typed division is singles.
+	typed, allSingles := false, true
+	for _, d := range divs {
+		if d.DivisionType == "" || d.DivisionType == "open" {
+			continue
 		}
+		typed = true
+		if d.DivisionType != "singles" {
+			allSingles = false
+		}
+	}
+	if typed {
+		format := "doubles"
 		if allSingles {
 			format = "singles"
 		}
-	}
-	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
-		map[string]any{"format": format}); err != nil {
-		return blocked, err
+		if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+			map[string]any{"format": format}); err != nil {
+			return blocked, err
+		}
 	}
 	return blocked, nil
 }

@@ -1299,6 +1299,28 @@ func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]st
 			return nil, err
 		}
 	}
+
+	// Keep events.format in sync with the divisions' play type — the scheduler
+	// reads events.format (singles vs doubles), NOT division_type. Singles only
+	// when every division is a singles play type; anything else (open / doubles
+	// variants / team) means doubles play.
+	format := "doubles"
+	if len(divs) > 0 {
+		allSingles := true
+		for _, d := range divs {
+			if d.DivisionType != "singles" {
+				allSingles = false
+				break
+			}
+		}
+		if allSingles {
+			format = "singles"
+		}
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"format": format}); err != nil {
+		return blocked, err
+	}
 	return blocked, nil
 }
 

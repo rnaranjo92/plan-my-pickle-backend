@@ -78,6 +78,8 @@ type DuprPayload struct {
 	EventID      string
 	DuprEventID  string
 	EventName    string
+	MatchID      string // unique per-match idempotency identifier
+	MatchDate    string // when the match was played (yyyy-MM-dd); empty = today
 	Team1DuprIDs []string
 	Team2DuprIDs []string
 	Team1Score   int      // game 1 (legacy single-game field)
@@ -101,7 +103,6 @@ type DuprRating struct {
 	Doubles            float64
 	SinglesProvisional bool
 	DoublesProvisional bool
-	Raw                string // raw /user response (debug; smoke endpoint only)
 }
 
 type DuprGateway interface {

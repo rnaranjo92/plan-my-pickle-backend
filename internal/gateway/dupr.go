@@ -236,7 +236,6 @@ func (d *RealDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 		Doubles:            parseDuprRating(res.Ratings.Doubles),
 		SinglesProvisional: provisional(res.Ratings.IsSinglesReliable),
 		DoublesProvisional: provisional(res.Ratings.IsDoublesReliable),
-		Raw:                string(raw),
 	}, nil
 }
 
@@ -273,13 +272,22 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 	if len(p.Team1DuprIDs) <= 1 && len(p.Team2DuprIDs) <= 1 {
 		format = "SINGLES"
 	}
-	identifier := p.DuprEventID
+	// Idempotency identifier MUST be unique per match (not per event), else DUPR
+	// dedupes every match after the first.
+	identifier := p.MatchID
+	if identifier == "" {
+		identifier = p.DuprEventID
+	}
 	if identifier == "" {
 		identifier = p.EventID
 	}
+	matchDate := p.MatchDate
+	if matchDate == "" {
+		matchDate = time.Now().Format("2006-01-02")
+	}
 	body := map[string]any{
 		"identifier": identifier,
-		"matchDate":  time.Now().Format("2006-01-02"),
+		"matchDate":  matchDate,
 		// Send both names — the partner saveMatch doc uses "format", the OpenAPI
 		// spec calls it "matchFormat"; unknown fields are ignored server-side.
 		"format":      format,

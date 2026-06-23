@@ -55,9 +55,6 @@ func NewServer(svc *service.Service) http.Handler {
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
-	// Smoke-test the DUPR partner integration: look up a player's live rating by
-	// DUPR id (returns mock data until the DUPR_* env vars are set).
-	mux.HandleFunc("GET /dupr/player/{duprId}", requireAuth(s.duprPlayer))
 	// DUPR account connection (SSO consent flow): the iframe URL, the callback
 	// that stores the user's link, and the caller's connection status.
 	mux.HandleFunc("GET /me/dupr/sso-url", requireAuth(s.duprSsoURL))
@@ -620,42 +617,18 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 // players or matches) so the client can explain.
 // duprPlayer looks up a player's live DUPR ratings by DUPR id — a smoke test for
 // the partner integration (mock data until the DUPR_* env vars are configured).
-func (s *Server) duprPlayer(w http.ResponseWriter, r *http.Request) {
-	// Always 200 so a returned error surfaces in the body instead of being masked
-	// as a proxy 502; recover guards against an unexpected panic in the client.
-	defer func() {
-		if rec := recover(); rec != nil {
-			writeJSON(w, http.StatusOK,
-				map[string]any{"ok": false, "error": fmt.Sprintf("panic: %v", rec)})
-		}
-	}()
-	start := time.Now()
-	rating, err := s.svc.Dupr.GetPlayerRating(r.PathValue("duprId"))
-	ms := time.Since(start).Milliseconds()
-	if err != nil {
-		writeJSON(w, http.StatusOK,
-			map[string]any{"ok": false, "ms": ms, "error": err.Error()})
+// duprWebhook receives DUPR RATING / RATING_SEED events and refreshes the
+// matching connected user's cached rating. Public (DUPR posts here), so it is
+// FAIL-CLOSED on a shared secret: DUPR_WEBHOOK_SECRET must be set and arrive as
+// the ?token= query param (we register the webhook URL with it). Always 200
+// quickly so DUPR doesn't retry-storm.
+func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
+	secret := os.Getenv("DUPR_WEBHOOK_SECRET")
+	if secret == "" || r.URL.Query().Get("token") != secret {
+		// Unconfigured or wrong token → reject, so no one can rewrite ratings.
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                 true,
-		"ms":                 ms,
-		"found":              rating.Found,
-		"duprId":             rating.DuprID,
-		"fullName":           rating.FullName,
-		"singles":            rating.Singles,
-		"doubles":            rating.Doubles,
-		"singlesProvisional": rating.SinglesProvisional,
-		"doublesProvisional": rating.DoublesProvisional,
-		"raw":                rating.Raw,
-	})
-}
-
-// duprWebhook receives DUPR RATING / RATING_SEED events and refreshes the
-// matching connected user's cached rating. Public (DUPR posts here) — guarded by
-// the clientId in the payload (when DUPR_CLIENT_ID is set) and by only touching
-// an already-connected DUPR id. Always 200 quickly so DUPR doesn't retry-storm.
-func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	var p struct {
 		ClientID string `json:"clientId"`
@@ -669,16 +642,11 @@ func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(body, &p); err == nil && p.Message.DuprID != "" {
-		want := os.Getenv("DUPR_CLIENT_ID")
-		if want == "" || want == p.ClientID {
-			if err := s.svc.ApplyDuprRating(p.Message.DuprID,
-				ratingPtr(p.Message.Rating.Doubles),
-				ratingPtr(p.Message.Rating.Singles)); err != nil {
-				log.Printf("dupr webhook: apply rating for %s failed: %v",
-					p.Message.DuprID, err)
-			}
-		} else {
-			log.Printf("dupr webhook: clientId mismatch, ignoring")
+		if err := s.svc.ApplyDuprRating(p.Message.DuprID,
+			ratingPtr(p.Message.Rating.Doubles),
+			ratingPtr(p.Message.Rating.Singles)); err != nil {
+			log.Printf("dupr webhook: apply rating for %s failed: %v",
+				p.Message.DuprID, err)
 		}
 	}
 	w.WriteHeader(http.StatusOK)
@@ -1113,9 +1081,9 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
 		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
 	}
-	// Submit to DUPR for sanctioned events (best-effort, async — no-op otherwise).
-	// Owner-only by construction: only the organizer/scorekeeper records scores.
-	go s.svc.SubmitMatchToDupr(r.PathValue("id"))
+	// DUPR submission is queued by advanceAfterScore and flushed by the organizer
+	// via "Import to DUPR" (SubmitPendingToDupr) — no extra call here (would
+	// double-submit).
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }
 

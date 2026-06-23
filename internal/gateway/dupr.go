@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -171,29 +172,46 @@ func (d *RealDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return DuprRating{}, err
 	}
+	// DUPR's /user result shape: {id, fullName, ratings:{singles, doubles,
+	// isSinglesReliable, isDoublesReliable}}. Ratings are a number, the string
+	// "NR", or null for an unrated player. (NOT top-level singlesRating.)
 	var res struct {
-		DuprID             string  `json:"duprId"`
-		FullName           string  `json:"fullName"`
-		SinglesRating      float64 `json:"singlesRating"`
-		DoublesRating      float64 `json:"doublesRating"`
-		SinglesProvisional bool    `json:"singlesProvisional"`
-		DoublesProvisional bool    `json:"doublesProvisional"`
+		ID       string `json:"id"`
+		FullName string `json:"fullName"`
+		Ratings  struct {
+			Singles           json.RawMessage `json:"singles"`
+			Doubles           json.RawMessage `json:"doubles"`
+			IsSinglesReliable *bool           `json:"isSinglesReliable"`
+			IsDoublesReliable *bool           `json:"isDoublesReliable"`
+		} `json:"ratings"`
 	}
 	if err := json.Unmarshal(env.Result, &res); err != nil {
 		return DuprRating{}, err
 	}
+	provisional := func(reliable *bool) bool { return reliable != nil && !*reliable }
 	return DuprRating{
-		// DUPR's /user response omits duprId; a present fullName (or a rating)
-		// signals a real, consented user. Echo the requested id.
-		Found:              res.FullName != "" || res.SinglesRating > 0 || res.DoublesRating > 0,
+		// A present id/fullName signals a real, consented user. Echo the id we
+		// requested (DUPR returns it under `id`).
+		Found:              res.ID != "" || res.FullName != "",
 		DuprID:             duprID,
 		FullName:           res.FullName,
-		Singles:            res.SinglesRating,
-		Doubles:            res.DoublesRating,
-		SinglesProvisional: res.SinglesProvisional,
-		DoublesProvisional: res.DoublesProvisional,
+		Singles:            parseDuprRating(res.Ratings.Singles),
+		Doubles:            parseDuprRating(res.Ratings.Doubles),
+		SinglesProvisional: provisional(res.Ratings.IsSinglesReliable),
+		DoublesProvisional: provisional(res.Ratings.IsDoublesReliable),
 		Raw:                string(raw),
 	}, nil
+}
+
+// parseDuprRating reads a DUPR rating value that may be a JSON number, the
+// string "NR"/"" (unrated), or null → 0.
+func parseDuprRating(raw json.RawMessage) float64 {
+	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if s == "" || s == "null" || strings.EqualFold(s, "NR") {
+		return 0
+	}
+	f, _ := strconv.ParseFloat(s, 64)
+	return f
 }
 
 func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {

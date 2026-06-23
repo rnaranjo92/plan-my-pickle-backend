@@ -876,7 +876,7 @@ func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("force") == "true"
-	n, err := s.svc.GenerateSchedule(r.PathValue("id"), force)
+	res, err := s.svc.GenerateSchedule(r.PathValue("id"), force)
 	if errors.Is(err, service.ErrScheduleHasResults) {
 		// 409 — the app should confirm with the user, then retry with ?force=true.
 		writeErr(w, http.StatusConflict, err)
@@ -886,11 +886,11 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
-	if n > 0 {
+	if res.Matches > 0 {
 		s.svc.AddFeedItem(r.PathValue("id"), "schedule_posted",
-			fmt.Sprintf("Schedule posted — %d matches", n), "")
+			fmt.Sprintf("Schedule posted — %d matches", res.Matches), "")
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"matches": n})
+	writeJSON(w, http.StatusOK, res)
 }
 
 // autoSchedule lays the pool games onto courts + time-slots ordered by division

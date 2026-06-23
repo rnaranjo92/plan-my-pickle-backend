@@ -477,6 +477,14 @@ type PlayoffSeedInfo struct {
 	PoolsOpen  int           `json:"poolsOpen"`
 }
 
+// ScheduleResult is the build-schedule response: how many matches were created,
+// plus any doubles players left without a partner (an odd field leaves one out)
+// so the organizer is told instead of the player being silently dropped.
+type ScheduleResult struct {
+	Matches     int      `json:"matches"`
+	Unscheduled []string `json:"unscheduled"`
+}
+
 type CreateEventRequest struct {
 	Name                 string         `json:"name"`
 	Format               string         `json:"format"`           // singles|doubles (default doubles)

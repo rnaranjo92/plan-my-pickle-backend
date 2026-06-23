@@ -1698,6 +1698,9 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 			map[string]any{"partner_id": nil, "partner_name": partnerName}); err != nil {
 			return false, err
 		}
+		if err := s.revertToRotatingIfNoPairs(ev); err != nil {
+			return false, err
+		}
 		return hasMatches && reg.partnerID != "", nil
 
 	default:
@@ -1710,8 +1713,32 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 			map[string]any{"partner_id": nil, "partner_name": nil}); err != nil {
 			return false, err
 		}
+		if err := s.revertToRotatingIfNoPairs(ev); err != nil {
+			return false, err
+		}
 		return hasMatches && reg.partnerID != "", nil
 	}
+}
+
+// revertToRotatingIfNoPairs flips a fixed-partner doubles event back to rotating
+// once its last registered pair is removed. Pairing auto-switches a rotating
+// event to fixed, so unpairing the final team should be symmetric — a fixed
+// event with zero pairs is meaningless, and re-pairing flips it back to fixed.
+func (s *Service) revertToRotatingIfNoPairs(ev model.Event) error {
+	if ev.Format != "doubles" || ev.PartnerMode != "fixed" {
+		return nil
+	}
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(ev.ID)+"&partner_id=not.is.null&select=id")
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		return nil
+	}
+	_, err = s.sb.Update("events", "id=eq."+store.Q(ev.ID),
+		map[string]any{"partner_mode": "rotating"})
+	return err
 }
 
 // UpdateRegistrationDetails edits the player behind a registration (organizer
@@ -1789,42 +1816,44 @@ func (s *Service) completedMatchCount(eventID string) (int, error) {
 }
 
 // ---------------------------------------------------------- scheduling
-func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
+func (s *Service) GenerateSchedule(eventID string, force bool) (model.ScheduleResult, error) {
 	// Refuse to wipe an in-progress event's scores unless explicitly forced.
 	if !force {
 		done, err := s.completedMatchCount(eventID)
 		if err != nil {
-			return 0, err
+			return model.ScheduleResult{}, err
 		}
 		if done > 0 {
-			return done, fmt.Errorf("%w: %d match(es) already scored", ErrScheduleHasResults, done)
+			return model.ScheduleResult{Matches: done},
+				fmt.Errorf("%w: %d match(es) already scored", ErrScheduleHasResults, done)
 		}
 	}
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
-		return 0, err
+		return model.ScheduleResult{}, err
 	}
 	bks, err := s.GetBrackets(eventID)
 	if err != nil {
-		return 0, err
+		return model.ScheduleResult{}, err
 	}
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {
-		return 0, err
+		return model.ScheduleResult{}, err
 	}
 	skill, err := s.playerSkills()
 	if err != nil {
-		return 0, err
+		return model.ScheduleResult{}, err
 	}
 	if err := s.wipeAllMatches(eventID); err != nil {
-		return 0, err
+		return model.ScheduleResult{}, err
 	}
 
 	total := 0
+	var droppedIDs []string
 	for _, b := range bks {
 		regs, err := s.bracketRegs(eventID, b.ID)
 		if err != nil {
-			return 0, err
+			return model.ScheduleResult{}, err
 		}
 		// Doubles needs at least 4 players (a full game); singles 2. Skip
 		// undersized divisions instead of persisting empty rounds.
@@ -1835,31 +1864,34 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 		if len(regs) < minPlayers {
 			continue
 		}
+		// A doubles player with no partner to pair with is left out of the draw —
+		// collect them so the organizer is told instead of a silent drop.
+		droppedIDs = append(droppedIDs, droppedDoublesPlayers(ev, regs)...)
 		if ev.TournamentFormat == "single_elim" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
 			n, err := s.persistBracket(ev, b.ID, sides, ev.Consolation)
 			if err != nil {
-				return 0, err
+				return model.ScheduleResult{}, err
 			}
 			total += n
 		} else if ev.TournamentFormat == "double_elim" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
 			n, err := s.persistDoubleElim(ev, b.ID, sides)
 			if err != nil {
-				return 0, err
+				return model.ScheduleResult{}, err
 			}
 			total += n
 		} else if ev.TournamentFormat == "compass" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
 			n, err := s.persistCompass(ev, b.ID, sides)
 			if err != nil {
-				return 0, err
+				return model.ScheduleResult{}, err
 			}
 			total += n
 		} else {
 			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum)
 			if err != nil {
-				return 0, err
+				return model.ScheduleResult{}, err
 			}
 			total += n
 			// pools_playoff: lay down the (empty) medal bracket now so it shows
@@ -1867,21 +1899,54 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (int, error) {
 			if ev.TournamentFormat == "pools_playoff" {
 				seeds, err := s.seedTopTeams(ev, eventID, b.ID, "wins")
 				if err != nil {
-					return 0, err
+					return model.ScheduleResult{}, err
 				}
 				if len(seeds) >= 4 {
 					if _, err := s.persistMedalBracket(ev, b.ID, nil); err != nil {
-						return 0, err
+						return model.ScheduleResult{}, err
 					}
 				}
 			}
 		}
 	}
 	if err := s.spreadCourts(eventID); err != nil {
-		return 0, err
+		return model.ScheduleResult{}, err
 	}
-	_, err = s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{"status": "in_progress"})
-	return total, err
+	if _, err = s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"status": "in_progress"}); err != nil {
+		return model.ScheduleResult{}, err
+	}
+
+	unscheduled, err := s.playerNamesByID(eventID, droppedIDs)
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	return model.ScheduleResult{Matches: total, Unscheduled: unscheduled}, nil
+}
+
+// playerNamesByID resolves player IDs to display names for the given event.
+// Returns nil for an empty input (the common case — no lookup performed).
+func (s *Service) playerNamesByID(eventID string, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	regs, err := s.Registrations(eventID)
+	if err != nil {
+		return nil, err
+	}
+	nameByID := map[string]string{}
+	for _, r := range regs {
+		nameByID[r.PlayerID] = r.FullName
+	}
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		n := nameByID[id]
+		if n == "" {
+			n = "A player"
+		}
+		names = append(names, n)
+	}
+	return names, nil
 }
 
 // spreadCourts distributes pool matches across every available court. Each
@@ -5648,6 +5713,35 @@ func pairsFromRegs(regs []reg) [][]string {
 		pairs = append(pairs, []string{leftover[i], leftover[i+1]})
 	}
 	return pairs
+}
+
+// droppedDoublesPlayers returns the player IDs that pairsFromRegs leaves out of
+// every team — the odd one when a fixed/elimination doubles field has an odd
+// count. Empty for singles and rotating round-robins (those seat everyone).
+func droppedDoublesPlayers(ev model.Event, regs []reg) []string {
+	if ev.Format != "doubles" {
+		return nil
+	}
+	preformed := ev.PartnerMode == "fixed" ||
+		ev.TournamentFormat == "single_elim" ||
+		ev.TournamentFormat == "double_elim" ||
+		ev.TournamentFormat == "compass"
+	if !preformed {
+		return nil
+	}
+	inTeam := map[string]bool{}
+	for _, p := range pairsFromRegs(regs) {
+		for _, id := range p {
+			inTeam[id] = true
+		}
+	}
+	var dropped []string
+	for _, r := range regs {
+		if !inTeam[r.playerID] {
+			dropped = append(dropped, r.playerID)
+		}
+	}
+	return dropped
 }
 
 func pairScore(pair []string, rate map[string]int) int {

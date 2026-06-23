@@ -2107,12 +2107,45 @@ func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
 		return err
 	}
 	if existing != nil {
-		_, err = s.sb.Update("dupr_connections", "user_id=eq."+store.Q(userID), row)
-		return err
+		if _, err = s.sb.Update("dupr_connections", "user_id=eq."+store.Q(userID), row); err != nil {
+			return err
+		}
+	} else {
+		row["connected_at"] = now()
+		if _, err = s.sb.Insert("dupr_connections", row); err != nil {
+			return err
+		}
 	}
-	row["connected_at"] = now()
-	_, err = s.sb.Insert("dupr_connections", row)
+	// Subscribe to RATING webhooks for this user (best-effort): DUPR posts a
+	// RATING_SEED with their current rating, which our webhook stores — so the
+	// rating populates + stays fresh without polling.
+	if e := s.Dupr.SubscribeUserRating(duprID); e != nil {
+		log.Printf("dupr: subscribe %s failed (non-fatal): %v", duprID, e)
+	}
+	return nil
+}
+
+// ApplyDuprRating updates a connected user's cached ratings from a RATING
+// webhook (matched by DUPR id). Only present (non-nil) values are written.
+func (s *Service) ApplyDuprRating(duprID string, doubles, singles *float64) error {
+	duprID = strings.TrimSpace(duprID)
+	if duprID == "" {
+		return nil
+	}
+	upd := map[string]any{"updated_at": now()}
+	if doubles != nil {
+		upd["doubles_rating"] = *doubles
+	}
+	if singles != nil {
+		upd["singles_rating"] = *singles
+	}
+	_, err := s.sb.Update("dupr_connections", "dupr_id=eq."+store.Q(duprID), upd)
 	return err
+}
+
+// RegisterDuprWebhook registers our webhook URL with DUPR (called at startup).
+func (s *Service) RegisterDuprWebhook(url string) error {
+	return s.Dupr.RegisterWebhook(url)
 }
 
 // DuprConnection returns the caller's DUPR link (token-free) for profile display.

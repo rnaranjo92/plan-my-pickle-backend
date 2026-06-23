@@ -71,6 +71,19 @@ func main() {
 			os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_SSO_BASE"),
 			os.Getenv("DUPR_API_VERSION"), os.Getenv("DUPR_CLUB_ID"))
 		log.Printf("DUPR: partner API configured")
+		// Register our rating webhook (best-effort; idempotent by URL). DUPR posts
+		// rating updates here; per-user subscription happens on connect.
+		hook := os.Getenv("DUPR_WEBHOOK_URL")
+		if hook == "" {
+			hook = "https://api.planmypickle.com/dupr/webhook"
+		}
+		go func() {
+			if err := svc.RegisterDuprWebhook(hook); err != nil {
+				log.Printf("DUPR: webhook register failed (non-fatal): %v", err)
+			} else {
+				log.Printf("DUPR: rating webhook registered at %s", hook)
+			}
+		}()
 	} else {
 		log.Printf("DUPR: mock — set DUPR_CLIENT_KEY, DUPR_CLIENT_SECRET to verify ratings + submit matches")
 	}

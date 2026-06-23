@@ -66,6 +66,43 @@ func (d *RealDupr) SsoURL() (string, string) {
 	return d.ssoBase + "/login-external-app/" + enc, d.ssoBase
 }
 
+// RegisterWebhook registers our HTTPS URL to receive RATING webhook events.
+// POST /{v}/webhook {webhookUrl, topics}. Idempotent on DUPR's side by url.
+func (d *RealDupr) RegisterWebhook(webhookURL string) error {
+	if strings.TrimSpace(webhookURL) == "" {
+		return nil
+	}
+	raw, code, err := d.authed(http.MethodPost,
+		fmt.Sprintf("/%s/webhook", d.version),
+		map[string]any{"webhookUrl": webhookURL, "topics": []string{"RATING"}})
+	if err != nil {
+		return err
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("dupr register webhook http %d: %s", code, string(raw))
+	}
+	return nil
+}
+
+// SubscribeUserRating subscribes a connected user to RATING events. DUPR then
+// immediately posts a RATING_SEED with their current rating to our webhook.
+func (d *RealDupr) SubscribeUserRating(duprID string) error {
+	duprID = strings.TrimSpace(duprID)
+	if duprID == "" {
+		return nil
+	}
+	raw, code, err := d.authed(http.MethodPost,
+		fmt.Sprintf("/user/%s/subscribe/webhook-event", d.version),
+		map[string]any{"duprIds": []string{duprID}, "topic": "RATING"})
+	if err != nil {
+		return err
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("dupr subscribe http %d: %s", code, string(raw))
+	}
+	return nil
+}
+
 // duprEnvelope is DUPR's standard response wrapper ({status, message, result}).
 type duprEnvelope struct {
 	Status  string          `json:"status"`

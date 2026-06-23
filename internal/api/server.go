@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -62,6 +63,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/dupr/sso-url", requireAuth(s.duprSsoURL))
 	mux.HandleFunc("POST /me/dupr/connect", requireAuth(s.duprConnect))
 	mux.HandleFunc("GET /me/dupr/connection", requireAuth(s.duprConnection))
+	// DUPR rating webhook (DUPR posts here — public; validated by clientId +
+	// only updates an existing connected DUPR id).
+	mux.HandleFunc("POST /dupr/webhook", s.duprWebhook)
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
@@ -645,6 +649,51 @@ func (s *Server) duprPlayer(w http.ResponseWriter, r *http.Request) {
 		"doublesProvisional": rating.DoublesProvisional,
 		"raw":                rating.Raw,
 	})
+}
+
+// duprWebhook receives DUPR RATING / RATING_SEED events and refreshes the
+// matching connected user's cached rating. Public (DUPR posts here) — guarded by
+// the clientId in the payload (when DUPR_CLIENT_ID is set) and by only touching
+// an already-connected DUPR id. Always 200 quickly so DUPR doesn't retry-storm.
+func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var p struct {
+		ClientID string `json:"clientId"`
+		Event    string `json:"event"`
+		Message  struct {
+			DuprID string `json:"duprId"`
+			Rating struct {
+				Singles json.RawMessage `json:"singles"`
+				Doubles json.RawMessage `json:"doubles"`
+			} `json:"rating"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(body, &p); err == nil && p.Message.DuprID != "" {
+		want := os.Getenv("DUPR_CLIENT_ID")
+		if want == "" || want == p.ClientID {
+			if err := s.svc.ApplyDuprRating(p.Message.DuprID,
+				ratingPtr(p.Message.Rating.Doubles),
+				ratingPtr(p.Message.Rating.Singles)); err != nil {
+				log.Printf("dupr webhook: apply rating for %s failed: %v",
+					p.Message.DuprID, err)
+			}
+		} else {
+			log.Printf("dupr webhook: clientId mismatch, ignoring")
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// ratingPtr parses a DUPR rating value (number, "NR", "", or null) → *float64.
+func ratingPtr(raw json.RawMessage) *float64 {
+	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if s == "" || s == "null" || strings.EqualFold(s, "NR") {
+		return nil
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return &f
+	}
+	return nil
 }
 
 // duprSsoURL returns the iframe URL (+ origin) for the DUPR account-connect flow.

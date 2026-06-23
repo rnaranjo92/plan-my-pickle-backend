@@ -112,6 +112,11 @@ type DuprGateway interface {
 	// DUPR account — base64(clientKey) embedded — plus the origin to validate the
 	// postMessage from. Empty when DUPR isn't configured.
 	SsoURL() (url string, origin string)
+	// RegisterWebhook registers our HTTPS URL to receive RATING webhook events.
+	RegisterWebhook(webhookURL string) error
+	// SubscribeUserRating subscribes a connected user to RATING events; DUPR then
+	// immediately posts a RATING_SEED with their current rating.
+	SubscribeUserRating(duprID string) error
 }
 
 type MockDupr struct {
@@ -143,4 +148,6 @@ func (m *MockDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 }
 
 // SsoURL is empty for the mock — the connect UI shows "DUPR not configured".
-func (m *MockDupr) SsoURL() (string, string) { return "", "" }
+func (m *MockDupr) SsoURL() (string, string)            { return "", "" }
+func (m *MockDupr) RegisterWebhook(string) error        { return nil }
+func (m *MockDupr) SubscribeUserRating(string) error    { return nil }

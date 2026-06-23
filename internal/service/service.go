@@ -535,6 +535,48 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 	return out, nil
 }
 
+// MyNextMatch returns the signed-in user's next match in an event — the one
+// in progress, else the soonest scheduled — or nil when they have none or aren't
+// registered. Powers the player view's "your next match" banner.
+func (s *Service) MyNextMatch(eventID, userID, email string) (*model.Match, error) {
+	pidList, err := s.playerIDsForUser(userID, email)
+	if err != nil || len(pidList) == 0 {
+		return nil, err
+	}
+	parts, err := s.sb.Select("match_participants",
+		"player_id=in.("+strings.Join(pidList, ",")+")&select=match_id")
+	if err != nil {
+		return nil, err
+	}
+	idset := map[string]bool{}
+	for _, p := range parts {
+		if mid := asStr(p, "match_id"); mid != "" {
+			idset[mid] = true
+		}
+	}
+	if len(idset) == 0 {
+		return nil, nil
+	}
+	mids := make([]string, 0, len(idset))
+	for id := range idset {
+		mids = append(mids, id)
+	}
+	// In-progress first (status sorts 'in_progress' < 'scheduled'), then by play
+	// order so the soonest upcoming game wins.
+	rows, err := s.sb.Select("matches",
+		"id=in.("+strings.Join(mids, ",")+")&event_id=eq."+store.Q(eventID)+
+			"&status=in.(scheduled,in_progress)"+
+			"&order=status.asc,play_order.asc.nullslast,created_at.asc&select="+matchSelect)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	m := mapMatch(rows[0])
+	return &m, nil
+}
+
 func (s *Service) GetEvent(id string) (model.Event, error) {
 	row, err := s.sb.SelectOne("events", "id=eq."+store.Q(id)+"&select=*")
 	if err != nil {

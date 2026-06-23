@@ -77,6 +77,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
+	// The signed-in player's next match in this event (for the "your next" banner).
+	mux.HandleFunc("GET /events/{id}/my-next-match", requireAuth(s.myNextMatch))
 	mux.HandleFunc("GET /events/nearby", s.nearbyEvents)
 	// Public marketing feed for planmypickle.com: recent/upcoming publicly-listed
 	// events in a SAFE projection (no auth, no PII). Served cross-origin.
@@ -274,6 +276,15 @@ func (s *Server) myEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) myNextMatch(w http.ResponseWriter, r *http.Request) {
+	m, err := s.svc.MyNextMatch(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"match": m})
 }
 
 // myProfile returns the signed-in user's saved player details to pre-fill the

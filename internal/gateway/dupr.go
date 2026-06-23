@@ -49,7 +49,7 @@ func NewRealDupr(clientKey, clientSecret, baseURL, version, clubID string) *Real
 		baseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		version:      strings.Trim(strings.TrimSpace(version), "/"),
 		clubID:       strings.TrimSpace(clubID),
-		http:         &http.Client{Timeout: 12 * time.Second},
+		http:         &http.Client{Timeout: 8 * time.Second},
 	}
 }
 

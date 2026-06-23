@@ -612,12 +612,25 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 // duprPlayer looks up a player's live DUPR ratings by DUPR id — a smoke test for
 // the partner integration (mock data until the DUPR_* env vars are configured).
 func (s *Server) duprPlayer(w http.ResponseWriter, r *http.Request) {
+	// Always 200 so a returned error surfaces in the body instead of being masked
+	// as a proxy 502; recover guards against an unexpected panic in the client.
+	defer func() {
+		if rec := recover(); rec != nil {
+			writeJSON(w, http.StatusOK,
+				map[string]any{"ok": false, "error": fmt.Sprintf("panic: %v", rec)})
+		}
+	}()
+	start := time.Now()
 	rating, err := s.svc.Dupr.GetPlayerRating(r.PathValue("duprId"))
+	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeJSON(w, http.StatusOK,
+			map[string]any{"ok": false, "ms": ms, "error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"ms":                 ms,
 		"found":              rating.Found,
 		"duprId":             rating.DuprID,
 		"fullName":           rating.FullName,

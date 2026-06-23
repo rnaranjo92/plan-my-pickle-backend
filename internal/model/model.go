@@ -468,6 +468,15 @@ type PlayoffSeed struct {
 	PointsFor int      `json:"pointsFor"`
 }
 
+// PlayoffSeedInfo is the Build-playoff dialog's payload: the seeded teams plus
+// pool progress, so the dialog can gate draw size by team count and warn /
+// disable Build until the pool matches are finished.
+type PlayoffSeedInfo struct {
+	Teams      []PlayoffSeed `json:"teams"`
+	PoolsTotal int           `json:"poolsTotal"`
+	PoolsOpen  int           `json:"poolsOpen"`
+}
+
 type CreateEventRequest struct {
 	Name                 string         `json:"name"`
 	Format               string         `json:"format"`           // singles|doubles (default doubles)

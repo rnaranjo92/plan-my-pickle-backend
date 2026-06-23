@@ -1333,10 +1333,15 @@ var ErrAlreadyRegistered = errors.New("already registered for this event")
 func (s *Service) registrationExistsByContact(eventID string, req model.RegisterRequest) (bool, error) {
 	check := func(col, val string) (bool, error) {
 		val = strings.TrimSpace(val)
-		if val == "" {
+		name := strings.TrimSpace(req.FullName)
+		if val == "" || name == "" {
 			return false, nil
 		}
-		players, err := s.sb.Select("players", col+"=eq."+store.Q(val)+"&select=id")
+		// Require the SAME NAME as well as the same contact — the same person
+		// re-registering. Without the name match, family members who share a
+		// phone/email would be wrongly blocked. (ilike = case-insensitive.)
+		players, err := s.sb.Select("players",
+			col+"=eq."+store.Q(val)+"&full_name=ilike."+store.Q(name)+"&select=id")
 		if err != nil {
 			return false, err
 		}
@@ -1652,6 +1657,10 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 		if other.bracketID != reg.bracketID {
 			return false, errors.New("partners must be in the same division")
 		}
+		// Whether this actually changes the pairing — re-confirming an existing
+		// A+B pair shouldn't warn that the schedule is stale.
+		pairingChanged :=
+			reg.partnerID != other.playerID || other.partnerID != reg.playerID
 		// Break any prior mutual links on either side before re-pairing.
 		if reg.partnerID != "" && reg.partnerID != other.playerID {
 			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
@@ -1677,7 +1686,7 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 				return false, err
 			}
 		}
-		return hasMatches, nil
+		return hasMatches && pairingChanged, nil
 
 	case partnerName != "":
 		if reg.partnerID != "" {
@@ -2781,7 +2790,11 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int, seeding str
 		return 0, err
 	}
 	var sides [][]string
-	if seeding == "manual" && len(manualSides) > 0 {
+	if seeding == "manual" {
+		// Manual requires an explicit order — never silently fall back to wins.
+		if len(manualSides) == 0 {
+			return 0, errors.New("manual seeding needs the team order")
+		}
 		// Honor the organizer's chosen order, but validate every team is a real
 		// team in this division (no fabricated/duplicated pairs).
 		valid, verr := s.seedTopTeams(ev, eventID, bracketID, "wins")
@@ -2854,26 +2867,27 @@ func validateManualSides(manual, valid [][]string) error {
 // default | "points"), each with its players' names and the team's combined
 // pool record — so the organizer can review and reorder them before building
 // the playoff.
-func (s *Service) PlayoffSeedTeams(bracketID, seeding string) ([]model.PlayoffSeed, error) {
+func (s *Service) PlayoffSeedTeams(bracketID, seeding string) (model.PlayoffSeedInfo, error) {
+	var info model.PlayoffSeedInfo
 	b, err := s.sb.SelectOne("brackets", "id=eq."+store.Q(bracketID)+"&select=event_id")
 	if err != nil {
-		return nil, err
+		return info, err
 	}
 	if b == nil {
-		return nil, ErrNotFound
+		return info, ErrNotFound
 	}
 	eventID := asStr(b, "event_id")
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
-		return nil, err
+		return info, err
 	}
 	sides, err := s.seedTopTeams(ev, eventID, bracketID, seeding)
 	if err != nil {
-		return nil, err
+		return info, err
 	}
 	regs, err := s.Registrations(eventID)
 	if err != nil {
-		return nil, err
+		return info, err
 	}
 	nameByPlayer := map[string]string{}
 	for _, r := range regs {
@@ -2881,7 +2895,7 @@ func (s *Service) PlayoffSeedTeams(bracketID, seeding string) ([]model.PlayoffSe
 	}
 	standings, err := s.Standings(eventID, bracketID, true)
 	if err != nil {
-		return nil, err
+		return info, err
 	}
 	type rec struct{ wins, diff, pf int }
 	recByPlayer := map[string]rec{}
@@ -2904,7 +2918,14 @@ func (s *Service) PlayoffSeedTeams(bracketID, seeding string) ([]model.PlayoffSe
 		}
 		out = append(out, seed)
 	}
-	return out, nil
+	total, open, err := s.poolProgress(bracketID)
+	if err != nil {
+		return info, err
+	}
+	info.Teams = out
+	info.PoolsTotal = total
+	info.PoolsOpen = open
+	return info, nil
 }
 
 // seedTopTeams returns this division's teams ordered best-first by pool

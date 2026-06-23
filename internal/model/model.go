@@ -426,10 +426,11 @@ type Match struct {
 	ResultType string      `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
 	// Round context — populated by the event-wide pool-matches query so the
 	// Game tab can group + filter every match from one stream.
-	RoundID     *string `json:"roundId,omitempty"`
-	RoundNumber *int    `json:"roundNumber,omitempty"`
-	RoundStatus string  `json:"roundStatus,omitempty"`
-	Sides       []Side  `json:"sides"`
+	RoundID        *string `json:"roundId,omitempty"`
+	RoundNumber    *int    `json:"roundNumber,omitempty"`
+	RoundStatus    string  `json:"roundStatus,omitempty"`
+	RoundStartedAt *string `json:"roundStartedAt,omitempty"` // when the round went active; for live "time left"
+	Sides          []Side  `json:"sides"`
 }
 
 type RoundView struct {

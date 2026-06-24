@@ -978,8 +978,8 @@ func clampGameDuration(m int) int {
 	switch {
 	case m <= 0:
 		return 25
-	case m < 15:
-		return 15
+	case m < 10:
+		return 10
 	case m > 90:
 		return 90
 	default:

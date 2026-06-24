@@ -138,6 +138,8 @@ func mapEvent(m map[string]any) model.Event {
 		WinBy:                asInt(m, "win_by"),
 		BestOf:               asInt(m, "best_of"),
 		GameDurationMinutes:  asInt(m, "game_duration_minutes"),
+		MinPoolRounds:        asInt(m, "min_pool_rounds"),
+		MaxPoolRounds:        asInt(m, "max_pool_rounds"),
 		RegistrationFeeCents: asInt(m, "registration_fee_cents"),
 		Currency:             asStr(m, "currency"),
 		Location:             asStrPtr(m, "location"),

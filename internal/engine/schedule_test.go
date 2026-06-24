@@ -18,7 +18,7 @@ func playersOf(m MatchSpec) []string {
 }
 
 func TestSinglesRoundRobin(t *testing.T) {
-	rounds := GenerateSchedule(ids(5), Singles, Rotating, 2, nil, 0) // odd -> byes
+	rounds := GenerateSchedule(ids(5), Singles, Rotating, 2, nil, 0, 0, 0) // odd -> byes
 	met := map[string]bool{}
 	for _, r := range rounds {
 		seen := map[string]bool{}
@@ -47,7 +47,7 @@ func TestSinglesRoundRobin(t *testing.T) {
 }
 
 func TestCourtAssignmentNoDoubleBooking(t *testing.T) {
-	rounds := GenerateSchedule(ids(8), Singles, Rotating, 2, nil, 0)
+	rounds := GenerateSchedule(ids(8), Singles, Rotating, 2, nil, 0, 0, 0)
 	for _, r := range rounds {
 		bySlot := map[int][]MatchSpec{}
 		for _, m := range r.Matches {
@@ -72,8 +72,32 @@ func TestCourtAssignmentNoDoubleBooking(t *testing.T) {
 	}
 }
 
+func TestPoolRoundBounds(t *testing.T) {
+	// 8 singles players → a full round-robin is 7 rounds.
+	full := GenerateSchedule(ids(8), Singles, Rotating, 2, nil, 0, 0, 0)
+	if len(full) != 7 {
+		t.Fatalf("full RR: want 7 rounds, got %d", len(full))
+	}
+	// max caps it (partial round-robin).
+	capped := GenerateSchedule(ids(8), Singles, Rotating, 2, nil, 0, 0, 3)
+	if len(capped) != 3 {
+		t.Fatalf("max=3: want 3 rounds, got %d", len(capped))
+	}
+	// min tops it up past the natural length by repeating matchups.
+	topped := GenerateSchedule(ids(8), Singles, Rotating, 2, nil, 0, 10, 0)
+	if len(topped) != 10 {
+		t.Fatalf("min=10: want 10 rounds, got %d", len(topped))
+	}
+	// Rounds renumber 1..N after fitting.
+	for i, r := range topped {
+		if r.RoundNumber != i+1 {
+			t.Fatalf("round %d mislabeled %d", i, r.RoundNumber)
+		}
+	}
+}
+
 func TestRotatingDoubles8(t *testing.T) {
-	rounds := GenerateSchedule(ids(8), Doubles, Rotating, 2, nil, 6)
+	rounds := GenerateSchedule(ids(8), Doubles, Rotating, 2, nil, 6, 0, 0)
 	games := map[string]int{}
 	partner := map[string]int{}
 	maxPartner := 0
@@ -114,7 +138,7 @@ func TestRotatingDoubles8(t *testing.T) {
 }
 
 func TestRotatingDoubles6FairSitOuts(t *testing.T) {
-	rounds := GenerateSchedule(ids(6), Doubles, Rotating, 1, nil, 6)
+	rounds := GenerateSchedule(ids(6), Doubles, Rotating, 1, nil, 6, 0, 0)
 	games := map[string]int{}
 	for _, p := range ids(6) {
 		games[p] = 0

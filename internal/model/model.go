@@ -13,6 +13,11 @@ type Event struct {
 	WinBy                int      `json:"winBy"`
 	BestOf               int      `json:"bestOf"` // games per match: 1 (single) or 3 (best of 3)
 	GameDurationMinutes  int      `json:"gameDurationMinutes"`
+	// MinPoolRounds / MaxPoolRounds bound the pool-play round-robin length
+	// (0 = unset). Max caps a full RR (partial round-robin); min tops it up by
+	// repeating matchups so everyone gets a guaranteed number of games.
+	MinPoolRounds        int      `json:"minPoolRounds"`
+	MaxPoolRounds        int      `json:"maxPoolRounds"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
 	Currency             string   `json:"currency"`
 	Location             *string  `json:"location,omitempty"`
@@ -530,6 +535,8 @@ type CreateEventRequest struct {
 	WinBy                int            `json:"winBy"`
 	BestOf               int            `json:"bestOf"`
 	GameDurationMinutes  int            `json:"gameDurationMinutes"`
+	MinPoolRounds        int            `json:"minPoolRounds"`
+	MaxPoolRounds        int            `json:"maxPoolRounds"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	Location             string         `json:"location"`
 	ContactPhone         string         `json:"contactPhone"`

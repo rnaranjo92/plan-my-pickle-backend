@@ -250,6 +250,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.WaiverURL != "" {
 		payload["waiver_url"] = req.WaiverURL
 	}
+	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
+	if req.MinPoolRounds > 0 {
+		payload["min_pool_rounds"] = req.MinPoolRounds
+	}
+	if req.MaxPoolRounds > 0 {
+		payload["max_pool_rounds"] = req.MaxPoolRounds
+	}
 	ev, err := s.sb.Insert("events", payload)
 	if err != nil {
 		return "", err
@@ -885,6 +892,15 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	}
 	if req.WaiverURL != "" {
 		upd["waiver_url"] = req.WaiverURL
+	}
+	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
+	// an edit never breaks before the migration is applied. (Trade-off: clearing
+	// a bound back to 0 won't persist until the column is live; acceptable.)
+	if req.MinPoolRounds > 0 {
+		upd["min_pool_rounds"] = req.MinPoolRounds
+	}
+	if req.MaxPoolRounds > 0 {
+		upd["max_pool_rounds"] = req.MaxPoolRounds
 	}
 	// Auto-geocode on edit: ONLY when the event has no coords yet (a map-picked
 	// venue is left untouched — we can't distinguish it from a prior geocode, so
@@ -2679,7 +2695,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 			rounds = 12
 		}
 	}
-	schedule := engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds)
+	schedule := engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds, ev.MinPoolRounds, ev.MaxPoolRounds)
 
 	// Batch every insert (rounds, matches, participants) into 3 bulk calls
 	// instead of ~3 per match. A big round-robin (e.g. 96 games) otherwise fires

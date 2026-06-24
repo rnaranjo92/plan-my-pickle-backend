@@ -44,21 +44,60 @@ type rawMatch struct {
 const bye = "" // sentinel BYE (player ids are never empty)
 
 // GenerateSchedule builds a full round-robin schedule from the registered ids.
-func GenerateSchedule(playerIDs []string, format PlayFormat, partner PartnerMode, numCourts int, fixedPairs [][]string, rounds int) []RoundSpec {
+// GenerateSchedule builds the pool-play round-robin. rounds is the desired count
+// for rotating doubles; minRounds/maxRounds (0 = unset) bound the rounds for ALL
+// formats — a full round-robin is capped to maxRounds (partial RR) and topped up
+// to minRounds by repeating matchups (a guaranteed-games social cap).
+func GenerateSchedule(playerIDs []string, format PlayFormat, partner PartnerMode, numCourts int, fixedPairs [][]string, rounds, minRounds, maxRounds int) []RoundSpec {
 	if numCourts < 1 {
 		numCourts = 1
 	}
 	if format == Singles {
-		return placeCourts(singlesRoundRobin(playerIDs), numCourts)
+		rr := singlesRoundRobin(playerIDs)
+		return placeCourts(fitRounds(rr, boundedTarget(len(rr), minRounds, maxRounds)), numCourts)
 	}
 	if partner == Fixed {
 		pairs := fixedPairs
 		if pairs == nil {
 			pairs = autoPair(playerIDs)
 		}
-		return placeCourts(doublesFixed(pairs), numCourts)
+		rr := doublesFixed(pairs)
+		return placeCourts(fitRounds(rr, boundedTarget(len(rr), minRounds, maxRounds)), numCourts)
 	}
-	return placeCourts(doublesRotating(playerIDs, rounds), numCourts)
+	// Rotating's "rounds" IS the round count, so bound it directly before building.
+	return placeCourts(doublesRotating(playerIDs, boundedTarget(rounds, minRounds, maxRounds)), numCourts)
+}
+
+// boundedTarget clamps a natural round count into the organizer's [min, max]
+// window (either 0 = unset). Always at least 1.
+func boundedTarget(natural, minRounds, maxRounds int) int {
+	t := natural
+	if maxRounds > 0 && t > maxRounds {
+		t = maxRounds
+	}
+	if minRounds > 0 && t < minRounds {
+		t = minRounds
+	}
+	if t < 1 {
+		t = 1
+	}
+	return t
+}
+
+// fitRounds resizes a generated round-robin to exactly target rounds: truncate
+// when there are too many, or cycle from the start (repeat matchups) to top up.
+func fitRounds(rr [][]rawMatch, target int) [][]rawMatch {
+	if target <= 0 || len(rr) == 0 || len(rr) == target {
+		return rr
+	}
+	if len(rr) > target {
+		return rr[:target]
+	}
+	out := make([][]rawMatch, 0, target)
+	for i := 0; i < target; i++ {
+		out = append(out, rr[i%len(rr)])
+	}
+	return out
 }
 
 // singles round robin via the circle method.

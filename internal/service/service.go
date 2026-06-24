@@ -5789,6 +5789,18 @@ func (s *Service) SetDayCap(eventID string, cap int) error {
 	return err
 }
 
+// SetDayEnds stores per-day court closing times (minutes from midnight, indexed
+// by tournament day; -1 in a slot = no close that day). An empty list clears them.
+func (s *Service) SetDayEnds(eventID string, ends []int) error {
+	var val any
+	if len(ends) > 0 {
+		val = ends
+	}
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"day_end_minutes": val})
+	return err
+}
+
 // SetMatchDay assigns a match to a 0-based tournament day. A negative day clears
 // the assignment (the schedule falls back to its automatic even split).
 func (s *Service) SetMatchDay(matchID string, day int) error {

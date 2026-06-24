@@ -64,6 +64,11 @@ type Event struct {
 	// DayCapMinutes: if set, no games start past this time-of-day; the rest roll
 	// to the next tournament day. Minutes from midnight; nil = no cap.
 	DayCapMinutes *int `json:"dayCapMinutes,omitempty"`
+	// DayEndMinutes: per-day court closing time (minutes from midnight), indexed
+	// by tournament day. A game that wouldn't FINISH before its day's close rolls
+	// to the next day (last/only day → flagged as running past close). -1 or a
+	// missing slot = no close that day. Takes precedence over DayCapMinutes.
+	DayEndMinutes []int `json:"dayEndMinutes,omitempty"`
 	// LeagueID links this event to a league (season/recurring play) it belongs to,
 	// or nil for a standalone event.
 	LeagueID *string `json:"leagueId,omitempty"`

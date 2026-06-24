@@ -160,6 +160,7 @@ func mapEvent(m map[string]any) model.Event {
 		PosterURL:            asStrPtr(m, "poster_url"),
 		ScheduleBreaks:       mapBreaks(m),
 		DayCapMinutes:        asIntPtr(m, "day_cap_minutes"),
+		DayEndMinutes:        mapIntArray(m, "day_end_minutes"),
 		Description:          asStrPtr(m, "description"),
 		LeagueID:             asStrPtr(m, "league_id"),
 		Status:               asStr(m, "status"),
@@ -180,6 +181,24 @@ func mapLeague(m map[string]any) model.League {
 		CashPrize:       asBool(m, "cash_prize"),
 		CashPrizeAmount: asFloatPtr(m, "cash_prize_amount"),
 	}
+}
+
+// mapIntArray parses a jsonb int array (e.g. events.day_end_minutes). JSON
+// numbers arrive as float64; positional, so callers keep the slot order.
+func mapIntArray(m map[string]any, key string) []int {
+	raw, ok := m[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(raw))
+	for _, v := range raw {
+		if f, ok := v.(float64); ok {
+			out = append(out, int(f))
+		} else {
+			out = append(out, -1)
+		}
+	}
+	return out
 }
 
 // mapBreaks parses the events.schedule_breaks jsonb array into typed breaks.

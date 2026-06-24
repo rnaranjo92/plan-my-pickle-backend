@@ -242,6 +242,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
 	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
 	mux.HandleFunc("POST /events/{id}/day-cap", s.ownerOnly("event", "id", s.setDayCap))
+	mux.HandleFunc("POST /events/{id}/day-ends", s.ownerOnly("event", "id", s.setDayEnds))
 	mux.HandleFunc("GET /brackets/{id}/playoff-seed", s.ownerOnly("bracket", "id", s.playoffSeed))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
@@ -1585,6 +1586,22 @@ func (s *Server) setDayCap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"dayCapMinutes": req.DayCapMinutes})
+}
+
+// setDayEnds sets per-day court closing times (minutes from midnight, indexed by
+// tournament day; -1 = no close that day). Owner-only.
+func (s *Server) setDayEnds(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DayEndMinutes []int `json:"dayEndMinutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetDayEnds(r.PathValue("id"), req.DayEndMinutes); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]int{"dayEndMinutes": req.DayEndMinutes})
 }
 
 // setMatchDay assigns a match to a tournament day (0-based); a negative day

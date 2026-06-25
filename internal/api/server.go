@@ -253,6 +253,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
 	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
+	mux.HandleFunc("GET /events/{id}/dupr-status", s.ownerOnly("event", "id", s.duprStatuses))
 
 	// --- Demo seeding: load a sample tournament owned by the signed-in user, so
 	// the "Load demo" buttons produce events the caller can actually manage.
@@ -1422,6 +1423,15 @@ func (s *Server) deleteRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) duprStatuses(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.svc.DuprSubmissionStatuses(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 func (s *Server) checkin(w http.ResponseWriter, r *http.Request) {

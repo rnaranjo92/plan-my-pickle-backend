@@ -5182,6 +5182,14 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 	return sum, nil
 }
 
+// DuprSubmissionStatuses returns each of the event's DUPR submission rows as
+// {match_id, status} (status in pending|submitted|failed|skipped) so the UI can
+// badge which matches have already been sent to DUPR.
+func (s *Service) DuprSubmissionStatuses(eventID string) ([]map[string]any, error) {
+	return s.sb.Select("dupr_submissions",
+		"event_id=eq."+store.Q(eventID)+"&select=match_id,status")
+}
+
 func (s *Service) markSubmission(id, status, ref, errMsg string) {
 	var submittedAt any
 	if status == "submitted" {

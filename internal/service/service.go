@@ -4228,6 +4228,35 @@ func (s *Service) AddFeedItem(eventID, typ, text, refID string) {
 	}
 }
 
+// PostChampionFeed posts (or UPDATES) the single "champions" feed item for a
+// division's gold final, keyed on the final's match id. Idempotent: a re-score /
+// correction updates the existing item to the current winner instead of
+// inserting a duplicate — which could otherwise leave a stale, WRONG champion on
+// the public feed. Best-effort; skips (rather than risks a dup) if it can't check.
+func (s *Service) PostChampionFeed(eventID, matchID, text string) {
+	if eventID == "" || matchID == "" || text == "" {
+		return
+	}
+	existing, err := s.sb.SelectOne("feed_items",
+		"event_id=eq."+store.Q(eventID)+"&type=eq.champions&ref_id=eq."+
+			store.Q(matchID)+"&select=id,text")
+	if err != nil {
+		log.Printf("feed: champions dedup check for %s failed: %v", eventID, err)
+		return
+	}
+	if existing == nil {
+		s.AddFeedItem(eventID, "champions", text, matchID)
+		return
+	}
+	if asStr(existing, "text") != text {
+		if _, err := s.sb.Update("feed_items",
+			"id=eq."+store.Q(asStr(existing, "id")),
+			map[string]any{"text": text}); err != nil {
+			log.Printf("feed: champions update for %s failed: %v", eventID, err)
+		}
+	}
+}
+
 // ListFeed returns an event's feed, newest first.
 // ListFeed returns an event's feed (newest first) enriched with reaction counts,
 // the caller's own reactions (callerID may be "" for anonymous), and comment
@@ -4630,9 +4659,11 @@ func (s *Service) ChampionFeedText(matchID string) (eventID, text string) {
 		return "", ""
 	}
 	m := mapMatch(row)
-	// Gold lives in the main/medal tier, slot 0, and the match must be decided.
+	// Gold lives in the main/medal tier, slot 0, decided — and NOT a Compass draw
+	// (bracket_group set), whose final the app's podium/banner doesn't crown, so
+	// the feed must not disagree with the bracket UI.
 	if m.Stage != "bracket" || m.BracketID == nil || m.WinningTeam == nil ||
-		m.Status != "completed" {
+		m.Status != "completed" || m.BracketGroup != "" {
 		return "", ""
 	}
 	if m.BracketTier != "" && m.BracketTier != "main" {

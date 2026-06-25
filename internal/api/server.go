@@ -1096,9 +1096,11 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
 		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
 	}
-	// If that final decided a division (the gold final), also crown the champions.
+	// If that final decided a division (the gold final), crown the champions —
+	// idempotent (upsert keyed on the final's match id) so a re-score updates the
+	// item instead of posting a duplicate / stale wrong winner.
 	if eid, txt := s.svc.ChampionFeedText(r.PathValue("id")); txt != "" {
-		s.svc.AddFeedItem(eid, "champions", txt, r.PathValue("id"))
+		s.svc.PostChampionFeed(eid, r.PathValue("id"), txt)
 	}
 	// DUPR submission is queued by advanceAfterScore and flushed by the organizer
 	// via "Import to DUPR" (SubmitPendingToDupr) — no extra call here (would
@@ -1118,9 +1120,11 @@ func (s *Server) forfeitMatch(w http.ResponseWriter, r *http.Request) {
 	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
 		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
 	}
-	// If that final decided a division (the gold final), also crown the champions.
+	// If that final decided a division (the gold final), crown the champions —
+	// idempotent (upsert keyed on the final's match id) so a re-score updates the
+	// item instead of posting a duplicate / stale wrong winner.
 	if eid, txt := s.svc.ChampionFeedText(r.PathValue("id")); txt != "" {
-		s.svc.AddFeedItem(eid, "champions", txt, r.PathValue("id"))
+		s.svc.PostChampionFeed(eid, r.PathValue("id"), txt)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }

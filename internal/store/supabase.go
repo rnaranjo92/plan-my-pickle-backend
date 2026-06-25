@@ -104,6 +104,17 @@ const selectPageSize = 1000
 //
 // The query must NOT carry its own limit/offset — SelectAll owns the windowing.
 func (c *Client) SelectAll(table, query string) ([]map[string]any, error) {
+	// Range windows are LIMIT/OFFSET applied AFTER ordering; with no ORDER BY,
+	// Postgres gives no stable order across the separate paged requests, so a row
+	// at a page boundary can be skipped or duplicated. Inject a deterministic
+	// order on the primary key when the caller hasn't set one.
+	if !strings.Contains(query, "order=") {
+		if query == "" {
+			query = "order=id"
+		} else {
+			query += "&order=id"
+		}
+	}
 	var all []map[string]any
 	for offset := 0; ; offset += selectPageSize {
 		from := offset

@@ -2209,32 +2209,56 @@ func (s *Service) spreadCourts(eventID string) error {
 		return a.created < b.created
 	})
 
+	// Assign each match BOTH a court and a wave/slot (play_order). Within a round,
+	// the i-th match goes to court i%nc and wave i/nc, so when a round has more
+	// matches than courts the overflow lands in a LATER slot rather than a second
+	// game on the same court at the same time. Slots accumulate across rounds so
+	// the schedule cascade orders them sequentially. (Previously only court_id was
+	// set and play_order left null, so two matches of one round read as
+	// simultaneous on one court — the engine's wave assignment was discarded.)
+	nc := len(courtNums)
 	byCourt := map[string][]string{}
-	prevRound, idx := -1, 0
+	bySlot := map[int][]string{}
+	prevRound, idxInRound, baseSlot := -1, 0, 0
 	for _, m := range list {
 		if m.round != prevRound {
+			if prevRound != -1 {
+				baseSlot += (idxInRound + nc - 1) / nc // waves used by the prior round
+			}
 			prevRound = m.round
-			idx = 0
+			idxInRound = 0
 		}
-		cid := courtByNum[courtNums[idx%len(courtNums)]]
-		idx++
+		cid := courtByNum[courtNums[idxInRound%nc]]
+		slot := baseSlot + idxInRound/nc
+		idxInRound++
 		byCourt[cid] = append(byCourt[cid], m.id)
+		bySlot[slot] = append(bySlot[slot], m.id)
 	}
-	// One UPDATE per court (chunked to keep the id=in.(...) URL bounded) instead
-	// of one per match. A big field (e.g. 768 pool games) otherwise fires 768
-	// sequential round-trips and the request times out (502).
+	// Batched UPDATEs (chunked to keep the id=in.(...) URL bounded): one per court
+	// for court_id, one per slot for play_order — instead of one round-trip per
+	// match (a big field, e.g. 768 pool games, would otherwise time out / 502).
 	const chunk = 80
-	for cid, ids := range byCourt {
+	apply := func(ids []string, patch map[string]any) error {
 		for i := 0; i < len(ids); i += chunk {
 			end := i + chunk
 			if end > len(ids) {
 				end = len(ids)
 			}
 			if _, err := s.sb.Update("matches",
-				"id=in.("+strings.Join(ids[i:end], ",")+")",
-				map[string]any{"court_id": cid}); err != nil {
+				"id=in.("+strings.Join(ids[i:end], ",")+")", patch); err != nil {
 				return err
 			}
+		}
+		return nil
+	}
+	for cid, ids := range byCourt {
+		if err := apply(ids, map[string]any{"court_id": cid}); err != nil {
+			return err
+		}
+	}
+	for slot, ids := range bySlot {
+		if err := apply(ids, map[string]any{"play_order": slot}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -3803,7 +3827,11 @@ type DuprImportSummary struct {
 	Skipped   int `json:"skipped"`
 }
 
-// VerifyAdminPasscode gates the coordinator scoring page. No passcode = open.
+// VerifyAdminPasscode gates the coordinator scoring page for a passcode-holding
+// (non-owner) scorekeeper. A blank/unset passcode means delegated scoring is
+// DISABLED — only the event owner's JWT can score — so an unset passcode must
+// NOT grant access (returning true here was an auth bypass: any anonymous caller
+// could score any event that never set a passcode, which is the default).
 func (s *Service) VerifyAdminPasscode(eventID, code string) (bool, error) {
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=admin_passcode")
 	if err != nil {
@@ -3812,9 +3840,9 @@ func (s *Service) VerifyAdminPasscode(eventID, code string) (bool, error) {
 	if ev == nil {
 		return false, ErrNotFound
 	}
-	pass := asStr(ev, "admin_passcode")
+	pass := strings.TrimSpace(asStr(ev, "admin_passcode"))
 	if pass == "" {
-		return true, nil
+		return false, nil // no passcode configured -> delegated scoring disabled
 	}
 	return pass == strings.TrimSpace(code), nil
 }
@@ -3878,9 +3906,11 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 	fee := asInt(ev, "registration_fee_cents")
 	currency := asStr(ev, "currency")
 
-	// Free registration — nothing to charge, confirm immediately.
+	// Free registration — nothing to charge, confirm immediately. Use
+	// provider="manual" (method "free"); the payments.provider CHECK constraint
+	// only allows stripe|paypal|venmo|manual, so "free" would be rejected.
 	if fee <= 0 {
-		return s.recordPayment(registrationID, "free", "", 0, currency, "paid", "paid")
+		return s.recordPayment(registrationID, "manual", "free", 0, currency, "paid", "paid")
 	}
 
 	// Fee-bearing, but no real payment processor is wired up (the mock always
@@ -4567,9 +4597,12 @@ func (s *Service) MatchFeedText(matchID string, final bool) (eventID, text strin
 	if m.Team2Score != nil {
 		s2 = *m.Team2Score
 	}
-	hi, lo := s1, s2
-	if s2 > s1 {
-		hi, lo = s2, s1
+	// Render the score in winner/loser order (NOT sorted descending): for a
+	// retirement the side that retired can be the one that was ahead, so the
+	// winner's score is not necessarily the larger number.
+	ws, ls := s1, s2
+	if wt == 2 {
+		ws, ls = s2, s1
 	}
 	switch m.ResultType {
 	case "forfeit":
@@ -4577,12 +4610,12 @@ func (s *Service) MatchFeedText(matchID string, final bool) (eventID, text strin
 	case "walkover":
 		return eventID, fmt.Sprintf("%s advance on a walkover", winner)
 	case "retire":
-		return eventID, fmt.Sprintf("%s def. %s %d–%d (%s retired)", winner, loser, hi, lo, loser)
+		return eventID, fmt.Sprintf("%s def. %s %d–%d (%s retired)", winner, loser, ws, ls, loser)
 	}
 	if wt == 0 {
 		return eventID, fmt.Sprintf("Final: %s vs %s, %d–%d", a, b, s1, s2)
 	}
-	return eventID, fmt.Sprintf("%s def. %s, %d–%d", winner, loser, hi, lo)
+	return eventID, fmt.Sprintf("%s def. %s, %d–%d", winner, loser, ws, ls)
 }
 
 // CheckIn marks a registration checked in. (#1)
@@ -6022,7 +6055,9 @@ func (s *Service) wipeBracketStage(bracketID string) error {
 // are not yet completed (open). Replaces a COUNT/SUM aggregation by tallying the
 // fetched statuses in Go.
 func (s *Service) poolProgress(bracketID string) (total, open int, err error) {
-	rows, err := s.sb.Select("matches",
+	// SelectAll (paged) — a large single division can exceed PostgREST's 1000-row
+	// cap; a plain Select would silently miss the tail and read pools as complete.
+	rows, err := s.sb.SelectAll("matches",
 		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.pool&select=status")
 	if err != nil {
 		return 0, 0, err

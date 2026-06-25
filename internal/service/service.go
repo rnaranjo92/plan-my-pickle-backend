@@ -4618,6 +4618,70 @@ func (s *Service) MatchFeedText(matchID string, final bool) (eventID, text strin
 	return eventID, fmt.Sprintf("%s def. %s, %d–%d", winner, loser, ws, ls)
 }
 
+// ChampionFeedText returns a "champions" feed line + event id IF the given match
+// is the just-decided GOLD final of its division (medal bracket, main tier,
+// final round, slot 0, completed with a winner); both "" otherwise. Mirrors the
+// app's podium logic so the public feed crowns the same champion the bracket
+// shows — and only once it's actually decided. Plain text (the UI adds the icon).
+func (s *Service) ChampionFeedText(matchID string) (eventID, text string) {
+	row, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event_id,"+matchSelect)
+	if err != nil || row == nil {
+		return "", ""
+	}
+	m := mapMatch(row)
+	// Gold lives in the main/medal tier, slot 0, and the match must be decided.
+	if m.Stage != "bracket" || m.BracketID == nil || m.WinningTeam == nil ||
+		m.Status != "completed" {
+		return "", ""
+	}
+	if m.BracketTier != "" && m.BracketTier != "main" {
+		return "", ""
+	}
+	if m.BracketSlot == nil || *m.BracketSlot != 0 || m.BracketRound == nil {
+		return "", ""
+	}
+	// Confirm it's the FINAL round of this bracket's main tier (not an early slot-0).
+	rows, err := s.sb.SelectAll("matches",
+		"bracket_id=eq."+store.Q(*m.BracketID)+
+			"&stage=eq.bracket&select=bracket_round,bracket_tier")
+	if err != nil {
+		return "", ""
+	}
+	maxRound := 0
+	for _, r := range rows {
+		t := asStr(r, "bracket_tier")
+		if t != "" && t != "main" {
+			continue
+		}
+		if rr := asInt(r, "bracket_round"); rr > maxRound {
+			maxRound = rr
+		}
+	}
+	if *m.BracketRound != maxRound {
+		return "", ""
+	}
+	// Winner (pair) name + division name.
+	winner := "The champions"
+	for _, sd := range m.Sides {
+		if sd.Team == *m.WinningTeam {
+			if n := strings.Join(sd.Players, " & "); n != "" {
+				winner = n
+			}
+		}
+	}
+	division := ""
+	if b, _ := s.sb.SelectOne("brackets",
+		"id=eq."+store.Q(*m.BracketID)+"&select=name"); b != nil {
+		division = asStr(b, "name")
+	}
+	eventID = asStr(row, "event_id")
+	if division != "" {
+		return eventID, fmt.Sprintf("%s win the %s division!", winner, division)
+	}
+	return eventID, fmt.Sprintf("%s are the champions!", winner)
+}
+
 // CheckIn marks a registration checked in. (#1)
 // CheckIn marks a registration checked in and reports whether this was a NEW
 // check-in (false if it was already checked in), so callers can post a one-time

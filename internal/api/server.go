@@ -1096,6 +1096,10 @@ func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {
 	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
 		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
 	}
+	// If that final decided a division (the gold final), also crown the champions.
+	if eid, txt := s.svc.ChampionFeedText(r.PathValue("id")); txt != "" {
+		s.svc.AddFeedItem(eid, "champions", txt, r.PathValue("id"))
+	}
 	// DUPR submission is queued by advanceAfterScore and flushed by the organizer
 	// via "Import to DUPR" (SubmitPendingToDupr) — no extra call here (would
 	// double-submit).
@@ -1113,6 +1117,10 @@ func (s *Server) forfeitMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if eid, txt := s.svc.MatchFeedText(r.PathValue("id"), true); txt != "" {
 		s.svc.AddFeedItem(eid, "match_final", txt, r.PathValue("id"))
+	}
+	// If that final decided a division (the gold final), also crown the champions.
+	if eid, txt := s.svc.ChampionFeedText(r.PathValue("id")); txt != "" {
+		s.svc.AddFeedItem(eid, "champions", txt, r.PathValue("id"))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }

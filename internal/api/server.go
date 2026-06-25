@@ -252,6 +252,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
 	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
+	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
 
 	// --- Demo seeding: load a sample tournament owned by the signed-in user, so
 	// the "Load demo" buttons produce events the caller can actually manage.
@@ -1391,6 +1392,20 @@ func (s *Server) setPartner(w http.ResponseWriter, r *http.Request) {
 // deleteRegistration removes a player's registration from an event (owner-only).
 func (s *Server) deleteRegistration(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.DeleteRegistration(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) deleteRound(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteRound(r.PathValue("id")); err != nil {
+		if errors.Is(err, service.ErrScheduleHasResults) {
+			http.Error(w,
+				"this round has scored matches — remove the scores first",
+				http.StatusConflict)
+			return
+		}
 		status(w, err)
 		return
 	}

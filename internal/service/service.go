@@ -6051,6 +6051,28 @@ func (s *Service) wipeBracketStage(bracketID string) error {
 	return s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket")
 }
 
+// DeleteRound removes a single round and all of its matches (participants cascade
+// with the matches). Refuses with ErrScheduleHasResults if ANY match in the round
+// has a recorded result (completed with both scores) so played games can't be
+// silently lost — a bye (completed with no score) does NOT block deletion.
+func (s *Service) DeleteRound(roundID string) error {
+	rows, err := s.sb.Select("matches",
+		"round_id=eq."+store.Q(roundID)+"&select=status,team1_score,team2_score")
+	if err != nil {
+		return err
+	}
+	for _, m := range rows {
+		if asStr(m, "status") == "completed" &&
+			m["team1_score"] != nil && m["team2_score"] != nil {
+			return ErrScheduleHasResults
+		}
+	}
+	if err := s.sb.Delete("matches", "round_id=eq."+store.Q(roundID)); err != nil {
+		return err
+	}
+	return s.sb.Delete("rounds", "id=eq."+store.Q(roundID))
+}
+
 // poolProgress reports how many pool matches a division has (total) and how many
 // are not yet completed (open). Replaces a COUNT/SUM aggregation by tallying the
 // fetched statuses in Go.

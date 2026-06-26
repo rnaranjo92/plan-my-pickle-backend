@@ -266,14 +266,9 @@ func (c *Client) Upsert(table, onConflict string, rows any) ([]map[string]any, e
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		log.Printf("upsert %s: status=%d body=%s", table, resp.StatusCode, body)
-		// Surface the PostgREST hint (table/constraint/schema-cache message) so
-		// upsert failures are diagnosable instead of an opaque "status 400".
-		msg := strings.TrimSpace(string(body))
-		if len(msg) > 300 {
-			msg = msg[:300]
-		}
-		return nil, fmt.Errorf("upsert %s failed (%d): %s", table, resp.StatusCode, msg)
+		// dbError logs the full PostgREST body server-side and returns a
+		// sanitized status-only error to the client.
+		return nil, dbError("upsert", table, resp.StatusCode, body)
 	}
 	var out []map[string]any
 	_ = json.Unmarshal(body, &out)

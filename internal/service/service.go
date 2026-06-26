@@ -662,7 +662,7 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	// Photo + ratings live on the account (keyed by the linked auth user). The
 	// photo read is best-effort so a missing profiles table never errors.
 	if uid := asStr(prow, "user_id"); uid != "" {
-		if pr, err := s.sb.SelectOne("profiles",
+		if pr, err := s.sb.SelectOne("pmp_profiles",
 			"user_id=eq."+store.Q(uid)+"&select=photo_url"); err == nil && pr != nil {
 			prof.PhotoURL = asStr(pr, "photo_url")
 		}
@@ -4528,7 +4528,7 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	// Account-level photo first (independent of any players row, so it works for
 	// organizers who never registered as a player). Best-effort: a missing
 	// profiles table (pre-migration 0035) just leaves no photo, never errors.
-	if pr, err := s.sb.SelectOne("profiles",
+	if pr, err := s.sb.SelectOne("pmp_profiles",
 		"user_id=eq."+store.Q(userID)+"&select=photo_url"); err == nil && pr != nil {
 		p.PhotoURL = asStr(pr, "photo_url")
 	}
@@ -4581,7 +4581,7 @@ func (s *Service) SetMyPhoto(userID, contentType string, data []byte) (string, e
 	url = fmt.Sprintf("%s?v=%08x", url, crc32.ChecksumIEEE(data))
 	// Persist on the account-level profile (keyed by user_id) so it survives
 	// regardless of whether the user has any players rows (migration 0035).
-	if _, err := s.sb.Upsert("profiles", "user_id", map[string]any{
+	if _, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
 		"user_id":   userID,
 		"photo_url": url,
 	}); err != nil {
@@ -4597,7 +4597,7 @@ func (s *Service) ClearMyPhoto(userID string) error {
 	if userID == "" {
 		return errors.New("not signed in")
 	}
-	_, err := s.sb.Upsert("profiles", "user_id", map[string]any{
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
 		"user_id":   userID,
 		"photo_url": nil,
 	})

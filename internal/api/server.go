@@ -74,6 +74,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// the connected-account status. Scoped to the authenticated organizer.
 	mux.HandleFunc("POST /me/stripe/connect", requireAuth(s.stripeConnect))
 	mux.HandleFunc("GET /me/stripe/status", requireAuth(s.stripeStatus))
+	// Premium subscription (organizer pays PlanMyPickle): start Checkout, read
+	// status, open the billing portal.
+	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
+	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
+	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -342,6 +347,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.svc.CreateEvent(req, userID(r))
 	if err != nil {
+		if errors.Is(err, service.ErrPremiumRequired) {
+			writeErr(w, http.StatusPaymentRequired, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -1336,6 +1345,62 @@ func (s *Server) stripeConnect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
 }
 
+// subscribePremium opens a Stripe subscription Checkout for the Premium plan.
+func (s *Server) subscribePremium(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+		writeErr(w, http.StatusBadRequest,
+			errors.New("successUrl and cancelUrl are required"))
+		return
+	}
+	url, err := s.svc.StartPremiumCheckout(
+		userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// subscriptionStatus reports the caller's Premium plan state.
+func (s *Server) subscriptionStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.GetPremiumStatus(userID(r)))
+}
+
+// billingPortal opens the Stripe billing portal for the caller to manage/cancel.
+func (s *Server) billingPortal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ReturnURL string `json:"returnUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.ReturnURL) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("returnUrl is required"))
+		return
+	}
+	url, err := s.svc.BillingPortal(userID(r), req.ReturnURL)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
 // stripeStatus reports the authenticated organizer's Stripe Connect state
 // (connected + chargesEnabled), refreshed from Stripe when an account exists.
 func (s *Server) stripeStatus(w http.ResponseWriter, r *http.Request) {
@@ -2161,6 +2226,10 @@ func status(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, service.ErrForbidden) {
 		writeErr(w, http.StatusForbidden, err)
+		return
+	}
+	if errors.Is(err, service.ErrPremiumRequired) {
+		writeErr(w, http.StatusPaymentRequired, err)
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err)

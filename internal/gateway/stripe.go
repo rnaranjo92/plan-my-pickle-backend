@@ -10,6 +10,7 @@ import (
 	stripe "github.com/stripe/stripe-go/v79"
 	"github.com/stripe/stripe-go/v79/account"
 	"github.com/stripe/stripe-go/v79/accountlink"
+	billingportalsession "github.com/stripe/stripe-go/v79/billingportal/session"
 	checkoutsession "github.com/stripe/stripe-go/v79/checkout/session"
 	"github.com/stripe/stripe-go/v79/webhook"
 )
@@ -41,6 +42,7 @@ type stripeClient struct {
 	accounts *account.Client
 	links    *accountlink.Client
 	sessions *checkoutsession.Client
+	portal   *billingportalsession.Client
 }
 
 // NewStripeGateway builds a Stripe-backed payment gateway from the platform's
@@ -52,6 +54,7 @@ func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 			accounts: &account.Client{B: backends.API, Key: secretKey},
 			links:    &accountlink.Client{B: backends.API, Key: secretKey},
 			sessions: &checkoutsession.Client{B: backends.API, Key: secretKey},
+			portal:   &billingportalsession.Client{B: backends.API, Key: secretKey},
 		},
 		webhookSecret: webhookSecret,
 	}
@@ -210,6 +213,51 @@ func (g *StripeGateway) CreateCheckoutSession(p CheckoutParams) (string, error) 
 	return sess.URL, nil
 }
 
+// CreateSubscriptionCheckout opens a hosted Checkout Session (mode=subscription)
+// for the Premium plan (priceID). client_reference_id = userID so the webhook
+// flips premium for the right account; customer_email pre-fills + lets Stripe
+// reuse/create the customer. Returns the Checkout URL.
+func (g *StripeGateway) CreateSubscriptionCheckout(email, userID, priceID, successURL, cancelURL string) (string, error) {
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.CheckoutSessionParams{
+		Mode:              stripe.String(string(stripe.CheckoutSessionModeSubscription)),
+		SuccessURL:        stripe.String(successURL),
+		CancelURL:         stripe.String(cancelURL),
+		ClientReferenceID: stripe.String(userID),
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{Price: stripe.String(priceID), Quantity: stripe.Int64(1)},
+		},
+	}
+	if email != "" {
+		params.CustomerEmail = stripe.String(email)
+	}
+	params.Context = ctx
+	params.AddMetadata("user_id", userID)
+	sess, err := g.client.sessions.New(params)
+	if err != nil {
+		return "", err
+	}
+	return sess.URL, nil
+}
+
+// CreateBillingPortalSession opens the Stripe-hosted billing portal so a
+// subscriber can manage or cancel their plan. Returns the portal URL.
+func (g *StripeGateway) CreateBillingPortalSession(customerID, returnURL string) (string, error) {
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.BillingPortalSessionParams{
+		Customer:  stripe.String(customerID),
+		ReturnURL: stripe.String(returnURL),
+	}
+	params.Context = ctx
+	sess, err := g.client.portal.New(params)
+	if err != nil {
+		return "", err
+	}
+	return sess.URL, nil
+}
+
 // ---- webhooks ----
 
 // ErrUnhandledWebhook signals a verified-but-ignored event type, so the caller
@@ -220,11 +268,23 @@ var ErrUnhandledWebhook = errors.New("unhandled stripe webhook event")
 // of CheckoutCompleted / AccountUpdated is set, per Type.
 type WebhookEvent struct {
 	Type string
-	// checkout.session.completed
+	// checkout.session.completed (mode=payment)
 	RegistrationID string
 	// account.updated
 	AccountID      string
 	ChargesEnabled bool
+	// subscription events (checkout.session.completed mode=subscription;
+	// customer.subscription.updated / .deleted). Nil for non-subscription events.
+	Subscription *SubscriptionEvent
+}
+
+// SubscriptionEvent carries Premium subscription state from a Stripe webhook.
+type SubscriptionEvent struct {
+	UserID         string // client_reference_id, set on the subscription Checkout
+	CustomerID     string
+	SubscriptionID string
+	Status         string // active | trialing | past_due | canceled | unpaid | ...
+	Active         bool   // status grants Premium (active or trialing)
 }
 
 // VerifyWebhook validates a webhook's signature (against STRIPE_WEBHOOK_SECRET)
@@ -246,10 +306,48 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 		if err := json.Unmarshal(event.Data.Raw, &sess); err != nil {
 			return WebhookEvent{}, err
 		}
+		// A Premium subscription checkout — flip premium for the account.
+		if sess.Mode == stripe.CheckoutSessionModeSubscription {
+			sub := &SubscriptionEvent{
+				UserID: sess.ClientReferenceID,
+				Status: "active",
+				Active: true,
+			}
+			if sub.UserID == "" {
+				sub.UserID = sess.Metadata["user_id"]
+			}
+			if sess.Customer != nil {
+				sub.CustomerID = sess.Customer.ID
+			}
+			if sess.Subscription != nil {
+				sub.SubscriptionID = sess.Subscription.ID
+			}
+			return WebhookEvent{Type: string(event.Type), Subscription: sub}, nil
+		}
 		return WebhookEvent{
 			Type:           string(event.Type),
 			RegistrationID: sess.Metadata["registration_id"],
 		}, nil
+	case stripe.EventTypeCustomerSubscriptionUpdated,
+		stripe.EventTypeCustomerSubscriptionDeleted:
+		var sub stripe.Subscription
+		if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
+			return WebhookEvent{}, err
+		}
+		active := sub.Status == stripe.SubscriptionStatusActive ||
+			sub.Status == stripe.SubscriptionStatusTrialing
+		if event.Type == stripe.EventTypeCustomerSubscriptionDeleted {
+			active = false
+		}
+		ev := &SubscriptionEvent{
+			SubscriptionID: sub.ID,
+			Status:         string(sub.Status),
+			Active:         active,
+		}
+		if sub.Customer != nil {
+			ev.CustomerID = sub.Customer.ID
+		}
+		return WebhookEvent{Type: string(event.Type), Subscription: ev}, nil
 	case stripe.EventTypeAccountUpdated:
 		var acct stripe.Account
 		if err := json.Unmarshal(event.Data.Raw, &acct); err != nil {

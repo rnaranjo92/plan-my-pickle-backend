@@ -151,12 +151,21 @@ var ErrScheduleHasResults = errors.New("schedule already has recorded results")
 // PlanMyPickle account (one DUPR id maps to one account).
 var ErrDuprIDTaken = errors.New("this DUPR account is already connected to another PlanMyPickle account")
 
+// ErrPremiumRequired means a Premium-only feature (DUPR sanctioning) was
+// requested by a non-premium account.
+var ErrPremiumRequired = errors.New("DUPR-sanctioned events require a Premium subscription")
+
 // ------------------------------------------------------------------ events
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
 func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
+	}
+	// DUPR sanctioning is a Premium feature — enforce server-side so the UI lock
+	// can't be bypassed.
+	if req.DuprSanctioned && !s.IsPremium(ownerID) {
+		return "", ErrPremiumRequired
 	}
 	format := req.Format
 	if format == "" {
@@ -847,12 +856,16 @@ func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 
 func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	ev, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(id)+"&select=id,venue_lat,venue_lng")
+		"id=eq."+store.Q(id)+"&select=id,venue_lat,venue_lng,owner_id")
 	if err != nil {
 		return err
 	}
 	if ev == nil {
 		return ErrNotFound
+	}
+	// DUPR sanctioning is Premium-only — gate by the event owner's plan.
+	if req.DuprSanctioned && !s.IsPremium(asStr(ev, "owner_id")) {
+		return ErrPremiumRequired
 	}
 
 	ptw := req.PointsToWin

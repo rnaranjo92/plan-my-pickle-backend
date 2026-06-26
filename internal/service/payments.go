@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"os"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
@@ -222,6 +223,11 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		}
 		return err
 	}
+	// Premium subscription lifecycle (subscription checkout / updated / deleted)
+	// — flip premium on the account.
+	if evt.Subscription != nil {
+		return s.applySubscriptionEvent(*evt.Subscription)
+	}
 	switch evt.Type {
 	case "checkout.session.completed":
 		if evt.RegistrationID == "" {
@@ -241,4 +247,99 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 	default:
 		return nil
 	}
+}
+
+// applySubscriptionEvent writes Premium subscription state onto the account.
+// Checkout-completed carries the user_id (upsert the row); a later
+// subscription.updated/deleted only has the Stripe customer id (update by it).
+func (s *Service) applySubscriptionEvent(ev gateway.SubscriptionEvent) error {
+	row := map[string]any{
+		"premium":             ev.Active,
+		"subscription_status": orNull(ev.Status),
+	}
+	if ev.SubscriptionID != "" {
+		row["stripe_subscription_id"] = ev.SubscriptionID
+	}
+	if ev.CustomerID != "" {
+		row["stripe_customer_id"] = ev.CustomerID
+	}
+	if ev.UserID != "" {
+		row["user_id"] = ev.UserID
+		_, err := s.sb.Upsert("pmp_profiles", "user_id", row)
+		return err
+	}
+	if ev.CustomerID != "" {
+		_, err := s.sb.Update("pmp_profiles",
+			"stripe_customer_id=eq."+store.Q(ev.CustomerID), row)
+		return err
+	}
+	return nil
+}
+
+// IsPremium reports whether the account currently has an active Premium plan.
+func (s *Service) IsPremium(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=premium")
+	return err == nil && row != nil && asBool(row, "premium")
+}
+
+// PremiumStatus is the caller's Premium plan state for the Profile UI.
+type PremiumStatus struct {
+	Premium   bool   `json:"premium"`
+	Status    string `json:"status,omitempty"`
+	CanManage bool   `json:"canManage"` // has a Stripe customer → billing portal works
+}
+
+// GetPremiumStatus returns the caller's Premium state (best-effort).
+func (s *Service) GetPremiumStatus(userID string) PremiumStatus {
+	if userID == "" {
+		return PremiumStatus{}
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=premium,subscription_status,stripe_customer_id")
+	if err != nil || row == nil {
+		return PremiumStatus{}
+	}
+	return PremiumStatus{
+		Premium:   asBool(row, "premium"),
+		Status:    asStr(row, "subscription_status"),
+		CanManage: asStr(row, "stripe_customer_id") != "",
+	}
+}
+
+// StartPremiumCheckout opens a Stripe subscription Checkout for the Premium plan.
+func (s *Service) StartPremiumCheckout(userID, email, successURL, cancelURL string) (string, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	priceID := strings.TrimSpace(os.Getenv("STRIPE_PREMIUM_PRICE_ID"))
+	if priceID == "" {
+		return "", errors.New("premium plan is not configured")
+	}
+	return gw.CreateSubscriptionCheckout(email, userID, priceID, successURL, cancelURL)
+}
+
+// BillingPortal opens the Stripe billing portal for the caller to manage/cancel.
+func (s *Service) BillingPortal(userID, returnURL string) (string, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=stripe_customer_id")
+	if err != nil {
+		return "", err
+	}
+	cust := ""
+	if row != nil {
+		cust = asStr(row, "stripe_customer_id")
+	}
+	if cust == "" {
+		return "", errors.New("no subscription to manage")
+	}
+	return gw.CreateBillingPortalSession(cust, returnURL)
 }

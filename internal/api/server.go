@@ -345,6 +345,12 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// Organizing is Premium-only. Gated here on the public path; the demo seeders
+	// call the service directly, so "explore a demo" stays free for everyone.
+	if !s.svc.IsPremium(userID(r)) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	id, err := s.svc.CreateEvent(req, userID(r))
 	if err != nil {
 		if errors.Is(err, service.ErrPremiumRequired) {
@@ -361,6 +367,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateLeagueRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	if !s.svc.IsPremium(userID(r)) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
 		return
 	}
 	id, err := s.svc.CreateLeague(userID(r), req)

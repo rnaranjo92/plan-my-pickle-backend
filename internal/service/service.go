@@ -151,9 +151,9 @@ var ErrScheduleHasResults = errors.New("schedule already has recorded results")
 // PlanMyPickle account (one DUPR id maps to one account).
 var ErrDuprIDTaken = errors.New("this DUPR account is already connected to another PlanMyPickle account")
 
-// ErrPremiumRequired means a Premium-only feature (DUPR sanctioning) was
-// requested by a non-premium account.
-var ErrPremiumRequired = errors.New("DUPR-sanctioned events require a Premium subscription")
+// ErrPremiumRequired means a Premium-only action (organizing events, DUPR
+// sanctioning) was requested by a non-premium account.
+var ErrPremiumRequired = errors.New("a Premium subscription is required")
 
 // ------------------------------------------------------------------ events
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).

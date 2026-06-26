@@ -71,6 +71,34 @@ func (c *Client) do(method, fullURL string, body []byte, prefer string) (*http.R
 	return c.httpClient.Do(req)
 }
 
+// StorageUpload puts raw bytes into a Supabase Storage bucket via the service
+// key (which bypasses bucket RLS) and returns the object's public URL. It
+// overwrites any existing object at the same path (x-upsert), so re-uploading a
+// user's avatar replaces the old file rather than orphaning it.
+func (c *Client) StorageUpload(bucket, path, contentType string, data []byte) (string, error) {
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("%s/storage/v1/object/%s/%s", c.baseURL, bucket, path),
+		bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("apikey", c.serviceKey)
+	req.Header.Set("Authorization", "Bearer "+c.serviceKey)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("x-upsert", "true")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", dbError("storage upload", bucket, resp.StatusCode, body)
+	}
+	return fmt.Sprintf("%s/storage/v1/object/public/%s/%s",
+		c.baseURL, bucket, path), nil
+}
+
 // Select returns rows from a table matching a raw PostgREST query string, e.g.
 // "event_id=eq.<id>&order=round_number.asc".
 func (c *Client) Select(table, query string) ([]map[string]any, error) {

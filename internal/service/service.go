@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"log"
 	"math"
 	"sort"
@@ -648,7 +649,7 @@ func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	prof := model.PlayerProfile{PlayerID: playerID, RecentEvents: []string{}}
 	prow, err := s.sb.SelectOne("players",
-		"id=eq."+store.Q(playerID)+"&select=id,full_name,dupr_id,user_id")
+		"id=eq."+store.Q(playerID)+"&select=id,full_name,dupr_id,user_id,photo_url")
 	if err != nil {
 		return prof, err
 	}
@@ -657,6 +658,7 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	}
 	prof.FullName = strings.TrimSpace(asStr(prow, "full_name"))
 	prof.DuprID = asStr(prow, "dupr_id")
+	prof.PhotoURL = asStr(prow, "photo_url")
 
 	// Ratings live on the DUPR connection (keyed by the linked auth user), kept
 	// fresh by the rating webhook — only present for players who connected DUPR.
@@ -4522,7 +4524,7 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	}
 	row, err := s.sb.SelectOne("players",
 		"user_id=eq."+store.Q(userID)+
-			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level&limit=1")
+			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level,photo_url&limit=1")
 	if err != nil || row == nil {
 		return p
 	}
@@ -4534,7 +4536,57 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	p.DuprID = asStr(row, "dupr_id")
 	p.DuprRating = asFloatPtr(row, "dupr_rating")
 	p.SkillLevel = asFloatPtr(row, "skill_level")
+	p.PhotoURL = asStr(row, "photo_url")
 	return p
+}
+
+// SetMyPhoto uploads the caller's avatar to the "avatars" Storage bucket and
+// stamps its public URL on every players row they own (a user's profile is
+// denormalized across those rows). Accepts JPEG/PNG up to 5 MB and returns the
+// cache-busted URL. The bucket must exist (public-read) — see migration 0034.
+func (s *Service) SetMyPhoto(userID, contentType string, data []byte) (string, error) {
+	if userID == "" {
+		return "", errors.New("not signed in")
+	}
+	var ext string
+	switch contentType {
+	case "image/jpeg", "image/jpg":
+		contentType, ext = "image/jpeg", "jpg"
+	case "image/png":
+		ext = "png"
+	default:
+		return "", errors.New("photo must be a JPEG or PNG")
+	}
+	if len(data) == 0 {
+		return "", errors.New("empty photo")
+	}
+	if len(data) > 5*1024*1024 {
+		return "", errors.New("photo too large (max 5 MB)")
+	}
+	url, err := s.sb.StorageUpload("avatars", userID+"."+ext, contentType, data)
+	if err != nil {
+		return "", err
+	}
+	// Content-addressed cache-bust: the URL only changes when the image does, so
+	// a re-upload (same object path) is fetched fresh instead of served stale.
+	url = fmt.Sprintf("%s?v=%08x", url, crc32.ChecksumIEEE(data))
+	if _, err := s.sb.Update("players", "user_id=eq."+store.Q(userID),
+		map[string]any{"photo_url": url}); err != nil {
+		return "", err
+	}
+	return url, nil
+}
+
+// ClearMyPhoto removes the caller's uploaded avatar URL from their profile rows
+// so the app falls back to a chosen mascot / initials. The storage object is
+// left in place (a later re-upload overwrites it).
+func (s *Service) ClearMyPhoto(userID string) error {
+	if userID == "" {
+		return errors.New("not signed in")
+	}
+	_, err := s.sb.Update("players", "user_id=eq."+store.Q(userID),
+		map[string]any{"photo_url": nil})
+	return err
 }
 
 // AccountExists reports whether a Supabase auth account already exists for the

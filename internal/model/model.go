@@ -785,6 +785,7 @@ type RosterEntry struct {
 type PlayerProfile struct {
 	PlayerID      string   `json:"playerId"`
 	FullName      string   `json:"fullName"`
+	PhotoURL      string   `json:"photoUrl,omitempty"`
 	DuprID        string   `json:"duprId,omitempty"`
 	DoublesRating *float64 `json:"doublesRating,omitempty"`
 	SinglesRating *float64 `json:"singlesRating,omitempty"`
@@ -806,4 +807,5 @@ type Profile struct {
 	DuprID     string   `json:"duprId"`
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	SkillLevel *float64 `json:"skillLevel,omitempty"`
+	PhotoURL   string   `json:"photoUrl,omitempty"`
 }

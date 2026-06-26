@@ -55,6 +55,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
+	mux.HandleFunc("POST /me/photo", requireAuth(s.uploadPhoto))
+	mux.HandleFunc("DELETE /me/photo", requireAuth(s.clearPhoto))
 	// DUPR account connection (SSO consent flow): the iframe URL, the callback
 	// that stores the user's link, and the caller's connection status.
 	mux.HandleFunc("GET /me/dupr/sso-url", requireAuth(s.duprSsoURL))
@@ -296,6 +298,31 @@ func (s *Server) myNextMatch(w http.ResponseWriter, r *http.Request) {
 // registration form.
 func (s *Server) myProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.MyProfile(userID(r), userEmail(r)))
+}
+
+// uploadPhoto stores the caller's avatar image (raw JPEG/PNG body) and returns
+// its public URL. Body is hard-capped at 6 MB; the service validates type/size.
+func (s *Server) uploadPhoto(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	url, err := s.svc.SetMyPhoto(userID(r), r.Header.Get("Content-Type"), data)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"photoUrl": url})
+}
+
+// clearPhoto removes the caller's uploaded avatar (fall back to mascot/initials).
+func (s *Server) clearPhoto(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearMyPhoto(userID(r)); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 // myFeed returns the caller's cross-event activity stream (the NewsFeed tab).

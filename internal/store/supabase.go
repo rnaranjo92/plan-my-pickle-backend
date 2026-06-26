@@ -93,7 +93,16 @@ func (c *Client) StorageUpload(bucket, path, contentType string, data []byte) (s
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return "", dbError("storage upload", bucket, resp.StatusCode, body)
+		log.Printf("storage upload %s/%s: status=%d body=%s",
+			bucket, path, resp.StatusCode, body)
+		// Storage error bodies are NOT sensitive like DB errors (they say things
+		// like "Bucket not found" / "mime type not supported") — surface a short
+		// hint so the cause is visible instead of an opaque "status 400".
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return "", fmt.Errorf("storage upload failed (%d): %s", resp.StatusCode, msg)
 	}
 	return fmt.Sprintf("%s/storage/v1/object/public/%s/%s",
 		c.baseURL, bucket, path), nil

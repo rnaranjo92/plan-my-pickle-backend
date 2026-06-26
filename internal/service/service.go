@@ -649,7 +649,7 @@ func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	prof := model.PlayerProfile{PlayerID: playerID, RecentEvents: []string{}}
 	prow, err := s.sb.SelectOne("players",
-		"id=eq."+store.Q(playerID)+"&select=id,full_name,dupr_id,user_id,photo_url")
+		"id=eq."+store.Q(playerID)+"&select=id,full_name,dupr_id,user_id")
 	if err != nil {
 		return prof, err
 	}
@@ -658,11 +658,14 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	}
 	prof.FullName = strings.TrimSpace(asStr(prow, "full_name"))
 	prof.DuprID = asStr(prow, "dupr_id")
-	prof.PhotoURL = asStr(prow, "photo_url")
 
-	// Ratings live on the DUPR connection (keyed by the linked auth user), kept
-	// fresh by the rating webhook — only present for players who connected DUPR.
+	// Photo + ratings live on the account (keyed by the linked auth user). The
+	// photo read is best-effort so a missing profiles table never errors.
 	if uid := asStr(prow, "user_id"); uid != "" {
+		if pr, err := s.sb.SelectOne("profiles",
+			"user_id=eq."+store.Q(uid)+"&select=photo_url"); err == nil && pr != nil {
+			prof.PhotoURL = asStr(pr, "photo_url")
+		}
 		if c, _ := s.sb.SelectOne("dupr_connections",
 			"user_id=eq."+store.Q(uid)+"&select=doubles_rating,singles_rating"); c != nil {
 			prof.DoublesRating = asFloatPtr(c, "doubles_rating")
@@ -4522,9 +4525,16 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	if userID == "" {
 		return p
 	}
+	// Account-level photo first (independent of any players row, so it works for
+	// organizers who never registered as a player). Best-effort: a missing
+	// profiles table (pre-migration 0035) just leaves no photo, never errors.
+	if pr, err := s.sb.SelectOne("profiles",
+		"user_id=eq."+store.Q(userID)+"&select=photo_url"); err == nil && pr != nil {
+		p.PhotoURL = asStr(pr, "photo_url")
+	}
 	row, err := s.sb.SelectOne("players",
 		"user_id=eq."+store.Q(userID)+
-			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level,photo_url&limit=1")
+			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level&limit=1")
 	if err != nil || row == nil {
 		return p
 	}
@@ -4536,7 +4546,6 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	p.DuprID = asStr(row, "dupr_id")
 	p.DuprRating = asFloatPtr(row, "dupr_rating")
 	p.SkillLevel = asFloatPtr(row, "skill_level")
-	p.PhotoURL = asStr(row, "photo_url")
 	return p
 }
 
@@ -4570,22 +4579,28 @@ func (s *Service) SetMyPhoto(userID, contentType string, data []byte) (string, e
 	// Content-addressed cache-bust: the URL only changes when the image does, so
 	// a re-upload (same object path) is fetched fresh instead of served stale.
 	url = fmt.Sprintf("%s?v=%08x", url, crc32.ChecksumIEEE(data))
-	if _, err := s.sb.Update("players", "user_id=eq."+store.Q(userID),
-		map[string]any{"photo_url": url}); err != nil {
+	// Persist on the account-level profile (keyed by user_id) so it survives
+	// regardless of whether the user has any players rows (migration 0035).
+	if _, err := s.sb.Upsert("profiles", "user_id", map[string]any{
+		"user_id":   userID,
+		"photo_url": url,
+	}); err != nil {
 		return "", err
 	}
 	return url, nil
 }
 
-// ClearMyPhoto removes the caller's uploaded avatar URL from their profile rows
-// so the app falls back to a chosen mascot / initials. The storage object is
-// left in place (a later re-upload overwrites it).
+// ClearMyPhoto removes the caller's uploaded avatar URL from their profile so
+// the app falls back to a chosen mascot / initials. The storage object is left
+// in place (a later re-upload overwrites it).
 func (s *Service) ClearMyPhoto(userID string) error {
 	if userID == "" {
 		return errors.New("not signed in")
 	}
-	_, err := s.sb.Update("players", "user_id=eq."+store.Q(userID),
-		map[string]any{"photo_url": nil})
+	_, err := s.sb.Upsert("profiles", "user_id", map[string]any{
+		"user_id":   userID,
+		"photo_url": nil,
+	})
 	return err
 }
 

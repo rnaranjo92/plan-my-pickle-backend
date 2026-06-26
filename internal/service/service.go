@@ -225,6 +225,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"currency":               "USD",
 		"location":               orNull(req.Location),
 		"contact_phone":          orNull(req.ContactPhone),
+		"zelle_handle":           orNull(req.ZelleHandle),
 		"dupr_sanctioned":        req.DuprSanctioned,
 		"cash_prize":             req.CashPrize,
 		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
@@ -901,6 +902,7 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		// an empty value clears the field (orNull → SQL NULL).
 		"listed":        req.Listed,
 		"contact_phone": orNull(req.ContactPhone),
+		"zelle_handle":  orNull(req.ZelleHandle),
 		"starts_at":     orNull(req.StartsAt),
 		"ends_at":       orNull(req.EndsAt),
 		"description":   orNull(req.Description),

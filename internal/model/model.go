@@ -20,6 +20,7 @@ type Event struct {
 	MaxPoolRounds        int      `json:"maxPoolRounds"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
 	Currency             string   `json:"currency"`
+	ZelleHandle          *string  `json:"zelleHandle,omitempty"`
 	Location             *string  `json:"location,omitempty"`
 	ContactPhone         *string  `json:"contactPhone,omitempty"`
 	VenueNotes           *string  `json:"venueNotes,omitempty"`
@@ -538,6 +539,7 @@ type CreateEventRequest struct {
 	MinPoolRounds        int            `json:"minPoolRounds"`
 	MaxPoolRounds        int            `json:"maxPoolRounds"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
+	ZelleHandle          string         `json:"zelleHandle,omitempty"`
 	Location             string         `json:"location"`
 	ContactPhone         string         `json:"contactPhone"`
 	VenueNotes           string         `json:"venueNotes"`

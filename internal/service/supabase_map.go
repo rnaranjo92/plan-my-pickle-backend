@@ -144,6 +144,7 @@ func mapEvent(m map[string]any) model.Event {
 		Currency:             asStr(m, "currency"),
 		Location:             asStrPtr(m, "location"),
 		ContactPhone:         asStrPtr(m, "contact_phone"),
+		ZelleHandle:          asStrPtr(m, "zelle_handle"),
 		VenueNotes:           asStrPtr(m, "venue_notes"),
 		WaiverURL:            asStrPtr(m, "waiver_url"),
 		VenueName:            asStrPtr(m, "venue_name"),

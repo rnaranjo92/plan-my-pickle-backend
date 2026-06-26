@@ -721,6 +721,10 @@ func (s *Server) duprConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.ConnectDupr(userID(r), in); err != nil {
+		if errors.Is(err, service.ErrDuprIDTaken) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

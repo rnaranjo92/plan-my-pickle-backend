@@ -147,6 +147,10 @@ var ErrForbidden = errors.New("forbidden")
 // re-generate is refused (409) once any match is completed, unless forced.
 var ErrScheduleHasResults = errors.New("schedule already has recorded results")
 
+// ErrDuprIDTaken means the DUPR account is already linked to a different
+// PlanMyPickle account (one DUPR id maps to one account).
+var ErrDuprIDTaken = errors.New("this DUPR account is already connected to another PlanMyPickle account")
+
 // ------------------------------------------------------------------ events
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
@@ -2303,6 +2307,13 @@ func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
 	duprID := strings.TrimSpace(in.DuprID)
 	if duprID == "" {
 		return errors.New("DUPR connection did not return a DUPR id")
+	}
+	// One DUPR id maps to one account: reject if it's already linked to a
+	// DIFFERENT PlanMyPickle user (re-connecting your own account is fine).
+	if taken, err := s.sb.SelectOne("dupr_connections",
+		"dupr_id=eq."+store.Q(duprID)+"&user_id=neq."+store.Q(userID)+
+			"&select=user_id&limit=1"); err == nil && taken != nil {
+		return ErrDuprIDTaken
 	}
 	doubles, singles := in.DoublesRating, in.SinglesRating
 	// Now that the user consented, prefer authoritative ratings from DUPR. Only

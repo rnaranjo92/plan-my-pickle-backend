@@ -35,8 +35,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("capture failed: %v", err)
 		}
-		fmt.Printf("  status=%s paid=%v captureId=%s custom_id=%s\n",
-			cap.Status, cap.Paid(), cap.CaptureID, cap.CustomID)
+		fmt.Printf("  orderStatus=%s captureStatus=%s paid=%v captureId=%s custom_id=%s\n",
+			cap.Status, cap.CaptureStatus, cap.Paid(), cap.CaptureID, cap.CustomID)
 		fmt.Printf("  gross=%s fee=%s net=%s %s\n",
 			cap.GrossValue, cap.FeeValue, cap.NetValue, cap.Currency)
 		return

@@ -154,6 +154,9 @@ type PayPalOrder struct {
 // the chosen funding source (paypal|venmo). custom_id = registrationID so the
 // capture + webhook attribute the payment; the approval link is a hosted page.
 func (g *PayPalGateway) CreateOrder(p OrderParams) (PayPalOrder, error) {
+	if p.AmountCents <= 0 {
+		return PayPalOrder{}, fmt.Errorf("paypal create order: amount must be positive, got %d cents", p.AmountCents)
+	}
 	currency := p.Currency
 	if currency == "" {
 		currency = "USD"
@@ -226,18 +229,24 @@ func (g *PayPalGateway) CreateOrder(p OrderParams) (PayPalOrder, error) {
 
 // PayPalCapture is the result of capturing an approved order.
 type PayPalCapture struct {
-	OrderID    string
-	CaptureID  string // payments.captures[0].id — store for refunds
-	Status     string // COMPLETED on success
-	CustomID   string // = registrationID
-	GrossValue string
-	FeeValue   string // PayPal's own fee
-	NetValue   string
-	Currency   string
+	OrderID       string
+	CaptureID     string // payments.captures[0].id — store for refunds
+	Status        string // ORDER status — COMPLETED on success
+	CaptureStatus string // captures[0].status — must ALSO be COMPLETED to be paid
+	CustomID      string // = registrationID
+	GrossValue    string
+	FeeValue      string // PayPal's own fee
+	NetValue      string
+	Currency      string
 }
 
-// Paid reports whether the capture landed money (order + capture COMPLETED).
-func (c PayPalCapture) Paid() bool { return c.Status == "COMPLETED" && c.CaptureID != "" }
+// Paid reports whether money actually landed. Per the PayPal spec, BOTH the
+// order status AND the individual capture status must be COMPLETED: a capture
+// can be PENDING (held / under review) while the order already reads COMPLETED,
+// and a PENDING capture must NOT grant the registration spot.
+func (c PayPalCapture) Paid() bool {
+	return c.Status == "COMPLETED" && c.CaptureStatus == "COMPLETED" && c.CaptureID != ""
+}
 
 // CaptureOrder captures an order the payer already approved. requestID is the
 // PayPal-Request-Id idempotency key (stable per registration -> safe retries).
@@ -284,15 +293,12 @@ func (g *PayPalGateway) CaptureOrder(orderID, requestID string) (PayPalCapture, 
 	if len(res.PurchaseUnits) > 0 && len(res.PurchaseUnits[0].Payments.Captures) > 0 {
 		c := res.PurchaseUnits[0].Payments.Captures[0]
 		out.CaptureID = c.ID
+		out.CaptureStatus = c.Status
 		out.CustomID = c.CustomID
 		out.Currency = c.Amount.CurrencyCode
 		out.GrossValue = c.SellerReceivableBreakdown.GrossAmount.Value
 		out.FeeValue = c.SellerReceivableBreakdown.PaypalFee.Value
 		out.NetValue = c.SellerReceivableBreakdown.NetAmount.Value
-		// Order status is authoritative, but fall back to the capture's.
-		if out.Status == "" {
-			out.Status = c.Status
-		}
 	}
 	return out, nil
 }

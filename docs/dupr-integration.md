@@ -34,10 +34,16 @@ Required to go live (UAT defaults shown):
 4. **Match create / update / delete, owner-only** — ✅ Done.
    - Create: organizer "Import to DUPR" → `SubmitPendingToDupr` (players can't submit).
    - Update: re-scoring an already-submitted match re-queues it; the flush calls
-     `UpdateMatch` (POST /match/{v}/update) using the stored matchCode, so a
-     corrected score propagates instead of duplicating.
+     `UpdateMatch` (POST /match/{v}/update). VERIFIED against DUPR's OpenAPI
+     (uat/prod.mydupr.com/api/v3/api-docs): the `matchId` field is an **int64**,
+     and the create response's `matchCode` is that id as a numeric string
+     (e.g. "0123456789") — so we send `matchId` as a NUMBER (ParseInt). Sending
+     the raw string was the bug that made updates fail.
    - Delete: regenerating the schedule (`wipeAllMatches`) reverses any submitted
-     matches via `DeleteMatch` (DELETE /match/{v}/delete) before discarding them.
+     matches via `DeleteMatch` (DELETE /match/{v}/delete) with body
+     `{matchCode, identifier}` — matches the OpenAPI `deleteMatch` exactly; the
+     `identifier` lines up with create (`identifier = match_id`). Async/best-
+     effort, so failures only show in logs, not the Import summary.
 
 ## Architecture notes
 - One submission path: scoring queues a row (`dupr_submissions`); the organizer

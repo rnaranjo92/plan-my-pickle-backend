@@ -312,6 +312,16 @@ func (d *RealDupr) matchBody(p DuprPayload) map[string]any {
 	return body
 }
 
+// snippet trims a response body to a short string for error messages (DUPR
+// error bodies say things like "match already rated" — useful, not sensitive).
+func snippet(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	return s
+}
+
 // parseMatchResult pulls the match code out of a create/update response.
 func parseMatchResult(raw []byte) DuprResult {
 	var env duprEnvelope
@@ -347,7 +357,14 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 // matchId in the body = the stored matchCode (p.MatchCode).
 func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
 	body := d.matchBody(p)
-	body["matchId"] = p.MatchCode
+	// updateMatch identifies the existing match by matchId, an int64 — the create
+	// response's matchCode is that id as a NUMERIC STRING (e.g. "0123456789"), so
+	// it must be sent as a JSON number. Sending the raw string fails the field.
+	if id, err := strconv.ParseInt(strings.TrimSpace(p.MatchCode), 10, 64); err == nil {
+		body["matchId"] = id
+	} else {
+		body["matchId"] = p.MatchCode // fallback; shouldn't happen for a real match
+	}
 	raw, code, err := d.authed(http.MethodPost,
 		fmt.Sprintf("/match/%s/update", d.version), body)
 	if err != nil {
@@ -355,7 +372,8 @@ func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
 	}
 	if code < 200 || code >= 300 {
 		log.Printf("dupr: match update http %d: %s", code, string(raw))
-		return DuprResult{OK: false, Error: fmt.Sprintf("dupr http %d", code)}, nil
+		return DuprResult{OK: false,
+			Error: fmt.Sprintf("dupr http %d: %s", code, snippet(raw))}, nil
 	}
 	res := parseMatchResult(raw)
 	if res.DuprMatchID == "" {

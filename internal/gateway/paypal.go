@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,11 +30,27 @@ type PayPalGateway struct {
 	clientSecret string
 	baseURL      string // no trailing slash
 	webhookID    string
-	httpClient   *http.Client
+
+	// Marketplace (Phase 3): set via SetMarketplace once the platform is an
+	// approved PayPal partner. partnerID = the platform's PayPal merchant id (for
+	// merchant-status lookups); bnCode = PayPal-Partner-Attribution-Id (BN).
+	partnerID string
+	bnCode    string
+
+	httpClient *http.Client
 
 	mu       sync.Mutex
 	token    string
 	tokenExp time.Time
+}
+
+// SetMarketplace enables Phase-3 multiparty calls (route funds to an organizer,
+// skim a platform fee). partnerID is the platform's PayPal merchant id; bnCode
+// is the PayPal-Partner-Attribution-Id (BN) for the partner app. Leave unset for
+// platform-collects (Phase 1).
+func (g *PayPalGateway) SetMarketplace(partnerID, bnCode string) {
+	g.partnerID = strings.TrimSpace(partnerID)
+	g.bnCode = strings.TrimSpace(bnCode)
 }
 
 // NewPayPalGateway builds the gateway. baseURL empty -> sandbox.
@@ -140,6 +157,12 @@ type OrderParams struct {
 	ReturnURL      string // where PayPal returns after approval (?token=ORDERID)
 	CancelURL      string
 	RequestID      string // -> PayPal-Request-Id idempotency header
+
+	// Marketplace (Phase 3). When PayeeMerchantID is set, funds route to that
+	// organizer's PayPal account and PlatformFeeCents is the platform's cut
+	// (which lands in the partner account). Empty -> platform-collects.
+	PayeeMerchantID  string
+	PlatformFeeCents int
 }
 
 // PayPalOrder is the result of creating an order: its id + the hosted approval
@@ -185,6 +208,23 @@ func (g *PayPalGateway) CreateOrder(p OrderParams) (PayPalOrder, error) {
 	if p.InvoiceID != "" {
 		pu["invoice_id"] = p.InvoiceID
 	}
+	// Marketplace: route funds to the organizer (payee) and skim the platform fee.
+	if p.PayeeMerchantID != "" {
+		pu["payee"] = map[string]any{"merchant_id": p.PayeeMerchantID}
+		if p.PlatformFeeCents > 0 {
+			if p.PlatformFeeCents >= p.AmountCents {
+				return PayPalOrder{}, fmt.Errorf("paypal create order: platform fee %d cents must be less than amount %d cents", p.PlatformFeeCents, p.AmountCents)
+			}
+			feeVal := fmt.Sprintf("%d.%02d", p.PlatformFeeCents/100, p.PlatformFeeCents%100)
+			pu["payment_instruction"] = map[string]any{
+				"disbursement_mode": "INSTANT",
+				// Omit the fee's payee -> the fee lands in the partner (platform) account.
+				"platform_fees": []map[string]any{{
+					"amount": map[string]any{"currency_code": currency, "value": feeVal},
+				}},
+			}
+		}
+	}
 	body := map[string]any{
 		"intent":         "CAPTURE",
 		"purchase_units": []map[string]any{pu},
@@ -195,6 +235,13 @@ func (g *PayPalGateway) CreateOrder(p OrderParams) (PayPalOrder, error) {
 	headers := map[string]string{}
 	if p.RequestID != "" {
 		headers["PayPal-Request-Id"] = p.RequestID
+	}
+	// Marketplace orders need the partner BN + an act-on-behalf-of assertion.
+	if p.PayeeMerchantID != "" {
+		if g.bnCode != "" {
+			headers["PayPal-Partner-Attribution-Id"] = g.bnCode
+		}
+		headers["PayPal-Auth-Assertion"] = g.authAssertion(p.PayeeMerchantID)
 	}
 	raw, code, err := g.authed(http.MethodPost, "/v2/checkout/orders", body, headers)
 	if err != nil {
@@ -250,10 +297,18 @@ func (c PayPalCapture) Paid() bool {
 
 // CaptureOrder captures an order the payer already approved. requestID is the
 // PayPal-Request-Id idempotency key (stable per registration -> safe retries).
-func (g *PayPalGateway) CaptureOrder(orderID, requestID string) (PayPalCapture, error) {
+// payeeMerchantID is set only for marketplace orders (adds the BN + auth-assertion
+// headers so the capture acts on behalf of the organizer); "" for platform-collects.
+func (g *PayPalGateway) CaptureOrder(orderID, requestID, payeeMerchantID string) (PayPalCapture, error) {
 	headers := map[string]string{"Prefer": "return=representation"}
 	if requestID != "" {
 		headers["PayPal-Request-Id"] = requestID
+	}
+	if payeeMerchantID != "" {
+		if g.bnCode != "" {
+			headers["PayPal-Partner-Attribution-Id"] = g.bnCode
+		}
+		headers["PayPal-Auth-Assertion"] = g.authAssertion(payeeMerchantID)
 	}
 	raw, code, err := g.authed(http.MethodPost,
 		fmt.Sprintf("/v2/checkout/orders/%s/capture", orderID), map[string]any{}, headers)
@@ -392,6 +447,96 @@ func (g *PayPalGateway) VerifyWebhook(h http.Header, rawBody []byte) (PayPalWebh
 		Status:    ev.Resource.Status,
 		CustomID:  ev.Resource.CustomID,
 	}, nil
+}
+
+// authAssertion builds the PayPal-Auth-Assertion header: an UNSIGNED JWT
+// (alg:none) telling PayPal to act on behalf of the seller (organizer). Format:
+// base64url({"alg":"none"}).base64url({"iss":clientID,"payer_id":seller}). (empty sig)
+func (g *PayPalGateway) authAssertion(sellerMerchantID string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString(
+		[]byte(fmt.Sprintf(`{"iss":%q,"payer_id":%q}`, g.clientID, sellerMerchantID)))
+	return header + "." + payload + "."
+}
+
+// CreatePartnerReferral starts onboarding an organizer as a PayPal seller under
+// this platform (Phase 3). trackingID is our internal organizer id (echoed back
+// as merchantId on return); returnURL is where PayPal sends the organizer after
+// they grant permission. Returns the action_url to redirect the organizer to —
+// a full-page redirect (CanvasKit-friendly). Requests the PARTNER_FEE feature so
+// platform_fees work.
+func (g *PayPalGateway) CreatePartnerReferral(trackingID, returnURL string) (string, error) {
+	body := map[string]any{
+		"tracking_id":             trackingID,
+		"partner_config_override": map[string]any{"return_url": returnURL},
+		"operations": []map[string]any{{
+			"operation": "API_INTEGRATION",
+			"api_integration_preference": map[string]any{
+				"rest_api_integration": map[string]any{
+					"integration_method": "PAYPAL",
+					"integration_type":   "THIRD_PARTY",
+					"third_party_details": map[string]any{
+						"features": []string{"PAYMENT", "REFUND", "PARTNER_FEE"},
+					},
+				},
+			},
+		}},
+		"products":       []string{"EXPRESS_CHECKOUT"},
+		"legal_consents": []map[string]any{{"type": "SHARE_DATA_CONSENT", "granted": true}},
+	}
+	raw, code, err := g.authed(http.MethodPost, "/v2/customer/partner-referrals", body, nil)
+	if err != nil {
+		return "", err
+	}
+	if code < 200 || code >= 300 {
+		return "", fmt.Errorf("paypal partner-referrals %d: %s", code, ppSnippet(raw))
+	}
+	var res struct {
+		Links []struct {
+			Href string `json:"href"`
+			Rel  string `json:"rel"`
+		} `json:"links"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", err
+	}
+	for _, l := range res.Links {
+		if l.Rel == "action_url" {
+			return l.Href, nil
+		}
+	}
+	return "", errors.New("paypal partner-referrals: no action_url in response")
+}
+
+// MerchantStatus checks whether an onboarded organizer can actually receive
+// money (the Phase-3 "can this organizer accept fees" gate). sellerMerchantID is
+// the organizer's merchantIdInPayPal captured at onboarding. Gate payouts on
+// paymentsReceivable AND emailConfirmed both true.
+func (g *PayPalGateway) MerchantStatus(sellerMerchantID string) (paymentsReceivable, emailConfirmed bool, err error) {
+	if g.partnerID == "" {
+		return false, false, errors.New("paypal: partner id not configured (call SetMarketplace)")
+	}
+	path := fmt.Sprintf("/v1/customer/partners/%s/merchant-integrations/%s",
+		g.partnerID, sellerMerchantID)
+	headers := map[string]string{}
+	if g.bnCode != "" {
+		headers["PayPal-Partner-Attribution-Id"] = g.bnCode
+	}
+	raw, code, err := g.authed(http.MethodGet, path, nil, headers)
+	if err != nil {
+		return false, false, err
+	}
+	if code < 200 || code >= 300 {
+		return false, false, fmt.Errorf("paypal merchant-status %d: %s", code, ppSnippet(raw))
+	}
+	var res struct {
+		PaymentsReceivable    bool `json:"payments_receivable"`
+		PrimaryEmailConfirmed bool `json:"primary_email_confirmed"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return false, false, err
+	}
+	return res.PaymentsReceivable, res.PrimaryEmailConfirmed, nil
 }
 
 // ppSnippet trims a PayPal response body for error messages.

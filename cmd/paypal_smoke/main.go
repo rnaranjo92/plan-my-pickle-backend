@@ -31,7 +31,7 @@ func main() {
 
 	if oid := os.Getenv("ORDER_ID"); oid != "" {
 		fmt.Println("== CAPTURE", oid, "==")
-		cap, err := gw.CaptureOrder(oid, "cap-"+reg)
+		cap, err := gw.CaptureOrder(oid, "cap-"+reg, "")
 		if err != nil {
 			log.Fatalf("capture failed: %v", err)
 		}

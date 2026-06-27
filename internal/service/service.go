@@ -620,6 +620,7 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 		return model.Event{}, ErrNotFound
 	}
 	ev := mapEvent(row)
+	ev.OwnerPremium = s.IsPremium(asStr(row, "owner_id"))
 	// Best-effort registered + checked-in counts (mirrors ListEvents) so the
 	// event-detail header shows the real numbers; a count failure must not fail
 	// the read — single reads otherwise leave the counts at 0.

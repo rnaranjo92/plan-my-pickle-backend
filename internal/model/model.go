@@ -86,6 +86,9 @@ type Event struct {
 	SponsorWatermarkOpacity  float64 `json:"sponsorWatermarkOpacity"`
 	SponsorWatermarkPosition string  `json:"sponsorWatermarkPosition,omitempty"`
 	SponsorWatermarkScale    float64 `json:"sponsorWatermarkScale"`
+	// OwnerPremium = the event owner has an active Premium plan. Set on single
+	// reads (GetEvent) so public views can hide the free-tier house-brand mark.
+	OwnerPremium bool `json:"ownerPremium"`
 }
 
 // PublicEvent is the SAFE, public-facing projection of an Event served at

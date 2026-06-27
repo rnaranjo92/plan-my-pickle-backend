@@ -1847,6 +1847,20 @@ func (s *Service) ImportRoster(eventID string, req model.ImportRosterRequest) (m
 // the event with their DUPR id + doubles rating. duprClubID "" -> the platform's
 // configured DUPR club. Already-registered players are skipped.
 func (s *Service) ImportDuprClubToEvent(eventID, bracketID, duprClubID string) (model.ImportRosterResult, error) {
+	// If no DUPR club was passed, use the event's club's DUPR id (when the event
+	// belongs to a club that has one set). The gateway falls back to the platform
+	// club. Tolerates the dupr_club_id column not existing yet (pre-migration).
+	if strings.TrimSpace(duprClubID) == "" {
+		if ev, e := s.sb.SelectOne("events",
+			"id=eq."+store.Q(eventID)+"&select=club_id"); e == nil && ev != nil {
+			if cid := asStr(ev, "club_id"); cid != "" {
+				if c, e := s.sb.SelectOne("clubs",
+					"id=eq."+store.Q(cid)+"&select=dupr_club_id"); e == nil && c != nil {
+					duprClubID = asStr(c, "dupr_club_id")
+				}
+			}
+		}
+	}
 	members, err := s.Dupr.ClubMembers(duprClubID)
 	if err != nil {
 		return model.ImportRosterResult{}, err
@@ -2525,7 +2539,72 @@ func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
 	if e := s.Dupr.SubscribeUserRating(duprID); e != nil {
 		log.Printf("dupr: subscribe %s failed (non-fatal): %v", duprID, e)
 	}
+	// Adopt any player rows imported from DUPR under this id (no account yet) onto
+	// this user, and auto-join the clubs whose events those players are in — so a
+	// migrated player who later signs up + connects DUPR sees their registrations
+	// and clubs without a duplicate. Best-effort.
+	s.linkDuprPlayers(userID, duprID)
 	return nil
+}
+
+// linkDuprPlayers adopts orphan player rows carrying duprID (created by a DUPR
+// roster import, no account) onto the account, then auto-joins the clubs whose
+// events those players are registered in. Best-effort — never breaks ConnectDupr.
+func (s *Service) linkDuprPlayers(userID, duprID string) {
+	if userID == "" || duprID == "" {
+		return
+	}
+	// 1) Adopt orphan players with this DUPR id (leave already-linked ones alone).
+	if _, err := s.sb.Update("players",
+		"dupr_id=eq."+store.Q(duprID)+"&user_id=is.null",
+		map[string]any{"user_id": userID}); err != nil {
+		return
+	}
+	// 2) Auto-join the clubs of the events those players are registered in.
+	pls, err := s.sb.Select("players", "user_id=eq."+store.Q(userID)+"&select=id")
+	if err != nil || len(pls) == 0 {
+		return
+	}
+	pids := make([]string, 0, len(pls))
+	for _, p := range pls {
+		if id := asStr(p, "id"); id != "" {
+			pids = append(pids, id)
+		}
+	}
+	regs, err := s.sb.Select("registrations",
+		"player_id=in.("+strings.Join(pids, ",")+")&select=event_id")
+	if err != nil || len(regs) == 0 {
+		return
+	}
+	eset := map[string]bool{}
+	for _, r := range regs {
+		if eid := asStr(r, "event_id"); eid != "" {
+			eset[eid] = true
+		}
+	}
+	if len(eset) == 0 {
+		return
+	}
+	eids := make([]string, 0, len(eset))
+	for eid := range eset {
+		eids = append(eids, eid)
+	}
+	evs, err := s.sb.Select("events",
+		"id=in.("+strings.Join(eids, ",")+")&club_id=not.is.null&select=club_id")
+	if err != nil {
+		return
+	}
+	joined := map[string]bool{}
+	for _, e := range evs {
+		cid := asStr(e, "club_id")
+		if cid == "" || joined[cid] {
+			continue
+		}
+		joined[cid] = true
+		_, _ = s.sb.Upsert("club_members", "club_id,user_id", map[string]any{
+			"club_id": cid, "user_id": userID, "role": "member",
+		})
+	}
 }
 
 // ApplyDuprRating updates a connected user's cached ratings from a RATING

@@ -18,10 +18,11 @@ func (s *Service) CreateClub(ownerID string, req model.CreateClubRequest) (model
 		return model.Club{}, errors.New("club name is required")
 	}
 	rows, err := s.sb.Insert("clubs", map[string]any{
-		"owner_id":    ownerID,
-		"name":        name,
-		"city":        orNull(strings.TrimSpace(req.City)),
-		"description": orNull(strings.TrimSpace(req.Description)),
+		"owner_id":     ownerID,
+		"name":         name,
+		"city":         orNull(strings.TrimSpace(req.City)),
+		"description":  orNull(strings.TrimSpace(req.Description)),
+		"dupr_club_id": orNull(strings.TrimSpace(req.DuprClubID)),
 	})
 	if err != nil {
 		return model.Club{}, err
@@ -47,9 +48,10 @@ func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubReques
 		return errors.New("club name is required")
 	}
 	_, err := s.sb.Update("clubs", "id=eq."+store.Q(clubID), map[string]any{
-		"name":        name,
-		"city":        orNull(strings.TrimSpace(req.City)),
-		"description": orNull(strings.TrimSpace(req.Description)),
+		"name":         name,
+		"city":         orNull(strings.TrimSpace(req.City)),
+		"description":  orNull(strings.TrimSpace(req.Description)),
+		"dupr_club_id": orNull(strings.TrimSpace(req.DuprClubID)),
 	})
 	return err
 }
@@ -271,6 +273,7 @@ func mapClub(m map[string]any) model.Club {
 		City:        asStr(m, "city"),
 		Description: asStr(m, "description"),
 		LogoURL:     asStr(m, "logo_url"),
+		DuprClubID:  asStr(m, "dupr_club_id"),
 		CreatedAt:   asStr(m, "created_at"),
 	}
 }

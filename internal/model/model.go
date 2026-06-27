@@ -626,6 +626,7 @@ type Club struct {
 	City        string `json:"city,omitempty"`
 	Description string `json:"description,omitempty"`
 	LogoURL     string `json:"logoUrl,omitempty"`
+	DuprClubID  string `json:"duprClubId,omitempty"`
 	CreatedAt   string `json:"createdAt,omitempty"`
 	// Per-view aggregates + caller flags (set when fetched for a specific user).
 	MemberCount int  `json:"memberCount"`
@@ -639,6 +640,7 @@ type CreateClubRequest struct {
 	Name        string `json:"name"`
 	City        string `json:"city"`
 	Description string `json:"description"`
+	DuprClubID  string `json:"duprClubId"`
 }
 
 // ClubMember is one member of a club, with their display name + photo.

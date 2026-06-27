@@ -79,6 +79,13 @@ type Event struct {
 	// LeagueID links this event to a league (season/recurring play) it belongs to,
 	// or nil for a standalone event.
 	LeagueID *string `json:"leagueId,omitempty"`
+	// Sponsor watermark — a low-opacity sponsor logo/mascot rendered BEHIND the
+	// event's surfaces. URL "" = none; opacity 0–1; scale 0.1–1; position one of
+	// center|top-left|top-right|bottom-left|bottom-right|tiled.
+	SponsorWatermarkURL      string  `json:"sponsorWatermarkUrl,omitempty"`
+	SponsorWatermarkOpacity  float64 `json:"sponsorWatermarkOpacity"`
+	SponsorWatermarkPosition string  `json:"sponsorWatermarkPosition,omitempty"`
+	SponsorWatermarkScale    float64 `json:"sponsorWatermarkScale"`
 }
 
 // PublicEvent is the SAFE, public-facing projection of an Event served at

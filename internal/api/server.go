@@ -230,6 +230,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/divisions", s.ownerOnly("event", "id", s.syncDivisions))
 	mux.HandleFunc("POST /events/{id}/division-order", s.ownerOnly("event", "id", s.setDivisionOrder))
 	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
+	mux.HandleFunc("POST /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.setSponsorWatermarkImage))
+	mux.HandleFunc("POST /events/{id}/sponsor-watermark/settings", s.ownerOnly("event", "id", s.setSponsorWatermarkSettings))
+	mux.HandleFunc("DELETE /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.clearSponsorWatermark))
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
 	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
@@ -834,6 +837,51 @@ func (s *Server) setEventPoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
+}
+
+// setSponsorWatermarkImage uploads the event's sponsor watermark image (owner-only
+// via the path id). JPEG/PNG up to ~5 MB; returns the stored URL.
+func (s *Server) setSponsorWatermarkImage(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	url, err := s.svc.SetSponsorWatermarkImage(
+		r.PathValue("id"), r.Header.Get("Content-Type"), data)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// setSponsorWatermarkSettings saves the watermark placement (opacity/scale/position).
+func (s *Server) setSponsorWatermarkSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL      string  `json:"url"`
+		Opacity  float64 `json:"opacity"`
+		Scale    float64 `json:"scale"`
+		Position string  `json:"position"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetSponsorWatermarkSettings(
+		r.PathValue("id"), req.URL, req.Opacity, req.Scale, req.Position); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// clearSponsorWatermark removes the event's watermark image.
+func (s *Server) clearSponsorWatermark(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearSponsorWatermark(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 // setLeaguePoster sets (or clears, when posterUrl is empty) the league's banner

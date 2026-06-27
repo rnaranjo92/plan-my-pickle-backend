@@ -817,10 +817,15 @@ func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Ev
 		e model.Event
 		d float64
 	}
+	now := time.Now()
 	list := make([]withDist, 0, len(rows))
 	for _, r := range rows {
 		e := mapEvent(r)
 		if e.VenueLat == nil || e.VenueLng == nil {
+			continue
+		}
+		// Discovery shows today + upcoming only — drop events already over.
+		if eventEnded(e, now) {
 			continue
 		}
 		d := haversineKm(lat, lng, *e.VenueLat, *e.VenueLng)
@@ -842,6 +847,36 @@ func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Ev
 		out = append(out, x.e)
 	}
 	return out, nil
+}
+
+// eventEnded reports whether an event is over (so nearby discovery hides it). It
+// uses the scheduled end; if no end is set, it assumes the event runs ~a day from
+// its start so a same-day no-end event isn't hidden the moment it begins. Undated
+// events (no start and no end) are never "ended".
+func eventEnded(e model.Event, now time.Time) bool {
+	end := parseTS(e.EndsAt)
+	if end.IsZero() {
+		if start := parseTS(e.StartsAt); !start.IsZero() {
+			end = start.Add(24 * time.Hour)
+		}
+	}
+	return !end.IsZero() && end.Before(now)
+}
+
+// parseTS tolerantly parses a stored timestamp string (RFC3339, with or without
+// fractional seconds / timezone, or date-only). Returns the zero time on failure.
+func parseTS(p *string) time.Time {
+	if p == nil || strings.TrimSpace(*p) == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02",
+	} {
+		if t, err := time.Parse(layout, strings.TrimSpace(*p)); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // haversineKm is the great-circle distance between two lat/lng points, in km.

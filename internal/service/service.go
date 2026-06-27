@@ -134,6 +134,12 @@ func (s *Service) Geocode(query string) (*courts.GeoResult, error) {
 	return courts.Geocode(query)
 }
 
+// CityAutocomplete returns city suggestions for club/venue city fields. Empty
+// when no geocoder key is configured (the field then works as plain free text).
+func (s *Service) CityAutocomplete(query string) []string {
+	return courts.CityAutocomplete(query)
+}
+
 func now() string   { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z") }
 func newID() string { return uuid.NewString() }
 

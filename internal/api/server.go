@@ -100,6 +100,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
 	mux.HandleFunc("GET /courts/nearby", s.nearbyCourts)
 	mux.HandleFunc("GET /geocode", s.geocode)
+	mux.HandleFunc("GET /city-autocomplete", requireAuth(s.cityAutocomplete))
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
 	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
 	mux.HandleFunc("POST /events/{id}/import-dupr", s.ownerOnly("event", "id", s.importDupr))
@@ -1484,6 +1485,17 @@ func (s *Server) bracketMatches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+// cityAutocomplete returns city suggestions ("City, State") for a free-text club
+// or venue city field. Auth-gated to bound the geocoder cost; empty list when no
+// geocoder key is configured.
+func (s *Server) cityAutocomplete(w http.ResponseWriter, r *http.Request) {
+	cities := s.svc.CityAutocomplete(r.URL.Query().Get("q"))
+	if cities == nil {
+		cities = []string{}
+	}
+	writeJSON(w, http.StatusOK, cities)
 }
 
 func (s *Server) geocode(w http.ResponseWriter, r *http.Request) {

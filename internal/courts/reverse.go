@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -131,6 +132,60 @@ func geocodeGeoapify(query string) (*GeoResult, error) {
 	}
 	r := parsed.Results[0]
 	return &GeoResult{Lat: r.Lat, Lng: r.Lon, Label: r.Formatted}, nil
+}
+
+// CityAutocomplete returns up to ~6 city suggestions ("City, State") for a
+// free-text query via Geoapify's autocomplete API (type=city). Returns nil when
+// PMP_GEOCODER_KEY is unset (callers then fall back to a plain free-text field)
+// or on any error/short query.
+func CityAutocomplete(query string) []string {
+	query = strings.TrimSpace(query)
+	if geocoderKey == "" || len(query) < 2 {
+		return nil
+	}
+	country := os.Getenv("PMP_GEO_COUNTRY")
+	if country == "" {
+		country = "us"
+	}
+	u := fmt.Sprintf("https://api.geoapify.com/v1/geocode/autocomplete?text=%s&type=city&limit=6&format=json&apiKey=%s",
+		url.QueryEscape(query), url.QueryEscape(geocoderKey))
+	if country != "any" {
+		u += "&filter=countrycode:" + url.QueryEscape(country)
+	}
+	resp, err := reverseHTTP.Get(u)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var parsed struct {
+		Results []struct {
+			City      string `json:"city"`
+			State     string `json:"state"`
+			Formatted string `json:"formatted"`
+		} `json:"results"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&parsed) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(parsed.Results))
+	seen := map[string]bool{}
+	for _, r := range parsed.Results {
+		label := r.City
+		if label != "" && r.State != "" {
+			label = r.City + ", " + r.State
+		} else if label == "" {
+			label = r.Formatted
+		}
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		out = append(out, label)
+	}
+	return out
 }
 
 // reverseGeoapify resolves a coordinate to a place name + address via Geoapify.

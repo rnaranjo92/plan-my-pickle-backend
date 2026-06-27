@@ -210,6 +210,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		}
 	}
 
+	// An event can be created under a club only by that club's owner.
+	if req.ClubID != "" && !s.OwnsClub(req.ClubID, ownerID) {
+		return "", ErrForbidden
+	}
 	payload := map[string]any{
 		"name":                   req.Name,
 		"format":                 format,
@@ -226,6 +230,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"location":               orNull(req.Location),
 		"contact_phone":          orNull(req.ContactPhone),
 		"zelle_handle":           orNull(req.ZelleHandle),
+		"club_id":                orNull(req.ClubID),
 		"dupr_sanctioned":        req.DuprSanctioned,
 		"cash_prize":             req.CashPrize,
 		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),

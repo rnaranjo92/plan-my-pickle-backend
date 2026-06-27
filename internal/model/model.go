@@ -21,6 +21,7 @@ type Event struct {
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
 	Currency             string   `json:"currency"`
 	ZelleHandle          *string  `json:"zelleHandle,omitempty"`
+	ClubID               *string  `json:"clubId,omitempty"`
 	Location             *string  `json:"location,omitempty"`
 	ContactPhone         *string  `json:"contactPhone,omitempty"`
 	VenueNotes           *string  `json:"venueNotes,omitempty"`
@@ -544,6 +545,7 @@ type CreateEventRequest struct {
 	MaxPoolRounds        int            `json:"maxPoolRounds"`
 	RegistrationFeeCents int            `json:"registrationFeeCents"`
 	ZelleHandle          string         `json:"zelleHandle,omitempty"`
+	ClubID               string         `json:"clubId,omitempty"`
 	Location             string         `json:"location"`
 	ContactPhone         string         `json:"contactPhone"`
 	VenueNotes           string         `json:"venueNotes"`
@@ -607,6 +609,37 @@ type ImportRosterResult struct {
 	Skipped int      `json:"skipped"` // already registered (deduped)
 	Failed  int      `json:"failed"`
 	Errors  []string `json:"errors,omitempty"`
+}
+
+// Club is a first-class club/organization that owns events and has members.
+type Club struct {
+	ID          string `json:"id"`
+	OwnerID     string `json:"ownerId"`
+	Name        string `json:"name"`
+	City        string `json:"city,omitempty"`
+	Description string `json:"description,omitempty"`
+	LogoURL     string `json:"logoUrl,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	// Per-view aggregates + caller flags (set when fetched for a specific user).
+	MemberCount int  `json:"memberCount"`
+	EventCount  int  `json:"eventCount"`
+	IsOwner     bool `json:"isOwner"`
+	IsMember    bool `json:"isMember"`
+}
+
+// CreateClubRequest is the create/edit payload for a club.
+type CreateClubRequest struct {
+	Name        string `json:"name"`
+	City        string `json:"city"`
+	Description string `json:"description"`
+}
+
+// ClubMember is one member of a club, with their display name + photo.
+type ClubMember struct {
+	UserID   string `json:"userId"`
+	FullName string `json:"fullName,omitempty"`
+	PhotoURL string `json:"photoUrl,omitempty"`
+	Role     string `json:"role"`
 }
 
 // RegistrationDetailsRequest edits a registered player's details (organizer-only).

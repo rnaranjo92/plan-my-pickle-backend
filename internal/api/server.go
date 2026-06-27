@@ -127,6 +127,16 @@ func NewServer(svc *service.Service) http.Handler {
 
 	// --- Authenticated: creating an event stamps the caller as its owner.
 	mux.HandleFunc("POST /events", requireAuth(s.createEvent))
+	// Clubs.
+	mux.HandleFunc("POST /clubs", requireAuth(s.createClub))
+	mux.HandleFunc("GET /me/clubs", requireAuth(s.myClubs))
+	mux.HandleFunc("GET /clubs/{id}", optionalAuth(s.getClub))
+	mux.HandleFunc("POST /clubs/{id}", requireAuth(s.updateClub))
+	mux.HandleFunc("POST /clubs/{id}/logo", requireAuth(s.uploadClubLogo))
+	mux.HandleFunc("GET /clubs/{id}/members", s.clubMembers)
+	mux.HandleFunc("GET /clubs/{id}/events", s.clubEvents)
+	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
+	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
 
 	// --- Leagues (season / recurring play): owner-scoped WRITES, but READS are
 	// open to participants too. Creating a league stamps the caller as its owner;
@@ -984,6 +994,113 @@ func (s *Server) importRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// ---- Clubs ----
+
+// createClub creates a club (Premium-gated, like createEvent).
+func (s *Server) createClub(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.IsPremium(userID(r)) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
+	var req model.CreateClubRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	c, err := s.svc.CreateClub(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// updateClub edits a club (owner-only — enforced in the service).
+func (s *Server) updateClub(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateClubRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.UpdateClub(r.PathValue("id"), userID(r), req); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// getClub returns a club for public viewing (caller flags via optionalAuth).
+func (s *Server) getClub(w http.ResponseWriter, r *http.Request) {
+	c, err := s.svc.GetClub(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+// myClubs lists the caller's clubs (owned or joined).
+func (s *Server) myClubs(w http.ResponseWriter, r *http.Request) {
+	c, err := s.svc.MyClubs(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+// clubMembers lists a club's members (public).
+func (s *Server) clubMembers(w http.ResponseWriter, r *http.Request) {
+	m, err := s.svc.ClubMembers(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// clubEvents lists a club's events (public).
+func (s *Server) clubEvents(w http.ResponseWriter, r *http.Request) {
+	e, err := s.svc.ClubEvents(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
+}
+
+// joinClub adds the caller as a member.
+func (s *Server) joinClub(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.JoinClub(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "joined"})
+}
+
+// leaveClub removes the caller's membership.
+func (s *Server) leaveClub(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.LeaveClub(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
+}
+
+// uploadClubLogo uploads a club logo (owner-only — enforced in the service).
+func (s *Server) uploadClubLogo(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	url, err := s.svc.SetClubLogo(r.PathValue("id"), userID(r),
+		r.Header.Get("Content-Type"), data)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"logoUrl": url})
 }
 
 func (s *Server) addFinanceEntry(w http.ResponseWriter, r *http.Request) {

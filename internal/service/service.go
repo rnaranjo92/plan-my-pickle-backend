@@ -1779,7 +1779,7 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	// free-text partner column.
 	base := "event_id=eq." + store.Q(eventID) +
 		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,%s" +
-		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level)," +
+		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level,user_id)," +
 		"partner:players!partner_id(full_name)," +
 		"bracket:brackets(min_rating,max_rating)"
 	rows, err := s.sb.Select("registrations", fmt.Sprintf(base, "partner_name,"))
@@ -1793,10 +1793,51 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 		}
 	}
 	out := make([]model.Registration, 0, len(rows))
-	for _, r := range rows {
+	uids := make([]string, len(rows))
+	for i, r := range rows {
 		out = append(out, mapRegistration(r))
+		if p := asMap(r, "player"); p != nil {
+			uids[i] = asStr(p, "user_id")
+		}
+	}
+	// Batch-load account profile photos for registrants linked to an app account
+	// (one query); name-only players have no user_id -> initials fallback.
+	photos := s.photosByUser(uids)
+	for i := range out {
+		if uids[i] != "" {
+			out[i].PhotoURL = photos[uids[i]]
+		}
 	}
 	return out, nil
+}
+
+// photosByUser batch-loads account profile photos (pmp_profiles.photo_url) for a
+// set of user ids in ONE query. Best-effort: returns an empty/partial map on
+// error so the roster never breaks. Keyed by user_id; only non-empty photos.
+func (s *Service) photosByUser(userIDs []string) map[string]string {
+	out := map[string]string{}
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(userIDs))
+	for _, u := range userIDs {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			uniq = append(uniq, u)
+		}
+	}
+	if len(uniq) == 0 {
+		return out
+	}
+	rows, err := s.sb.Select("pmp_profiles",
+		"user_id=in.("+strings.Join(uniq, ",")+")&select=user_id,photo_url")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		if url := asStr(r, "photo_url"); url != "" {
+			out[asStr(r, "user_id")] = url
+		}
+	}
+	return out
 }
 
 // eventHasMatches reports whether a schedule has already been generated for the

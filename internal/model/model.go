@@ -351,6 +351,10 @@ type Registration struct {
 	CheckedIn     bool     `json:"checkedIn"`
 	CheckInToken  *string  `json:"checkInToken,omitempty"`
 	Phone         string   `json:"phone"`
+	// PhotoURL is the registrant's account profile photo (pmp_profiles via the
+	// linked user_id), used as their roster avatar; empty for name-only players
+	// (the UI falls back to initials).
+	PhotoURL      string   `json:"photoUrl,omitempty"`
 	DuprID        *string  `json:"duprId,omitempty"`
 	DuprRating    *float64 `json:"duprRating,omitempty"`
 	// OutsideRating is true when the player's DUPR rating falls outside their

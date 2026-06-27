@@ -312,6 +312,52 @@ func (d *RealDupr) matchBody(p DuprPayload) map[string]any {
 	return body
 }
 
+// ClubMembers fetches a DUPR club's member roster: POST /club/{v}/members with
+// {clubId}. clubID "" -> the gateway's configured club. Restricted partners get
+// only connected users back.
+func (d *RealDupr) ClubMembers(clubID string) ([]DuprMember, error) {
+	cid := strings.TrimSpace(clubID)
+	if cid == "" {
+		cid = d.clubID
+	}
+	if cid == "" {
+		return nil, fmt.Errorf("dupr: no club id configured")
+	}
+	id, err := strconv.ParseInt(cid, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("dupr: club id must be numeric, got %q", cid)
+	}
+	raw, code, err := d.authed(http.MethodPost,
+		fmt.Sprintf("/club/%s/members", d.version), map[string]any{"clubId": id})
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("dupr club members %d: %s", code, snippet(raw))
+	}
+	var res struct {
+		Results []struct {
+			ID       string `json:"id"`
+			FullName string `json:"fullName"`
+			Singles  string `json:"singles"`
+			Doubles  string `json:"doubles"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, err
+	}
+	out := make([]DuprMember, 0, len(res.Results))
+	for _, m := range res.Results {
+		out = append(out, DuprMember{
+			DuprID:   m.ID,
+			FullName: m.FullName,
+			Singles:  m.Singles,
+			Doubles:  m.Doubles,
+		})
+	}
+	return out, nil
+}
+
 // snippet trims a response body to a short string for error messages (DUPR
 // error bodies say things like "match already rated" — useful, not sensitive).
 func snippet(b []byte) string {

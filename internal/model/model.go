@@ -611,6 +611,13 @@ type ImportRosterResult struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
+// ImportDuprRequest imports a DUPR club's roster into an event. DuprClubID empty
+// -> the platform's configured DUPR club.
+type ImportDuprRequest struct {
+	BracketID  string `json:"bracketId"`
+	DuprClubID string `json:"duprClubId"`
+}
+
 // Club is a first-class club/organization that owns events and has members.
 type Club struct {
 	ID          string `json:"id"`

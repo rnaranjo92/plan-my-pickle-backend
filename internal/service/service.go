@@ -1843,6 +1843,45 @@ func (s *Service) ImportRoster(eventID string, req model.ImportRosterRequest) (m
 	return res, nil
 }
 
+// ImportDuprClubToEvent fetches the DUPR club's members and registers each into
+// the event with their DUPR id + doubles rating. duprClubID "" -> the platform's
+// configured DUPR club. Already-registered players are skipped.
+func (s *Service) ImportDuprClubToEvent(eventID, bracketID, duprClubID string) (model.ImportRosterResult, error) {
+	members, err := s.Dupr.ClubMembers(duprClubID)
+	if err != nil {
+		return model.ImportRosterResult{}, err
+	}
+	var res model.ImportRosterResult
+	for _, m := range members {
+		name := strings.TrimSpace(m.FullName)
+		if name == "" {
+			continue
+		}
+		var rating *float64
+		if d, e := strconv.ParseFloat(strings.TrimSpace(m.Doubles), 64); e == nil {
+			rating = &d
+		}
+		_, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+			FullName:   name,
+			DuprID:     m.DuprID,
+			DuprRating: rating,
+			BracketID:  bracketID,
+		}, "")
+		switch {
+		case err == nil:
+			res.Added++
+		case errors.Is(err, ErrAlreadyRegistered):
+			res.Skipped++
+		default:
+			res.Failed++
+			if len(res.Errors) < 8 {
+				res.Errors = append(res.Errors, name+": "+err.Error())
+			}
+		}
+	}
+	return res, nil
+}
+
 func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	// registrations has two FKs to players (player_id, partner_id) so the embed
 	// must name the FK column; alias both embeds to stable keys. partner is the

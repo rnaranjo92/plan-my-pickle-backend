@@ -102,6 +102,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /geocode", s.geocode)
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
 	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
+	mux.HandleFunc("POST /events/{id}/import-dupr", s.ownerOnly("event", "id", s.importDupr))
 	// /pay and /shirt are public self-service (a registrant has no account), but
 	// must prove ownership of the registration — the registration id is harvestable
 	// from the public feed/roster, so without a check the endpoints are an IDOR
@@ -989,6 +990,21 @@ func (s *Server) importRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.svc.ImportRoster(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// importDupr imports a DUPR club's roster into the event (owner-only).
+func (s *Server) importDupr(w http.ResponseWriter, r *http.Request) {
+	var req model.ImportDuprRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	res, err := s.svc.ImportDuprClubToEvent(
+		r.PathValue("id"), req.BracketID, req.DuprClubID)
 	if err != nil {
 		status(w, err)
 		return

@@ -106,6 +106,15 @@ type DuprRating struct {
 	DoublesProvisional bool
 }
 
+// DuprMember is one member of a partner's DUPR club roster. Ratings are the raw
+// DUPR strings (e.g. "3.80", or "" / "NR" when unrated).
+type DuprMember struct {
+	DuprID   string
+	FullName string
+	Singles  string
+	Doubles  string
+}
+
 type DuprGateway interface {
 	SubmitMatch(p DuprPayload) (DuprResult, error)
 	// UpdateMatch revises a previously-submitted match (p.MatchCode identifies it).
@@ -124,6 +133,9 @@ type DuprGateway interface {
 	// SubscribeUserRating subscribes a connected user to RATING events; DUPR then
 	// immediately posts a RATING_SEED with their current rating.
 	SubscribeUserRating(duprID string) error
+	// ClubMembers fetches a DUPR club's member roster (clubID "" -> the gateway's
+	// configured club). Restricted partners get only connected users.
+	ClubMembers(clubID string) ([]DuprMember, error)
 }
 
 type MockDupr struct {
@@ -166,6 +178,12 @@ func (m *MockDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 }
 
 // SsoURL is empty for the mock — the connect UI shows "DUPR not configured".
-func (m *MockDupr) SsoURL() (string, string)            { return "", "" }
-func (m *MockDupr) RegisterWebhook(string) error        { return nil }
-func (m *MockDupr) SubscribeUserRating(string) error    { return nil }
+func (m *MockDupr) SsoURL() (string, string)         { return "", "" }
+func (m *MockDupr) RegisterWebhook(string) error     { return nil }
+func (m *MockDupr) SubscribeUserRating(string) error { return nil }
+func (m *MockDupr) ClubMembers(string) ([]DuprMember, error) {
+	return []DuprMember{
+		{DuprID: "MOCK01", FullName: "Mock Member One", Singles: "3.50", Doubles: "3.50"},
+		{DuprID: "MOCK02", FullName: "Mock Member Two", Singles: "4.00", Doubles: "3.90"},
+	}, nil
+}

@@ -15,12 +15,25 @@ import (
 // organizer's connected account.
 const platformFeeBPS = 500
 
-// platformFeeCents computes the platform's cut (rounded down) for an entry fee.
+// platformFeeCapCents caps the platform's per-registration cut so big-ticket
+// entries aren't taxed at the full 5% — this keeps PMP inside the flat $2-$5
+// band that capped-fee rivals use (RegFox ~$4.99, PickleballTournaments ~$10
+// per 2 events) instead of looking expensive on a $150+ sanctioned entry. The
+// cap only bites above feeCents where 5% exceeds it ($100 entry = $5 = the cap;
+// anything pricier is capped). Set to 0 to disable. 500 = $5.00.
+const platformFeeCapCents = 500
+
+// platformFeeCents computes the platform's cut (rounded down) for an entry fee:
+// platformFeeBPS of the fee, capped at platformFeeCapCents.
 func platformFeeCents(feeCents int) int {
 	if feeCents <= 0 {
 		return 0
 	}
-	return feeCents * platformFeeBPS / 10000
+	fee := feeCents * platformFeeBPS / 10000
+	if platformFeeCapCents > 0 && fee > platformFeeCapCents {
+		return platformFeeCapCents
+	}
+	return fee
 }
 
 // stripeGW returns the StripeGateway if the live Stripe processor is wired up,

@@ -5672,6 +5672,22 @@ func (s *Service) BracketMatches(bracketID string) ([]model.Match, error) {
 // by a matches section (division, round/stage, both teams, score, winner). It
 // reuses the same Standings + matches queries the live dashboard uses, so the
 // export matches what organizers see on screen. Returns the CSV bytes.
+// csvSafe defends a CSV cell against spreadsheet formula injection (CWE-1236): a
+// cell whose first char is one a spreadsheet may treat as a formula (= + - @) or
+// a control char (TAB/CR) is prefixed with an apostrophe so Excel/Sheets render
+// it as text. Applied to every user-supplied cell in CSV exports — player names
+// etc. are free text collected at (public) registration.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 // RosterCSV streams the event's REGISTRANT roster (contact info + status) as a
 // CSV — distinct from ResultsCSV (standings/matches). Owner-only. Uses its own
 // query so player email can be included without putting it in the shared
@@ -5694,10 +5710,10 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 		"&select=payment_status,checked_in,bracket_id,%s" +
 		"player:players!player_id(full_name,phone,email,dupr_id)," +
 		"partner:players!partner_id(full_name)"
-	rows, err := s.sb.Select("registrations", fmt.Sprintf(base, "partner_name,"))
+	rows, err := s.sb.SelectAll("registrations", fmt.Sprintf(base, "partner_name,"))
 	if err != nil {
 		// Tolerate the partner_name column not existing yet (pre-migration).
-		rows, err = s.sb.Select("registrations", fmt.Sprintf(base, ""))
+		rows, err = s.sb.SelectAll("registrations", fmt.Sprintf(base, ""))
 		if err != nil {
 			return nil, err
 		}
@@ -5707,7 +5723,7 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 	cw := csv.NewWriter(&buf)
 	w := func(rec ...string) { _ = cw.Write(rec) }
 
-	w("PlanMyPickle Roster", ev.Name)
+	w("PlanMyPickle Roster", csvSafe(ev.Name))
 	w()
 	w("Name", "Phone", "Email", "Division", "Partner", "Paid", "Checked in", "DUPR ID")
 	for _, r := range rows {
@@ -5733,7 +5749,9 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 		if asBool(r, "checked_in") {
 			checked = "Yes"
 		}
-		w(name, phone, email, divName[asStr(r, "bracket_id")], partner, paid, checked, dupr)
+		w(csvSafe(name), csvSafe(phone), csvSafe(email),
+			csvSafe(divName[asStr(r, "bracket_id")]), csvSafe(partner),
+			paid, checked, csvSafe(dupr))
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {
@@ -5783,7 +5801,7 @@ func (s *Service) ResultsCSV(eventID string) ([]byte, error) {
 		}
 		for i, row := range st {
 			if err := write(
-				strconv.Itoa(i+1), row.FullName,
+				strconv.Itoa(i+1), csvSafe(row.FullName),
 				strconv.Itoa(row.GamesPlayed), strconv.Itoa(row.Wins), strconv.Itoa(row.Losses),
 				strconv.Itoa(row.PointsFor), strconv.Itoa(row.PointsAgainst), strconv.Itoa(row.PointDiff),
 			); err != nil {
@@ -5818,9 +5836,9 @@ func (s *Service) ResultsCSV(eventID string) ([]byte, error) {
 			div = divName[*m.BracketID]
 		}
 		if err := write(
-			div, matchStageLabel(m),
-			teamNames(m, 1), teamNames(m, 2),
-			matchScoreText(m), matchWinnerText(m),
+			csvSafe(div), matchStageLabel(m),
+			csvSafe(teamNames(m, 1)), csvSafe(teamNames(m, 2)),
+			matchScoreText(m), csvSafe(matchWinnerText(m)),
 		); err != nil {
 			return nil, err
 		}

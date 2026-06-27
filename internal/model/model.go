@@ -651,6 +651,17 @@ type ClubMember struct {
 	Role     string `json:"role"`
 }
 
+// UserSearchResult is a followable account in player search / followers / following
+// lists: display name + DUPR rating from their player row, photo from pmp_profiles,
+// and whether the calling user already follows them.
+type UserSearchResult struct {
+	UserID        string   `json:"userId"`
+	FullName      string   `json:"fullName,omitempty"`
+	PhotoURL      string   `json:"photoUrl,omitempty"`
+	DoublesRating *float64 `json:"doublesRating,omitempty"`
+	IsFollowing   bool     `json:"isFollowing"`
+}
+
 // RegistrationDetailsRequest edits a registered player's details (organizer-only).
 // Writes the shared players row behind the registration.
 type RegistrationDetailsRequest struct {

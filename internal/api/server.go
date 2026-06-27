@@ -139,6 +139,13 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
 
+	// Social graph: search players & follow them.
+	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
+	mux.HandleFunc("POST /users/{id}/follow", requireAuth(s.followUser))
+	mux.HandleFunc("DELETE /users/{id}/follow", requireAuth(s.unfollowUser))
+	mux.HandleFunc("GET /me/following", requireAuth(s.myFollowing))
+	mux.HandleFunc("GET /me/followers", requireAuth(s.myFollowers))
+
 	// --- Leagues (season / recurring play): owner-scoped WRITES, but READS are
 	// open to participants too. Creating a league stamps the caller as its owner;
 	// GET /leagues lists only the caller's OWNED leagues (organizer dashboard),
@@ -1101,6 +1108,56 @@ func (s *Server) leaveClub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
+}
+
+// --- Social graph: search players & follow them ---
+
+// searchUsers finds followable accounts by display name (?q=, >= 2 chars).
+func (s *Server) searchUsers(w http.ResponseWriter, r *http.Request) {
+	res, err := s.svc.SearchUsers(userID(r), r.URL.Query().Get("q"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// followUser makes the caller follow the path user.
+func (s *Server) followUser(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.Follow(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "following"})
+}
+
+// unfollowUser removes the caller's follow of the path user.
+func (s *Server) unfollowUser(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.Unfollow(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "unfollowed"})
+}
+
+// myFollowing lists the accounts the caller follows.
+func (s *Server) myFollowing(w http.ResponseWriter, r *http.Request) {
+	res, err := s.svc.Following(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// myFollowers lists the accounts that follow the caller.
+func (s *Server) myFollowers(w http.ResponseWriter, r *http.Request) {
+	res, err := s.svc.Followers(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // uploadClubLogo uploads a club logo (owner-only — enforced in the service).

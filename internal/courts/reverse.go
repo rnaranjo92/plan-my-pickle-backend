@@ -134,11 +134,13 @@ func geocodeGeoapify(query string) (*GeoResult, error) {
 	return &GeoResult{Lat: r.Lat, Lng: r.Lon, Label: r.Formatted}, nil
 }
 
-// CityAutocomplete returns up to ~6 city suggestions ("City, State") for a
-// free-text query via Geoapify's autocomplete API (type=city). Returns nil when
-// PMP_GEOCODER_KEY is unset (callers then fall back to a plain free-text field)
-// or on any error/short query.
-func CityAutocomplete(query string) []string {
+// PlaceAutocomplete returns up to ~6 location suggestions for a free-text query
+// via Geoapify's autocomplete API. kind=="city" restricts to cities and labels
+// them "City, State"; any other kind ("place") returns mixed addresses/POIs/cities
+// labeled by their full formatted address (for a venue field). Returns nil when
+// PMP_GEOCODER_KEY is unset (callers fall back to a plain text field) or on any
+// error / short query.
+func PlaceAutocomplete(query, kind string) []string {
 	query = strings.TrimSpace(query)
 	if geocoderKey == "" || len(query) < 2 {
 		return nil
@@ -147,8 +149,12 @@ func CityAutocomplete(query string) []string {
 	if country == "" {
 		country = "us"
 	}
-	u := fmt.Sprintf("https://api.geoapify.com/v1/geocode/autocomplete?text=%s&type=city&limit=6&format=json&apiKey=%s",
-		url.QueryEscape(query), url.QueryEscape(geocoderKey))
+	typeFilter := ""
+	if kind == "city" {
+		typeFilter = "&type=city"
+	}
+	u := fmt.Sprintf("https://api.geoapify.com/v1/geocode/autocomplete?text=%s%s&limit=6&format=json&apiKey=%s",
+		url.QueryEscape(query), typeFilter, url.QueryEscape(geocoderKey))
 	if country != "any" {
 		u += "&filter=countrycode:" + url.QueryEscape(country)
 	}
@@ -173,10 +179,15 @@ func CityAutocomplete(query string) []string {
 	out := make([]string, 0, len(parsed.Results))
 	seen := map[string]bool{}
 	for _, r := range parsed.Results {
-		label := r.City
-		if label != "" && r.State != "" {
-			label = r.City + ", " + r.State
-		} else if label == "" {
+		var label string
+		if kind == "city" {
+			label = r.City
+			if label != "" && r.State != "" {
+				label = r.City + ", " + r.State
+			} else if label == "" {
+				label = r.Formatted
+			}
+		} else {
 			label = r.Formatted
 		}
 		if label == "" || seen[label] {

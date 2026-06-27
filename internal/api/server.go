@@ -1491,11 +1491,15 @@ func (s *Server) bracketMatches(w http.ResponseWriter, r *http.Request) {
 // or venue city field. Auth-gated to bound the geocoder cost; empty list when no
 // geocoder key is configured.
 func (s *Server) cityAutocomplete(w http.ResponseWriter, r *http.Request) {
-	cities := s.svc.CityAutocomplete(r.URL.Query().Get("q"))
-	if cities == nil {
-		cities = []string{}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = "city"
 	}
-	writeJSON(w, http.StatusOK, cities)
+	results := s.svc.PlaceAutocomplete(r.URL.Query().Get("q"), kind)
+	if results == nil {
+		results = []string{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) geocode(w http.ResponseWriter, r *http.Request) {

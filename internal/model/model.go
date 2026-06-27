@@ -587,6 +587,28 @@ type RegisterRequest struct {
 	CaptchaToken string `json:"captchaToken,omitempty"`
 }
 
+// ImportRosterRequest bulk-registers many players into an event from a roster
+// import (owner-only). All players go into the chosen BracketID (division).
+type ImportRosterRequest struct {
+	BracketID string               `json:"bracketId"`
+	Players   []ImportRosterPlayer `json:"players"`
+}
+
+// ImportRosterPlayer is one row of an imported roster.
+type ImportRosterPlayer struct {
+	FullName string `json:"fullName"`
+	Phone    string `json:"phone"`
+	Email    string `json:"email"`
+}
+
+// ImportRosterResult summarizes a bulk roster import.
+type ImportRosterResult struct {
+	Added   int      `json:"added"`
+	Skipped int      `json:"skipped"` // already registered (deduped)
+	Failed  int      `json:"failed"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
 // RegistrationDetailsRequest edits a registered player's details (organizer-only).
 // Writes the shared players row behind the registration.
 type RegistrationDetailsRequest struct {

@@ -101,6 +101,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /courts/nearby", s.nearbyCourts)
 	mux.HandleFunc("GET /geocode", s.geocode)
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
+	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
 	// /pay and /shirt are public self-service (a registrant has no account), but
 	// must prove ownership of the registration — the registration id is harvestable
 	// from the public feed/roster, so without a check the endpoints are an IDOR
@@ -216,6 +217,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
 	// Downloadable results export (standings + matches) for the organizer.
 	mux.HandleFunc("GET /events/{id}/results.csv", s.ownerOnly("event", "id", s.resultsCSV))
+	mux.HandleFunc("GET /events/{id}/roster.csv", s.ownerOnly("event", "id", s.rosterCSV))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -955,6 +957,33 @@ func (s *Server) resultsCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="results.csv"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// rosterCSV streams the event's registrant roster as a CSV download (owner-only).
+func (s *Server) rosterCSV(w http.ResponseWriter, r *http.Request) {
+	data, err := s.svc.RosterCSV(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="roster.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// importRoster bulk-registers players from a roster import (owner-only).
+func (s *Server) importRoster(w http.ResponseWriter, r *http.Request) {
+	var req model.ImportRosterRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	res, err := s.svc.ImportRoster(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) addFinanceEntry(w http.ResponseWriter, r *http.Request) {

@@ -1807,6 +1807,37 @@ func (s *Service) autoAssignBracket(eventID string, rating *float64) (string, er
 	return bks[0].ID, nil
 }
 
+// ImportRoster bulk-registers many players into an event (owner-only). All go
+// into req.BracketID; rows already registered (by phone/email) are skipped, not
+// duplicated. Blank-name rows are ignored. Returns a per-import summary.
+func (s *Service) ImportRoster(eventID string, req model.ImportRosterRequest) (model.ImportRosterResult, error) {
+	var res model.ImportRosterResult
+	for _, p := range req.Players {
+		name := strings.TrimSpace(p.FullName)
+		if name == "" {
+			continue
+		}
+		_, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+			FullName:  name,
+			Phone:     strings.TrimSpace(p.Phone),
+			Email:     strings.TrimSpace(p.Email),
+			BracketID: req.BracketID,
+		}, "")
+		switch {
+		case err == nil:
+			res.Added++
+		case errors.Is(err, ErrAlreadyRegistered):
+			res.Skipped++
+		default:
+			res.Failed++
+			if len(res.Errors) < 8 {
+				res.Errors = append(res.Errors, name+": "+err.Error())
+			}
+		}
+	}
+	return res, nil
+}
+
 func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	// registrations has two FKs to players (player_id, partner_id) so the embed
 	// must name the FK column; alias both embeds to stable keys. partner is the
@@ -5641,6 +5672,76 @@ func (s *Service) BracketMatches(bracketID string) ([]model.Match, error) {
 // by a matches section (division, round/stage, both teams, score, winner). It
 // reuses the same Standings + matches queries the live dashboard uses, so the
 // export matches what organizers see on screen. Returns the CSV bytes.
+// RosterCSV streams the event's REGISTRANT roster (contact info + status) as a
+// CSV — distinct from ResultsCSV (standings/matches). Owner-only. Uses its own
+// query so player email can be included without putting it in the shared
+// Registration JSON.
+func (s *Service) RosterCSV(eventID string) ([]byte, error) {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return nil, err
+	}
+	brackets, err := s.GetBrackets(eventID)
+	if err != nil {
+		return nil, err
+	}
+	divName := make(map[string]string, len(brackets))
+	for _, b := range brackets {
+		divName[b.ID] = b.Name
+	}
+
+	base := "event_id=eq." + store.Q(eventID) +
+		"&select=payment_status,checked_in,bracket_id,%s" +
+		"player:players!player_id(full_name,phone,email,dupr_id)," +
+		"partner:players!partner_id(full_name)"
+	rows, err := s.sb.Select("registrations", fmt.Sprintf(base, "partner_name,"))
+	if err != nil {
+		// Tolerate the partner_name column not existing yet (pre-migration).
+		rows, err = s.sb.Select("registrations", fmt.Sprintf(base, ""))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
+	w := func(rec ...string) { _ = cw.Write(rec) }
+
+	w("PlanMyPickle Roster", ev.Name)
+	w()
+	w("Name", "Phone", "Email", "Division", "Partner", "Paid", "Checked in", "DUPR ID")
+	for _, r := range rows {
+		var name, phone, email, dupr string
+		if p := asMap(r, "player"); p != nil {
+			name = asStr(p, "full_name")
+			phone = asStr(p, "phone")
+			email = asStr(p, "email")
+			dupr = asStr(p, "dupr_id")
+		}
+		partner := ""
+		if pp := asMap(r, "partner"); pp != nil {
+			partner = asStr(pp, "full_name")
+		}
+		if partner == "" {
+			partner = asStr(r, "partner_name")
+		}
+		paid := "No"
+		if asStr(r, "payment_status") == "paid" {
+			paid = "Yes"
+		}
+		checked := "No"
+		if asBool(r, "checked_in") {
+			checked = "Yes"
+		}
+		w(name, phone, email, divName[asStr(r, "bracket_id")], partner, paid, checked, dupr)
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func (s *Service) ResultsCSV(eventID string) ([]byte, error) {
 	ev, err := s.GetEvent(eventID)
 	if err != nil {

@@ -1233,6 +1233,13 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	}
 	eventID := asStr(evRows[0], "id")
 
+	// Direct inserts bypass CreateEvent's ensureCourts, so create the court rows
+	// ourselves — without them spreadCourts/spreadBracketCourts find 0 courts and
+	// arrange nothing on Build schedule.
+	if err := s.ensureCourts(eventID, courts); err != nil {
+		return "", fmt.Errorf("seed courts: %w", err)
+	}
+
 	brRows, err := s.sb.Insert("brackets", map[string]any{
 		"event_id": eventID, "name": "3.0-4.0", "division_type": divType,
 		"min_rating": 3.0, "max_rating": 4.0, "dupr_min": 3.0, "dupr_max": 4.0, "sort_order": 0,
@@ -1339,6 +1346,9 @@ func (s *Service) seedMultiDivMixed(ownerID string) (string, error) {
 	}
 	eventID := asStr(evRows[0], "id")
 	prefix := eventID[:8]
+	if err := s.ensureCourts(eventID, 12); err != nil {
+		return "", fmt.Errorf("seed courts: %w", err)
+	}
 
 	divs := []struct {
 		name   string

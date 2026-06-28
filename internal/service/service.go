@@ -2687,7 +2687,16 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder i
 		row["bracket_id"] = bracketID
 	}
 	if court > 0 {
-		row["court_number"] = court
+		// Resolve the court number to its FK — matches place via court_id, not a
+		// court_number column (mirrors SetMatchCourt).
+		c, err := s.sb.SelectOne("courts",
+			"event_id=eq."+store.Q(eventID)+"&court_number=eq."+strconv.Itoa(court)+"&select=id")
+		if err != nil {
+			return "", err
+		}
+		if c != nil {
+			row["court_id"] = asStr(c, "id")
+		}
 	}
 	ins, err := s.sb.Insert("matches", []map[string]any{row})
 	if err != nil {

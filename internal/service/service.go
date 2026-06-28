@@ -1470,7 +1470,7 @@ func (s *Service) seedPodium(ownerID string) (string, error) {
 	if err := s.seedDivPairs(eventID, asStr(brRows[0], "id"), eventID[:8], 0, 8, 3.0, 5.0); err != nil {
 		return "", err
 	}
-	if _, err := s.GenerateSchedule(eventID, false); err != nil {
+	if _, err := s.GenerateSchedule(eventID, false, true); err != nil {
 		return "", fmt.Errorf("seed schedule: %w", err)
 	}
 	if err := s.autoPlayEvent(eventID); err != nil {
@@ -1669,7 +1669,7 @@ func (s *Service) seedTournament(req model.CreateEventRequest, poolCompletion fl
 		return "", err
 	}
 
-	if _, err := s.GenerateSchedule(eid, true); err != nil {
+	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
 		return "", err
 	}
 
@@ -2550,7 +2550,7 @@ func (s *Service) completedMatchCount(eventID string) (int, error) {
 }
 
 // ---------------------------------------------------------- scheduling
-func (s *Service) GenerateSchedule(eventID string, force bool) (model.ScheduleResult, error) {
+func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.ScheduleResult, error) {
 	// Refuse to wipe an in-progress event's scores unless explicitly forced.
 	if !force {
 		done, err := s.completedMatchCount(eventID)
@@ -2643,16 +2643,20 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (model.ScheduleRe
 			}
 		}
 	}
-	if err := s.spreadCourts(eventID); err != nil {
-		return model.ScheduleResult{}, err
-	}
-	// Elimination draws also lay their matches onto courts/time-slots so they show
-	// on the Game-tab grid. Skip pools_playoff: its medal bracket is empty at build
-	// and gets arranged when the playoff is generated (and would collide with pools).
-	switch ev.TournamentFormat {
-	case "single_elim", "double_elim", "compass":
-		if err := s.spreadBracketCourts(eventID); err != nil {
+	// Auto-arrange games onto courts/time-slots — SKIPPED for a manual build
+	// (arrange=false), where the organizer places each game on the Board.
+	if arrange {
+		if err := s.spreadCourts(eventID); err != nil {
 			return model.ScheduleResult{}, err
+		}
+		// Elimination draws also lay their matches onto courts/time-slots so they
+		// show on the Game-tab grid. Skip pools_playoff: its medal bracket is empty
+		// at build and gets arranged when the playoff is generated.
+		switch ev.TournamentFormat {
+		case "single_elim", "double_elim", "compass":
+			if err := s.spreadBracketCourts(eventID); err != nil {
+				return model.ScheduleResult{}, err
+			}
 		}
 	}
 	if _, err = s.sb.Update("events", "id=eq."+store.Q(eventID),

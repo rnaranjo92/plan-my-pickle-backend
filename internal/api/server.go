@@ -1338,7 +1338,10 @@ func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("force") == "true"
-	res, err := s.svc.GenerateSchedule(r.PathValue("id"), force)
+	// arrange defaults to true; ?arrange=false = a MANUAL build (create games but
+	// leave them unplaced for the organizer to position on the Board).
+	arrange := r.URL.Query().Get("arrange") != "false"
+	res, err := s.svc.GenerateSchedule(r.PathValue("id"), force, arrange)
 	if errors.Is(err, service.ErrScheduleHasResults) {
 		// 409 — the app should confirm with the user, then retry with ?force=true.
 		writeErr(w, http.StatusConflict, err)

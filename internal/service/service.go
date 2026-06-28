@@ -2740,12 +2740,24 @@ func (s *Service) ClearArrangement(eventID string) error {
 	return err
 }
 
-// DeleteMatch removes one match and its participants (match_participants don't
-// cascade). Powers the "Delete match" action in the edit-match sheet.
+// DeleteMatch removes a single SCHEDULED, non-bracket match (its participants +
+// any dupr_submissions row cascade via the FK). Powers the edit-match sheet's
+// Delete. Completed/bracket matches are rejected — deleting a scored match would
+// leave a pushed DUPR rating un-reversed, and deleting a bracket game breaks
+// advancement; those go through a wipe/regenerate path instead.
 func (s *Service) DeleteMatch(matchID string) error {
-	if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(matchID)); err != nil {
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=status,stage")
+	if err != nil {
 		return err
 	}
+	if m == nil {
+		return ErrNotFound
+	}
+	if asStr(m, "status") == "completed" || asStr(m, "stage") == "bracket" {
+		return fmt.Errorf("%w: completed or bracket matches can't be deleted here", ErrScheduleHasResults)
+	}
+	// match_participants cascade via the FK on delete — just remove the match row.
 	return s.sb.Delete("matches", "id=eq."+store.Q(matchID))
 }
 

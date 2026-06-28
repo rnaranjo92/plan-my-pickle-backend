@@ -2676,12 +2676,15 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 // CreateManualGame inserts an organizer-defined match — chosen teams on a chosen
 // court + time slot (play_order). Powers manual scheduling (the "Add game"
 // dialog); players come from the registered roster and it counts like a pool game.
-func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder int, team1, team2 []string) (string, error) {
+func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, durationMinutes int, team1, team2 []string) (string, error) {
 	row := map[string]any{
 		"event_id":   eventID,
 		"stage":      "pool",
 		"status":     "scheduled",
 		"play_order": playOrder,
+	}
+	if durationMinutes > 0 {
+		row["duration_minutes"] = durationMinutes
 	}
 	if bracketID != "" {
 		row["bracket_id"] = bracketID
@@ -2735,6 +2738,15 @@ func (s *Service) ClearArrangement(eventID string) error {
 		"event_id=eq."+store.Q(eventID)+"&status=eq.scheduled",
 		map[string]any{"court_id": nil, "play_order": nil})
 	return err
+}
+
+// DeleteMatch removes one match and its participants (match_participants don't
+// cascade). Powers the "Delete match" action in the edit-match sheet.
+func (s *Service) DeleteMatch(matchID string) error {
+	if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(matchID)); err != nil {
+		return err
+	}
+	return s.sb.Delete("matches", "id=eq."+store.Q(matchID))
 }
 
 // playerNamesByID resolves player IDs to display names for the given event.

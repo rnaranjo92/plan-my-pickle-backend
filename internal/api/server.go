@@ -275,6 +275,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/court", s.ownerOnly("match", "id", s.setMatchCourt))
 	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
+	mux.HandleFunc("DELETE /matches/{id}", s.ownerOnly("match", "id", s.deleteMatch))
 	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
 	mux.HandleFunc("POST /events/{id}/day-cap", s.ownerOnly("event", "id", s.setDayCap))
 	mux.HandleFunc("POST /events/{id}/day-ends", s.ownerOnly("event", "id", s.setDayEnds))
@@ -1363,18 +1364,19 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 // manualGame creates one organizer-defined match (the "Add game" dialog).
 func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BracketID   string   `json:"bracketId"`
-		CourtNumber int      `json:"courtNumber"`
-		PlayOrder   int      `json:"playOrder"`
-		Team1       []string `json:"team1"`
-		Team2       []string `json:"team2"`
+		BracketID       string   `json:"bracketId"`
+		CourtNumber     int      `json:"courtNumber"`
+		PlayOrder       int      `json:"playOrder"`
+		DurationMinutes int      `json:"durationMinutes"`
+		Team1           []string `json:"team1"`
+		Team2           []string `json:"team2"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	id, err := s.svc.CreateManualGame(r.PathValue("id"), req.BracketID,
-		req.CourtNumber, req.PlayOrder, req.Team1, req.Team2)
+		req.CourtNumber, req.PlayOrder, req.DurationMinutes, req.Team1, req.Team2)
 	if err != nil {
 		status(w, err)
 		return
@@ -1385,6 +1387,15 @@ func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 // clearArrangement un-places every scheduled game (manual scheduling, mode A).
 func (s *Server) clearArrangement(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.ClearArrangement(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteMatch removes one match + its participants (edit-match sheet's Delete).
+func (s *Server) deleteMatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteMatch(r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}

@@ -2671,6 +2671,49 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 	return model.ScheduleResult{Matches: total, Unscheduled: unscheduled}, nil
 }
 
+// CreateManualGame inserts an organizer-defined match — chosen teams on a chosen
+// court + time slot (play_order). Powers manual scheduling (the "Add game"
+// dialog); players come from the registered roster and it counts like a pool game.
+func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder int, team1, team2 []string) (string, error) {
+	row := map[string]any{
+		"event_id":   eventID,
+		"stage":      "pool",
+		"status":     "scheduled",
+		"play_order": playOrder,
+	}
+	if bracketID != "" {
+		row["bracket_id"] = bracketID
+	}
+	if court > 0 {
+		row["court_number"] = court
+	}
+	ins, err := s.sb.Insert("matches", []map[string]any{row})
+	if err != nil {
+		return "", err
+	}
+	if len(ins) == 0 {
+		return "", errors.New("manual game insert returned no row")
+	}
+	matchID := asStr(ins[0], "id")
+	partRows := make([]map[string]any, 0, len(team1)+len(team2))
+	for _, pid := range team1 {
+		if pid != "" {
+			partRows = append(partRows, map[string]any{"match_id": matchID, "player_id": pid, "team": 1})
+		}
+	}
+	for _, pid := range team2 {
+		if pid != "" {
+			partRows = append(partRows, map[string]any{"match_id": matchID, "player_id": pid, "team": 2})
+		}
+	}
+	if len(partRows) > 0 {
+		if _, err := s.sb.Upsert("match_participants", "match_id,player_id", partRows); err != nil {
+			return "", err
+		}
+	}
+	return matchID, nil
+}
+
 // playerNamesByID resolves player IDs to display names for the given event.
 // Returns nil for an empty input (the common case — no lookup performed).
 func (s *Service) playerNamesByID(eventID string, ids []string) ([]string, error) {

@@ -249,6 +249,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /checklist/{id}/check", s.ownerOnly("checklist", "id", s.setChecklistChecked))
 	mux.HandleFunc("DELETE /checklist/{id}", s.ownerOnly("checklist", "id", s.deleteChecklistItem))
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
+	mux.HandleFunc("POST /events/{id}/manual-game", s.ownerOnly("event", "id", s.manualGame))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
 	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
@@ -1356,6 +1357,28 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Schedule posted — %d matches", res.Matches), "")
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// manualGame creates one organizer-defined match (the "Add game" dialog).
+func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BracketID   string   `json:"bracketId"`
+		CourtNumber int      `json:"courtNumber"`
+		PlayOrder   int      `json:"playOrder"`
+		Team1       []string `json:"team1"`
+		Team2       []string `json:"team2"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	id, err := s.svc.CreateManualGame(r.PathValue("id"), req.BracketID,
+		req.CourtNumber, req.PlayOrder, req.Team1, req.Team2)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
 // autoSchedule lays the pool games onto courts + time-slots ordered by division

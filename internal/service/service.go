@@ -960,6 +960,13 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"ends_at":       orNull(req.EndsAt),
 		"description":   orNull(req.Description),
 	}
+	// Rotate the scorekeeper passcode on edit (plaintext, mirrors create). Set-only:
+	// an empty field leaves the current passcode untouched — we never wipe it, since
+	// a blank passcode disables volunteer scoring (see VerifyAdminPasscode). The edit
+	// form starts this box blank, so most edits intentionally leave it unchanged.
+	if pc := strings.TrimSpace(req.AdminPasscode); pc != "" {
+		upd["admin_passcode"] = pc
+	}
 	// venue_notes / waiver_url ship in add_venue_info.sql — reference them only
 	// when set so an event edit never breaks before the migration is applied (and
 	// so it can't fail app-wide if that manual step is missed). Trade-off: blanking

@@ -258,6 +258,34 @@ func (g *StripeGateway) CreateBillingPortalSession(customerID, returnURL string)
 	return sess.URL, nil
 }
 
+// CreateOneTimeCheckout opens a hosted Checkout Session (mode=payment) for a
+// one-time charge (e.g. the per-event Premium pass) keyed to refID — set as
+// client_reference_id AND metadata[metaKey] so the webhook can attribute the
+// payment. Returns the Checkout URL.
+func (g *StripeGateway) CreateOneTimeCheckout(email, refID, metaKey, priceID, successURL, cancelURL string) (string, error) {
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.CheckoutSessionParams{
+		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
+		SuccessURL:        stripe.String(successURL),
+		CancelURL:         stripe.String(cancelURL),
+		ClientReferenceID: stripe.String(refID),
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{Price: stripe.String(priceID), Quantity: stripe.Int64(1)},
+		},
+	}
+	if email != "" {
+		params.CustomerEmail = stripe.String(email)
+	}
+	params.Context = ctx
+	params.AddMetadata(metaKey, refID)
+	sess, err := g.client.sessions.New(params)
+	if err != nil {
+		return "", err
+	}
+	return sess.URL, nil
+}
+
 // ---- webhooks ----
 
 // ErrUnhandledWebhook signals a verified-but-ignored event type, so the caller
@@ -270,6 +298,8 @@ type WebhookEvent struct {
 	Type string
 	// checkout.session.completed (mode=payment)
 	RegistrationID string
+	// checkout.session.completed (mode=payment) — a one-time per-event Premium pass.
+	EventPassID string
 	// account.updated
 	AccountID      string
 	ChargesEnabled bool
@@ -327,6 +357,7 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 		return WebhookEvent{
 			Type:           string(event.Type),
 			RegistrationID: sess.Metadata["registration_id"],
+			EventPassID:    sess.Metadata["event_pass_id"],
 		}, nil
 	case stripe.EventTypeCustomerSubscriptionUpdated,
 		stripe.EventTypeCustomerSubscriptionDeleted:

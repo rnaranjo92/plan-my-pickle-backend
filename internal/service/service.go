@@ -620,7 +620,7 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 		return model.Event{}, ErrNotFound
 	}
 	ev := mapEvent(row)
-	ev.OwnerPremium = s.IsPremium(asStr(row, "owner_id"))
+	ev.OwnerPremium = s.eventPremiumUnlocked(row)
 	// Best-effort registered + checked-in counts (mirrors ListEvents) so the
 	// event-detail header shows the real numbers; a count failure must not fail
 	// the read — single reads otherwise leave the counts at 0.
@@ -904,16 +904,19 @@ func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 }
 
 func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
+	// select=* (not a column list) so this read stays valid before migration 0044
+	// adds premium_pass — until then eventPremiumUnlocked simply sees it as false.
 	ev, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(id)+"&select=id,venue_lat,venue_lng,owner_id")
+		"id=eq."+store.Q(id)+"&select=*")
 	if err != nil {
 		return err
 	}
 	if ev == nil {
 		return ErrNotFound
 	}
-	// DUPR sanctioning is Premium-only — gate by the event owner's plan.
-	if req.DuprSanctioned && !s.IsPremium(asStr(ev, "owner_id")) {
+	// DUPR sanctioning is Premium — allowed if the owner subscribes OR a one-time
+	// per-event pass was bought for this event.
+	if req.DuprSanctioned && !s.eventPremiumUnlocked(ev) {
 		return ErrPremiumRequired
 	}
 

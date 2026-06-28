@@ -243,6 +243,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 	}
 	switch evt.Type {
 	case "checkout.session.completed":
+		// A one-time per-event Premium pass — unlock the event.
+		if evt.EventPassID != "" {
+			return s.grantEventPass(evt.EventPassID)
+		}
 		if evt.RegistrationID == "" {
 			return nil // nothing to attribute the payment to
 		}
@@ -299,6 +303,22 @@ func (s *Service) IsPremium(userID string) bool {
 	return err == nil && row != nil && asBool(row, "premium")
 }
 
+// eventPremiumUnlocked reports whether an event has Premium features available —
+// either its owner has an active subscription, or a one-time per-event pass was
+// purchased for it (events.premium_pass). The passed row must include owner_id
+// and premium_pass (GetEvent uses select=*; callers with a narrow select must
+// add premium_pass to it).
+func (s *Service) eventPremiumUnlocked(ev map[string]any) bool {
+	return s.IsPremium(asStr(ev, "owner_id")) || asBool(ev, "premium_pass")
+}
+
+// grantEventPass marks an event Premium-unlocked after its one-time pass is paid.
+func (s *Service) grantEventPass(eventID string) error {
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"premium_pass": true, "updated_at": now()})
+	return err
+}
+
 // PremiumStatus is the caller's Premium plan state for the Profile UI.
 type PremiumStatus struct {
 	Premium   bool   `json:"premium"`
@@ -334,6 +354,21 @@ func (s *Service) StartPremiumCheckout(userID, email, successURL, cancelURL stri
 		return "", errors.New("premium plan is not configured")
 	}
 	return gw.CreateSubscriptionCheckout(email, userID, priceID, successURL, cancelURL)
+}
+
+// StartEventPassCheckout opens a one-time Stripe Checkout for the per-event
+// Premium pass (event ownership is enforced by the route). On success the
+// webhook flips events.premium_pass via grantEventPass.
+func (s *Service) StartEventPassCheckout(eventID, email, successURL, cancelURL string) (string, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	priceID := strings.TrimSpace(os.Getenv("STRIPE_EVENT_PASS_PRICE_ID"))
+	if priceID == "" {
+		return "", errors.New("the per-event pass is not configured")
+	}
+	return gw.CreateOneTimeCheckout(email, eventID, "event_pass_id", priceID, successURL, cancelURL)
 }
 
 // BillingPortal opens the Stripe billing portal for the caller to manage/cancel.

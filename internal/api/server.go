@@ -104,6 +104,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
 	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
 	mux.HandleFunc("POST /events/{id}/import-dupr", s.ownerOnly("event", "id", s.importDupr))
+	// One-time per-event Premium pass: owner-only Stripe Checkout.
+	mux.HandleFunc("POST /events/{id}/premium-pass-checkout", s.ownerOnly("event", "id", s.startEventPassCheckout))
 	// /pay and /shirt are public self-service (a registrant has no account), but
 	// must prove ownership of the registration — the registration id is harvestable
 	// from the public feed/roster, so without a check the endpoints are an IDOR
@@ -1650,6 +1652,35 @@ func (s *Server) subscribePremium(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := s.svc.StartPremiumCheckout(
 		userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// startEventPassCheckout opens a one-time Stripe Checkout for the per-event
+// Premium pass. The route's ownerOnly wrapper has already verified the caller
+// owns {id}; the webhook flips events.premium_pass on success.
+func (s *Server) startEventPassCheckout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+		writeErr(w, http.StatusBadRequest,
+			errors.New("successUrl and cancelUrl are required"))
+		return
+	}
+	url, err := s.svc.StartEventPassCheckout(
+		r.PathValue("id"), userEmail(r), req.SuccessURL, req.CancelURL)
 	if errors.Is(err, service.ErrPaymentsNotConfigured) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return

@@ -5136,11 +5136,24 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 			}
 		}
 	}
-	// Events they're registered to play in.
-	if rows, err := s.sb.Select("players", "user_id=eq."+store.Q(userID)+"&select=event_id"); err == nil {
-		for _, r := range rows {
-			if id := asStr(r, "event_id"); id != "" {
-				idSet[id] = struct{}{}
+	// Events they're registered to play in. players is a GLOBAL identity table
+	// (no event_id column), so go user -> their player rows -> those players'
+	// registrations' event_id. (Mirrors linkDuprPlayers.)
+	if pls, err := s.sb.Select("players", "user_id=eq."+store.Q(userID)+"&select=id"); err == nil && len(pls) > 0 {
+		pids := make([]string, 0, len(pls))
+		for _, p := range pls {
+			if id := asStr(p, "id"); id != "" {
+				pids = append(pids, id)
+			}
+		}
+		if len(pids) > 0 {
+			if regs, err := s.sb.Select("registrations",
+				"player_id=in.("+strings.Join(pids, ",")+")&select=event_id"); err == nil {
+				for _, r := range regs {
+					if id := asStr(r, "event_id"); id != "" {
+						idSet[id] = struct{}{}
+					}
+				}
 			}
 		}
 	}

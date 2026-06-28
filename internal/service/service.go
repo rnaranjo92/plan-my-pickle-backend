@@ -1203,9 +1203,15 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		doubles, mixed                               bool
 	)
 	switch kind {
+	case "podium":
+		// A small, pre-played single-elim showing gold/silver/bronze.
+		return s.seedPodium(ownerID)
 	case "mixedmulti150":
-		// Multi-division single-elim mixed doubles is its own builder (3 brackets).
-		return s.seedMultiDivMixed(ownerID)
+		// Multi-division mixed doubles, own builder (3 brackets).
+		return s.seedMultiDivMixed(ownerID, "single_elim", "single-elim")
+	case "poolsmulti150":
+		// Same field, NON-elimination: pools then a playoff bracket per division.
+		return s.seedMultiDivMixed(ownerID, "pools_playoff", "pools-playoff")
 	case "mixed30":
 		name, format, partnerMode, tournFmt, divType =
 			"TEST · Mixed Doubles 3.0-4.0 · 30", "doubles", "fixed", "round_robin", "mixed_doubles"
@@ -1219,7 +1225,7 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 			"TEST · Singles 3.0-4.0 · 80", "singles", "na", "single_elim", "singles"
 		count, courts = 80, 10
 	default:
-		return "", fmt.Errorf("unknown seed kind %q (want mixed30|mixedmulti150|doubles150|singles80)", kind)
+		return "", fmt.Errorf("unknown seed kind %q (want podium|mixed30|mixedmulti150|poolsmulti150|doubles150|singles80)", kind)
 	}
 
 	evRows, err := s.sb.Insert("events", map[string]any{
@@ -1334,10 +1340,10 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 // across 3 rating divisions (3.0-3.5 / 3.5-4.0 / 4.0-4.5), 25 fixed M/F pairs each,
 // with ~1 in 6 players rated over their division's cap. Exercises multi-division
 // bracket scheduling. Returns the new event id.
-func (s *Service) seedMultiDivMixed(ownerID string) (string, error) {
+func (s *Service) seedMultiDivMixed(ownerID, tournFmt, label string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Mixed Doubles · 150 · 3 div · single-elim", "format": "doubles",
-		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "single_elim",
+		"name": "TEST · Mixed Doubles · 150 · 3 div · " + label, "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": tournFmt,
 		"num_courts": 12, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
 		"location": "Test Courts", "owner_id": ownerID,
 	})
@@ -1434,6 +1440,80 @@ func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs 
 	}
 	_, err = s.sb.Insert("registrations", regRows)
 	return err
+}
+
+// seedPodium builds a SMALL single-elim doubles event WITH the consolation (bronze)
+// game and AUTO-PLAYS every match to completion, so it opens already showing a gold /
+// silver / bronze podium — no manual scoring needed. 8 fixed pairs. Returns the id.
+func (s *Service) seedPodium(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "TEST · Podium · 8 teams · single-elim", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "single_elim",
+		"num_courts": 4, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
+		"location": "Test Courts", "owner_id": ownerID, "consolation": true,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 4); err != nil {
+		return "", fmt.Errorf("seed courts: %w", err)
+	}
+	brRows, err := s.sb.Insert("brackets", map[string]any{
+		"event_id": eventID, "name": "Open", "division_type": "open",
+		"min_rating": 3.0, "max_rating": 5.0, "dupr_min": 3.0, "dupr_max": 5.0, "sort_order": 0,
+	})
+	if err != nil || len(brRows) == 0 {
+		return "", fmt.Errorf("seed bracket: %w", err)
+	}
+	if err := s.seedDivPairs(eventID, asStr(brRows[0], "id"), eventID[:8], 0, 8, 3.0, 5.0); err != nil {
+		return "", err
+	}
+	if _, err := s.GenerateSchedule(eventID, false); err != nil {
+		return "", fmt.Errorf("seed schedule: %w", err)
+	}
+	if err := s.autoPlayBracket(eventID); err != nil {
+		return "", fmt.Errorf("seed autoplay: %w", err)
+	}
+	// Mark the event finished so it reads as completed (champion treatment).
+	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"status": "completed"})
+	return eventID, nil
+}
+
+// autoPlayBracket scores every ready bracket match (both sides filled) 11-7 to the
+// higher slot, repeating as winners advance and losers drop into the consolation,
+// until no scheduled match has two teams. Deterministic → a stable gold/silver/bronze.
+func (s *Service) autoPlayBracket(eventID string) error {
+	for iter := 0; iter < 40; iter++ {
+		rows, err := s.sb.SelectAll("matches",
+			"event_id=eq."+store.Q(eventID)+"&stage=eq.bracket&status=eq.scheduled"+
+				"&select=id,match_participants(team)")
+		if err != nil {
+			return err
+		}
+		scoredAny := false
+		for _, r := range rows {
+			teams := map[int]bool{}
+			if ps, ok := r["match_participants"].([]any); ok {
+				for _, p := range ps {
+					if pm, ok := p.(map[string]any); ok {
+						teams[asInt(pm, "team")] = true
+					}
+				}
+			}
+			if teams[1] && teams[2] { // both sides known → playable
+				if err := s.applyScore(asStr(r, "id"), 11, 7); err != nil {
+					return err
+				}
+				scoredAny = true
+			}
+		}
+		if !scoredAny {
+			break
+		}
+	}
+	return nil
 }
 
 // FillRandomPlayers seeds the given EXISTING event with a batch of demo players

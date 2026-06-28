@@ -369,12 +369,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// Organizing is Premium-only. Gated here on the public path; the demo seeders
-	// call the service directly, so "explore a demo" stays free for everyone.
-	if !s.svc.IsPremium(userID(r)) {
-		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
-		return
-	}
+	// Organizing is FREE — anyone can create + run a tournament (the engine is
+	// never paywalled). Premium gates only specific features: CreateEvent itself
+	// returns ErrPremiumRequired for a DUPR-sanctioned event, and advanced draws /
+	// remove-branding / clubs are gated elsewhere.
 	id, err := s.svc.CreateEvent(req, userID(r))
 	if err != nil {
 		if errors.Is(err, service.ErrPremiumRequired) {
@@ -393,10 +391,8 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if !s.svc.IsPremium(userID(r)) {
-		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
-		return
-	}
+	// Organizing (incl. leagues) is FREE; the Club tier monetizes the durable
+	// system-of-record (cross-season standings + roster), not league creation.
 	id, err := s.svc.CreateLeague(userID(r), req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)

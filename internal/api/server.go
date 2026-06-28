@@ -1368,6 +1368,7 @@ func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 		CourtNumber     int      `json:"courtNumber"`
 		PlayOrder       int      `json:"playOrder"`
 		DurationMinutes int      `json:"durationMinutes"`
+		ScheduledDay    *int     `json:"scheduledDay"`
 		Team1           []string `json:"team1"`
 		Team2           []string `json:"team2"`
 	}
@@ -1375,8 +1376,12 @@ func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	day := -1
+	if req.ScheduledDay != nil {
+		day = *req.ScheduledDay
+	}
 	id, err := s.svc.CreateManualGame(r.PathValue("id"), req.BracketID,
-		req.CourtNumber, req.PlayOrder, req.DurationMinutes, req.Team1, req.Team2)
+		req.CourtNumber, req.PlayOrder, req.DurationMinutes, day, req.Team1, req.Team2)
 	if err != nil {
 		status(w, err)
 		return

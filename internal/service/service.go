@@ -2676,7 +2676,7 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 // CreateManualGame inserts an organizer-defined match — chosen teams on a chosen
 // court + time slot (play_order). Powers manual scheduling (the "Add game"
 // dialog); players come from the registered roster and it counts like a pool game.
-func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, durationMinutes int, team1, team2 []string) (string, error) {
+func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, durationMinutes, scheduledDay int, team1, team2 []string) (string, error) {
 	row := map[string]any{
 		"event_id":   eventID,
 		"stage":      "pool",
@@ -2685,6 +2685,9 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, 
 	}
 	if durationMinutes > 0 {
 		row["duration_minutes"] = durationMinutes
+	}
+	if scheduledDay >= 0 {
+		row["scheduled_day"] = scheduledDay
 	}
 	if bracketID != "" {
 		row["bracket_id"] = bracketID
@@ -2698,7 +2701,23 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, 
 			return "", err
 		}
 		if c != nil {
-			row["court_id"] = asStr(c, "id")
+			courtID := asStr(c, "id")
+			row["court_id"] = courtID
+			// Double-booking guard (defense-in-depth; the dialog only offers free
+			// courts): reject if a scheduled game already sits on this court at this
+			// wave (play_order rounds to the same slot).
+			lo := strconv.FormatFloat(float64(playOrder)-0.5, 'f', 1, 64)
+			hi := strconv.FormatFloat(float64(playOrder)+0.5, 'f', 1, 64)
+			busy, err := s.sb.Select("matches",
+				"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
+					"&status=eq.scheduled&play_order=gte."+lo+"&play_order=lt."+hi+
+					"&select=id&limit=1")
+			if err != nil {
+				return "", err
+			}
+			if len(busy) > 0 {
+				return "", fmt.Errorf("%w: that court is already taken at that time", ErrScheduleHasResults)
+			}
 		}
 	}
 	ins, err := s.sb.Insert("matches", []map[string]any{row})

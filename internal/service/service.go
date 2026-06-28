@@ -2449,6 +2449,15 @@ func (s *Service) GenerateSchedule(eventID string, force bool) (model.ScheduleRe
 	if err := s.spreadCourts(eventID); err != nil {
 		return model.ScheduleResult{}, err
 	}
+	// Elimination draws also lay their matches onto courts/time-slots so they show
+	// on the Game-tab grid. Skip pools_playoff: its medal bracket is empty at build
+	// and gets arranged when the playoff is generated (and would collide with pools).
+	switch ev.TournamentFormat {
+	case "single_elim", "double_elim", "compass":
+		if err := s.spreadBracketCourts(eventID); err != nil {
+			return model.ScheduleResult{}, err
+		}
+	}
 	if _, err = s.sb.Update("events", "id=eq."+store.Q(eventID),
 		map[string]any{"status": "in_progress"}); err != nil {
 		return model.ScheduleResult{}, err
@@ -2484,6 +2493,110 @@ func (s *Service) playerNamesByID(eventID string, ids []string) ([]string, error
 		names = append(names, n)
 	}
 	return names, nil
+}
+
+// spreadBracketCourts lays an elimination bracket's (non-bye) matches onto courts
+// and time-slots the same way spreadCourts does for pools — so single/double-elim
+// and compass draws also appear on the Game-tab time-grid, not only the Standings
+// bracket. Byes are status='completed' at build (their winner already advanced),
+// so the status=scheduled filter excludes them at the source. Matches order by
+// bracket round (the time block) so round 1 plays before round 2; a later-round
+// match with a TBD feeder still gets a slot (its name fills in as winners advance,
+// keeping the same court/slot). play_order accumulates per round, cycling courts.
+func (s *Service) spreadBracketCourts(eventID string) error {
+	courtByNum, err := s.courtIDsByNumber(eventID)
+	if err != nil {
+		return err
+	}
+	if len(courtByNum) == 0 {
+		return nil
+	}
+	courtNums := make([]int, 0, len(courtByNum))
+	for n := range courtByNum {
+		courtNums = append(courtNums, n)
+	}
+	sort.Ints(courtNums)
+
+	// Only the still-to-be-played matches; byes/decided games are status!=scheduled.
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.bracket&status=eq.scheduled"+
+			"&select=id,bracket_round,bracket_slot,bracket_tier,bracket_group")
+	if err != nil {
+		return err
+	}
+	type mr struct {
+		id, tier, group string
+		round, slot     int
+	}
+	list := make([]mr, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, mr{
+			id:    asStr(r, "id"),
+			tier:  asStr(r, "bracket_tier"),
+			group: asStr(r, "bracket_group"),
+			round: asInt(r, "bracket_round"),
+			slot:  asInt(r, "bracket_slot"),
+		})
+	}
+	// Round is the time block; tier/group/slot keep a stable layout. Single-elim
+	// has no tier/group so this reduces to (round, slot).
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		if a.round != b.round {
+			return a.round < b.round
+		}
+		if a.tier != b.tier {
+			return a.tier < b.tier
+		}
+		if a.group != b.group {
+			return a.group < b.group
+		}
+		return a.slot < b.slot
+	})
+
+	nc := len(courtNums)
+	byCourt := map[string][]string{}
+	bySlot := map[int][]string{}
+	prevRound, idxInRound, baseSlot := -1, 0, 0
+	for _, m := range list {
+		if m.round != prevRound {
+			if prevRound != -1 {
+				baseSlot += (idxInRound + nc - 1) / nc
+			}
+			prevRound = m.round
+			idxInRound = 0
+		}
+		cid := courtByNum[courtNums[idxInRound%nc]]
+		slot := baseSlot + idxInRound/nc
+		idxInRound++
+		byCourt[cid] = append(byCourt[cid], m.id)
+		bySlot[slot] = append(bySlot[slot], m.id)
+	}
+	const chunk = 80
+	apply := func(ids []string, patch map[string]any) error {
+		for i := 0; i < len(ids); i += chunk {
+			end := i + chunk
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if _, err := s.sb.Update("matches",
+				"id=in.("+strings.Join(ids[i:end], ",")+")", patch); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for cid, ids := range byCourt {
+		if err := apply(ids, map[string]any{"court_id": cid}); err != nil {
+			return err
+		}
+	}
+	for slot, ids := range bySlot {
+		if err := apply(ids, map[string]any{"play_order": slot}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // spreadCourts distributes pool matches across every available court. Each
@@ -6209,6 +6322,46 @@ func (s *Service) EventPoolMatches(eventID string) ([]model.Match, error) {
 		out = append(out, mapMatch(r))
 	}
 	// Order by round number, then division, then court (round/court are embeds).
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if ra, rb := intOr(a.RoundNumber, 1<<30), intOr(b.RoundNumber, 1<<30); ra != rb {
+			return ra < rb
+		}
+		if ba, bb := strOr(a.BracketID), strOr(b.BracketID); ba != bb {
+			return ba < bb
+		}
+		return intOr(a.CourtNumber, 1<<30) < intOr(b.CourtNumber, 1<<30)
+	})
+	return out, nil
+}
+
+// EventScheduleMatches returns the matches that belong on the Game-tab time-grid.
+// For elimination draws (single/double-elim, compass) that's the bracket matches
+// (they carry court/play_order from spreadBracketCourts); for every other format
+// it's the pool games only — pools_playoff's medal bracket stays out of the grid
+// (it lives on Standings, and its bracket_round would collide with pool rounds).
+// Distinct from EventPoolMatches (kept pool-only for the CSV export, which appends
+// bracket games itself).
+func (s *Service) EventScheduleMatches(eventID string) ([]model.Match, error) {
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=tournament_format")
+	if err != nil {
+		return nil, err
+	}
+	stageFilter := "&stage=eq.pool"
+	switch asStr(ev, "tournament_format") {
+	case "single_elim", "double_elim", "compass":
+		stageFilter = "" // bracket-only event → return its bracket matches
+	}
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+stageFilter+"&select="+matchSelect)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Match, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapMatch(r))
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if ra, rb := intOr(a.RoundNumber, 1<<30), intOr(b.RoundNumber, 1<<30); ra != rb {

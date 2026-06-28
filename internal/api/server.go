@@ -1326,7 +1326,9 @@ func (s *Server) busyCourts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {
-	matches, err := s.svc.EventPoolMatches(r.PathValue("id"))
+	// The Game tab's time-grid: pool games, plus elimination-bracket games for
+	// single/double-elim & compass (EventScheduleMatches decides per format).
+	matches, err := s.svc.EventScheduleMatches(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

@@ -1442,15 +1442,16 @@ func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs 
 	return err
 }
 
-// seedPodium builds a SMALL single-elim doubles event WITH the consolation (bronze)
-// game and AUTO-PLAYS every match to completion, so it opens already showing a gold /
-// silver / bronze podium — no manual scoring needed. 8 fixed pairs. Returns the id.
+// seedPodium builds a SMALL pools→playoff doubles event and AUTO-PLAYS every match
+// (pools, then the 4-team medal bracket) to completion, so it opens already on a gold /
+// silver / bronze podium — no manual scoring. The medal bracket (top-4 playoff) is what
+// creates the in-bracket bronze game the podium reads; single-elim's back-draw does not.
 func (s *Service) seedPodium(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Podium · 8 teams · single-elim", "format": "doubles",
-		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "single_elim",
+		"name": "TEST · Podium · gold/silver/bronze", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "pools_playoff",
 		"num_courts": 4, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "consolation": true,
+		"location": "Test Courts", "owner_id": ownerID,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1472,7 +1473,7 @@ func (s *Service) seedPodium(ownerID string) (string, error) {
 	if _, err := s.GenerateSchedule(eventID, false); err != nil {
 		return "", fmt.Errorf("seed schedule: %w", err)
 	}
-	if err := s.autoPlayBracket(eventID); err != nil {
+	if err := s.autoPlayEvent(eventID); err != nil {
 		return "", fmt.Errorf("seed autoplay: %w", err)
 	}
 	// Mark the event finished so it reads as completed (champion treatment).
@@ -1481,13 +1482,13 @@ func (s *Service) seedPodium(ownerID string) (string, error) {
 	return eventID, nil
 }
 
-// autoPlayBracket scores every ready bracket match (both sides filled) 11-7 to the
-// higher slot, repeating as winners advance and losers drop into the consolation,
-// until no scheduled match has two teams. Deterministic → a stable gold/silver/bronze.
-func (s *Service) autoPlayBracket(eventID string) error {
-	for iter := 0; iter < 40; iter++ {
+// autoPlayEvent scores every ready match (both sides filled) 11-7 to the higher slot,
+// repeating as pools complete (which auto-seeds the playoff) and bracket winners
+// advance, until no scheduled match has two teams. Deterministic → a stable podium.
+func (s *Service) autoPlayEvent(eventID string) error {
+	for iter := 0; iter < 80; iter++ {
 		rows, err := s.sb.SelectAll("matches",
-			"event_id=eq."+store.Q(eventID)+"&stage=eq.bracket&status=eq.scheduled"+
+			"event_id=eq."+store.Q(eventID)+"&status=eq.scheduled"+
 				"&select=id,match_participants(team)")
 		if err != nil {
 			return err

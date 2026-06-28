@@ -3207,9 +3207,13 @@ func (s *Service) persistBracket(ev model.Event, bracketID string, seededSides [
 	// a half-built bracket.
 	matchRows := make([]map[string]any, 0, len(plan.Matches))
 	for _, m := range plan.Matches {
+		// Every row MUST carry the same keys: PostgREST rejects a bulk insert whose
+		// objects differ ("All object keys must match"). Byes set completed_at /
+		// winning_team; non-byes carry them as nil so the array stays homogeneous.
 		row := map[string]any{
 			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
 			"bracket_round": m.Round, "bracket_slot": m.Slot, "status": "scheduled",
+			"completed_at": nil, "winning_team": nil,
 		}
 		if m.ResolvedWinner != nil { // a bye — auto-complete it
 			row["status"] = "completed"
@@ -3430,7 +3434,7 @@ func (s *Service) persistDoubleElim(ev model.Event, bracketID string, seededSide
 		row := map[string]any{
 			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
 			"bracket_tier": m.Tier, "bracket_round": m.Round, "bracket_slot": m.Slot,
-			"status": "scheduled",
+			"status": "scheduled", "completed_at": nil, "winning_team": nil,
 		}
 		if m.ResolvedWinner != nil { // a WB bye — auto-complete it
 			row["status"] = "completed"
@@ -3521,7 +3525,7 @@ func (s *Service) persistCompass(ev model.Event, bracketID string, seededSides [
 			"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
 			"bracket_tier": "main", "bracket_group": m.Group,
 			"bracket_round": m.Round, "bracket_slot": m.Slot,
-			"status": "scheduled",
+			"status": "scheduled", "completed_at": nil, "winning_team": nil,
 		}
 		if m.ResolvedWinner != nil { // an East round-1 bye — auto-complete it
 			row["status"] = "completed"

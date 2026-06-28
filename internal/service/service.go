@@ -2714,6 +2714,16 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder i
 	return matchID, nil
 }
 
+// ClearArrangement un-places every SCHEDULED game (clears court_number +
+// play_order, keeping the matchups) so the organizer can position them manually
+// on the Board. Started/scored games keep their court.
+func (s *Service) ClearArrangement(eventID string) error {
+	_, err := s.sb.Update("matches",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.scheduled",
+		map[string]any{"court_number": nil, "play_order": nil})
+	return err
+}
+
 // playerNamesByID resolves player IDs to display names for the given event.
 // Returns nil for an empty input (the common case — no lookup performed).
 func (s *Service) playerNamesByID(eventID string, ids []string) ([]string, error) {

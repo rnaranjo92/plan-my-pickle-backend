@@ -250,6 +250,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /checklist/{id}", s.ownerOnly("checklist", "id", s.deleteChecklistItem))
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/manual-game", s.ownerOnly("event", "id", s.manualGame))
+	mux.HandleFunc("POST /events/{id}/clear-arrangement", s.ownerOnly("event", "id", s.clearArrangement))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
 	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
@@ -1379,6 +1380,15 @@ func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// clearArrangement un-places every scheduled game (manual scheduling, mode A).
+func (s *Server) clearArrangement(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearArrangement(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // autoSchedule lays the pool games onto courts + time-slots ordered by division

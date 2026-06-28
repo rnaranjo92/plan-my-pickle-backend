@@ -2714,13 +2714,15 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder i
 	return matchID, nil
 }
 
-// ClearArrangement un-places every SCHEDULED game (clears court_number +
-// play_order, keeping the matchups) so the organizer can position them manually
-// on the Board. Started/scored games keep their court.
+// ClearArrangement un-places every SCHEDULED game (keeping the matchups) so the
+// organizer can position them manually on the Board. court_id is the placement
+// FK (SetMatchCourt writes it; the DTO resolves courtNumber back from it) and
+// play_order is the per-court time slot — null both, exactly like the drag-to-
+// Unassigned path. Started/scored games keep their court (status filter).
 func (s *Service) ClearArrangement(eventID string) error {
 	_, err := s.sb.Update("matches",
 		"event_id=eq."+store.Q(eventID)+"&status=eq.scheduled",
-		map[string]any{"court_number": nil, "play_order": nil})
+		map[string]any{"court_id": nil, "play_order": nil})
 	return err
 }
 

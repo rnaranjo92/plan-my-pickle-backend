@@ -6549,6 +6549,10 @@ func (s *Service) EventScheduleMatches(eventID string) ([]model.Match, error) {
 	switch asStr(ev, "tournament_format") {
 	case "single_elim", "double_elim", "compass":
 		stageFilter = "" // bracket-only event → return its bracket matches
+	case "pools_playoff":
+		// Pools AND the medal bracket — so the live TV can detect the playoff
+		// phase and show the bracket + champions celebration once pools finish.
+		stageFilter = ""
 	}
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+stageFilter+"&select="+matchSelect)

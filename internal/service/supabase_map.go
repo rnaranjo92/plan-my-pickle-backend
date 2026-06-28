@@ -158,6 +158,7 @@ func mapEvent(m map[string]any) model.Event {
 		CashPrize:            asBool(m, "cash_prize"),
 		CashPrizeAmount:      asFloatPtr(m, "cash_prize_amount"),
 		Consolation:          asBool(m, "consolation"),
+		AutoAdjust:           asBool(m, "auto_adjust"),
 		StartsAt:             asStrPtr(m, "starts_at"),
 		EndsAt:               asStrPtr(m, "ends_at"),
 		Listed:               asBool(m, "listed"),
@@ -367,7 +368,7 @@ func mapRoundView(m map[string]any) model.RoundView {
 // court number, round context, and participants (with player names) embedded —
 // so a match and its sides load in one round-trip instead of N+1 queries.
 const matchSelect = "id,bracket_id,stage,bracket_tier,bracket_group,bracket_round,bracket_slot," +
-	"team1_score,team2_score,winning_team,games,status,result_type,play_order,duration_minutes,scheduled_day," +
+	"team1_score,team2_score,winning_team,games,status,result_type,play_order,duration_minutes,scheduled_day,completed_at," +
 	"court:courts!court_id(court_number)," +
 	"round:rounds!round_id(id,round_number,status,started_at)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
@@ -457,6 +458,7 @@ func mapMatch(m map[string]any) model.Match {
 		PlayOrder:       asFloatPtr(m, "play_order"),
 		DurationMinutes: asIntPtr(m, "duration_minutes"),
 		ScheduledDay:    asIntPtr(m, "scheduled_day"),
+		CompletedAt:     asStrPtr(m, "completed_at"),
 		Sides:           mapSides(m),
 	}
 	if c := asMap(m, "court"); c != nil {

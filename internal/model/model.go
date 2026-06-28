@@ -39,6 +39,9 @@ type Event struct {
 	// Consolation enables a consolation back-draw for single_elim (first-round
 	// losers play down to a consolation champion / bronze — USAP 12.J ≥2 matches).
 	Consolation bool `json:"consolation"`
+	// AutoAdjust re-flows later match start times to follow ACTUAL game finishes
+	// (early or late) as scores come in, instead of the fixed planned slots.
+	AutoAdjust bool `json:"autoAdjust"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
 	StartsAt *string `json:"startsAt,omitempty"`
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
@@ -456,6 +459,7 @@ type Match struct {
 	RoundNumber    *int    `json:"roundNumber,omitempty"`
 	RoundStatus    string  `json:"roundStatus,omitempty"`
 	RoundStartedAt *string `json:"roundStartedAt,omitempty"` // when the round went active; for live "time left"
+	CompletedAt    *string `json:"completedAt,omitempty"`    // actual finish time (RFC3339 UTC); null until scored/forfeited
 	Sides          []Side  `json:"sides"`
 }
 
@@ -570,6 +574,7 @@ type CreateEventRequest struct {
 	CashPrize            bool           `json:"cashPrize"`
 	CashPrizeAmount      *float64       `json:"cashPrizeAmount,omitempty"`
 	Consolation          bool           `json:"consolation"` // single_elim back-draw
+	AutoAdjust           bool           `json:"autoAdjust"`
 	StartsAt             string         `json:"startsAt"`    // RFC3339 UTC, "" = none
 	EndsAt               string         `json:"endsAt"`      // RFC3339 UTC, "" = none
 	Description          string         `json:"description"`

@@ -242,6 +242,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"cash_prize":             req.CashPrize,
 		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
 		"consolation":            req.Consolation,
+		"auto_adjust":            req.AutoAdjust,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
 		"listed":                 req.Listed,
@@ -949,6 +950,7 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"location":               orNull(req.Location),
 		"dupr_sanctioned":        req.DuprSanctioned,
+		"auto_adjust":            req.AutoAdjust,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
 		"listed":        req.Listed,

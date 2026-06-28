@@ -1203,6 +1203,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		doubles, mixed                               bool
 	)
 	switch kind {
+	case "mixedmulti150":
+		// Multi-division single-elim mixed doubles is its own builder (3 brackets).
+		return s.seedMultiDivMixed(ownerID)
 	case "mixed30":
 		name, format, partnerMode, tournFmt, divType =
 			"TEST · Mixed Doubles 3.0-4.0 · 30", "doubles", "fixed", "round_robin", "mixed_doubles"
@@ -1216,7 +1219,7 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 			"TEST · Singles 3.0-4.0 · 80", "singles", "na", "single_elim", "singles"
 		count, courts = 80, 10
 	default:
-		return "", fmt.Errorf("unknown seed kind %q (want mixed30|doubles150|singles80)", kind)
+		return "", fmt.Errorf("unknown seed kind %q (want mixed30|mixedmulti150|doubles150|singles80)", kind)
 	}
 
 	evRows, err := s.sb.Insert("events", map[string]any{
@@ -1318,6 +1321,109 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		return "", fmt.Errorf("seed registrations: %w", err)
 	}
 	return eventID, nil
+}
+
+// seedMultiDivMixed builds a 150-player MIXED DOUBLES, SINGLE-ELIM test event split
+// across 3 rating divisions (3.0-3.5 / 3.5-4.0 / 4.0-4.5), 25 fixed M/F pairs each,
+// with ~1 in 6 players rated over their division's cap. Exercises multi-division
+// bracket scheduling. Returns the new event id.
+func (s *Service) seedMultiDivMixed(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "TEST · Mixed Doubles · 150 · 3 div · single-elim", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "single_elim",
+		"num_courts": 12, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
+		"location": "Test Courts", "owner_id": ownerID,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	prefix := eventID[:8]
+
+	divs := []struct {
+		name   string
+		lo, hi float64
+	}{
+		{"Mixed 3.0-3.5", 3.0, 3.5},
+		{"Mixed 3.5-4.0", 3.5, 4.0},
+		{"Mixed 4.0-4.5", 4.0, 4.5},
+	}
+	startN := 0
+	for di, d := range divs {
+		brRows, err := s.sb.Insert("brackets", map[string]any{
+			"event_id": eventID, "name": d.name, "division_type": "mixed_doubles",
+			"min_rating": d.lo, "max_rating": d.hi, "dupr_min": d.lo, "dupr_max": d.hi,
+			"sort_order": di,
+		})
+		if err != nil || len(brRows) == 0 {
+			return "", fmt.Errorf("seed bracket: %w", err)
+		}
+		if err := s.seedDivPairs(eventID, asStr(brRows[0], "id"), prefix, startN, 25, d.lo, d.hi); err != nil {
+			return "", err
+		}
+		startN += 50 // 25 pairs = 50 players per division
+	}
+	return eventID, nil
+}
+
+// seedDivPairs bulk-inserts `pairs` fixed M/F mixed-doubles pairs (2*pairs players)
+// rated within [lo, hi) — ~1 in 6 over hi — and registers them to bracketID. n runs
+// globally (startN+1 ..) so dupr_id/phone stay unique across divisions.
+func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs int, lo, hi float64) error {
+	male := []string{"Mike", "John", "Dave", "Carl", "Sam", "Tom", "Alex", "Ben", "Will", "Jake", "Luis", "Ray", "Nick", "Paul", "Kev"}
+	female := []string{"Mia", "Jen", "Sara", "Ana", "Kim", "Liz", "Emma", "Beth", "Nina", "Tara", "Lucy", "Rosa", "Dana", "Pam", "Kate"}
+	last := []string{"Lee", "Ng", "Diaz", "Park", "Cruz", "Hall", "Reed", "Shaw", "Vance", "Wood"}
+	count := pairs * 2
+	playerRows := make([]map[string]any, count)
+	for i := 0; i < count; i++ {
+		n := startN + i + 1
+		rating := lo + float64(n%5)*0.1 // within [lo, hi)
+		if n%6 == 0 {
+			rating = hi + 0.2 // over this division's cap
+		}
+		first := female[n%len(female)]
+		if n%2 == 1 {
+			first = male[n%len(male)]
+		}
+		playerRows[i] = map[string]any{
+			"full_name":        fmt.Sprintf("%s %s %d", first, last[n%len(last)], n),
+			"dupr_id":          fmt.Sprintf("TST-%s-%d", prefix, n),
+			"dupr_rating":      rating,
+			"dupr_reliability": 85,
+			"phone":            fmt.Sprintf("+1555%07d", n),
+		}
+	}
+	plRows, err := s.sb.Insert("players", playerRows)
+	if err != nil || len(plRows) != count {
+		return fmt.Errorf("seed div players (%d/%d): %w", len(plRows), count, err)
+	}
+	idByN := make(map[int]string, count)
+	for _, row := range plRows {
+		parts := strings.Split(asStr(row, "dupr_id"), "-")
+		if len(parts) >= 3 {
+			if k, e := strconv.Atoi(parts[len(parts)-1]); e == nil {
+				idByN[k] = asStr(row, "id")
+			}
+		}
+	}
+	ts := now()
+	mk := func(p, partner string) map[string]any {
+		return map[string]any{
+			"event_id": eventID, "player_id": p, "partner_id": partner,
+			"bracket_id": bracketID, "payment_status": "comped", "checked_in": true,
+			"checked_in_at": ts, "check_in_method": "manual",
+		}
+	}
+	var regRows []map[string]any
+	for k := startN + 1; k+1 <= startN+count; k += 2 {
+		p1, p2 := idByN[k], idByN[k+1]
+		if p1 == "" || p2 == "" {
+			continue
+		}
+		regRows = append(regRows, mk(p1, p2), mk(p2, p1))
+	}
+	_, err = s.sb.Insert("registrations", regRows)
+	return err
 }
 
 // FillRandomPlayers seeds the given EXISTING event with a batch of demo players

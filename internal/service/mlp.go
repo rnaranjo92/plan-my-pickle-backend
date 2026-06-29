@@ -919,6 +919,25 @@ func validateLineup(lineType string, ids []string, roster map[string]string) err
 	return nil
 }
 
+// validateDecLineup checks a DreamBreaker side: exactly 4 distinct players from
+// the team's roster, any gender (the rotation order is the slice order).
+func validateDecLineup(ids []string, roster map[string]string) error {
+	if len(ids) != 4 {
+		return errors.New("the DreamBreaker needs exactly 4 players per team")
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			return errors.New("a player can't be listed twice in the DreamBreaker")
+		}
+		seen[id] = true
+		if _, in := roster[id]; !in {
+			return errors.New("a selected player isn't on that team")
+		}
+	}
+	return nil
+}
+
 // SetLineLineup replaces the players on one tie line (each side from its own
 // team's roster; gender + count enforced per the line type). Blocked once the
 // line is scored.
@@ -939,9 +958,6 @@ func (s *Service) SetLineLineup(matchID string, team1, team2 []string) error {
 	if tieID == "" {
 		return errors.New("not a team tie line")
 	}
-	if lt == "dec" {
-		return errors.New("the DreamBreaker uses the whole roster — no lineup to set")
-	}
 	tie, err := s.sb.SelectOne("team_ties",
 		"id=eq."+store.Q(tieID)+"&select=team_a_id,team_b_id")
 	if err != nil {
@@ -958,11 +974,22 @@ func (s *Service) SetLineLineup(matchID string, team1, team2 []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateLineup(lt, team1, rosterA); err != nil {
-		return err
-	}
-	if err := validateLineup(lt, team2, rosterB); err != nil {
-		return err
+	if lt == "dec" {
+		// DreamBreaker: exactly 4 players per team, any gender (rotation order =
+		// array order). The captain picks 4 from the roster (4 of 6 for Premier).
+		if err := validateDecLineup(team1, rosterA); err != nil {
+			return err
+		}
+		if err := validateDecLineup(team2, rosterB); err != nil {
+			return err
+		}
+	} else {
+		if err := validateLineup(lt, team1, rosterA); err != nil {
+			return err
+		}
+		if err := validateLineup(lt, team2, rosterB); err != nil {
+			return err
+		}
 	}
 	if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(matchID)); err != nil {
 		return err

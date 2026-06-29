@@ -5227,6 +5227,81 @@ func (s *Service) PostChampionFeed(eventID, matchID, text string) {
 	}
 }
 
+// PostTeamChampionFeed upserts the single "champions" feed item for a TEAM
+// event's playoff (keyed on event + type, since there's no single gold match).
+func (s *Service) PostTeamChampionFeed(eventID, text string) {
+	if eventID == "" || text == "" {
+		return
+	}
+	existing, err := s.sb.SelectOne("feed_items",
+		"event_id=eq."+store.Q(eventID)+"&type=eq.champions&select=id,text")
+	if err != nil {
+		return
+	}
+	if existing == nil {
+		s.AddFeedItem(eventID, "champions", text, "")
+		return
+	}
+	if asStr(existing, "text") != text {
+		if _, err := s.sb.Update("feed_items",
+			"id=eq."+store.Q(asStr(existing, "id")),
+			map[string]any{"text": text}); err != nil {
+			log.Printf("feed: team champions update for %s failed: %v", eventID, err)
+		}
+	}
+}
+
+// maybePostPlayoffPodium crowns the playoff podium on the feed once the final is
+// decided: gold = champion, silver = runner-up, bronze = the semifinal losers.
+func (s *Service) maybePostPlayoffPodium(eventID string, byRound map[int][]map[string]any, maxRound int) {
+	final := byRound[maxRound]
+	if len(final) != 1 {
+		return
+	}
+	gold := asStr(final[0], "winner_team_id")
+	if gold == "" {
+		return
+	}
+	silver := asStr(final[0], "team_a_id")
+	if silver == gold {
+		silver = asStr(final[0], "team_b_id")
+	}
+	var bronze []string
+	for _, semi := range byRound[maxRound-1] {
+		w := asStr(semi, "winner_team_id")
+		if w == "" {
+			continue
+		}
+		loser := asStr(semi, "team_a_id")
+		if loser == w {
+			loser = asStr(semi, "team_b_id")
+		}
+		if loser != "" {
+			bronze = append(bronze, loser)
+		}
+	}
+	teams, err := s.ListTeams(eventID)
+	if err != nil {
+		return
+	}
+	name := map[string]string{}
+	for _, t := range teams {
+		name[t.ID] = t.Name
+	}
+	text := "Gold: " + name[gold]
+	if silver != "" {
+		text += " · Silver: " + name[silver]
+	}
+	if len(bronze) > 0 {
+		bn := make([]string, 0, len(bronze))
+		for _, id := range bronze {
+			bn = append(bn, name[id])
+		}
+		text += " · Bronze: " + strings.Join(bn, " & ")
+	}
+	s.PostTeamChampionFeed(eventID, text)
+}
+
 // ListFeed returns an event's feed, newest first.
 // ListFeed returns an event's feed (newest first) enriched with reaction counts,
 // the caller's own reactions (callerID may be "" for anonymous), and comment

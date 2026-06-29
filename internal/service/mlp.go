@@ -563,6 +563,8 @@ func (s *Service) maybeAdvancePlayoffRound(eventID string) error {
 	}
 	cur := byRound[maxRound]
 	if len(cur) <= 1 {
+		// The final — crown the podium (gold/silver/bronze) on the feed.
+		s.maybePostPlayoffPodium(eventID, byRound, maxRound)
 		return nil // the final — champion decided
 	}
 	winners := make([]string, 0, len(cur))

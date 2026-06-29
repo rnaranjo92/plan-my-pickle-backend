@@ -3316,6 +3316,16 @@ func (s *Service) DuprConnection(userID string) (model.DuprConnection, error) {
 func (s *Service) DuprSsoURL() (string, string) { return s.Dupr.SsoURL() }
 
 func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestSlots int) (int, error) {
+	// Team events are already placed conflict-free by GenerateTeamTies — never
+	// re-arrange them by rating (no registrations/divisions to sort by, and
+	// re-arranging would pile each tie's 4 lines into a single slot).
+	if ev, gerr := s.GetEvent(eventID); gerr == nil && ev.TeamSize > 0 {
+		ids, lerr := s.listPoolMatchIDs(eventID)
+		if lerr != nil {
+			return 0, lerr
+		}
+		return len(ids), nil
+	}
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {
 		return 0, err

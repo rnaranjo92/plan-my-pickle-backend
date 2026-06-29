@@ -6533,6 +6533,10 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Team (MLP) events have no registrations — export the team rosters instead.
+	if ev.TeamSize > 0 {
+		return s.teamRosterCSV(ev)
+	}
 	brackets, err := s.GetBrackets(eventID)
 	if err != nil {
 		return nil, err
@@ -6588,6 +6592,40 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 		w(csvSafe(name), csvSafe(phone), csvSafe(email),
 			csvSafe(divName[asStr(r, "bracket_id")]), csvSafe(partner),
 			paid, checked, csvSafe(dupr))
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// teamRosterCSV exports an MLP team event's rosters (one row per member, grouped
+// by team) — the registration-based RosterCSV reads empty for team events.
+func (s *Service) teamRosterCSV(ev model.Event) ([]byte, error) {
+	teams, err := s.ListTeams(ev.ID)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
+	w := func(rec ...string) { _ = cw.Write(rec) }
+	w("PlanMyPickle Roster", csvSafe(ev.Name))
+	w()
+	w("Name", "Phone", "Team", "Gender", "Checked in", "DUPR ID")
+	for _, t := range teams {
+		for _, m := range t.Members {
+			gender := "Man"
+			if m.Gender == "F" {
+				gender = "Woman"
+			}
+			checked := "No"
+			if m.CheckedIn {
+				checked = "Yes"
+			}
+			w(csvSafe(m.FullName), csvSafe(m.Phone), csvSafe(t.Name),
+				gender, checked, csvSafe(m.DuprID))
+		}
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {

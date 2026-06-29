@@ -1218,6 +1218,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		doubles, mixed                               bool
 	)
 	switch kind {
+	case "mlp6":
+		// MLP-style team event: 6 teams of 16 (8M/8W), round-robin of ties.
+		return s.seedMlp(ownerID)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
@@ -1240,7 +1243,7 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 			"TEST · Singles 3.0-4.0 · 80", "singles", "na", "single_elim", "singles"
 		count, courts = 80, 10
 	default:
-		return "", fmt.Errorf("unknown seed kind %q (want podium|mixed30|mixedmulti150|poolsmulti150|doubles150|singles80)", kind)
+		return "", fmt.Errorf("unknown seed kind %q (want podium|mixed30|mixedmulti150|poolsmulti150|doubles150|singles80|mlp6)", kind)
 	}
 
 	evRows, err := s.sb.Insert("events", map[string]any{
@@ -1670,6 +1673,75 @@ func ratingInBand(min, max *float64, i, n int) float64 {
 	}
 	v := lo + (hi-lo)*(0.05+0.9*float64(i)/float64(denom))
 	return float64(int(v*100+0.5)) / 100
+}
+
+// seedMlp creates a TEST MLP-style team event: 6 teams of 16 players (8 men + 8
+// women each), then generates the round-robin of ties. Lines are left unscored
+// so QA can score them on the board and watch the tie roll up.
+func (s *Service) seedMlp(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "TEST · MLP · 6 teams", "format": "doubles", "partner_mode": "fixed",
+		"scoring_mode": "wins", "tournament_format": "round_robin", "num_courts": 8,
+		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": 4,
+		"dupr_sanctioned": false, "status": "open",
+		"location": "Test Courts", "owner_id": ownerID,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed mlp event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 8); err != nil {
+		return "", fmt.Errorf("seed mlp courts: %w", err)
+	}
+
+	male := []string{"Mike", "John", "Dave", "Carl", "Sam", "Tom", "Alex", "Ben"}
+	female := []string{"Mia", "Jen", "Sara", "Ana", "Kim", "Liz", "Emma", "Beth"}
+	last := []string{"Lee", "Ng", "Diaz", "Park", "Cruz", "Hall", "Reed", "Shaw"}
+
+	for t := 0; t < 6; t++ {
+		teamRows, err := s.sb.Insert("event_teams", []map[string]any{
+			{"event_id": eventID, "name": fmt.Sprintf("Team %d", t+1)},
+		})
+		if err != nil || len(teamRows) == 0 {
+			return "", fmt.Errorf("seed mlp team: %w", err)
+		}
+		teamID := asStr(teamRows[0], "id")
+
+		// 16 per team = 8 men + 8 women. Bulk-mint players, then bulk-link members
+		// (insert order is preserved, so the returned rows align with names/genders).
+		players := make([]map[string]any, 0, 16)
+		names := make([]string, 0, 16)
+		genders := make([]string, 0, 16)
+		for g := 0; g < 8; g++ {
+			mn := fmt.Sprintf("%s %s", male[g], last[(t+g)%len(last)])
+			fn := fmt.Sprintf("%s %s", female[g], last[(t+g+1)%len(last)])
+			players = append(players, map[string]any{"full_name": mn})
+			names = append(names, mn)
+			genders = append(genders, "M")
+			players = append(players, map[string]any{"full_name": fn})
+			names = append(names, fn)
+			genders = append(genders, "F")
+		}
+		plRows, err := s.sb.Insert("players", players)
+		if err != nil || len(plRows) != len(players) {
+			return "", fmt.Errorf("seed mlp players: %w", err)
+		}
+		members := make([]map[string]any, len(plRows))
+		for i, pr := range plRows {
+			members[i] = map[string]any{
+				"team_id": teamID, "player_id": asStr(pr, "id"),
+				"full_name": names[i], "gender": genders[i],
+			}
+		}
+		if _, err := s.sb.Insert("event_team_members", members); err != nil {
+			return "", fmt.Errorf("seed mlp members: %w", err)
+		}
+	}
+
+	if _, err := s.GenerateTeamTies(eventID); err != nil {
+		return "", fmt.Errorf("seed mlp schedule: %w", err)
+	}
+	return eventID, nil
 }
 
 // seedTournament creates the event, registers the demo players, generates the

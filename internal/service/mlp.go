@@ -50,6 +50,11 @@ func mapTeamMember(m map[string]any) model.TeamMember {
 	if p := asStr(m, "player_id"); p != "" {
 		tm.PlayerID = &p
 	}
+	if pl, ok := m["player"].(map[string]any); ok {
+		tm.Phone = asStr(pl, "phone")
+		tm.DuprID = asStr(pl, "dupr_id")
+		tm.DuprRating = asFloatPtr(pl, "dupr_rating")
+	}
 	return tm
 }
 
@@ -87,8 +92,19 @@ func (s *Service) AddTeamMember(teamID string, req model.AddTeamMemberRequest) (
 		playerID = *req.PlayerID
 	}
 	if playerID == "" {
-		// Mint a lightweight players row so lines can reference the member.
-		pl, err := s.sb.Insert("players", []map[string]any{{"full_name": req.FullName}})
+		// Mint a players row so lines can reference the member; carry optional
+		// contact + DUPR fields so they show on the card and profile.
+		prow := map[string]any{"full_name": req.FullName}
+		if req.Phone != "" {
+			prow["phone"] = req.Phone
+		}
+		if req.DuprID != "" {
+			prow["dupr_id"] = req.DuprID
+		}
+		if req.DuprRating != nil {
+			prow["dupr_rating"] = *req.DuprRating
+		}
+		pl, err := s.sb.Insert("players", []map[string]any{prow})
 		if err != nil {
 			return model.TeamMember{}, err
 		}
@@ -150,7 +166,7 @@ func (s *Service) ListTeams(eventID string) ([]model.EventTeam, error) {
 		return teams, nil
 	}
 	mrows, err := s.sb.Select("event_team_members",
-		"team_id=in.("+joinIDs(ids)+")&select=*&order=gender,full_name")
+		"team_id=in.("+joinIDs(ids)+")&select=*,player:players!player_id(phone,dupr_id,dupr_rating)&order=gender,full_name")
 	if err != nil {
 		return nil, err
 	}

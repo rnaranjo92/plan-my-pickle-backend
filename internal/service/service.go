@@ -1715,10 +1715,21 @@ func (s *Service) seedMlp(ownerID string) (string, error) {
 		for g := 0; g < 8; g++ {
 			mn := fmt.Sprintf("%s %s", male[g], last[(t+g)%len(last)])
 			fn := fmt.Sprintf("%s %s", female[g], last[(t+g+1)%len(last)])
-			players = append(players, map[string]any{"full_name": mn})
+			rating := 3.0 + float64(g%6)*0.2
+			players = append(players, map[string]any{
+				"full_name":   mn,
+				"phone":       fmt.Sprintf("+1555%03d%04d", t, g*2),
+				"dupr_id":     fmt.Sprintf("TST-%s-%dm%d", eventID[:8], t, g),
+				"dupr_rating": rating,
+			})
 			names = append(names, mn)
 			genders = append(genders, "M")
-			players = append(players, map[string]any{"full_name": fn})
+			players = append(players, map[string]any{
+				"full_name":   fn,
+				"phone":       fmt.Sprintf("+1555%03d%04d", t, g*2+1),
+				"dupr_id":     fmt.Sprintf("TST-%s-%df%d", eventID[:8], t, g),
+				"dupr_rating": rating,
+			})
 			names = append(names, fn)
 			genders = append(genders, "F")
 		}

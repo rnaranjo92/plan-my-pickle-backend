@@ -350,9 +350,12 @@ type TeamMember struct {
 	ID       string  `json:"id"`
 	TeamID   string  `json:"teamId"`
 	PlayerID *string `json:"playerId,omitempty"`
-	FullName  string `json:"fullName"`
-	Gender    string `json:"gender"` // M | F
-	CheckedIn bool   `json:"checkedIn"`
+	FullName   string   `json:"fullName"`
+	Gender     string   `json:"gender"` // M | F
+	CheckedIn  bool     `json:"checkedIn"`
+	Phone      string   `json:"phone,omitempty"`
+	DuprID     string   `json:"duprId,omitempty"`
+	DuprRating *float64 `json:"duprRating,omitempty"`
 }
 
 // TeamTie is a team-vs-team matchup; its lines live in matches (tie_id).
@@ -410,9 +413,12 @@ type CreateTeamRequest struct {
 
 // AddTeamMemberRequest adds a roster member (gender required for line eligibility).
 type AddTeamMemberRequest struct {
-	FullName string  `json:"fullName"`
-	Gender   string  `json:"gender"` // M | F
-	PlayerID *string `json:"playerId,omitempty"`
+	FullName   string   `json:"fullName"`
+	Gender     string   `json:"gender"` // M | F
+	PlayerID   *string  `json:"playerId,omitempty"`
+	Phone      string   `json:"phone,omitempty"`
+	DuprID     string   `json:"duprId,omitempty"`
+	DuprRating *float64 `json:"duprRating,omitempty"`
 }
 
 // FlexMatchup is one team-pair matchup in a Flex league division's generated

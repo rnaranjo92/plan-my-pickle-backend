@@ -115,6 +115,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/ties", s.mlpListTies)
 	mux.HandleFunc("GET /events/{id}/team-standings", s.mlpStandings)
 	mux.HandleFunc("POST /events/{id}/lines/{matchId}/lineup", s.ownerOnly("event", "id", s.mlpSetLineup))
+	mux.HandleFunc("POST /events/{id}/team-members/{memberId}/checkin", s.ownerOnly("event", "id", s.mlpCheckinMember))
 	// One-time per-event Premium pass: owner-only Stripe Checkout.
 	mux.HandleFunc("POST /events/{id}/premium-pass-checkout", s.ownerOnly("event", "id", s.startEventPassCheckout))
 	// /pay and /shirt are public self-service (a registrant has no account), but
@@ -1489,6 +1490,21 @@ func (s *Server) mlpSetLineup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetLineLineup(r.PathValue("matchId"), req.Team1, req.Team2); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
+}
+
+func (s *Server) mlpCheckinMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CheckedIn bool `json:"checkedIn"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.SetMemberCheckedIn(r.PathValue("memberId"), req.CheckedIn); err != nil {
 		status(w, err)
 		return
 	}

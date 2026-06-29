@@ -350,8 +350,9 @@ type TeamMember struct {
 	ID       string  `json:"id"`
 	TeamID   string  `json:"teamId"`
 	PlayerID *string `json:"playerId,omitempty"`
-	FullName string  `json:"fullName"`
-	Gender   string  `json:"gender"` // M | F
+	FullName  string `json:"fullName"`
+	Gender    string `json:"gender"` // M | F
+	CheckedIn bool   `json:"checkedIn"`
 }
 
 // TeamTie is a team-vs-team matchup; its lines live in matches (tie_id).

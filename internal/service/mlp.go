@@ -43,8 +43,9 @@ func mapTeamMember(m map[string]any) model.TeamMember {
 	tm := model.TeamMember{
 		ID:       asStr(m, "id"),
 		TeamID:   asStr(m, "team_id"),
-		FullName: asStr(m, "full_name"),
-		Gender:   asStr(m, "gender"),
+		FullName:  asStr(m, "full_name"),
+		Gender:    asStr(m, "gender"),
+		CheckedIn: asBool(m, "checked_in"),
 	}
 	if p := asStr(m, "player_id"); p != "" {
 		tm.PlayerID = &p
@@ -120,6 +121,13 @@ func (s *Service) RemoveEventTeam(teamID string) error {
 // RemoveTeamMember drops one roster member.
 func (s *Service) RemoveTeamMember(memberID string) error {
 	return s.sb.Delete("event_team_members", "id=eq."+store.Q(memberID))
+}
+
+// SetMemberCheckedIn toggles a roster member's check-in.
+func (s *Service) SetMemberCheckedIn(memberID string, checkedIn bool) error {
+	_, err := s.sb.Update("event_team_members", "id=eq."+store.Q(memberID),
+		map[string]any{"checked_in": checkedIn})
+	return err
 }
 
 // ListTeams returns an event's teams with their rosters attached.

@@ -109,6 +109,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/teams", s.mlpListTeams)
 	mux.HandleFunc("POST /events/{id}/teams", s.ownerOnly("event", "id", s.mlpCreateTeam))
 	mux.HandleFunc("DELETE /events/{id}/teams/{teamId}", s.ownerOnly("event", "id", s.mlpRemoveTeam))
+	mux.HandleFunc("POST /events/{id}/teams/{teamId}/rename", s.ownerOnly("event", "id", s.mlpRenameTeam))
 	mux.HandleFunc("POST /events/{id}/teams/{teamId}/members", s.ownerOnly("event", "id", s.mlpAddTeamMember))
 	mux.HandleFunc("DELETE /events/{id}/team-members/{memberId}", s.ownerOnly("event", "id", s.mlpRemoveTeamMember))
 	mux.HandleFunc("POST /events/{id}/team-schedule", s.ownerOnly("event", "id", s.mlpGenerateTies))
@@ -1432,6 +1433,19 @@ func (s *Server) mlpRemoveTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) mlpRenameTeam(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateTeamRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.RenameEventTeam(r.PathValue("teamId"), req.Name); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) mlpAddTeamMember(w http.ResponseWriter, r *http.Request) {

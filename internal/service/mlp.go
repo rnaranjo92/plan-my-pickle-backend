@@ -77,6 +77,16 @@ func (s *Service) CreateTeam(eventID string, req model.CreateTeamRequest) (model
 	return mapEventTeam(out[0]), nil
 }
 
+// RenameEventTeam updates a team's display name.
+func (s *Service) RenameEventTeam(teamID, name string) error {
+	if name == "" {
+		return errors.New("team name is required")
+	}
+	_, err := s.sb.Update("event_teams", "id=eq."+store.Q(teamID),
+		map[string]any{"name": name})
+	return err
+}
+
 // AddTeamMember adds a roster member. Every member gets a players row (created if
 // not linked) so tie lines can reuse match_participants; gender is required and
 // drives line eligibility.

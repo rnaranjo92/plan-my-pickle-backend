@@ -471,8 +471,24 @@ func (s *Service) spawnDecider(tie map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return s.createTieLine(eventID, bracketID, tieID, "dec", 9999, "",
-		[]string{aMen[0], aWomen[0]}, []string{bMen[0], bWomen[0]})
+	// Place the DreamBreaker on the first court, just after this tie's regulation
+	// slots, so it appears on the schedule the moment a tie reaches 2-2.
+	court := ""
+	if cb, cerr := s.courtIDsByNumber(eventID); cerr == nil && len(cb) > 0 {
+		nums := make([]int, 0, len(cb))
+		for n := range cb {
+			nums = append(nums, n)
+		}
+		sort.Ints(nums)
+		court = cb[nums[0]]
+	}
+	slot := asInt(tie, "play_order") + 100
+	// The DreamBreaker is a SINGLES rotation: all four players of each team take
+	// turns (swapping every 4 points on court). Record them all as the line's
+	// participants; the running score is kept like any game (to 21, win by 2).
+	return s.createTieLine(eventID, bracketID, tieID, "dec", slot, court,
+		append(append([]string{}, aMen...), aWomen...),
+		append(append([]string{}, bMen...), bWomen...))
 }
 
 func (s *Service) setTieState(tieID string, started bool, _ string) error {

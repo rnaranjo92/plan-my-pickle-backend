@@ -4448,7 +4448,7 @@ func (s *Service) RecordSeries(matchID string, games []model.GameScore) error {
 	// Defaults (11, win by 2, single game) apply if the event predates a column.
 	ptw, winBy, bestOf := 11, 2, 1
 	fmtRow, err := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=event:events!event_id(points_to_win,win_by,best_of)")
+		"id=eq."+store.Q(matchID)+"&select=line_type,event:events!event_id(points_to_win,win_by,best_of)")
 	if err != nil {
 		return err
 	}
@@ -4465,6 +4465,11 @@ func (s *Service) RecordSeries(matchID string, games []model.GameScore) error {
 		if b := asInt(ev, "best_of"); b > 0 {
 			bestOf = b
 		}
+	}
+	// MLP DreamBreaker: the decider line is a single game to 21, win by 2 (not the
+	// event's per-line target).
+	if asStr(fmtRow, "line_type") == "dec" {
+		ptw, winBy, bestOf = 21, 2, 1
 	}
 	winner, t1, t2, err := validateSeries(games, bestOf, ptw, winBy)
 	if err != nil {

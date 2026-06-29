@@ -244,6 +244,10 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 			}
 		}
 	}
+	// Place the new lines onto courts/time-slots so they show on the Game tab.
+	if err := s.spreadCourts(eventID); err != nil {
+		return count, err
+	}
 	return count, nil
 }
 

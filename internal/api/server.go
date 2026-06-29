@@ -114,6 +114,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /events/{id}/team-members/{memberId}", s.ownerOnly("event", "id", s.mlpRemoveTeamMember))
 	mux.HandleFunc("POST /events/{id}/team-schedule", s.ownerOnly("event", "id", s.mlpGenerateTies))
 	mux.HandleFunc("GET /events/{id}/ties", s.mlpListTies)
+	mux.HandleFunc("POST /events/{id}/playoff", s.ownerOnly("event", "id", s.mlpGeneratePlayoff))
 	mux.HandleFunc("GET /events/{id}/team-standings", s.mlpStandings)
 	mux.HandleFunc("POST /events/{id}/lines/{matchId}/lineup", s.ownerOnly("event", "id", s.mlpSetLineup))
 	mux.HandleFunc("POST /events/{id}/team-members/{memberId}/checkin", s.ownerOnly("event", "id", s.mlpCheckinMember))
@@ -1472,6 +1473,15 @@ func (s *Server) mlpRemoveTeamMember(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mlpGenerateTies(w http.ResponseWriter, r *http.Request) {
 	n, err := s.svc.GenerateTeamTies(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"ties": n})
+}
+
+func (s *Server) mlpGeneratePlayoff(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.GeneratePlayoff(r.PathValue("id"))
 	if err != nil {
 		status(w, err)
 		return

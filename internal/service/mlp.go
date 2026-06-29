@@ -376,6 +376,227 @@ func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, 
 	return nil
 }
 
+// createTieLinesFor writes a tie's 4 regulation lines (team A = match side 1):
+// women's + men's share slotA; the two mixed share slotB. Used by the playoff,
+// where courts/slots are assigned differently than the pool round-robin.
+func (s *Service) createTieLinesFor(eventID, bracketID, tieID string, a, b model.EventTeam, courtA, courtB string, slotA, slotB int) error {
+	aMen, aWomen, err := teamLineup(a.Members)
+	if err != nil {
+		return fmt.Errorf("%s: %w", a.Name, err)
+	}
+	bMen, bWomen, err := teamLineup(b.Members)
+	if err != nil {
+		return fmt.Errorf("%s: %w", b.Name, err)
+	}
+	type lineSpec struct {
+		lt     string
+		t1, t2 []string
+		court  string
+		slot   int
+	}
+	for _, sp := range []lineSpec{
+		{"wd", aWomen, bWomen, courtA, slotA},
+		{"md", aMen, bMen, courtB, slotA},
+		{"mx1", []string{aMen[0], aWomen[0]}, []string{bMen[0], bWomen[0]}, courtA, slotB},
+		{"mx2", []string{aMen[1], aWomen[1]}, []string{bMen[1], bWomen[1]}, courtB, slotB},
+	} {
+		if err := s.createTieLine(eventID, bracketID, tieID, sp.lt, sp.slot, sp.court, sp.t1, sp.t2); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sortedCourtNums(courtByNum map[int]string) []int {
+	nums := make([]int, 0, len(courtByNum))
+	for n := range courtByNum {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	return nums
+}
+
+// seedPairs returns the round-1 seed matchups (0-based seed indices) for a
+// single-elim bracket of the top k seeds.
+func seedPairs(k int) [][2]int {
+	switch k {
+	case 8:
+		return [][2]int{{0, 7}, {3, 4}, {1, 6}, {2, 5}}
+	case 4:
+		return [][2]int{{0, 3}, {1, 2}}
+	default:
+		return [][2]int{{0, 1}}
+	}
+}
+
+// ErrPoolIncomplete is returned when a playoff is requested before every pool tie
+// has a winner.
+var ErrPoolIncomplete = errors.New("finish every pool match before generating the playoff")
+
+// GeneratePlayoff seeds a single-elimination playoff from the pool standings: the
+// top 4 teams (top 2 if fewer than 4) play a seeded first round; later rounds are
+// created automatically as winners advance (maybeAdvancePlayoffRound). No new
+// columns — playoff ties are stage="playoff" with play_order = 1000 + round*100 + slot.
+func (s *Service) GeneratePlayoff(eventID string) (int, error) {
+	ties, err := s.ListTies(eventID)
+	if err != nil {
+		return 0, err
+	}
+	var pool, playoff []model.TeamTie
+	for _, t := range ties {
+		if t.Stage == "playoff" {
+			playoff = append(playoff, t)
+		} else {
+			pool = append(pool, t)
+		}
+	}
+	if len(pool) == 0 {
+		return 0, errors.New("generate the pool schedule first")
+	}
+	for _, t := range pool {
+		if t.WinnerTeamID == nil {
+			return 0, ErrPoolIncomplete
+		}
+	}
+	for _, t := range playoff {
+		if t.WinnerTeamID != nil {
+			return 0, errors.New("the playoff already has results")
+		}
+	}
+	for _, t := range playoff {
+		_ = s.sb.Delete("team_ties", "id=eq."+store.Q(t.ID)) // lines cascade
+	}
+
+	seeds, err := s.TeamEventStandings(eventID)
+	if err != nil {
+		return 0, err
+	}
+	n := len(seeds)
+	if n < 2 {
+		return 0, errors.New("need at least 2 teams for a playoff")
+	}
+	k := 4
+	if n < 4 {
+		k = 2
+	}
+
+	bracketID := ""
+	if bks, berr := s.GetBrackets(eventID); berr == nil && len(bks) > 0 {
+		bracketID = bks[0].ID
+	}
+	teams, err := s.ListTeams(eventID)
+	if err != nil {
+		return 0, err
+	}
+	byID := map[string]model.EventTeam{}
+	for _, t := range teams {
+		byID[t.ID] = t
+	}
+	courtByNum, err := s.courtIDsByNumber(eventID)
+	if err != nil {
+		return 0, err
+	}
+	courtNums := sortedCourtNums(courtByNum)
+
+	count := 0
+	for slot, pr := range seedPairs(k) {
+		if pr[0] >= n || pr[1] >= n {
+			continue
+		}
+		a := byID[seeds[pr[0]].TeamID]
+		b := byID[seeds[pr[1]].TeamID]
+		playOrder := 1000 + 100 + slot // round 1
+		if err := s.createPlayoffTie(eventID, bracketID, a, b, playOrder, slot, courtNums, courtByNum); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+// createPlayoffTie writes one playoff tie (stage="playoff") + its 4 lines.
+func (s *Service) createPlayoffTie(eventID, bracketID string, a, b model.EventTeam, playOrder, slot int, courtNums []int, courtByNum map[int]string) error {
+	tieRow := map[string]any{
+		"event_id":   eventID,
+		"stage":      "playoff",
+		"team_a_id":  a.ID,
+		"team_b_id":  b.ID,
+		"status":     "scheduled",
+		"play_order": playOrder,
+	}
+	if bracketID != "" {
+		tieRow["bracket_id"] = bracketID
+	}
+	out, err := s.sb.Insert("team_ties", []map[string]any{tieRow})
+	if err != nil {
+		return err
+	}
+	if len(out) == 0 {
+		return errors.New("playoff tie insert returned no row")
+	}
+	tieID := asStr(out[0], "id")
+	courtA, courtB := "", ""
+	if nc := len(courtNums); nc > 0 {
+		courtA = courtByNum[courtNums[(slot*2)%nc]]
+		courtB = courtByNum[courtNums[(slot*2+1)%nc]]
+	}
+	return s.createTieLinesFor(eventID, bracketID, tieID, a, b, courtA, courtB, playOrder*2, playOrder*2+1)
+}
+
+// maybeAdvancePlayoffRound runs when a playoff tie finishes: once every tie in the
+// current (highest) round has a winner, it pairs the winners in seed order to
+// create the next round. A single-tie round is the final — nothing to do.
+func (s *Service) maybeAdvancePlayoffRound(eventID string) error {
+	rows, err := s.sb.Select("team_ties",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.playoff&select=id,winner_team_id,play_order,bracket_id&order=play_order")
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+	byRound := map[int][]map[string]any{}
+	maxRound := 0
+	for _, r := range rows {
+		rd := (asInt(r, "play_order") - 1000) / 100
+		byRound[rd] = append(byRound[rd], r)
+		if rd > maxRound {
+			maxRound = rd
+		}
+	}
+	cur := byRound[maxRound]
+	if len(cur) <= 1 {
+		return nil // the final — champion decided
+	}
+	winners := make([]string, 0, len(cur))
+	for _, t := range cur {
+		w := asStr(t, "winner_team_id")
+		if w == "" {
+			return nil // round not complete yet
+		}
+		winners = append(winners, w)
+	}
+	bracketID := asStr(cur[0], "bracket_id")
+	teams, err := s.ListTeams(eventID)
+	if err != nil {
+		return err
+	}
+	byID := map[string]model.EventTeam{}
+	for _, t := range teams {
+		byID[t.ID] = t
+	}
+	courtByNum, err := s.courtIDsByNumber(eventID)
+	if err != nil {
+		return err
+	}
+	courtNums := sortedCourtNums(courtByNum)
+	for i := 0; i+1 < len(winners); i += 2 {
+		slot := i / 2
+		playOrder := 1000 + (maxRound+1)*100 + slot
+		if err := s.createPlayoffTie(eventID, bracketID, byID[winners[i]], byID[winners[i+1]], playOrder, slot, courtNums, courtByNum); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // createTieLine inserts one line as a matches row + its 2-v-2 participants,
 // placed on courtID at playOrder (courtID "" = unplaced).
 func (s *Service) createTieLine(eventID, bracketID, tieID, lineType string, playOrder int, courtID string, team1, team2 []string) error {
@@ -425,7 +646,7 @@ func (s *Service) createTieLine(eventID, bracketID, tieID, lineType string, play
 // sets the tie winner + status once decided. winning_team 1 == team A, 2 == B.
 func (s *Service) rollupTie(tieID string) error {
 	tie, err := s.sb.SelectOne("team_ties",
-		"id=eq."+store.Q(tieID)+"&select=id,event_id,bracket_id,team_a_id,team_b_id")
+		"id=eq."+store.Q(tieID)+"&select=id,event_id,bracket_id,team_a_id,team_b_id,stage,play_order")
 	if err != nil {
 		return err
 	}
@@ -541,9 +762,15 @@ func (s *Service) finishTie(tie map[string]any, winnerTeam int) error {
 	if winnerTeam == 2 {
 		winnerID = asStr(tie, "team_b_id")
 	}
-	_, err := s.sb.Update("team_ties", "id=eq."+store.Q(asStr(tie, "id")),
-		map[string]any{"status": "completed", "winner_team_id": winnerID})
-	return err
+	if _, err := s.sb.Update("team_ties", "id=eq."+store.Q(asStr(tie, "id")),
+		map[string]any{"status": "completed", "winner_team_id": winnerID}); err != nil {
+		return err
+	}
+	// Playoff ties grow the bracket: once a round completes, winners pair up.
+	if asStr(tie, "stage") == "playoff" {
+		return s.maybeAdvancePlayoffRound(asStr(tie, "event_id"))
+	}
+	return nil
 }
 
 // ListTies returns an event's ties with their lines' results attached.
@@ -564,6 +791,9 @@ func (s *Service) ListTies(eventID string) ([]model.TeamTie, error) {
 			TeamAID: asStr(r, "team_a_id"),
 			TeamBID: asStr(r, "team_b_id"),
 			Status:  asStr(r, "status"),
+		}
+		if t.Stage == "playoff" {
+			t.Round = (asInt(r, "play_order") - 1000) / 100
 		}
 		if b := asStr(r, "bracket_id"); b != "" {
 			t.BracketID = &b
@@ -763,6 +993,9 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 		st[t.ID] = &model.TeamEventStanding{TeamID: t.ID, Name: t.Name}
 	}
 	for _, tie := range ties {
+		if tie.Stage != "pool" {
+			continue // pool standings only; the playoff is a separate bracket
+		}
 		a, b := st[tie.TeamAID], st[tie.TeamBID]
 		if a == nil || b == nil {
 			continue

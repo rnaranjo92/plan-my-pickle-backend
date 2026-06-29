@@ -369,6 +369,7 @@ type TeamTie struct {
 	TeamBID      string    `json:"teamBId"`
 	WinnerTeamID *string   `json:"winnerTeamId,omitempty"`
 	Status       string    `json:"status"`
+	Round        int       `json:"round,omitempty"` // playoff round (1=first); 0 for pool
 	Lines        []TieLine `json:"lines,omitempty"`
 }
 

@@ -1010,7 +1010,8 @@ func (s *Service) SetLineLineup(matchID string, team1, team2 []string) error {
 }
 
 // TeamEventStandings tallies each team's ties/lines/points from completed ties,
-// ordered by ties won, then lines won, then point differential.
+// ordered by ties won, then head-to-head, then line differential, then point
+// differential.
 func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding, error) {
 	teams, err := s.ListTeams(eventID)
 	if err != nil {
@@ -1024,6 +1025,7 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 	for _, t := range teams {
 		st[t.ID] = &model.TeamEventStanding{TeamID: t.ID, Name: t.Name}
 	}
+	h2h := map[string]bool{} // h2h[winnerID+"|"+loserID] = true (pool ties)
 	for _, tie := range ties {
 		if tie.Stage != "pool" {
 			continue // pool standings only; the playoff is a separate bracket
@@ -1057,9 +1059,11 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 			if *tie.WinnerTeamID == tie.TeamAID {
 				a.TiesWon++
 				b.TiesLost++
+				h2h[tie.TeamAID+"|"+tie.TeamBID] = true
 			} else if *tie.WinnerTeamID == tie.TeamBID {
 				b.TiesWon++
 				a.TiesLost++
+				h2h[tie.TeamBID+"|"+tie.TeamAID] = true
 			}
 		}
 	}
@@ -1068,15 +1072,20 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 		out = append(out, *v)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].TiesWon != out[j].TiesWon {
-			return out[i].TiesWon > out[j].TiesWon
+		a, b := out[i], out[j]
+		if a.TiesWon != b.TiesWon {
+			return a.TiesWon > b.TiesWon
 		}
-		if out[i].LinesWon != out[j].LinesWon {
-			return out[i].LinesWon > out[j].LinesWon
+		// Head-to-head: if these two met and one won, it ranks higher.
+		if ab, ba := h2h[a.TeamID+"|"+b.TeamID], h2h[b.TeamID+"|"+a.TeamID]; ab != ba {
+			return ab
 		}
-		di := out[i].PointsFor - out[i].PointsAgainst
-		dj := out[j].PointsFor - out[j].PointsAgainst
-		return di > dj
+		// Line differential — not raw wins, so simply having played more ties
+		// can't let a worse record jump a better one mid-tournament.
+		if ldi, ldj := a.LinesWon-a.LinesLost, b.LinesWon-b.LinesLost; ldi != ldj {
+			return ldi > ldj
+		}
+		return (a.PointsFor - a.PointsAgainst) > (b.PointsFor - b.PointsAgainst)
 	})
 	return out, nil
 }

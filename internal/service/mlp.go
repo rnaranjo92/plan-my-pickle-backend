@@ -350,7 +350,7 @@ func (s *Service) rollupTie(tieID string) error {
 	if err != nil {
 		return err
 	}
-	var aWins, bWins, regDone int
+	var aWins, bWins int
 	var decider map[string]any
 	for _, ln := range lines {
 		lt := asStr(ln, "line_type")
@@ -359,7 +359,6 @@ func (s *Service) rollupTie(tieID string) error {
 			continue
 		}
 		if asStr(ln, "status") == "completed" {
-			regDone++
 			switch asInt(ln, "winning_team") {
 			case 1:
 				aWins++
@@ -369,9 +368,10 @@ func (s *Service) rollupTie(tieID string) error {
 		}
 	}
 
-	// Still playing the four regulation lines.
-	if regDone < len(tieLineOrder) {
-		return s.setTieState(tieID, regDone > 0, "")
+	// Still playing the four regulation lines. Count only ATTRIBUTED wins so an
+	// unattributed completed line can never finish a tie early.
+	if aWins+bWins < len(tieLineOrder) {
+		return s.setTieState(tieID, aWins+bWins > 0, "")
 	}
 
 	// All four in. A clean majority decides it.
@@ -522,7 +522,9 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 			continue
 		}
 		for _, ln := range tie.Lines {
-			if ln.Status != "completed" {
+			// Only the 4 regulation lines feed lines-won + point diff; the decider
+			// only decides the tie winner (via winner_team_id below).
+			if ln.Status != "completed" || ln.LineType == "dec" {
 				continue
 			}
 			if ln.Team1Score != nil && ln.Team2Score != nil {

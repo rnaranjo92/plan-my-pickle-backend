@@ -449,8 +449,9 @@ func (s *Service) rollupTie(tieID string) error {
 	return s.finishTie(tie, asInt(decider, "winning_team"))
 }
 
-// spawnDecider creates the lazy decider line — a mixed game between each team's
-// first man + first woman (a simple stand-in for the full DreamBreaker).
+// spawnDecider creates the lazy DreamBreaker line on a 2-2 split: the MLP singles
+// rotation where all four players of each team take turns (to 21, win by 2). All
+// four are recorded as its participants; it's placed on the first court.
 func (s *Service) spawnDecider(tie map[string]any) error {
 	eventID := asStr(tie, "event_id")
 	bracketID := asStr(tie, "bracket_id")

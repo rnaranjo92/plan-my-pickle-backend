@@ -4565,8 +4565,11 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 		return err
 	}
 	// Only real, played results are eligible for DUPR — forfeits, retirements and
-	// walkovers aren't submitted (no genuine head-to-head score).
-	if rt := asStr(m, "result_type"); ev != nil && asBool(ev, "dupr_sanctioned") && (rt == "" || rt == "normal") {
+	// walkovers aren't submitted (no genuine head-to-head score). The MLP
+	// DreamBreaker (dec) is an 8-player singles rotation, not a DUPR-ratable game,
+	// so it's excluded; the regulation 2-v-2 lines stay eligible.
+	if rt := asStr(m, "result_type"); ev != nil && asBool(ev, "dupr_sanctioned") &&
+		(rt == "" || rt == "normal") && asStr(m, "line_type") != "dec" {
 		// Best-effort: this only ENQUEUES a row for the organizer's later DUPR
 		// import (the real submit is SubmitPendingToDupr) — never fail an
 		// already-committed score over the deferred queue write, mirroring the

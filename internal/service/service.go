@@ -1224,6 +1224,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "mlp6prem":
 		// MLP Premier: 6 teams of 6 (3M/3W), team_size=6.
 		return s.seedMlp(ownerID, true)
+	case "mlpscored":
+		// MLP with scores filled in — live ties + standings for the team board.
+		return s.seedMlpScored(ownerID)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
@@ -1760,6 +1763,74 @@ func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 
 	if _, err := s.GenerateTeamTies(eventID); err != nil {
 		return "", fmt.Errorf("seed mlp schedule: %w", err)
+	}
+	return eventID, nil
+}
+
+// seedMlpScored builds an MLP event and fills in scores so the live team
+// scoreboard is populated: a mix of completed ties (3–1, no DreamBreaker needed),
+// in-progress ties (a couple lines done + one playing), and scheduled ties.
+func (s *Service) seedMlpScored(ownerID string) (string, error) {
+	eventID, err := s.seedMlp(ownerID, false)
+	if err != nil {
+		return "", err
+	}
+	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
+		"name":   "TEST · MLP · scored",
+		"status": "in_progress",
+	})
+	ties, err := s.ListTies(eventID)
+	if err != nil {
+		return eventID, err
+	}
+	setLine := func(matchID string, t1, t2, win int, status string) {
+		row := map[string]any{"status": status}
+		if status == "completed" {
+			row["team1_score"], row["team2_score"], row["winning_team"] = t1, t2, win
+		}
+		_, _ = s.sb.Update("matches", "id=eq."+store.Q(matchID), row)
+	}
+	for i, tie := range ties {
+		reg := make([]model.TieLine, 0, 4)
+		for _, ln := range tie.Lines {
+			if ln.LineType != "dec" {
+				reg = append(reg, ln)
+			}
+		}
+		switch i % 5 {
+		case 0:
+			// leave scheduled
+		case 1, 2:
+			// in progress: 2 lines done (1–1), 1 line playing
+			if len(reg) >= 1 {
+				setLine(reg[0].MatchID, 11, 6, 1, "completed")
+			}
+			if len(reg) >= 2 {
+				setLine(reg[1].MatchID, 7, 11, 2, "completed")
+			}
+			if len(reg) >= 3 {
+				setLine(reg[2].MatchID, 0, 0, 0, "in_progress")
+			}
+			_ = s.rollupTie(tie.ID)
+		default:
+			// completed: winner takes 3 of 4 (no 2–2, so no decider needed)
+			winnerSide := 1
+			if i%2 == 1 {
+				winnerSide = 2
+			}
+			for j, ln := range reg {
+				win := winnerSide
+				if j == 3 {
+					win = 3 - winnerSide
+				}
+				t1, t2 := 11, 6
+				if win == 2 {
+					t1, t2 = 6, 11
+				}
+				setLine(ln.MatchID, t1, t2, win, "completed")
+			}
+			_ = s.rollupTie(tie.ID)
+		}
 	}
 	return eventID, nil
 }

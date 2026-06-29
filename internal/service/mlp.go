@@ -212,6 +212,23 @@ func teamLineup(members []model.TeamMember) (men, women []string, err error) {
 	return men[:2], women[:2], nil
 }
 
+// teamRoster returns up to perGender men and women (in roster order) — used for
+// the DreamBreaker rotation, which fields the team's full playing roster
+// (2M+2W Challenger, 3M+3W Premier). Unlike teamLineup it requires no minimum.
+func teamRoster(members []model.TeamMember, perGender int) (men, women []string) {
+	for _, m := range members {
+		if m.PlayerID == nil || *m.PlayerID == "" {
+			continue
+		}
+		if m.Gender == "M" && len(men) < perGender {
+			men = append(men, *m.PlayerID)
+		} else if m.Gender == "F" && len(women) < perGender {
+			women = append(women, *m.PlayerID)
+		}
+	}
+	return men, women
+}
+
 // GenerateTeamTies builds a single round-robin of TIES among the event's teams
 // (grouped by bracket), each tie's 4 lines pre-filled with the standard 4-player
 // lineup. It refuses to clobber once any tie has a result.
@@ -705,8 +722,9 @@ func (s *Service) rollupTie(tieID string) error {
 }
 
 // spawnDecider creates the lazy DreamBreaker line on a 2-2 split: the MLP singles
-// rotation where all four players of each team take turns (to 21, win by 2). All
-// four are recorded as its participants; it's placed on the first court.
+// rotation where the team's full playing roster takes turns (to 21, win by 2) —
+// 2M+2W for Challenger, 3M+3W for Premier. All are recorded as its participants;
+// it's placed on the first court.
 func (s *Service) spawnDecider(tie map[string]any) error {
 	eventID := asStr(tie, "event_id")
 	bracketID := asStr(tie, "bracket_id")
@@ -719,14 +737,13 @@ func (s *Service) spawnDecider(tie map[string]any) error {
 	for _, t := range a {
 		byID[t.ID] = t.Members
 	}
-	aMen, aWomen, err := teamLineup(byID[asStr(tie, "team_a_id")])
-	if err != nil {
-		return err
+	// Challenger fields 2M+2W; Premier fields the full 3M+3W rotation.
+	perGender := 2
+	if ev, eerr := s.GetEvent(eventID); eerr == nil && ev.TeamSize/2 > perGender {
+		perGender = ev.TeamSize / 2
 	}
-	bMen, bWomen, err := teamLineup(byID[asStr(tie, "team_b_id")])
-	if err != nil {
-		return err
-	}
+	aMen, aWomen := teamRoster(byID[asStr(tie, "team_a_id")], perGender)
+	bMen, bWomen := teamRoster(byID[asStr(tie, "team_b_id")], perGender)
 	// Place the DreamBreaker on the first court, just after this tie's regulation
 	// slots, so it appears on the schedule the moment a tie reaches 2-2.
 	court := ""

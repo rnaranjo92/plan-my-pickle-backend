@@ -243,19 +243,12 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 	if len(teams) < 2 {
 		return 0, errors.New("need at least 2 teams to generate a schedule")
 	}
-	// Pre-validate every roster can field a lineup so we never half-build. For
-	// Premier (team_size >= 6) require a full 3 men + 3 women.
-	ev, err := s.GetEvent(eventID)
-	if err != nil {
-		return 0, err
-	}
+	// Pre-validate every roster can field a lineup so we never half-build (needs
+	// 2 of each). Premier rosters that are short of 3M/3W still play with a
+	// 4-player fallback — that's surfaced as a non-blocking warning in the UI.
 	for _, t := range teams {
-		men, women, lerr := teamLineup(t.Members)
-		if lerr != nil {
-			return 0, fmt.Errorf("%s: %w", t.Name, lerr)
-		}
-		if ev.TeamSize >= 6 && (len(men) < 3 || len(women) < 3) {
-			return 0, fmt.Errorf("%s: Premier teams need at least 3 men and 3 women (has %d men, %d women) — add players or use a 4-player format", t.Name, len(men), len(women))
+		if _, _, err := teamLineup(t.Members); err != nil {
+			return 0, fmt.Errorf("%s: %w", t.Name, err)
 		}
 	}
 	// Refuse if any tie already has a winner (results exist).

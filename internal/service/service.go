@@ -4399,7 +4399,14 @@ func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t
 		return ErrNotFound
 	}
 	// The updated row (return=representation) carries the routing columns.
-	return s.advanceAfterScore(out[0])
+	if err := s.advanceAfterScore(out[0]); err != nil {
+		return err
+	}
+	// A scored tie line re-evaluates its tie (lines won -> winner; decider on 2-2).
+	if tieID := asStr(out[0], "tie_id"); tieID != "" {
+		return s.rollupTie(tieID)
+	}
+	return nil
 }
 
 // applyScore writes a single-game result without format validation (demo seeding).

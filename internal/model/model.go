@@ -325,6 +325,84 @@ type RecordFixtureRequest struct {
 	PlayedAt string `json:"playedAt"`
 }
 
+// ============================================================================
+// MLP-style team events. A team-format event (events.team_size > 0) registers
+// TEAMS of players (each with a gender); the existing tournament_format brackets
+// the teams. Each team-vs-team matchup is a TeamTie whose lines REUSE the
+// matches table (matches.tie_id + line_type): women's (wd), men's (md), two
+// mixed (mx1, mx2), plus a lazily-created decider (dec) when the lines split 2-2.
+// ============================================================================
+
+// EventTeam is a team in a team-format event, optionally scoped to a pool.
+type EventTeam struct {
+	ID        string       `json:"id"`
+	EventID   string       `json:"eventId"`
+	BracketID *string      `json:"bracketId,omitempty"`
+	Name      string       `json:"name"`
+	Seed      *int         `json:"seed,omitempty"`
+	Members   []TeamMember `json:"members,omitempty"`
+}
+
+// TeamMember is a roster member; Gender (M|F) drives line eligibility.
+type TeamMember struct {
+	ID       string  `json:"id"`
+	TeamID   string  `json:"teamId"`
+	PlayerID *string `json:"playerId,omitempty"`
+	FullName string  `json:"fullName"`
+	Gender   string  `json:"gender"` // M | F
+}
+
+// TeamTie is a team-vs-team matchup; its lines live in matches (tie_id).
+// WinnerTeamID is rolled up from lines won (2-2 broken by the decider line).
+type TeamTie struct {
+	ID           string    `json:"id"`
+	EventID      string    `json:"eventId"`
+	BracketID    *string   `json:"bracketId,omitempty"`
+	Stage        string    `json:"stage"`
+	TeamAID      string    `json:"teamAId"`
+	TeamBID      string    `json:"teamBId"`
+	WinnerTeamID *string   `json:"winnerTeamId,omitempty"`
+	Status       string    `json:"status"`
+	Lines        []TieLine `json:"lines,omitempty"`
+}
+
+// TieLine is one line of a tie (a matches row) with its per-line result.
+// WinningTeam is 1 (team A) | 2 (team B) | 0 (unscored).
+type TieLine struct {
+	MatchID     string `json:"matchId"`
+	LineType    string `json:"lineType"` // wd | md | mx1 | mx2 | dec
+	Status      string `json:"status"`
+	Team1Score  *int   `json:"team1Score,omitempty"`
+	Team2Score  *int   `json:"team2Score,omitempty"`
+	WinningTeam int    `json:"winningTeam"`
+}
+
+// TeamEventStanding is a team's record in a team event, ordered by ties won,
+// then lines won, then point differential.
+type TeamEventStanding struct {
+	TeamID        string `json:"teamId"`
+	Name          string `json:"name"`
+	TiesWon       int    `json:"tiesWon"`
+	TiesLost      int    `json:"tiesLost"`
+	LinesWon      int    `json:"linesWon"`
+	LinesLost     int    `json:"linesLost"`
+	PointsFor     int    `json:"pointsFor"`
+	PointsAgainst int    `json:"pointsAgainst"`
+}
+
+// CreateTeamRequest registers a team on a team-format event.
+type CreateTeamRequest struct {
+	Name      string  `json:"name"`
+	BracketID *string `json:"bracketId,omitempty"`
+}
+
+// AddTeamMemberRequest adds a roster member (gender required for line eligibility).
+type AddTeamMemberRequest struct {
+	FullName string  `json:"fullName"`
+	Gender   string  `json:"gender"` // M | F
+	PlayerID *string `json:"playerId,omitempty"`
+}
+
 // FlexMatchup is one team-pair matchup in a Flex league division's generated
 // round-robin schedule (Flex League — the self-scheduled season). It reuses the
 // `teams` table for entrants. A matchup starts pending (generated, not yet

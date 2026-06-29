@@ -104,6 +104,16 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
 	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
 	mux.HandleFunc("POST /events/{id}/import-dupr", s.ownerOnly("event", "id", s.importDupr))
+
+	// --- MLP-style team events (teams + rosters + ties) ---
+	mux.HandleFunc("GET /events/{id}/teams", s.mlpListTeams)
+	mux.HandleFunc("POST /events/{id}/teams", s.ownerOnly("event", "id", s.mlpCreateTeam))
+	mux.HandleFunc("DELETE /events/{id}/teams/{teamId}", s.ownerOnly("event", "id", s.mlpRemoveTeam))
+	mux.HandleFunc("POST /events/{id}/teams/{teamId}/members", s.ownerOnly("event", "id", s.mlpAddTeamMember))
+	mux.HandleFunc("DELETE /events/{id}/team-members/{memberId}", s.ownerOnly("event", "id", s.mlpRemoveTeamMember))
+	mux.HandleFunc("POST /events/{id}/team-schedule", s.ownerOnly("event", "id", s.mlpGenerateTies))
+	mux.HandleFunc("GET /events/{id}/ties", s.mlpListTies)
+	mux.HandleFunc("GET /events/{id}/team-standings", s.mlpStandings)
 	// One-time per-event Premium pass: owner-only Stripe Checkout.
 	mux.HandleFunc("POST /events/{id}/premium-pass-checkout", s.ownerOnly("event", "id", s.startEventPassCheckout))
 	// /pay and /shirt are public self-service (a registrant has no account), but
@@ -1387,6 +1397,88 @@ func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// --- MLP-style team events ---
+
+func (s *Server) mlpListTeams(w http.ResponseWriter, r *http.Request) {
+	t, err := s.svc.ListTeams(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) mlpCreateTeam(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateTeamRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	t, err := s.svc.CreateTeam(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) mlpRemoveTeam(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveEventTeam(r.PathValue("teamId")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) mlpAddTeamMember(w http.ResponseWriter, r *http.Request) {
+	var req model.AddTeamMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	m, err := s.svc.AddTeamMember(r.PathValue("teamId"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) mlpRemoveTeamMember(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveTeamMember(r.PathValue("memberId")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) mlpGenerateTies(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.GenerateTeamTies(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"ties": n})
+}
+
+func (s *Server) mlpListTies(w http.ResponseWriter, r *http.Request) {
+	t, err := s.svc.ListTies(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) mlpStandings(w http.ResponseWriter, r *http.Request) {
+	t, err := s.svc.TeamEventStandings(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }
 
 // clearArrangement un-places every scheduled game (manual scheduling, mode A).

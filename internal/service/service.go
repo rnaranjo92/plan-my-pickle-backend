@@ -243,6 +243,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
 		"consolation":            req.Consolation,
 		"auto_adjust":            req.AutoAdjust,
+		"team_size":              req.TeamSize,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
 		"listed":                 req.Listed,
@@ -966,6 +967,11 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// form starts this box blank, so most edits intentionally leave it unchanged.
 	if pc := strings.TrimSpace(req.AdminPasscode); pc != "" {
 		upd["admin_passcode"] = pc
+	}
+	// Set-only: an edit never un-teams an event (0 = not sent), so a metadata edit
+	// can't accidentally wipe the team flag.
+	if req.TeamSize > 0 {
+		upd["team_size"] = req.TeamSize
 	}
 	// venue_notes / waiver_url ship in add_venue_info.sql — reference them only
 	// when set so an event edit never breaks before the migration is applied (and

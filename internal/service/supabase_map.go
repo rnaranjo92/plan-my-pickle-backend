@@ -159,6 +159,7 @@ func mapEvent(m map[string]any) model.Event {
 		CashPrizeAmount:      asFloatPtr(m, "cash_prize_amount"),
 		Consolation:          asBool(m, "consolation"),
 		AutoAdjust:           asBool(m, "auto_adjust"),
+		TeamSize:             asInt(m, "team_size"),
 		StartsAt:             asStrPtr(m, "starts_at"),
 		EndsAt:               asStrPtr(m, "ends_at"),
 		Listed:               asBool(m, "listed"),

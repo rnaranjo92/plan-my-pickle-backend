@@ -42,6 +42,8 @@ type Event struct {
 	// AutoAdjust re-flows later match start times to follow ACTUAL game finishes
 	// (early or late) as scores come in, instead of the fixed planned slots.
 	AutoAdjust bool `json:"autoAdjust"`
+	// TeamSize > 0 marks an MLP-style team event (roster size per team; 4 = 2M/2W).
+	TeamSize int `json:"teamSize"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
 	StartsAt *string `json:"startsAt,omitempty"`
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
@@ -653,6 +655,7 @@ type CreateEventRequest struct {
 	CashPrizeAmount      *float64       `json:"cashPrizeAmount,omitempty"`
 	Consolation          bool           `json:"consolation"` // single_elim back-draw
 	AutoAdjust           bool           `json:"autoAdjust"`
+	TeamSize             int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
 	StartsAt             string         `json:"startsAt"`    // RFC3339 UTC, "" = none
 	EndsAt               string         `json:"endsAt"`      // RFC3339 UTC, "" = none
 	Description          string         `json:"description"`

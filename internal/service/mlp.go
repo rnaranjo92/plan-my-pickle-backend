@@ -215,23 +215,16 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 		}
 	}
 
-	// Group teams by bracket (null bracket = one group).
-	groups := map[string][]model.EventTeam{}
-	for _, t := range teams {
-		key := ""
-		if t.BracketID != nil {
-			key = *t.BracketID
-		}
-		groups[key] = append(groups[key], t)
+	// Put the lines in the event's division so the division-filtered Game tab
+	// shows them (the create/edit form always makes at least an "Open" division;
+	// a team event uses a single one). Bracket-less otherwise.
+	bracketID := ""
+	if bks, berr := s.GetBrackets(eventID); berr == nil && len(bks) > 0 {
+		bracketID = bks[0].ID
 	}
-	keys := make([]string, 0, len(groups))
-	for k := range groups {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 
 	// Courts for conflict-free line placement (assigned directly at creation —
-	// the registration-based spreadCourts doesn't handle bracket-less tie lines).
+	// the registration-based spreadCourts doesn't handle these lines).
 	courtByNum, err := s.courtIDsByNumber(eventID)
 	if err != nil {
 		return 0, err
@@ -242,17 +235,15 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 	}
 	sort.Ints(courtNums)
 
+	// A single round-robin over all teams: each round pairs every team once, so a
+	// team never plays two ties at the same time.
 	count := 0
-	for _, k := range keys {
-		// A single round-robin: each round pairs every team once, so a team never
-		// plays two ties at the same time.
-		for r, round := range roundRobinRounds(len(groups[k])) {
-			for ti, pair := range round {
-				if err := s.createTie(eventID, k, groups[k][pair[0]], groups[k][pair[1]], r, ti, courtNums, courtByNum); err != nil {
-					return count, err
-				}
-				count++
+	for r, round := range roundRobinRounds(len(teams)) {
+		for ti, pair := range round {
+			if err := s.createTie(eventID, bracketID, teams[pair[0]], teams[pair[1]], r, ti, courtNums, courtByNum); err != nil {
+				return count, err
 			}
+			count++
 		}
 	}
 	return count, nil

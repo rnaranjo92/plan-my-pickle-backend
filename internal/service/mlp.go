@@ -230,30 +230,72 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 	}
 	sort.Strings(keys)
 
-	order := 0
+	// Courts for conflict-free line placement (assigned directly at creation —
+	// the registration-based spreadCourts doesn't handle bracket-less tie lines).
+	courtByNum, err := s.courtIDsByNumber(eventID)
+	if err != nil {
+		return 0, err
+	}
+	courtNums := make([]int, 0, len(courtByNum))
+	for n := range courtByNum {
+		courtNums = append(courtNums, n)
+	}
+	sort.Ints(courtNums)
+
 	count := 0
 	for _, k := range keys {
-		g := groups[k]
-		for i := 0; i < len(g); i++ {
-			for j := i + 1; j < len(g); j++ {
-				order++
-				if err := s.createTie(eventID, k, g[i], g[j], order); err != nil {
+		// A single round-robin: each round pairs every team once, so a team never
+		// plays two ties at the same time.
+		for r, round := range roundRobinRounds(len(groups[k])) {
+			for ti, pair := range round {
+				if err := s.createTie(eventID, k, groups[k][pair[0]], groups[k][pair[1]], r, ti, courtNums, courtByNum); err != nil {
 					return count, err
 				}
 				count++
 			}
 		}
 	}
-	// Place the new lines onto courts/time-slots so they show on the Game tab.
-	if err := s.spreadCourts(eventID); err != nil {
-		return count, err
-	}
 	return count, nil
 }
 
-// createTie writes one tie + its 4 regulation lines (matches) with the standard
-// lineup (team A = match team 1, team B = team 2).
-func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, order int) error {
+// roundRobinRounds returns the rounds of a single round-robin over n teams (the
+// circle method): each round pairs every team once; an odd n sits one out via a
+// phantom bye. Returns rounds of [i,j] team-index pairs.
+func roundRobinRounds(n int) [][][2]int {
+	if n < 2 {
+		return nil
+	}
+	m, bye := n, -1
+	if n%2 == 1 {
+		m, bye = n+1, n
+	}
+	idx := make([]int, m)
+	for i := range idx {
+		idx[i] = i
+	}
+	rounds := make([][][2]int, 0, m-1)
+	for r := 0; r < m-1; r++ {
+		var round [][2]int
+		for i := 0; i < m/2; i++ {
+			a, b := idx[i], idx[m-1-i]
+			if a != bye && b != bye {
+				round = append(round, [2]int{a, b})
+			}
+		}
+		rounds = append(rounds, round)
+		// Rotate: fix idx[0], shift the rest clockwise by one.
+		last := idx[m-1]
+		copy(idx[2:], idx[1:m-1])
+		idx[1] = last
+	}
+	return rounds
+}
+
+// createTie writes one tie + its 4 lines (team A = match team 1). Lines are
+// placed CONFLICT-FREE at creation: wd+md run together (disjoint players), then
+// mx1+mx2. Round r occupies time-slots r*2 (wd,md) and r*2+1 (mx1,mx2); tie ti in
+// the round uses courts [ti*2] and [ti*2+1].
+func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, ti int, courtNums []int, courtByNum map[int]string) error {
 	aMen, aWomen, err := teamLineup(a.Members)
 	if err != nil {
 		return fmt.Errorf("%s: %w", a.Name, err)
@@ -262,13 +304,20 @@ func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, ord
 	if err != nil {
 		return fmt.Errorf("%s: %w", b.Name, err)
 	}
+	courtA, courtB := "", ""
+	if nc := len(courtNums); nc > 0 {
+		courtA = courtByNum[courtNums[(ti*2)%nc]]
+		courtB = courtByNum[courtNums[(ti*2+1)%nc]]
+	}
+	slotA, slotB := r*2, r*2+1
+
 	tieRow := map[string]any{
 		"event_id":   eventID,
 		"stage":      "pool",
 		"team_a_id":  a.ID,
 		"team_b_id":  b.ID,
 		"status":     "scheduled",
-		"play_order": order,
+		"play_order": slotA,
 	}
 	if bracketID != "" {
 		tieRow["bracket_id"] = bracketID
@@ -282,33 +331,42 @@ func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, ord
 	}
 	tieID := asStr(tieOut[0], "id")
 
-	// The four regulation lines + their lineups (A = team 1, B = team 2).
-	lineups := map[string][2][]string{
-		"wd":  {aWomen, bWomen},
-		"md":  {aMen, bMen},
-		"mx1": {{aMen[0], aWomen[0]}, {bMen[0], bWomen[0]}},
-		"mx2": {{aMen[1], aWomen[1]}, {bMen[1], bWomen[1]}},
+	// {line, side-A lineup, side-B lineup, court, time-slot}.
+	type lineSpec struct {
+		lt     string
+		t1, t2 []string
+		court  string
+		slot   int
 	}
-	for li, lt := range tieLineOrder {
-		if err := s.createTieLine(eventID, bracketID, tieID, lt, order*10+li, lineups[lt][0], lineups[lt][1]); err != nil {
+	for _, sp := range []lineSpec{
+		{"wd", aWomen, bWomen, courtA, slotA},
+		{"md", aMen, bMen, courtB, slotA},
+		{"mx1", []string{aMen[0], aWomen[0]}, []string{bMen[0], bWomen[0]}, courtA, slotB},
+		{"mx2", []string{aMen[1], aWomen[1]}, []string{bMen[1], bWomen[1]}, courtB, slotB},
+	} {
+		if err := s.createTieLine(eventID, bracketID, tieID, sp.lt, sp.slot, sp.court, sp.t1, sp.t2); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// createTieLine inserts one line as a matches row + its 2-v-2 participants.
-func (s *Service) createTieLine(eventID, bracketID, tieID, lineType string, order int, team1, team2 []string) error {
+// createTieLine inserts one line as a matches row + its 2-v-2 participants,
+// placed on courtID at playOrder (courtID "" = unplaced).
+func (s *Service) createTieLine(eventID, bracketID, tieID, lineType string, playOrder int, courtID string, team1, team2 []string) error {
 	row := map[string]any{
 		"event_id":   eventID,
 		"stage":      "pool",
 		"status":     "scheduled",
 		"tie_id":     tieID,
 		"line_type":  lineType,
-		"play_order": order,
+		"play_order": playOrder,
 	}
 	if bracketID != "" {
 		row["bracket_id"] = bracketID
+	}
+	if courtID != "" {
+		row["court_id"] = courtID
 	}
 	out, err := s.sb.Insert("matches", []map[string]any{row})
 	if err != nil {
@@ -422,7 +480,7 @@ func (s *Service) spawnDecider(tie map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return s.createTieLine(eventID, bracketID, tieID, "dec", 9999,
+	return s.createTieLine(eventID, bracketID, tieID, "dec", 9999, "",
 		[]string{aMen[0], aWomen[0]}, []string{bMen[0], bWomen[0]})
 }
 

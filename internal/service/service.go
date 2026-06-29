@@ -2653,20 +2653,16 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 	if err != nil {
 		return model.ScheduleResult{}, err
 	}
-	// Team events: the tie lines already exist (built from the rosters) — NEVER
-	// wipe + regenerate from registrations (there are none, so that would just
-	// delete the lines). Just (re)arrange the existing lines onto courts.
+	// Team events: NEVER wipe + regenerate from registrations (there are none, so
+	// that would just delete the tie lines). Instead (re)build the ties from the
+	// rosters and arrange them onto courts — same as the Teams screen's "Rebuild
+	// schedule", and self-healing if the lines were previously wiped.
 	if ev.TeamSize > 0 {
-		if arrange {
-			if err := s.spreadCourts(eventID); err != nil {
-				return model.ScheduleResult{}, err
-			}
-		}
-		ids, err := s.listPoolMatchIDs(eventID)
+		n, err := s.GenerateTeamTies(eventID)
 		if err != nil {
 			return model.ScheduleResult{}, err
 		}
-		return model.ScheduleResult{Matches: len(ids)}, nil
+		return model.ScheduleResult{Matches: n * len(tieLineOrder)}, nil
 	}
 	bks, err := s.GetBrackets(eventID)
 	if err != nil {

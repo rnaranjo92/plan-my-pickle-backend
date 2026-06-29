@@ -189,8 +189,8 @@ func (s *Service) ListTeams(eventID string) ([]model.EventTeam, error) {
 	return teams, nil
 }
 
-// teamLineup splits a team's roster into its first two men + two women — the
-// fixed 4-player MLP lineup. Errors if the roster can't field a line.
+// teamLineup splits a team's roster into all its men + women (player ids), in
+// roster order. Errors if the roster can't field a line (needs 2 of each).
 func teamLineup(members []model.TeamMember) (men, women []string, err error) {
 	for _, m := range members {
 		pid := ""
@@ -209,7 +209,27 @@ func teamLineup(members []model.TeamMember) (men, women []string, err error) {
 	if len(men) < 2 || len(women) < 2 {
 		return nil, nil, fmt.Errorf("a team needs at least 2 men and 2 women (has %d men, %d women)", len(men), len(women))
 	}
-	return men[:2], women[:2], nil
+	return men, women, nil
+}
+
+// lineupSet picks the default per-line lineups from a roster. A 4-player
+// Challenger team uses its first 2 men + 2 women across the lines; a 6-player
+// Premier team puts the 3rd man/woman into a mixed line so all six play.
+// Players within a simultaneous slot (wd+md, then mx1+mx2) are always disjoint.
+func lineupSet(men, women []string) (wd, md, mx1, mx2 []string) {
+	wd = []string{women[0], women[1]}
+	md = []string{men[0], men[1]}
+	mx1M, mx2M := men[0], men[1]
+	if len(men) >= 3 {
+		mx1M, mx2M = men[2], men[0]
+	}
+	mx1W, mx2W := women[0], women[1]
+	if len(women) >= 3 {
+		mx1W, mx2W = women[2], women[0]
+	}
+	mx1 = []string{mx1M, mx1W}
+	mx2 = []string{mx2M, mx2W}
+	return
 }
 
 // GenerateTeamTies builds a single round-robin of TIES among the event's teams
@@ -223,10 +243,19 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 	if len(teams) < 2 {
 		return 0, errors.New("need at least 2 teams to generate a schedule")
 	}
-	// Pre-validate every roster can field a lineup so we never half-build.
+	// Pre-validate every roster can field a lineup so we never half-build. For
+	// Premier (team_size >= 6) require a full 3 men + 3 women.
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return 0, err
+	}
 	for _, t := range teams {
-		if _, _, err := teamLineup(t.Members); err != nil {
-			return 0, fmt.Errorf("%s: %w", t.Name, err)
+		men, women, lerr := teamLineup(t.Members)
+		if lerr != nil {
+			return 0, fmt.Errorf("%s: %w", t.Name, lerr)
+		}
+		if ev.TeamSize >= 6 && (len(men) < 3 || len(women) < 3) {
+			return 0, fmt.Errorf("%s: Premier teams need at least 3 men and 3 women (has %d men, %d women) — add players or use a 4-player format", t.Name, len(men), len(women))
 		}
 	}
 	// Refuse if any tie already has a winner (results exist).
@@ -363,11 +392,13 @@ func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, 
 		court  string
 		slot   int
 	}
+	awd, amd, amx1, amx2 := lineupSet(aMen, aWomen)
+	bwd, bmd, bmx1, bmx2 := lineupSet(bMen, bWomen)
 	for _, sp := range []lineSpec{
-		{"wd", aWomen, bWomen, courtA, slotA},
-		{"md", aMen, bMen, courtB, slotA},
-		{"mx1", []string{aMen[0], aWomen[0]}, []string{bMen[0], bWomen[0]}, courtA, slotB},
-		{"mx2", []string{aMen[1], aWomen[1]}, []string{bMen[1], bWomen[1]}, courtB, slotB},
+		{"wd", awd, bwd, courtA, slotA},
+		{"md", amd, bmd, courtB, slotA},
+		{"mx1", amx1, bmx1, courtA, slotB},
+		{"mx2", amx2, bmx2, courtB, slotB},
 	} {
 		if err := s.createTieLine(eventID, bracketID, tieID, sp.lt, sp.slot, sp.court, sp.t1, sp.t2); err != nil {
 			return err
@@ -394,11 +425,13 @@ func (s *Service) createTieLinesFor(eventID, bracketID, tieID string, a, b model
 		court  string
 		slot   int
 	}
+	awd, amd, amx1, amx2 := lineupSet(aMen, aWomen)
+	bwd, bmd, bmx1, bmx2 := lineupSet(bMen, bWomen)
 	for _, sp := range []lineSpec{
-		{"wd", aWomen, bWomen, courtA, slotA},
-		{"md", aMen, bMen, courtB, slotA},
-		{"mx1", []string{aMen[0], aWomen[0]}, []string{bMen[0], bWomen[0]}, courtA, slotB},
-		{"mx2", []string{aMen[1], aWomen[1]}, []string{bMen[1], bWomen[1]}, courtB, slotB},
+		{"wd", awd, bwd, courtA, slotA},
+		{"md", amd, bmd, courtB, slotA},
+		{"mx1", amx1, bmx1, courtA, slotB},
+		{"mx2", amx2, bmx2, courtB, slotB},
 	} {
 		if err := s.createTieLine(eventID, bracketID, tieID, sp.lt, sp.slot, sp.court, sp.t1, sp.t2); err != nil {
 			return err
@@ -476,7 +509,9 @@ func (s *Service) GeneratePlayoff(eventID string) (int, error) {
 		return 0, errors.New("need at least 2 teams for a playoff")
 	}
 	k := 4
-	if n < 4 {
+	if n >= 8 {
+		k = 8
+	} else if n < 4 {
 		k = 2
 	}
 
@@ -747,9 +782,11 @@ func (s *Service) spawnDecider(tie map[string]any) error {
 	// The DreamBreaker is a SINGLES rotation: all four players of each team take
 	// turns (swapping every 4 points on court). Record them all as the line's
 	// participants; the running score is kept like any game (to 21, win by 2).
+	// Default DreamBreaker four: first 2 men + 2 women of each side (the captain
+	// can reassign any 4 via SetLineLineup before it's scored).
 	return s.createTieLine(eventID, bracketID, tieID, "dec", slot, court,
-		append(append([]string{}, aMen...), aWomen...),
-		append(append([]string{}, bMen...), bWomen...))
+		append(append([]string{}, aMen[:2]...), aWomen[:2]...),
+		append(append([]string{}, bMen[:2]...), bWomen[:2]...))
 }
 
 func (s *Service) setTieState(tieID string, started bool, _ string) error {

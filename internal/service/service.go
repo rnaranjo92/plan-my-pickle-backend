@@ -4645,7 +4645,9 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 		}
 	}
 	if stage == "pool" {
-		if bc := asStrPtr(m, "bracket_id"); bc != nil {
+		// Team-event tie lines are also stage="pool" on the division bracket, but
+		// they belong to a tie (not a registration pool) — skip pool->playoff seeding.
+		if bc := asStrPtr(m, "bracket_id"); bc != nil && asStr(m, "tie_id") == "" {
 			if err := s.maybeSeedPlayoff(*bc); err != nil {
 				return err
 			}

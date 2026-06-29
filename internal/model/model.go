@@ -368,15 +368,24 @@ type TeamTie struct {
 	Lines        []TieLine `json:"lines,omitempty"`
 }
 
-// TieLine is one line of a tie (a matches row) with its per-line result.
-// WinningTeam is 1 (team A) | 2 (team B) | 0 (unscored).
+// TieLine is one line of a tie (a matches row) with its per-line result + the
+// player ids on each side (team A = 1, team B = 2). WinningTeam is 1 | 2 | 0.
 type TieLine struct {
-	MatchID     string `json:"matchId"`
-	LineType    string `json:"lineType"` // wd | md | mx1 | mx2 | dec
-	Status      string `json:"status"`
-	Team1Score  *int   `json:"team1Score,omitempty"`
-	Team2Score  *int   `json:"team2Score,omitempty"`
-	WinningTeam int    `json:"winningTeam"`
+	MatchID      string   `json:"matchId"`
+	LineType     string   `json:"lineType"` // wd | md | mx1 | mx2 | dec
+	Status       string   `json:"status"`
+	Team1Score   *int     `json:"team1Score,omitempty"`
+	Team2Score   *int     `json:"team2Score,omitempty"`
+	WinningTeam  int      `json:"winningTeam"`
+	Team1Players []string `json:"team1Players"`
+	Team2Players []string `json:"team2Players"`
+}
+
+// SetLineupRequest assigns the players for one tie line (each side from its own
+// team's roster; gender + count must match the line type).
+type SetLineupRequest struct {
+	Team1 []string `json:"team1"`
+	Team2 []string `json:"team2"`
 }
 
 // TeamEventStanding is a team's record in a team event, ordered by ties won,

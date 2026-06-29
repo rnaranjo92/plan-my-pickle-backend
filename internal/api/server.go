@@ -114,6 +114,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/team-schedule", s.ownerOnly("event", "id", s.mlpGenerateTies))
 	mux.HandleFunc("GET /events/{id}/ties", s.mlpListTies)
 	mux.HandleFunc("GET /events/{id}/team-standings", s.mlpStandings)
+	mux.HandleFunc("POST /events/{id}/lines/{matchId}/lineup", s.ownerOnly("event", "id", s.mlpSetLineup))
 	// One-time per-event Premium pass: owner-only Stripe Checkout.
 	mux.HandleFunc("POST /events/{id}/premium-pass-checkout", s.ownerOnly("event", "id", s.startEventPassCheckout))
 	// /pay and /shirt are public self-service (a registrant has no account), but
@@ -1479,6 +1480,19 @@ func (s *Server) mlpStandings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) mlpSetLineup(w http.ResponseWriter, r *http.Request) {
+	var req model.SetLineupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.SetLineLineup(r.PathValue("matchId"), req.Team1, req.Team2); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
 }
 
 // clearArrangement un-places every scheduled game (manual scheduling, mode A).

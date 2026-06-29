@@ -545,16 +545,18 @@ func (s *Service) ListTies(eventID string) ([]model.TeamTie, error) {
 		return ties, nil
 	}
 	lrows, err := s.sb.Select("matches",
-		"tie_id=in.("+joinIDs(ids)+")&select=id,tie_id,line_type,status,team1_score,team2_score,winning_team&order=play_order")
+		"tie_id=in.("+joinIDs(ids)+")&select=id,tie_id,line_type,status,team1_score,team2_score,winning_team,participants:match_participants(team,player_id)&order=play_order")
 	if err != nil {
 		return nil, err
 	}
 	for _, lr := range lrows {
 		ln := model.TieLine{
-			MatchID:     asStr(lr, "id"),
-			LineType:    asStr(lr, "line_type"),
-			Status:      asStr(lr, "status"),
-			WinningTeam: asInt(lr, "winning_team"),
+			MatchID:      asStr(lr, "id"),
+			LineType:     asStr(lr, "line_type"),
+			Status:       asStr(lr, "status"),
+			WinningTeam:  asInt(lr, "winning_team"),
+			Team1Players: []string{},
+			Team2Players: []string{},
 		}
 		if v, ok := lr["team1_score"]; ok && v != nil {
 			t1 := asInt(lr, "team1_score")
@@ -564,11 +566,151 @@ func (s *Service) ListTies(eventID string) ([]model.TeamTie, error) {
 			t2 := asInt(lr, "team2_score")
 			ln.Team2Score = &t2
 		}
+		if ps, ok := lr["participants"].([]any); ok {
+			for _, p := range ps {
+				pm, ok := p.(map[string]any)
+				if !ok {
+					continue
+				}
+				pid := asStr(pm, "player_id")
+				if pid == "" {
+					continue
+				}
+				if asInt(pm, "team") == 1 {
+					ln.Team1Players = append(ln.Team1Players, pid)
+				} else {
+					ln.Team2Players = append(ln.Team2Players, pid)
+				}
+			}
+		}
 		if i, ok := idx[asStr(lr, "tie_id")]; ok {
 			ties[i].Lines = append(ties[i].Lines, ln)
 		}
 	}
 	return ties, nil
+}
+
+// lineGenderReq is how many men + women a line needs per side.
+func lineGenderReq(lineType string) (men, women int, ok bool) {
+	switch lineType {
+	case "wd":
+		return 0, 2, true
+	case "md":
+		return 2, 0, true
+	case "mx1", "mx2":
+		return 1, 1, true
+	}
+	return 0, 0, false
+}
+
+// teamGenderMap returns a team roster's player_id -> gender.
+func (s *Service) teamGenderMap(teamID string) (map[string]string, error) {
+	rows, err := s.sb.Select("event_team_members",
+		"team_id=eq."+store.Q(teamID)+"&select=player_id,gender")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, r := range rows {
+		if pid := asStr(r, "player_id"); pid != "" {
+			out[pid] = asStr(r, "gender")
+		}
+	}
+	return out, nil
+}
+
+// validateLineup checks one side's players against a line's gender + count rule.
+func validateLineup(lineType string, ids []string, roster map[string]string) error {
+	men, women, ok := lineGenderReq(lineType)
+	if !ok {
+		return fmt.Errorf("can't set a lineup for a %q line", lineType)
+	}
+	if len(ids) != men+women {
+		return fmt.Errorf("this line needs %d player(s) per team", men+women)
+	}
+	gotM, gotF := 0, 0
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			return errors.New("a player can't be listed twice on a line")
+		}
+		seen[id] = true
+		g, in := roster[id]
+		if !in {
+			return errors.New("a selected player isn't on that team")
+		}
+		switch g {
+		case "M":
+			gotM++
+		case "F":
+			gotF++
+		}
+	}
+	if gotM != men || gotF != women {
+		return fmt.Errorf("this line needs %dM + %dW (got %dM + %dW)", men, women, gotM, gotF)
+	}
+	return nil
+}
+
+// SetLineLineup replaces the players on one tie line (each side from its own
+// team's roster; gender + count enforced per the line type). Blocked once the
+// line is scored.
+func (s *Service) SetLineLineup(matchID string, team1, team2 []string) error {
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=line_type,tie_id,status")
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return ErrNotFound
+	}
+	if asStr(m, "status") == "completed" {
+		return fmt.Errorf("%w: this line is already scored", ErrScheduleHasResults)
+	}
+	lt := asStr(m, "line_type")
+	tieID := asStr(m, "tie_id")
+	if tieID == "" {
+		return errors.New("not a team tie line")
+	}
+	if lt == "dec" {
+		return errors.New("the DreamBreaker uses the whole roster — no lineup to set")
+	}
+	tie, err := s.sb.SelectOne("team_ties",
+		"id=eq."+store.Q(tieID)+"&select=team_a_id,team_b_id")
+	if err != nil {
+		return err
+	}
+	if tie == nil {
+		return ErrNotFound
+	}
+	rosterA, err := s.teamGenderMap(asStr(tie, "team_a_id"))
+	if err != nil {
+		return err
+	}
+	rosterB, err := s.teamGenderMap(asStr(tie, "team_b_id"))
+	if err != nil {
+		return err
+	}
+	if err := validateLineup(lt, team1, rosterA); err != nil {
+		return err
+	}
+	if err := validateLineup(lt, team2, rosterB); err != nil {
+		return err
+	}
+	if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(matchID)); err != nil {
+		return err
+	}
+	rows := make([]map[string]any, 0, len(team1)+len(team2))
+	for _, pid := range team1 {
+		rows = append(rows, map[string]any{"match_id": matchID, "player_id": pid, "team": 1})
+	}
+	for _, pid := range team2 {
+		rows = append(rows, map[string]any{"match_id": matchID, "player_id": pid, "team": 2})
+	}
+	if len(rows) > 0 {
+		_, err = s.sb.Insert("match_participants", rows)
+	}
+	return err
 }
 
 // TeamEventStandings tallies each team's ties/lines/points from completed ties,

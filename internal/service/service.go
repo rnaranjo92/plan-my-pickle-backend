@@ -1219,8 +1219,11 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	)
 	switch kind {
 	case "mlp6":
-		// MLP-style team event: 6 teams of 16 (8M/8W), round-robin of ties.
-		return s.seedMlp(ownerID)
+		// MLP Challenger: 6 teams of 16 (8M/8W), round-robin of ties.
+		return s.seedMlp(ownerID, false)
+	case "mlp6prem":
+		// MLP Premier: 6 teams of 6 (3M/3W), team_size=6.
+		return s.seedMlp(ownerID, true)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
@@ -1678,11 +1681,17 @@ func ratingInBand(min, max *float64, i, n int) float64 {
 // seedMlp creates a TEST MLP-style team event: 6 teams of 16 players (8 men + 8
 // women each), then generates the round-robin of ties. Lines are left unscored
 // so QA can score them on the board and watch the tie roll up.
-func (s *Service) seedMlp(ownerID string) (string, error) {
+func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
+	teamSize, perGender := 4, 8
+	name := "TEST · MLP · 6 teams"
+	if premier {
+		teamSize, perGender = 6, 3
+		name = "TEST · MLP Premier · 6 teams"
+	}
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · MLP · 6 teams", "format": "doubles", "partner_mode": "fixed",
+		"name": name, "format": "doubles", "partner_mode": "fixed",
 		"scoring_mode": "wins", "tournament_format": "round_robin", "num_courts": 8,
-		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": 4,
+		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": teamSize,
 		"dupr_sanctioned": false, "status": "open",
 		"location": "Test Courts", "owner_id": ownerID,
 	})
@@ -1712,7 +1721,7 @@ func (s *Service) seedMlp(ownerID string) (string, error) {
 		players := make([]map[string]any, 0, 16)
 		names := make([]string, 0, 16)
 		genders := make([]string, 0, 16)
-		for g := 0; g < 8; g++ {
+		for g := 0; g < perGender; g++ {
 			mn := fmt.Sprintf("%s %s", male[g], last[(t+g)%len(last)])
 			fn := fmt.Sprintf("%s %s", female[g], last[(t+g+1)%len(last)])
 			rating := 3.0 + float64(g%6)*0.2

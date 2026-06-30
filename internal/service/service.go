@@ -1227,6 +1227,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "mlpscored":
 		// MLP with scores filled in — live ties + standings for the team board.
 		return s.seedMlpScored(ownerID)
+	case "mlpchamp":
+		// MLP played to completion — pools + playoff done, has a champion.
+		return s.seedMlpComplete(ownerID)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
@@ -1833,6 +1836,85 @@ func (s *Service) seedMlpScored(ownerID string) (string, error) {
 		}
 	}
 	return eventID, nil
+}
+
+// seedMlpComplete builds an MLP event, plays every pool tie to a 3-1 result (no
+// DreamBreaker), seeds the playoff, and plays it to a champion — a fully
+// finished event for demoing final standings + the gold/silver/bronze podium.
+func (s *Service) seedMlpComplete(ownerID string) (string, error) {
+	eventID, err := s.seedMlp(ownerID, false)
+	if err != nil {
+		return "", err
+	}
+	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
+		"name":   "TEST · MLP · champion",
+		"status": "in_progress",
+	})
+	pool, err := s.ListTies(eventID)
+	if err != nil {
+		return eventID, err
+	}
+	for i, tie := range pool {
+		s.scoreTie31(tie, 1+(i%2)) // alternate which side wins for a spread
+	}
+	if _, err := s.GeneratePlayoff(eventID); err != nil {
+		return eventID, err
+	}
+	if err := s.scorePlayoffRounds(eventID); err != nil {
+		return eventID, err
+	}
+	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"status": "completed"})
+	return eventID, nil
+}
+
+// scoreTie31 fills a tie's 4 regulation lines so winnerSide (1 or 2) takes it
+// 3-1 — a clean result with no DreamBreaker. Best-effort (seed helper).
+func (s *Service) scoreTie31(tie model.TeamTie, winnerSide int) {
+	reg := make([]model.TieLine, 0, 4)
+	for _, ln := range tie.Lines {
+		if ln.LineType != "dec" {
+			reg = append(reg, ln)
+		}
+	}
+	for j, ln := range reg {
+		win := winnerSide
+		if j == 3 {
+			win = 3 - winnerSide // loser takes the last line -> 3-1
+		}
+		t1, t2 := 11, 6
+		if win == 2 {
+			t1, t2 = 6, 11
+		}
+		_, _ = s.sb.Update("matches", "id=eq."+store.Q(ln.MatchID), map[string]any{
+			"team1_score": t1, "team2_score": t2, "winning_team": win, "status": "completed",
+		})
+	}
+	_ = s.rollupTie(tie.ID)
+}
+
+// scorePlayoffRounds plays out the playoff: score every open playoff tie, which
+// grows the next round, and repeat until a champion remains.
+func (s *Service) scorePlayoffRounds(eventID string) error {
+	for iter := 0; iter < 6; iter++ {
+		ties, err := s.ListTies(eventID)
+		if err != nil {
+			return err
+		}
+		var open []model.TeamTie
+		for _, t := range ties {
+			if t.Stage == "playoff" && t.WinnerTeamID == nil {
+				open = append(open, t)
+			}
+		}
+		if len(open) == 0 {
+			return nil
+		}
+		for i, t := range open {
+			s.scoreTie31(t, 1+(i%2))
+		}
+	}
+	return nil
 }
 
 // seedTournament creates the event, registers the demo players, generates the

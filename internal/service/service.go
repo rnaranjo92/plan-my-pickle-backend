@@ -5584,12 +5584,19 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		return nil, err
 	}
 	out := make([]model.FeedItem, 0, len(rows))
+	itemIDs := make([]string, 0, len(rows))
 	for _, r := range rows {
 		fi := mapFeedItem(r)
 		fi.ReactionCounts = map[string]int{}
 		fi.MyReactions = []string{}
 		fi.EventName = names[fi.EventID]
 		out = append(out, fi)
+		itemIDs = append(itemIDs, fi.ID)
+	}
+	// Enrich with reaction counts / my reactions / comment counts (like ListFeed) —
+	// otherwise the NewsFeed shows every post as un-reacted after a refresh.
+	if len(itemIDs) > 0 {
+		s.attachSocial(out, itemIDs, userID)
 	}
 	return out, nil
 }

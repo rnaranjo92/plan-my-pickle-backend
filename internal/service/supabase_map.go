@@ -174,6 +174,7 @@ func mapEvent(m map[string]any) model.Event {
 		Description:          asStrPtr(m, "description"),
 		LeagueID:             asStrPtr(m, "league_id"),
 		Status:               asStr(m, "status"),
+		ScoreboardTheme:      asMap(m, "scoreboard_theme"),
 	}
 }
 

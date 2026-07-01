@@ -80,6 +80,27 @@ func (s *Service) ClearSponsorWatermark(eventID string) error {
 	return err
 }
 
+// SetScoreboardTheme saves the per-event live-board look: only the known keys
+// (bg/text/accent hex + a font key) are persisted; blanks are dropped, and an
+// all-empty theme resets to null (the default house look). Owner-only by route.
+// Ships in add_scoreboard_theme.sql — a save before that migration errors (no
+// column); GetEvent tolerates the column's absence.
+func (s *Service) SetScoreboardTheme(eventID string, theme map[string]any) error {
+	clean := map[string]any{}
+	for _, k := range []string{"bg", "text", "accent", "font"} {
+		if v, ok := theme[k].(string); ok && strings.TrimSpace(v) != "" {
+			clean[k] = strings.TrimSpace(v)
+		}
+	}
+	var payload any = clean
+	if len(clean) == 0 {
+		payload = nil // reset to the default theme
+	}
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"scoreboard_theme": payload})
+	return err
+}
+
 func clampF(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo

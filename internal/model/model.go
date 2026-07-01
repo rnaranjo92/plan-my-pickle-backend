@@ -94,6 +94,10 @@ type Event struct {
 	// OwnerPremium = the event owner has an active Premium plan. Set on single
 	// reads (GetEvent) so public views can hide the free-tier house-brand mark.
 	OwnerPremium bool `json:"ownerPremium"`
+	// ScoreboardTheme is the per-event live-board look: { bg, text, accent, font }
+	// (hex color strings + a font-family key). Nil = the default house theme.
+	// Ships in add_scoreboard_theme.sql.
+	ScoreboardTheme map[string]any `json:"scoreboardTheme,omitempty"`
 }
 
 // PublicEvent is the SAFE, public-facing projection of an Event served at

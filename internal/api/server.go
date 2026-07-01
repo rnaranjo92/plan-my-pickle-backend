@@ -250,6 +250,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.setSponsorWatermarkImage))
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark/settings", s.ownerOnly("event", "id", s.setSponsorWatermarkSettings))
 	mux.HandleFunc("DELETE /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.clearSponsorWatermark))
+	mux.HandleFunc("POST /events/{id}/scoreboard-theme", s.ownerOnly("event", "id", s.setScoreboardTheme))
 	mux.HandleFunc("DELETE /events/{id}", s.ownerOnly("event", "id", s.deleteEvent))
 	mux.HandleFunc("GET /events/{id}/registrations", s.ownerOnly("event", "id", s.registrations))
 	mux.HandleFunc("GET /events/{id}/finance", s.ownerOnly("event", "id", s.financeEntries))
@@ -900,6 +901,21 @@ func (s *Server) clearSponsorWatermark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
+}
+
+// setScoreboardTheme saves the per-event live-board look (colors + font).
+func (s *Server) setScoreboardTheme(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Theme map[string]any `json:"theme"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetScoreboardTheme(r.PathValue("id"), req.Theme); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
 // setLeaguePoster sets (or clears, when posterUrl is empty) the league's banner

@@ -1205,6 +1205,45 @@ func (s *Service) registerDemoPlayers(eventID string, perDiv int) error {
 	return nil
 }
 
+// seedDuprDemo stands up a ready-to-demo DUPR-SANCTIONED singles event for the
+// DUPR integration review: one open division, four players named after the UAT
+// test accounts, and a generated single-elim bracket — so scoring a match and
+// then "Import to DUPR" (create / update / delete, owner-only) is one tap away.
+// The players are seeded with ratings but NO DUPR id; during the live demo you
+// connect the real UAT accounts (SSO) so their consented DUPR ids attach.
+func (s *Service) seedDuprDemo(ownerID string) (string, error) {
+	eid, err := s.CreateEvent(model.CreateEventRequest{
+		Name:             "DEMO · DUPR · sanctioned",
+		Format:           "singles",
+		PartnerMode:      "na",
+		TournamentFormat: "single_elim",
+		NumCourts:        2,
+		DuprSanctioned:   true,
+		Location:         "DUPR Demo Courts",
+		Brackets: []model.BracketInput{
+			{Name: "Open 3.0-4.5", MinRating: ratingPtr(3.0), MaxRating: ratingPtr(4.5)},
+		},
+	}, ownerID)
+	if err != nil {
+		return "", err
+	}
+	names := []string{"UAT Player 1", "UAT Player 2", "UAT Player 3", "UAT Player 4"}
+	for i, n := range names {
+		if _, err := s.RegisterPlayer(eid, model.RegisterRequest{
+			FullName:   n,
+			Phone:      fmt.Sprintf("+1555%07d", 2000000+i),
+			SkillLevel: ratingPtr(3.6 + float64(i)*0.1),
+			DuprRating: ratingPtr(3.6 + float64(i)*0.1),
+		}, ""); err != nil {
+			return eid, err
+		}
+	}
+	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
+		return eid, err
+	}
+	return eid, nil
+}
+
 // SeedTestTournament creates a ready-to-run TEST tournament owned by ownerID with
 // a single 3.0-4.0 rating bracket. ~1 in 5 players is given a DUPR rating ABOVE
 // 4.0 so the "outside the bracket rating" flag can be exercised. kind selects the
@@ -1230,6 +1269,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "mlpchamp":
 		// MLP played to completion — pools + playoff done, has a champion.
 		return s.seedMlpComplete(ownerID)
+	case "duprdemo":
+		// A ready-to-demo DUPR-SANCTIONED singles event for the DUPR review.
+		return s.seedDuprDemo(ownerID)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)

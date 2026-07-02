@@ -1272,6 +1272,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "duprdemo":
 		// A ready-to-demo DUPR-SANCTIONED singles event for the DUPR review.
 		return s.seedDuprDemo(ownerID)
+	case "pikelbol":
+		// Real event: Pikelbol Adiks 2026 Masters — 9 teams of 8, Premier.
+		return s.seedPikelbol(ownerID)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
@@ -1808,6 +1811,68 @@ func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 
 	if _, err := s.GenerateTeamTies(eventID); err != nil {
 		return "", fmt.Errorf("seed mlp schedule: %w", err)
+	}
+	return eventID, nil
+}
+
+// seedPikelbol sets up the real "Pikelbol Adiks 2026 Masters" event: 9 teams of
+// 8, Premier (team_size 6). Genders are a BEST-GUESS from first names — the
+// organizer reviews/fixes them in Manage Teams, then generates the schedule. It
+// deliberately does NOT auto-generate ties (lineups depend on corrected genders).
+func (s *Service) seedPikelbol(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "Pikelbol Adiks 2026 Masters", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins",
+		"tournament_format": "round_robin", "num_courts": 6,
+		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": 6,
+		"dupr_sanctioned": false, "status": "open",
+		"location": "San Diego", "owner_id": ownerID,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed pikelbol event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 6); err != nil {
+		return "", fmt.Errorf("seed pikelbol courts: %w", err)
+	}
+	type pk struct{ n, g string }
+	teams := [][]pk{
+		{{"Gayle", "F"}, {"Lolit", "F"}, {"Twinkle", "F"}, {"Ivan", "M"}, {"Jessa B.", "F"}, {"Mario", "M"}, {"EJ", "M"}, {"Alex", "M"}},
+		{{"Krizhia", "F"}, {"Janella", "F"}, {"Marissa", "F"}, {"Bobby", "M"}, {"Rose", "F"}, {"JP L.", "M"}, {"Leif D.", "M"}, {"Randy", "M"}},
+		{{"Lhou", "F"}, {"Marife", "F"}, {"Sheila", "F"}, {"Sid", "M"}, {"Nikki", "F"}, {"Zavier", "M"}, {"Howie", "M"}, {"Joshua", "M"}},
+		{{"Anne M.", "F"}, {"Angeli", "F"}, {"Mae", "F"}, {"Aaron", "M"}, {"Shirley", "F"}, {"Vicente", "M"}, {"Andrew", "M"}, {"Aris", "M"}},
+		{{"Mafie", "F"}, {"Megen", "F"}, {"Alliyah", "F"}, {"Marvin", "M"}, {"Yen", "F"}, {"Allan", "M"}, {"Ivan Med.", "M"}, {"Amiel", "M"}},
+		{{"Joan Y.", "F"}, {"Tin B.", "F"}, {"Janet", "F"}, {"Ian A.", "M"}, {"Myles", "M"}, {"David", "M"}, {"Rafael", "M"}, {"Chrix", "M"}},
+		{{"Sarah", "F"}, {"Joan L.", "F"}, {"Jonelle", "F"}, {"Miguel", "M"}, {"Michelle", "F"}, {"Jon N.", "M"}, {"Joel", "M"}, {"Tristan", "M"}},
+		{{"Belle", "F"}, {"Ysabella", "F"}, {"Angelica", "F"}, {"Pete", "M"}, {"Verna", "F"}, {"Nathan", "M"}, {"Jeff", "M"}, {"Jimmy", "M"}},
+		{{"Eden", "F"}, {"Ann L.", "F"}, {"Carina", "F"}, {"Gilbert", "M"}, {"Arlene", "F"}, {"Ricky", "M"}, {"Ernest", "M"}, {"Quynton", "M"}},
+	}
+	for i, members := range teams {
+		teamRows, err := s.sb.Insert("event_teams", []map[string]any{
+			{"event_id": eventID, "name": fmt.Sprintf("Team %d", i+1)},
+		})
+		if err != nil || len(teamRows) == 0 {
+			return eventID, fmt.Errorf("seed pikelbol team %d: %w", i+1, err)
+		}
+		teamID := asStr(teamRows[0], "id")
+		players := make([]map[string]any, len(members))
+		for j, m := range members {
+			players[j] = map[string]any{"full_name": m.n}
+		}
+		plRows, err := s.sb.Insert("players", players)
+		if err != nil || len(plRows) != len(players) {
+			return eventID, fmt.Errorf("seed pikelbol players t%d: %w", i+1, err)
+		}
+		rows := make([]map[string]any, len(plRows))
+		for j, pr := range plRows {
+			rows[j] = map[string]any{
+				"team_id": teamID, "player_id": asStr(pr, "id"),
+				"full_name": members[j].n, "gender": members[j].g,
+			}
+		}
+		if _, err := s.sb.Insert("event_team_members", rows); err != nil {
+			return eventID, fmt.Errorf("seed pikelbol members t%d: %w", i+1, err)
+		}
 	}
 	return eventID, nil
 }

@@ -5142,7 +5142,8 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 
 // DuprImportSummary is the result of flushing queued results to DUPR.
 type DuprImportSummary struct {
-	Submitted int `json:"submitted"`
+	Submitted int `json:"submitted"` // newly created on DUPR
+	Updated   int `json:"updated"`   // corrections to an existing DUPR match
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
 	// Details carries the per-match reason for each skip/fail so the UI can show
@@ -6762,7 +6763,11 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		}
 		if res.OK {
 			s.markSubmission(subID, "submitted", res.DuprMatchID, "")
-			sum.Submitted++
+			if existingCode != "" {
+				sum.Updated++ // corrected an existing DUPR match
+			} else {
+				sum.Submitted++ // newly created
+			}
 		} else {
 			// Transient DUPR failure (5xx / timeout / network / unparseable): keep
 			// the row retryable with backoff instead of dropping it, until the

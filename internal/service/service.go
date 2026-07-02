@@ -2438,6 +2438,12 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	// connected — their results must be submittable to DUPR. An organizer adding
 	// players (req.Self == false) is trusted and not blocked. Anonymous self-
 	// registration (linkUserID == "") is also blocked here: no account, no connection.
+	//
+	// This is a UX/data-quality guardrail, not a hard security boundary: req.Self
+	// is client-controlled, so a crafted req.Self=false lands the caller as an
+	// unlinked player — but then no dupr_id is ever attached, and the real backstop
+	// (SubmitPendingToDupr fails a match with any participant missing a dupr_id)
+	// still keeps un-DUPR'd results out of DUPR.
 	if req.Self && !conn.Connected && s.eventIsSanctioned(eventID) {
 		return model.Registration{}, ErrDuprNotConnected
 	}

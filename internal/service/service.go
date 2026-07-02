@@ -2337,6 +2337,66 @@ func (s *Service) registrationExistsByContact(eventID string, req model.Register
 // logged-in user registering THEMSELVES), the player is tied to that account
 // (players.user_id) — reusing the account's existing player row if it has one
 // (the user_id column is unique) rather than creating a duplicate.
+// duprTestAccountEmails are the DUPR UAT test logins the demo "Register DUPR
+// testers" button enrolls into a sanctioned event. Each is linked to its
+// PlanMyPickle account, so RegisterPlayer attaches the account's SSO-connected
+// dupr_id automatically — making the resulting matches submittable to DUPR.
+var duprTestAccountEmails = []string{
+	"player1@duprtest.com",
+	"player2@duprtest.com",
+	"player3@duprtest.com",
+	"player4@duprtest.com",
+}
+
+// DuprTestSummary reports the outcome of RegisterDuprTestAccounts.
+type DuprTestSummary struct {
+	Registered        int      `json:"registered"`
+	AlreadyRegistered int      `json:"alreadyRegistered"`
+	NotFound          []string `json:"notFound"`     // no PlanMyPickle account for the email
+	NotConnected      []string `json:"notConnected"` // registered, but DUPR not connected yet
+}
+
+// RegisterDuprTestAccounts enrolls the fixed DUPR UAT test logins into an event
+// (a demo helper for the DUPR walkthrough). It resolves each email to its auth
+// user via public.profiles and registers them linked to that account, so
+// RegisterPlayer attaches their connected dupr_id. Idempotent — an already-
+// registered tester is counted, not duplicated. Accounts that exist but haven't
+// connected DUPR yet are still registered and flagged in NotConnected (their
+// match can't be submitted to DUPR until they connect).
+func (s *Service) RegisterDuprTestAccounts(eventID string) (DuprTestSummary, error) {
+	var sum DuprTestSummary
+	for _, email := range duprTestAccountEmails {
+		prof, err := s.sb.SelectOne("profiles",
+			"email=eq."+store.Q(email)+"&select=id,full_name")
+		if err != nil {
+			return sum, err
+		}
+		if prof == nil {
+			sum.NotFound = append(sum.NotFound, email)
+			continue
+		}
+		uid := asStr(prof, "id")
+		name := asStr(prof, "full_name")
+		if name == "" {
+			name = email
+		}
+		_, err = s.RegisterPlayer(eventID,
+			model.RegisterRequest{FullName: name, Email: email}, uid)
+		switch {
+		case err == nil:
+			sum.Registered++
+		case errors.Is(err, ErrAlreadyRegistered):
+			sum.AlreadyRegistered++
+		default:
+			return sum, err
+		}
+		if c, e := s.DuprConnection(uid); e != nil || !c.Connected {
+			sum.NotConnected = append(sum.NotConnected, email)
+		}
+	}
+	return sum, nil
+}
+
 func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")

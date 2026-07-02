@@ -273,6 +273,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
 	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
 	mux.HandleFunc("POST /events/{id}/fill-demo-players", s.ownerOnly("event", "id", s.fillRandomPlayers))
+	// Demo helper: enroll the fixed DUPR UAT test accounts into a sanctioned event.
+	mux.HandleFunc("POST /events/{id}/register-dupr-testers", s.ownerOnly("event", "id", s.registerDuprTesters))
 	mux.HandleFunc("POST /events/{id}/feed", s.ownerOnly("event", "id", s.feedPost))
 	mux.HandleFunc("DELETE /feed/{id}", s.ownerOnly("feed_item", "id", s.feedDelete))
 	// Feed social — any signed-in user may react/comment (not just the owner).
@@ -2502,6 +2504,17 @@ func (s *Server) fillRandomPlayers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"added": n})
+}
+
+// registerDuprTesters enrolls the fixed DUPR UAT test accounts into the event
+// (demo helper) and returns a summary of what happened.
+func (s *Server) registerDuprTesters(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.svc.RegisterDuprTestAccounts(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
 }
 
 func (s *Server) unstartMatch(w http.ResponseWriter, r *http.Request) {

@@ -5145,6 +5145,9 @@ type DuprImportSummary struct {
 	Submitted int `json:"submitted"`
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
+	// Details carries the per-match reason for each skip/fail so the UI can show
+	// WHY nothing was submitted (e.g. "bye / incomplete side", "dupr http 409 …").
+	Details []string `json:"details,omitempty"`
 }
 
 // VerifyAdminPasscode gates the coordinator scoring page for a passcode-holding
@@ -6656,6 +6659,7 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		if m == nil || wt == nil || t1s == nil || t2s == nil {
 			s.markSubmission(subID, "failed", "", "match not completed")
 			sum.Failed++
+			sum.Details = append(sum.Details, "match not completed")
 			continue
 		}
 		// Forfeits/retirements/walkovers aren't real played results — skip them
@@ -6663,6 +6667,7 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		if rt := asStr(m, "result_type"); rt != "" && rt != "normal" {
 			s.markSubmission(subID, "skipped", "", "not a played result ("+rt+")")
 			sum.Skipped++
+			sum.Details = append(sum.Details, "skipped: not a played result ("+rt+")")
 			continue
 		}
 		parts, err := s.sb.Select("match_participants",
@@ -6691,6 +6696,7 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		if missing != "" {
 			s.markSubmission(subID, "failed", "", "Missing DUPR id for "+missing)
 			sum.Failed++
+			sum.Details = append(sum.Details, "missing DUPR id for "+missing)
 			continue
 		}
 		// A bye (one side empty) is not a real match — skip rather than submit a
@@ -6698,6 +6704,7 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		if len(t1) == 0 || len(t2) == 0 {
 			s.markSubmission(subID, "skipped", "", "bye / incomplete side")
 			sum.Skipped++
+			sum.Details = append(sum.Details, "skipped: bye / incomplete side")
 			continue
 		}
 		// Best-of-N: submit each game; the legacy single-game fields carry game 1
@@ -6742,6 +6749,11 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 			// attempt cap flips it to a terminal 'failed'.
 			s.markSubmissionRetry(subID, asInt(p, "attempts"), res.Error)
 			sum.Failed++
+			reason := res.Error
+			if reason == "" {
+				reason = "DUPR rejected the submission"
+			}
+			sum.Details = append(sum.Details, reason)
 		}
 	}
 	return sum, nil

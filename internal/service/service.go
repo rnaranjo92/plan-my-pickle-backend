@@ -6755,6 +6755,47 @@ func (s *Service) DuprSubmissionStatuses(eventID string) ([]map[string]any, erro
 		"event_id=eq."+store.Q(eventID)+"&select=match_id,status")
 }
 
+// DuprRemoveSummary reports the outcome of RemoveEventFromDupr.
+type DuprRemoveSummary struct {
+	Removed int      `json:"removed"`
+	Failed  int      `json:"failed"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
+// RemoveEventFromDupr reverses an event's already-submitted results on DUPR — the
+// delete leg of the create/update/delete round-trip. It deletes each submitted
+// match on DUPR and "un-submits" it locally (back to pending, provider_ref/attempts
+// cleared) so it can be re-imported. Local scores are left untouched — unlike a
+// schedule wipe, this only touches DUPR. Owner-gated at the handler.
+func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error) {
+	subs, err := s.sb.Select("dupr_submissions",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=id,match_id,provider_ref")
+	if err != nil {
+		return DuprRemoveSummary{}, err
+	}
+	var sum DuprRemoveSummary
+	for _, sub := range subs {
+		code := asStr(sub, "provider_ref")
+		if code == "" {
+			continue // never actually landed on DUPR — nothing to delete
+		}
+		if err := s.Dupr.DeleteMatch(code, asStr(sub, "match_id")); err != nil {
+			sum.Failed++
+			sum.Errors = append(sum.Errors, err.Error())
+			continue
+		}
+		// Un-submit locally: gone from DUPR, re-importable with a fresh budget.
+		// (Not auto-resubmitted — the reconciler only retries attempts>0 rows.)
+		_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(asStr(sub, "id")),
+			map[string]any{
+				"status": "pending", "provider_ref": nil, "submitted_at": nil,
+				"attempts": 0, "next_attempt_at": nil, "error": nil,
+			})
+		sum.Removed++
+	}
+	return sum, nil
+}
+
 func (s *Service) markSubmission(id, status, ref, errMsg string) {
 	var submittedAt any
 	if status == "submitted" {

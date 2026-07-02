@@ -6630,17 +6630,25 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		duprEventID = asStr(row, "dupr_event_id")
 	}
 
+	// A manual "Import to DUPR" (retryOnly == false) pushes EVERYTHING not already
+	// on DUPR — both pending and previously-failed rows — and ignores the retry
+	// backoff (the organizer asked for it now). The background reconciler only
+	// retries still-pending, previously-attempted rows and respects the backoff.
+	statusFilter := "status=in.(pending,failed)"
+	if retryOnly {
+		statusFilter = "status=eq.pending"
+	}
 	pendings, err := s.sb.Select("dupr_submissions",
-		"event_id=eq."+store.Q(eventID)+"&status=eq.pending&select=id,match_id,provider_ref,attempts,next_attempt_at")
+		"event_id=eq."+store.Q(eventID)+"&"+statusFilter+"&select=id,match_id,provider_ref,attempts,next_attempt_at")
 	if err != nil {
 		return DuprImportSummary{}, err
 	}
 
 	var sum DuprImportSummary
 	for _, p := range pendings {
-		// Respect the backoff window on a retrying row, and (in reconcile mode)
-		// never auto-submit a fresh, organizer-not-yet-imported result.
-		if !dueNow(asStr(p, "next_attempt_at")) {
+		// The reconciler respects the backoff window and never auto-submits a fresh
+		// (never-attempted) result; a manual import does neither.
+		if retryOnly && !dueNow(asStr(p, "next_attempt_at")) {
 			continue
 		}
 		if retryOnly && asInt(p, "attempts") == 0 {

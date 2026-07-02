@@ -367,20 +367,45 @@ func TestWithCORS(t *testing.T) {
 	})
 	h := withCORS(inner)
 
-	t.Run("OPTIONS preflight short-circuits with 204", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, "/", nil))
-		if rec.Code != http.StatusNoContent {
-			t.Fatalf("status = %d, want 204", rec.Code)
+	acao := func(origin, method string) (int, string) {
+		req := httptest.NewRequest(method, "/", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
 		}
-		if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
-			t.Fatal("missing CORS origin header")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Header().Get("Access-Control-Allow-Origin")
+	}
+
+	t.Run("OPTIONS preflight from an allow-listed origin → 204 + reflected origin", func(t *testing.T) {
+		code, got := acao("https://app.planmypickle.com", http.MethodOptions)
+		if code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", code)
+		}
+		if got != "https://app.planmypickle.com" {
+			t.Fatalf("ACAO = %q, want the reflected origin (never \"*\")", got)
 		}
 	})
 
-	t.Run("non-OPTIONS passes through with CORS headers", func(t *testing.T) {
+	t.Run("allow-listed + preview origins are reflected; others get no ACAO", func(t *testing.T) {
+		for _, o := range []string{
+			"https://app.planmypickle.com",
+			"https://planmypickle.com",
+			"https://app-git-branch.vercel.app",
+		} {
+			if _, got := acao(o, http.MethodGet); got != o {
+				t.Errorf("origin %q: ACAO = %q, want it reflected", o, got)
+			}
+		}
+		if _, got := acao("https://evil.example.com", http.MethodGet); got != "" {
+			t.Errorf("third-party origin should get no ACAO, got %q", got)
+		}
+	})
+
+	t.Run("non-OPTIONS passes through with method headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusTeapot {
 			t.Fatalf("inner not reached: status = %d", rec.Code)
 		}

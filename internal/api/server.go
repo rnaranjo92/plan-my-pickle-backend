@@ -2881,10 +2881,11 @@ func (rl *rateLimiter) allow(key string) bool {
 
 // corsAllowedOrigins are the first-party browser origins that read this API:
 // the Flutter app, the apex marketing site (planmypickle.com — the public
-// tournaments feed), and localhost for dev. The API carries no cookies or
-// credentials, so it currently answers every origin with "*" (see withCORS);
-// this list documents the intended first-party callers and lets the policy be
-// tightened to an explicit allow-list without code archaeology.
+// tournaments feed), and localhost for dev. Vercel preview deploys (*.vercel.app)
+// are also honored so pre-production testing against this API keeps working.
+// The API carries no cookies/credentials (auth is a bearer token JS must attach,
+// never auto-sent), so this restriction is defense-in-depth: it stops a random
+// third-party site from driving the API from a signed-in user's browser.
 var corsAllowedOrigins = []string{
 	"https://app.planmypickle.com",  // Flutter app
 	"https://planmypickle.com",      // apex marketing site (public feed)
@@ -2893,16 +2894,29 @@ var corsAllowedOrigins = []string{
 	"http://localhost:8080",
 }
 
+// corsOriginAllowed reports whether an Origin header should be reflected back.
+func corsOriginAllowed(origin string) bool {
+	for _, o := range corsAllowedOrigins {
+		if origin == o {
+			return true
+		}
+	}
+	// Vercel preview deployments of the app (e.g. app-git-branch-xyz.vercel.app).
+	return strings.HasSuffix(origin, ".vercel.app")
+}
+
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The marketing feed (GET /events/public) and every spectator read are
-		// fetched cross-origin from planmypickle.com / www.planmypickle.com (see
-		// corsAllowedOrigins). The API holds no cookies/credentials, so "*" safely
-		// covers those apex origins plus the app and any spectator's browser.
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Reflect the caller's origin only when it's an allow-listed first-party
+		// origin — not a blanket "*". The marketing feed and spectator reads come
+		// from planmypickle.com / the app / preview deploys, all covered above.
+		if origin := r.Header.Get("Origin"); corsOriginAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			// Vary so a shared cache never serves one origin's ACAO to another.
+			w.Header().Add("Vary", "Origin")
+		}
 		// DELETE is used by events/finance/checklist; without it a browser's
-		// preflight blocks those calls. Origin "*" is safe — the API carries no
-		// cookies/credentials (the Supabase service key is server-side only).
+		// preflight blocks those calls.
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		// Authorization carries the user's bearer token; without it the browser
 		// preflight blocks every authenticated request. X-Registration-Token

@@ -70,6 +70,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
 	// Aggregated activity feed across the user's events (powers the NewsFeed tab).
 	mux.HandleFunc("GET /me/feed", requireAuth(s.myFeed))
+	mux.HandleFunc("POST /me/posts", requireAuth(s.createPost))
+	mux.HandleFunc("DELETE /me/posts/{id}", requireAuth(s.deletePost))
 	// Organizer Stripe Connect (real payouts): start/resume onboarding + read
 	// the connected-account status. Scoped to the authenticated organizer.
 	mux.HandleFunc("POST /me/stripe/connect", requireAuth(s.stripeConnect))
@@ -384,6 +386,31 @@ func (s *Server) myFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// createPost creates a standalone community (user) post from the NewsFeed composer.
+func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	fi, err := s.svc.CreateCommunityPost(userID(r), userEmail(r), req.Text)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, fi)
+}
+
+// deletePost removes the caller's own community post.
+func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteCommunityPost(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {

@@ -5593,10 +5593,38 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		out = append(out, fi)
 		itemIDs = append(itemIDs, fi.ID)
 	}
+	// My own community posts (standalone user posts, no event). County-scoped
+	// visibility to OTHERS lands in a later phase; the author always sees theirs.
+	seen := map[string]bool{}
+	for _, id := range itemIDs {
+		seen[id] = true
+	}
+	if crows, err := s.sb.Select("feed_items",
+		"author_id=eq."+store.Q(userID)+"&select=*&order=created_at.desc&limit=60"); err == nil {
+		for _, r := range crows {
+			fi := mapFeedItem(r)
+			if seen[fi.ID] {
+				continue
+			}
+			seen[fi.ID] = true
+			fi.ReactionCounts = map[string]int{}
+			fi.MyReactions = []string{}
+			out = append(out, fi)
+		}
+	}
+	// Newest first across events + community posts (created_at is ISO → sorts lexically).
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	finalIDs := make([]string, len(out))
+	for i := range out {
+		finalIDs[i] = out[i].ID
+	}
 	// Enrich with reaction counts / my reactions / comment counts (like ListFeed) —
 	// otherwise the NewsFeed shows every post as un-reacted after a refresh.
-	if len(itemIDs) > 0 {
-		s.attachSocial(out, itemIDs, userID)
+	if len(finalIDs) > 0 {
+		s.attachSocial(out, finalIDs, userID)
 	}
 	return out, nil
 }

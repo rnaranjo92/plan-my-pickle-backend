@@ -6811,7 +6811,10 @@ func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error)
 		if code == "" {
 			continue // never actually landed on DUPR — nothing to delete
 		}
-		if err := s.Dupr.DeleteMatch(code, asStr(sub, "match_id")); err != nil {
+		// DUPR delete validates the identifier against the one used at CREATE, so
+		// pass the same generation identifier (not the raw match_id).
+		ident := duprIdentifier(asStr(sub, "match_id"), asInt(sub, "dupr_gen"))
+		if err := s.Dupr.DeleteMatch(code, ident); err != nil {
 			sum.Failed++
 			sum.Errors = append(sum.Errors, err.Error())
 			continue
@@ -8016,10 +8019,12 @@ func (s *Service) wipeAllMatches(eventID string) error {
 	// local wipe (best-effort, async — never block/​slow regeneration).
 	var toDelete [][2]string // {matchCode, identifier}
 	if subs, err := s.sb.Select("dupr_submissions",
-		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=match_id,provider_ref"); err == nil {
+		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=match_id,provider_ref,dupr_gen"); err == nil {
 		for _, sub := range subs {
 			if code := asStr(sub, "provider_ref"); code != "" {
-				toDelete = append(toDelete, [2]string{code, asStr(sub, "match_id")})
+				// Delete identifier must match the CREATE identifier (generation).
+				ident := duprIdentifier(asStr(sub, "match_id"), asInt(sub, "dupr_gen"))
+				toDelete = append(toDelete, [2]string{code, ident})
 			}
 		}
 	}

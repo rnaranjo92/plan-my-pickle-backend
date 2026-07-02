@@ -6606,6 +6606,15 @@ func (s *Service) queueDuprSubmission(matchID, eventID string) error {
 	return err
 }
 
+// duprIdentifier is the DUPR create identifier for a match at a given generation.
+// DUPR forbids reusing an identifier (even after a delete → "Match with identifier
+// already exists"), so each generation — bumped whenever a submission is reversed —
+// yields a distinct identifier, while staying stable across retries within a
+// generation for idempotency / partial-failure safety.
+func duprIdentifier(matchID string, gen int) string {
+	return matchID + "-g" + strconv.Itoa(gen)
+}
+
 // SubmitPendingToDupr flushes queued results to DUPR for a sanctioned event —
 // the organizer-initiated "Import to DUPR" action. (#11)
 func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error) {
@@ -6639,7 +6648,7 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		statusFilter = "status=eq.pending"
 	}
 	pendings, err := s.sb.Select("dupr_submissions",
-		"event_id=eq."+store.Q(eventID)+"&"+statusFilter+"&select=id,match_id,provider_ref,attempts,next_attempt_at")
+		"event_id=eq."+store.Q(eventID)+"&"+statusFilter+"&select=id,match_id,provider_ref,attempts,next_attempt_at,dupr_gen")
 	if err != nil {
 		return DuprImportSummary{}, err
 	}
@@ -6734,6 +6743,9 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		payload := gateway.DuprPayload{
 			EventID: eventID, DuprEventID: duprEventID,
 			EventName: ev.Name, MatchID: matchID, MatchCode: existingCode,
+			// Fresh per-generation identifier so a re-create after a delete never
+			// reuses an identifier (DUPR rejects that). Stable within a generation.
+			Identifier:   duprIdentifier(matchID, asInt(p, "dupr_gen")),
 			MatchDate:    matchDate,
 			Team1DuprIDs: t1, Team2DuprIDs: t2,
 			Team1Score: g1t1, Team2Score: g1t2, Games: pairs,
@@ -6789,7 +6801,7 @@ type DuprRemoveSummary struct {
 // schedule wipe, this only touches DUPR. Owner-gated at the handler.
 func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error) {
 	subs, err := s.sb.Select("dupr_submissions",
-		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=id,match_id,provider_ref")
+		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=id,match_id,provider_ref,dupr_gen")
 	if err != nil {
 		return DuprRemoveSummary{}, err
 	}
@@ -6806,10 +6818,13 @@ func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error)
 		}
 		// Un-submit locally: gone from DUPR, re-importable with a fresh budget.
 		// (Not auto-resubmitted — the reconciler only retries attempts>0 rows.)
+		// Bump dupr_gen so a re-import uses a BRAND-NEW identifier — DUPR won't let
+		// a deleted match's identifier be reused.
 		_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(asStr(sub, "id")),
 			map[string]any{
 				"status": "pending", "provider_ref": nil, "submitted_at": nil,
 				"attempts": 0, "next_attempt_at": nil, "error": nil,
+				"dupr_gen": asInt(sub, "dupr_gen") + 1,
 			})
 		sum.Removed++
 	}

@@ -78,7 +78,12 @@ type DuprPayload struct {
 	EventID      string
 	DuprEventID  string
 	EventName    string
-	MatchID      string // unique per-match idempotency identifier
+	MatchID      string // our match id (fallback identifier / delete reference)
+	// Identifier is the DUPR idempotency key sent on create. DUPR forbids reusing
+	// an identifier (even after a delete → "Match with identifier already exists"),
+	// so the caller derives a fresh one per create generation (e.g.
+	// "<matchID>-g<gen>"); empty falls back to MatchID.
+	Identifier   string
 	MatchCode    string // existing DUPR matchCode, for UpdateMatch
 	MatchDate    string // when the match was played (yyyy-MM-dd); empty = today
 	Team1DuprIDs []string

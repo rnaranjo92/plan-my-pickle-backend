@@ -303,9 +303,13 @@ func (d *RealDupr) matchBody(p DuprPayload) map[string]any {
 	if len(p.Team1DuprIDs) <= 1 && len(p.Team2DuprIDs) <= 1 {
 		format = "SINGLES"
 	}
-	// Idempotency identifier MUST be unique per match (not per event), else DUPR
-	// dedupes every match after the first.
-	identifier := p.MatchID
+	// Idempotency identifier MUST be unique per match (not per event) AND never
+	// reused across creates (DUPR rejects a reused identifier, even post-delete).
+	// The caller supplies a fresh per-generation identifier; fall back to MatchID.
+	identifier := p.Identifier
+	if identifier == "" {
+		identifier = p.MatchID
+	}
 	if identifier == "" {
 		identifier = p.DuprEventID
 	}
@@ -439,7 +443,8 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 	}
 	if code < 200 || code >= 300 {
 		log.Printf("dupr: match create http %d: %s", code, string(raw))
-		return DuprResult{OK: false, Error: fmt.Sprintf("dupr http %d", code)}, nil
+		return DuprResult{OK: false,
+			Error: fmt.Sprintf("dupr http %d: %s", code, snippet(raw))}, nil
 	}
 	return parseMatchResult(raw), nil
 }

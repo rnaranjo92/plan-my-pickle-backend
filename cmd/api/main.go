@@ -91,6 +91,17 @@ func main() {
 		} else {
 			log.Printf("DUPR: webhook NOT registered — set DUPR_WEBHOOK_SECRET to enable rating updates")
 		}
+		// Background reconciler: retry transient DUPR submission failures on a
+		// backoff so a hiccup self-heals without the organizer re-importing.
+		go func() {
+			ticker := time.NewTicker(2 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := svc.ReconcileDuprSubmissions(); err != nil {
+					log.Printf("DUPR: submission reconcile failed: %v", err)
+				}
+			}
+		}()
 	} else {
 		log.Printf("DUPR: mock — set DUPR_CLIENT_KEY, DUPR_CLIENT_SECRET to verify ratings + submit matches")
 	}

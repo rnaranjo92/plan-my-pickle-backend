@@ -6510,12 +6510,23 @@ func (s *Service) queueDuprSubmission(matchID, eventID string) error {
 		return err
 	}
 	_, err = s.sb.Update("dupr_submissions", "id=eq."+store.Q(asStr(existing, "id")),
-		map[string]any{"status": "pending", "error": nil})
+		map[string]any{"status": "pending", "error": nil,
+			"attempts": 0, "next_attempt_at": nil}) // re-scored → fresh retry budget
 	return err
 }
 
-// SubmitPendingToDupr flushes queued results to DUPR for a sanctioned event. (#11)
+// SubmitPendingToDupr flushes queued results to DUPR for a sanctioned event —
+// the organizer-initiated "Import to DUPR" action. (#11)
 func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error) {
+	return s.flushDuprSubmissions(eventID, false)
+}
+
+// flushDuprSubmissions submits an event's due, still-pending DUPR rows. When
+// retryOnly is true it processes only rows that were ALREADY attempted (attempts
+// > 0) — used by the background reconciler to heal transient failures without
+// auto-submitting a fresh, never-attempted result (which would push to official
+// DUPR ratings without the organizer's manual Import).
+func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImportSummary, error) {
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
 		return DuprImportSummary{}, err
@@ -6529,13 +6540,21 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 	}
 
 	pendings, err := s.sb.Select("dupr_submissions",
-		"event_id=eq."+store.Q(eventID)+"&status=eq.pending&select=id,match_id,provider_ref")
+		"event_id=eq."+store.Q(eventID)+"&status=eq.pending&select=id,match_id,provider_ref,attempts,next_attempt_at")
 	if err != nil {
 		return DuprImportSummary{}, err
 	}
 
 	var sum DuprImportSummary
 	for _, p := range pendings {
+		// Respect the backoff window on a retrying row, and (in reconcile mode)
+		// never auto-submit a fresh, organizer-not-yet-imported result.
+		if !dueNow(asStr(p, "next_attempt_at")) {
+			continue
+		}
+		if retryOnly && asInt(p, "attempts") == 0 {
+			continue
+		}
 		subID := asStr(p, "id")
 		matchID := asStr(p, "match_id")
 		m, err := s.sb.SelectOne("matches",
@@ -6630,7 +6649,10 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 			s.markSubmission(subID, "submitted", res.DuprMatchID, "")
 			sum.Submitted++
 		} else {
-			s.markSubmission(subID, "failed", "", res.Error)
+			// Transient DUPR failure (5xx / timeout / network / unparseable): keep
+			// the row retryable with backoff instead of dropping it, until the
+			// attempt cap flips it to a terminal 'failed'.
+			s.markSubmissionRetry(subID, asInt(p, "attempts"), res.Error)
 			sum.Failed++
 		}
 	}
@@ -6651,11 +6673,92 @@ func (s *Service) markSubmission(id, status, ref, errMsg string) {
 		submittedAt = now()
 	}
 	_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
-		"status":       status,
-		"provider_ref": orNull(ref),
-		"error":        orNull(errMsg),
-		"submitted_at": submittedAt,
+		"status":          status,
+		"provider_ref":    orNull(ref),
+		"error":           orNull(errMsg),
+		"submitted_at":    submittedAt,
+		"next_attempt_at": nil, // terminal (or skipped) → no more retries
 	})
+}
+
+// duprMaxAttempts caps retries of a transiently-failing submission before it is
+// marked terminal 'failed'. With the backoff below this spans ~2.5h of outage.
+const duprMaxAttempts = 10
+
+// markSubmissionRetry records a transient DUPR failure. Below the attempt cap the
+// row stays 'pending' with an exponential-backoff next_attempt_at so the
+// reconciler retries it; at the cap it becomes terminal 'failed' (visible, so an
+// organizer can investigate / re-import).
+func (s *Service) markSubmissionRetry(id string, attempts int, errMsg string) {
+	attempts++
+	if attempts >= duprMaxAttempts {
+		_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
+			"status":          "failed",
+			"attempts":        attempts,
+			"error":           orNull(errMsg + " — gave up after " + strconv.Itoa(attempts) + " attempts"),
+			"next_attempt_at": nil,
+		})
+		return
+	}
+	_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
+		"status":          "pending",
+		"attempts":        attempts,
+		"error":           orNull(errMsg),
+		"next_attempt_at": duprNextAttempt(attempts),
+	})
+}
+
+// duprNextAttempt returns when to retry after `attempts` failures: exponential
+// backoff 1m, 2m, 4m, … capped at 30m.
+func duprNextAttempt(attempts int) string {
+	d := time.Minute
+	for i := 1; i < attempts && d < 30*time.Minute; i++ {
+		d *= 2
+	}
+	if d > 30*time.Minute {
+		d = 30 * time.Minute
+	}
+	return time.Now().UTC().Add(d).Format("2006-01-02T15:04:05.000Z")
+}
+
+// dueNow reports whether a next_attempt_at timestamp has arrived (empty/unparsed
+// → due, so a row can never get permanently stuck).
+func dueNow(ts string) bool {
+	if ts == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return true
+	}
+	return !t.After(time.Now())
+}
+
+// ReconcileDuprSubmissions retries transient DUPR failures that are now due,
+// across all sanctioned events — so a DUPR hiccup self-heals without the
+// organizer re-clicking Import. Only already-attempted rows (attempts > 0) are
+// retried; a fresh, never-imported result is left for the organizer's action.
+func (s *Service) ReconcileDuprSubmissions() error {
+	rows, err := s.sb.Select("dupr_submissions",
+		"status=eq.pending&attempts=gt.0&select=event_id,next_attempt_at")
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if !dueNow(asStr(r, "next_attempt_at")) {
+			continue
+		}
+		eid := asStr(r, "event_id")
+		if eid == "" || seen[eid] {
+			continue
+		}
+		seen[eid] = true
+		if _, err := s.flushDuprSubmissions(eid, true); err != nil {
+			log.Printf("dupr reconcile: event %s: %v", eid, err)
+		}
+	}
+	return nil
 }
 
 // advanceTeam copies one side (by team number) of a finished match into its

@@ -11,6 +11,30 @@ import (
 	"testing"
 )
 
+func TestIn(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		// Real ids (uuids/ints/slugs) are emitted raw — byte-for-byte identical
+		// to the old strings.Join, so this is a safe drop-in on the wire.
+		{[]string{"a1b2", "c3d4"}, `in.(a1b2,c3d4)`},
+		{[]string{"550e8400-e29b-41d4-a716-446655440000"}, `in.(550e8400-e29b-41d4-a716-446655440000)`},
+		{[]string{"42", "7", "1001"}, `in.(42,7,1001)`},
+		{[]string{"under_score-and-dash"}, `in.(under_score-and-dash)`},
+		{nil, `in.()`},
+		// A value with a reserved char can't be a legit id; it's quoted + escaped
+		// so it can't break out of the list.
+		{[]string{"a,b)"}, `in.(%22a%2Cb%29%22)`},
+		{[]string{"ok", `x"y`}, `in.(ok,%22x%5C%22y%22)`},
+	}
+	for _, c := range cases {
+		if got := In(c.in); got != c.want {
+			t.Errorf("In(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // newClient points a real Client at a mock PostgREST server via the same env
 // seam NewClient reads.
 func newClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server) {

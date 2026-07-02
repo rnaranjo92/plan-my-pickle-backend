@@ -135,7 +135,7 @@ func (s *Service) StripeAccountStatus(ownerID string) (AccountStatus, error) {
 		if acct, err := gw.RetrieveAccount(accountID); err == nil {
 			if acct.ChargesEnabled != status.ChargesEnabled {
 				status.ChargesEnabled = acct.ChargesEnabled
-				_, _ = s.sb.Update("organizer_payments", "owner_id="+store.Q(ownerID),
+				_, _ = s.sb.Update("organizer_payments", "owner_id=eq."+store.Q(ownerID),
 					map[string]any{"charges_enabled": acct.ChargesEnabled, "updated_at": now()})
 			}
 		}

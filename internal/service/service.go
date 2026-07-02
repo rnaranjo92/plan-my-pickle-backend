@@ -365,7 +365,7 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 		// Best-effort: a count failure must not blank the whole dashboard, so on
 		// error we leave the counts at 0 and still return the events.
 		regs, err := s.sb.Select("registrations",
-			"event_id=in.("+strings.Join(ids, ",")+")&select=event_id")
+			"event_id="+store.In(ids)+"&select=event_id")
 		if err == nil {
 			counts := make(map[string]int, len(out))
 			for _, r := range regs {
@@ -410,7 +410,7 @@ func (s *Service) PublicEvents(limit int) ([]model.PublicEvent, error) {
 			ids[i] = e.ID
 		}
 		if regs, err := s.sb.Select("registrations",
-			"event_id=in.("+strings.Join(ids, ",")+")&select=event_id"); err == nil {
+			"event_id="+store.In(ids)+"&select=event_id"); err == nil {
 			counts := make(map[string]int, len(events))
 			for _, r := range regs {
 				counts[asStr(r, "event_id")]++
@@ -451,7 +451,7 @@ func (s *Service) attachActivity(events []model.Event) {
 	for i, e := range events {
 		ids[i] = e.ID
 	}
-	inList := "in.(" + strings.Join(ids, ",") + ")"
+	inList := store.In(ids)
 
 	// Newest feed item per event. Rows come back created_at-desc, so the first
 	// row seen for an event id is its latest activity.
@@ -543,7 +543,7 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 		return []model.Event{}, nil
 	}
 	regs, err := s.sb.Select("registrations",
-		"player_id=in.("+strings.Join(pidList, ",")+")&select=event_id")
+		"player_id="+store.In(pidList)+"&select=event_id")
 	if err != nil {
 		return nil, err
 	}
@@ -559,7 +559,7 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 		return []model.Event{}, nil
 	}
 	rows, err := s.sb.Select("events",
-		"id=in.("+strings.Join(ids, ",")+")&select=*&order=created_at.desc")
+		"id="+store.In(ids)+"&select=*&order=created_at.desc")
 	if err != nil {
 		return nil, err
 	}
@@ -580,7 +580,7 @@ func (s *Service) MyNextMatch(eventID, userID, email string) (*model.Match, erro
 		return nil, err
 	}
 	parts, err := s.sb.Select("match_participants",
-		"player_id=in.("+strings.Join(pidList, ",")+")&select=match_id")
+		"player_id="+store.In(pidList)+"&select=match_id")
 	if err != nil {
 		return nil, err
 	}
@@ -600,7 +600,7 @@ func (s *Service) MyNextMatch(eventID, userID, email string) (*model.Match, erro
 	// In-progress first (status sorts 'in_progress' < 'scheduled'), then by play
 	// order so the soonest upcoming game wins.
 	rows, err := s.sb.Select("matches",
-		"id=in.("+strings.Join(mids, ",")+")&event_id=eq."+store.Q(eventID)+
+		"id="+store.In(mids)+"&event_id=eq."+store.Q(eventID)+
 			"&status=in.(scheduled,in_progress)"+
 			"&order=status.asc,play_order.asc.nullslast,created_at.asc&select="+matchSelect)
 	if err != nil {
@@ -719,7 +719,7 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	}
 	if len(mids) > 0 {
 		rows, err := s.sb.Select("matches",
-			"id=in.("+strings.Join(mids, ",")+")&status=eq.completed"+
+			"id="+store.In(mids)+"&status=eq.completed"+
 				"&select=id,team1_score,team2_score,winning_team")
 		if err != nil {
 			return prof, err
@@ -2110,13 +2110,13 @@ func (s *Service) reconcileRoundStatuses(eventID string) error {
 		}
 	}
 	if len(toCompleted) > 0 {
-		if _, err := s.sb.Update("rounds", "id=in.("+strings.Join(toCompleted, ",")+")",
+		if _, err := s.sb.Update("rounds", "id="+store.In(toCompleted)+"",
 			map[string]any{"status": "completed"}); err != nil {
 			return err
 		}
 	}
 	if len(toActive) > 0 {
-		if _, err := s.sb.Update("rounds", "id=in.("+strings.Join(toActive, ",")+")",
+		if _, err := s.sb.Update("rounds", "id="+store.In(toActive)+"",
 			map[string]any{"status": "active"}); err != nil {
 			return err
 		}
@@ -2321,7 +2321,7 @@ func (s *Service) registrationExistsByContact(eventID string, req model.Register
 			return false, nil
 		}
 		dup, err := s.sb.SelectOne("registrations",
-			"event_id=eq."+store.Q(eventID)+"&player_id=in.("+strings.Join(ids, ",")+")&select=id")
+			"event_id=eq."+store.Q(eventID)+"&player_id="+store.In(ids)+"&select=id")
 		if err != nil {
 			return false, err
 		}
@@ -2657,7 +2657,7 @@ func (s *Service) photosByUser(userIDs []string) map[string]string {
 		return out
 	}
 	rows, err := s.sb.Select("pmp_profiles",
-		"user_id=in.("+strings.Join(uniq, ",")+")&select=user_id,photo_url")
+		"user_id="+store.In(uniq)+"&select=user_id,photo_url")
 	if err != nil {
 		return out
 	}
@@ -3266,7 +3266,7 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 				end = len(ids)
 			}
 			if _, err := s.sb.Update("matches",
-				"id=in.("+strings.Join(ids[i:end], ",")+")", patch); err != nil {
+				"id="+store.In(ids[i:end])+"", patch); err != nil {
 				return err
 			}
 		}
@@ -3374,7 +3374,7 @@ func (s *Service) spreadCourts(eventID string) error {
 				end = len(ids)
 			}
 			if _, err := s.sb.Update("matches",
-				"id=in.("+strings.Join(ids[i:end], ",")+")", patch); err != nil {
+				"id="+store.In(ids[i:end])+"", patch); err != nil {
 				return err
 			}
 		}
@@ -3512,7 +3512,7 @@ func (s *Service) linkDuprPlayers(userID, duprID string) {
 		}
 	}
 	regs, err := s.sb.Select("registrations",
-		"player_id=in.("+strings.Join(pids, ",")+")&select=event_id")
+		"player_id="+store.In(pids)+"&select=event_id")
 	if err != nil || len(regs) == 0 {
 		return
 	}
@@ -3530,7 +3530,7 @@ func (s *Service) linkDuprPlayers(userID, duprID string) {
 		eids = append(eids, eid)
 	}
 	evs, err := s.sb.Select("events",
-		"id=in.("+strings.Join(eids, ",")+")&club_id=not.is.null&select=club_id")
+		"id="+store.In(eids)+"&club_id=not.is.null&select=club_id")
 	if err != nil {
 		return
 	}
@@ -3741,7 +3741,7 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 				end = len(mids)
 			}
 			parts, e := s.sb.Select("match_participants",
-				"match_id=in.("+strings.Join(mids[start:end], ",")+")&select=match_id,player_id")
+				"match_id="+store.In(mids[start:end])+"&select=match_id,player_id")
 			if e != nil {
 				return 0, e
 			}
@@ -3877,7 +3877,7 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 				end = len(ids)
 			}
 			if _, err := s.sb.Update("matches",
-				"id=in.("+strings.Join(ids[i:end], ",")+")", data); err != nil {
+				"id="+store.In(ids[i:end])+"", data); err != nil {
 				return err
 			}
 		}
@@ -5190,6 +5190,11 @@ func (s *Service) CollectPaymentManually(registrationID string) error {
 
 // recordPayment writes a payments row and syncs the registration's
 // payment_status. Returns whether the registration ended up paid.
+//
+// IDEMPOTENT: Stripe retries webhooks (checkout.session.completed → this path
+// via CollectPaymentManually) and users can double-click "pay", so we guard
+// against duplicate payments rows that would double-count in finance totals.
+// The registration_status Update is naturally idempotent and always runs.
 func (s *Service) recordPayment(registrationID, provider, ref string, fee int, currency, payStatus, regStatus string) (bool, error) {
 	var refVal, paidAt any
 	if ref != "" {
@@ -5198,22 +5203,55 @@ func (s *Service) recordPayment(registrationID, provider, ref string, fee int, c
 	if payStatus == "paid" {
 		paidAt = now()
 	}
-	if _, err := s.sb.Insert("payments", map[string]any{
-		"registration_id": registrationID,
-		"provider":        provider,
-		"provider_ref":    refVal,
-		"amount_cents":    fee,
-		"currency":        currency,
-		"status":          payStatus,
-		"paid_at":         paidAt,
-	}); err != nil {
+	dup, err := s.paymentAlreadyRecorded(registrationID, provider, payStatus)
+	if err != nil {
 		return false, err
+	}
+	if !dup {
+		if _, err := s.sb.Insert("payments", map[string]any{
+			"registration_id": registrationID,
+			"provider":        provider,
+			"provider_ref":    refVal,
+			"amount_cents":    fee,
+			"currency":        currency,
+			"status":          payStatus,
+			"paid_at":         paidAt,
+		}); err != nil {
+			return false, err
+		}
 	}
 	if _, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID),
 		map[string]any{"payment_status": regStatus}); err != nil {
 		return false, err
 	}
 	return regStatus == "paid", nil
+}
+
+// paymentAlreadyRecorded reports whether a payments row already covers this
+// write, keeping recordPayment idempotent under webhook retries / double-clicks:
+//   - paid:    any existing paid row for the registration (one fee, paid once) —
+//     covers Stripe-webhook retries (which come through with an empty ref).
+//   - pending: an existing pending row for the same registration + provider,
+//     so repeated public "pay" clicks don't stack duplicates.
+//
+// Other statuses (e.g. failed) are never deduped — each is informative.
+func (s *Service) paymentAlreadyRecorded(registrationID, provider, payStatus string) (bool, error) {
+	var query string
+	switch payStatus {
+	case "paid":
+		query = "registration_id=eq." + store.Q(registrationID) +
+			"&status=eq.paid&select=id"
+	case "pending":
+		query = "registration_id=eq." + store.Q(registrationID) +
+			"&provider=eq." + store.Q(provider) + "&status=eq.pending&select=id"
+	default:
+		return false, nil
+	}
+	row, err := s.sb.SelectOne("payments", query)
+	if err != nil {
+		return false, err
+	}
+	return row != nil, nil
 }
 
 // SaveShirtOrder creates or updates the (optional) tournament-shirt order a
@@ -5619,7 +5657,7 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		}
 		if len(pids) > 0 {
 			if regs, err := s.sb.Select("registrations",
-				"player_id=in.("+strings.Join(pids, ",")+")&select=event_id"); err == nil {
+				"player_id="+store.In(pids)+"&select=event_id"); err == nil {
 				for _, r := range regs {
 					if id := asStr(r, "event_id"); id != "" {
 						idSet[id] = struct{}{}
@@ -5635,7 +5673,7 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	for id := range idSet {
 		ids = append(ids, id)
 	}
-	inList := "in.(" + strings.Join(ids, ",") + ")"
+	inList := store.In(ids)
 	// Event id -> name, for the context label on each item.
 	names := map[string]string{}
 	if rows, err := s.sb.Select("events", "id="+inList+"&select=id,name"); err == nil {
@@ -5697,7 +5735,7 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 // attachSocial fills ReactionCounts/MyReactions/CommentCount for a set of feed
 // items in two batched queries (no N+1; best-effort).
 func (s *Service) attachSocial(items []model.FeedItem, ids []string, callerID string) {
-	inList := "in.(" + strings.Join(ids, ",") + ")"
+	inList := store.In(ids)
 	idx := make(map[string]int, len(items))
 	for i := range items {
 		idx[items[i].ID] = i
@@ -7696,7 +7734,7 @@ func (f *feedUpdates) flush(s *Service) error {
 				end = len(ids)
 			}
 			if _, err := s.sb.Update("matches",
-				"id=in.("+strings.Join(ids[i:end], ",")+")", fields); err != nil {
+				"id="+store.In(ids[i:end])+"", fields); err != nil {
 				return err
 			}
 		}

@@ -94,7 +94,7 @@ func (s *Service) MyClubs(userID string) ([]model.Club, error) {
 		return []model.Club{}, nil
 	}
 	rows, err := s.sb.Select("clubs",
-		"id=in.("+strings.Join(ids, ",")+")&select=*&order=created_at.desc")
+		"id="+store.In(ids)+"&select=*&order=created_at.desc")
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func (s *Service) ClubMembers(clubID string) ([]model.ClubMember, error) {
 	names := map[string]string{}
 	if len(uids) > 0 {
 		if prows, err := s.sb.Select("players",
-			"user_id=in.("+strings.Join(uids, ",")+")&select=user_id,full_name"); err == nil {
+			"user_id="+store.In(uids)+"&select=user_id,full_name"); err == nil {
 			for _, p := range prows {
 				if n := asStr(p, "full_name"); n != "" {
 					names[asStr(p, "user_id")] = n

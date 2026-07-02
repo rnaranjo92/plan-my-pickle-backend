@@ -31,9 +31,13 @@ type RealDupr struct {
 	clubID       string // optional club to attribute submitted matches to
 	http         *http.Client
 
-	mu     sync.Mutex
+	mu     sync.Mutex // guards token/expiry (held only for field reads/writes)
 	token  string
 	expiry time.Time
+	// refreshMu serializes token refreshes so concurrent misses don't stampede
+	// DUPR's auth endpoint — held across the network call, but callers holding a
+	// still-valid token never contend for it (they take the fast path below).
+	refreshMu sync.Mutex
 }
 
 // NewRealDupr builds the live gateway. baseURL/version/clubID may be empty to
@@ -112,12 +116,25 @@ type duprEnvelope struct {
 
 // accessToken returns a cached bearer token, refreshing via the client-key/
 // secret exchange when missing or within 30s of expiry.
+//
+// The blocking token exchange runs WITHOUT holding the field lock (d.mu), so a
+// slow DUPR auth call can't serialize every concurrent ratings/match request
+// behind it. refreshMu serializes the refresh itself so concurrent misses issue
+// only one exchange (no stampede); a double-check after acquiring it means only
+// the first waiter actually refreshes.
 func (d *RealDupr) accessToken() (string, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.token != "" && time.Now().Before(d.expiry.Add(-30*time.Second)) {
-		return d.token, nil
+	// Fast path: a valid cached token, guarded briefly by the field lock.
+	if tok := d.cachedToken(); tok != "" {
+		return tok, nil
 	}
+
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+	// Re-check: another goroutine may have refreshed while we waited for the lock.
+	if tok := d.cachedToken(); tok != "" {
+		return tok, nil
+	}
+
 	endpoint := fmt.Sprintf("%s/auth/%s/token", d.baseURL, d.version)
 	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
 	if err != nil {
@@ -148,13 +165,26 @@ func (d *RealDupr) accessToken() (string, error) {
 	if err := json.Unmarshal(env.Result, &res); err != nil || res.Token == "" {
 		return "", fmt.Errorf("dupr auth: no token in response: %s", string(raw))
 	}
-	d.token = res.Token
+	expiry := time.Now().Add(50 * time.Minute) // conservative fallback
 	if t, e := time.Parse(time.RFC3339, res.Expiry); e == nil {
-		d.expiry = t
-	} else {
-		d.expiry = time.Now().Add(50 * time.Minute) // conservative fallback
+		expiry = t
 	}
-	return d.token, nil
+	d.mu.Lock()
+	d.token = res.Token
+	d.expiry = expiry
+	d.mu.Unlock()
+	return res.Token, nil
+}
+
+// cachedToken returns the current token if it's present and not within 30s of
+// expiry, else "" — holding the field lock only for the field reads.
+func (d *RealDupr) cachedToken() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.token != "" && time.Now().Before(d.expiry.Add(-30*time.Second)) {
+		return d.token
+	}
+	return ""
 }
 
 // authed makes a bearer-authenticated request and returns the raw body + status.
@@ -368,19 +398,34 @@ func snippet(b []byte) string {
 	return s
 }
 
-// parseMatchResult pulls the match code out of a create/update response.
+// parseMatchResult pulls the match code out of a create/update response. OK is
+// true only when a match code was actually found: a 2xx with an empty/unparseable
+// body would otherwise yield OK:true with an empty DuprMatchID, which silently
+// breaks the later Update/Delete (they'd send an empty identifier). Callers that
+// require the code (create) can treat OK:false as a soft failure; update falls
+// back to the code it already had.
 func parseMatchResult(raw []byte) DuprResult {
 	var env duprEnvelope
-	_ = json.Unmarshal(raw, &env)
+	if err := json.Unmarshal(raw, &env); err != nil {
+		log.Printf("dupr: match result envelope parse failed: %v: %s", err, snippet(raw))
+		return DuprResult{OK: false, Error: "unparseable dupr response"}
+	}
 	var res struct {
 		MatchCode       string `json:"matchCode"`
 		HashedMatchCode string `json:"hashedMatchCode"`
 		Identifier      string `json:"identifier"`
 	}
-	_ = json.Unmarshal(env.Result, &res)
+	if err := json.Unmarshal(env.Result, &res); err != nil {
+		log.Printf("dupr: match result body parse failed: %v: %s", err, snippet(raw))
+		return DuprResult{OK: false, Error: "unparseable dupr result"}
+	}
 	ref := res.MatchCode
 	if ref == "" {
 		ref = res.HashedMatchCode
+	}
+	if ref == "" {
+		log.Printf("dupr: match result missing matchCode: %s", snippet(raw))
+		return DuprResult{OK: false, Error: "dupr response missing matchCode"}
 	}
 	return DuprResult{OK: true, DuprMatchID: ref}
 }
@@ -423,7 +468,10 @@ func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
 	}
 	res := parseMatchResult(raw)
 	if res.DuprMatchID == "" {
-		res.DuprMatchID = p.MatchCode // keep the existing code on update
+		// A 2xx update that echoed no code is still a success — keep the code we
+		// already had for this match (parseMatchResult reports OK:false on an
+		// empty code, which is the right call for create but not for update).
+		res = DuprResult{OK: true, DuprMatchID: p.MatchCode}
 	}
 	return res, nil
 }

@@ -176,7 +176,7 @@ func (s *Service) ListTeams(eventID string) ([]model.EventTeam, error) {
 		return teams, nil
 	}
 	mrows, err := s.sb.Select("event_team_members",
-		"team_id=in.("+joinIDs(ids)+")&select=*,player:players!player_id(phone,dupr_id,dupr_rating)&order=gender,full_name")
+		"team_id="+store.In(ids)+"&select=*,player:players!player_id(phone,dupr_id,dupr_rating)&order=gender,full_name")
 	if err != nil {
 		return nil, err
 	}
@@ -844,7 +844,7 @@ func (s *Service) ListTies(eventID string) ([]model.TeamTie, error) {
 		return ties, nil
 	}
 	lrows, err := s.sb.Select("matches",
-		"tie_id=in.("+joinIDs(ids)+")&select=id,tie_id,line_type,status,team1_score,team2_score,winning_team,participants:match_participants(team,player_id)&order=play_order")
+		"tie_id="+store.In(ids)+"&select=id,tie_id,line_type,status,team1_score,team2_score,winning_team,participants:match_participants(team,player_id)&order=play_order")
 	if err != nil {
 		return nil, err
 	}
@@ -1118,16 +1118,4 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 		return (a.PointsFor - a.PointsAgainst) > (b.PointsFor - b.PointsAgainst)
 	})
 	return out, nil
-}
-
-// joinIDs builds a PostgREST in-list body from raw ids.
-func joinIDs(ids []string) string {
-	out := ""
-	for i, id := range ids {
-		if i > 0 {
-			out += ","
-		}
-		out += id
-	}
-	return out
 }

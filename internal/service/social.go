@@ -140,7 +140,7 @@ func (s *Service) followingSet(callerID string, ids []string) map[string]bool {
 	}
 	rows, err := s.sb.Select("follows",
 		"follower_id=eq."+store.Q(callerID)+
-			"&followee_id=in.("+strings.Join(ids, ",")+")&select=followee_id")
+			"&followee_id="+store.In(ids)+"&select=followee_id")
 	if err != nil {
 		return out
 	}
@@ -163,7 +163,7 @@ func (s *Service) decorateUsers(callerID string, ids []string,
 	if names == nil {
 		names, ratings = map[string]string{}, map[string]*float64{}
 		if prows, err := s.sb.Select("players",
-			"user_id=in.("+strings.Join(ids, ",")+")&select=user_id,full_name,doubles_rating"); err == nil {
+			"user_id="+store.In(ids)+"&select=user_id,full_name,doubles_rating"); err == nil {
 			for _, p := range prows {
 				uid := asStr(p, "user_id")
 				if uid == "" {

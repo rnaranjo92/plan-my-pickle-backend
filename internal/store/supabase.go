@@ -34,6 +34,55 @@ func dbDecodeError(op, table string, body []byte) error {
 // Q escapes a value for use inside a PostgREST filter, e.g. "id=eq."+Q(v).
 func Q(v string) string { return url.QueryEscape(v) }
 
+// In builds a PostgREST `in.(...)` filter value from a list of literal column
+// values (typically UUIDs or ints), e.g. `"id=" + store.In(ids)`. It centralizes
+// what used to be scattered `"in.("+strings.Join(ids, ",")+")"` concatenations.
+//
+// Values made up only of unreserved id characters — which every real id is — are
+// emitted raw, byte-for-byte identical to a plain comma join, so this is a safe
+// drop-in with no change to the wire format for real traffic. A value containing
+// a reserved character (comma, parenthesis, quote, …) — which cannot be a
+// legitimate id and today would corrupt or break out of the filter — is instead
+// double-quoted and escaped so it stays a single, contained value.
+func In(values []string) string {
+	var b strings.Builder
+	b.WriteString("in.(")
+	for i, v := range values {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if isUnreservedID(v) {
+			b.WriteString(v)
+			continue
+		}
+		// PostgREST quoted-value syntax: wrap in double quotes, backslash-escape
+		// embedded backslashes/quotes, then percent-encode so the quotes survive
+		// the URL. The separating commas stay literal (structural).
+		e := strings.ReplaceAll(v, `\`, `\\`)
+		e = strings.ReplaceAll(e, `"`, `\"`)
+		b.WriteString(url.QueryEscape(`"` + e + `"`))
+	}
+	b.WriteByte(')')
+	return b.String()
+}
+
+// isUnreservedID reports whether v is safe to place raw in an in-list — only the
+// characters real ids use (uuids, ints, simple slugs). Anything else takes the
+// quoted/escaped path in In.
+func isUnreservedID(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // Client talks to a Supabase project's PostgREST tables and RPC functions.
 type Client struct {
 	httpClient *http.Client
@@ -271,7 +320,9 @@ func (c *Client) Upsert(table, onConflict string, rows any) ([]map[string]any, e
 		return nil, dbError("upsert", table, resp.StatusCode, body)
 	}
 	var out []map[string]any
-	_ = json.Unmarshal(body, &out)
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, dbDecodeError("upsert", table, body)
+	}
 	return out, nil
 }
 

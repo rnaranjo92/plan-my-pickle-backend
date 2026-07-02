@@ -2,6 +2,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -750,12 +751,19 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 // the partner integration (mock data until the DUPR_* env vars are configured).
 // duprWebhook receives DUPR RATING / RATING_SEED events and refreshes the
 // matching connected user's cached rating. Public (DUPR posts here), so it is
-// FAIL-CLOSED on a shared secret: DUPR_WEBHOOK_SECRET must be set and arrive as
-// the ?token= query param (we register the webhook URL with it). Always 200
-// quickly so DUPR doesn't retry-storm.
+// FAIL-CLOSED on a shared secret: DUPR_WEBHOOK_SECRET must be set and arrive
+// either in the X-Webhook-Token header (preferred — keeps it out of URL/proxy
+// logs) or the ?token= query param (back-compat with an already-registered
+// webhook URL). Compared in constant time to avoid a timing side-channel.
+// Always 200 quickly so DUPR doesn't retry-storm.
 func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
 	secret := os.Getenv("DUPR_WEBHOOK_SECRET")
-	if secret == "" || r.URL.Query().Get("token") != secret {
+	token := r.Header.Get("X-Webhook-Token")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	if secret == "" ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
 		// Unconfigured or wrong token → reject, so no one can rewrite ratings.
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -1429,8 +1437,7 @@ func (s *Server) manualGame(w http.ResponseWriter, r *http.Request) {
 		Team1           []string `json:"team1"`
 		Team2           []string `json:"team2"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !decode(w, r, &req) {
 		return
 	}
 	day := -1
@@ -1459,8 +1466,7 @@ func (s *Server) mlpListTeams(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mlpCreateTeam(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateTeamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !decode(w, r, &req) {
 		return
 	}
 	t, err := s.svc.CreateTeam(r.PathValue("id"), req)
@@ -1481,8 +1487,7 @@ func (s *Server) mlpRemoveTeam(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mlpRenameTeam(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateTeamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !decode(w, r, &req) {
 		return
 	}
 	if err := s.svc.RenameEventTeam(r.PathValue("teamId"), req.Name); err != nil {
@@ -1494,8 +1499,7 @@ func (s *Server) mlpRenameTeam(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mlpAddTeamMember(w http.ResponseWriter, r *http.Request) {
 	var req model.AddTeamMemberRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !decode(w, r, &req) {
 		return
 	}
 	m, err := s.svc.AddTeamMember(r.PathValue("teamId"), req)
@@ -1552,8 +1556,7 @@ func (s *Server) mlpStandings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mlpSetLineup(w http.ResponseWriter, r *http.Request) {
 	var req model.SetLineupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !decode(w, r, &req) {
 		return
 	}
 	if err := s.svc.SetLineLineup(r.PathValue("matchId"), req.Team1, req.Team2); err != nil {
@@ -1567,8 +1570,7 @@ func (s *Server) mlpCheckinMember(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CheckedIn bool `json:"checkedIn"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !decode(w, r, &req) {
 		return
 	}
 	if err := s.svc.SetMemberCheckedIn(r.PathValue("memberId"), req.CheckedIn); err != nil {
@@ -1714,6 +1716,8 @@ func (s *Server) playoff(w http.ResponseWriter, r *http.Request) {
 		Sides   [][]string `json:"sides"`
 	}
 	// Body is optional (legacy callers passed ?topN= only); tolerate no body.
+	// Still cap it (DoS hardening) even though a decode error is ignored here.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.TopN == 0 {
 		req.TopN, _ = strconv.Atoi(r.URL.Query().Get("topN"))

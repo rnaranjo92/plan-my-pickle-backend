@@ -136,13 +136,13 @@ func (s *Service) leagueIDsForUser(userID, email string) (map[string]bool, error
 	if len(pidList) == 0 {
 		return out, nil
 	}
-	pids := strings.Join(pidList, ",")
+	pids := store.In(pidList)
 
 	// (a) Registered for an event that belongs to a league. Two steps (mirrors
 	// MyEvents): the caller's registrations → their event ids → the events that
 	// have a non-null league_id → those leagues.
 	regs, err := s.sb.Select("registrations",
-		"player_id=in.("+pids+")&select=event_id")
+		"player_id="+pids+"&select=event_id")
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func (s *Service) leagueIDsForUser(userID, email string) (map[string]bool, error
 			ids = append(ids, id)
 		}
 		evs, err := s.sb.Select("events",
-			"id=in.("+strings.Join(ids, ",")+")&league_id=not.is.null&select=league_id")
+			"id="+store.In(ids)+"&league_id=not.is.null&select=league_id")
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +175,7 @@ func (s *Service) leagueIDsForUser(userID, email string) (map[string]bool, error
 	bracketIDs := map[string]bool{}
 	for _, table := range []string{"ladder_entrants", "teams"} {
 		rows, err := s.sb.Select(table,
-			"player_id=in.("+pids+")&select=league_bracket_id")
+			"player_id="+pids+"&select=league_bracket_id")
 		if err != nil {
 			return nil, err
 		}
@@ -191,7 +191,7 @@ func (s *Service) leagueIDsForUser(userID, email string) (map[string]bool, error
 			bids = append(bids, id)
 		}
 		bks, err := s.sb.Select("league_brackets",
-			"id=in.("+strings.Join(bids, ",")+")&select=league_id")
+			"id="+store.In(bids)+"&select=league_id")
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +246,7 @@ func (s *Service) MyLeagues(userID, email string) ([]model.League, error) {
 	}
 	if len(missing) > 0 {
 		rows, err := s.sb.Select("leagues",
-			"id=in.("+strings.Join(missing, ",")+")&select=*")
+			"id="+store.In(missing)+"&select=*")
 		if err != nil {
 			return nil, err
 		}
@@ -283,7 +283,7 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		ids[i] = l.ID
 	}
 	rows, err := s.sb.Select("events",
-		"league_id=in.("+strings.Join(ids, ",")+")&select=league_id,starts_at,ends_at")
+		"league_id="+store.In(ids)+"&select=league_id,starts_at,ends_at")
 	if err != nil {
 		return err
 	}
@@ -372,7 +372,7 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 			ids[i] = e.ID
 		}
 		if regs, rerr := s.sb.Select("registrations",
-			"event_id=in.("+strings.Join(ids, ",")+")&select=event_id"); rerr == nil {
+			"event_id="+store.In(ids)+"&select=event_id"); rerr == nil {
 			counts := make(map[string]int, len(events))
 			for _, r := range regs {
 				counts[asStr(r, "event_id")]++

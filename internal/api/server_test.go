@@ -451,17 +451,22 @@ func TestCreateEventMalformedBody(t *testing.T) {
 	}
 }
 
-func TestCreateEventNonPremiumIs402(t *testing.T) {
+// A non-Premium organizer creating a DUPR-SANCTIONED event must be blocked with
+// 402 — sanctioning is the Premium gate (basic event creation itself is free).
+// The premium check runs before any DB work, so this is deterministic under the
+// mock. (Previously this test asserted that *all* event creation was Premium,
+// which no longer matches the model: the tournament engine is free.)
+func TestCreateEventSanctionedNonPremiumIs402(t *testing.T) {
 	m := newMockSupabase(t)
 	// IsPremium queries Supabase; with empty/default rows the user is not premium.
 	h := newTestServer(t, m)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/events",
-		strings.NewReader(`{"name":"Test Open","format":"singles"}`))
+		strings.NewReader(`{"name":"Test Open","format":"singles","duprSanctioned":true}`))
 	req.Header.Set("Authorization", "Bearer "+authToken(t, "owner-1"))
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPaymentRequired {
-		t.Fatalf("status = %d, want 402 (premium required) for non-premium creator", rec.Code)
+		t.Fatalf("status = %d, want 402 (premium required) for a non-premium creator of a DUPR-sanctioned event", rec.Code)
 	}
 }
 

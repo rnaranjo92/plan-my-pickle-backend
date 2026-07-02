@@ -158,6 +158,10 @@ var ErrScheduleHasResults = errors.New("schedule already has recorded results")
 // PlanMyPickle account (one DUPR id maps to one account).
 var ErrDuprIDTaken = errors.New("this DUPR account is already connected to another PlanMyPickle account")
 
+// ErrDuprNotConnected means a player tried to SELF-register for a DUPR-sanctioned
+// event without a connected DUPR account (their results must be submittable).
+var ErrDuprNotConnected = errors.New("connect your DUPR account to register for this DUPR-sanctioned event")
+
 // ErrPremiumRequired means a Premium-only action (organizing events, DUPR
 // sanctioning) was requested by a non-premium account.
 var ErrPremiumRequired = errors.New("a Premium subscription is required")
@@ -2397,6 +2401,14 @@ func (s *Service) RegisterDuprTestAccounts(eventID string) (DuprTestSummary, err
 	return sum, nil
 }
 
+// eventIsSanctioned reports whether an event is DUPR-sanctioned (best-effort: a
+// lookup failure returns false so it can't wrongly block a registration).
+func (s *Service) eventIsSanctioned(eventID string) bool {
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=dupr_sanctioned")
+	return err == nil && ev != nil && asBool(ev, "dupr_sanctioned")
+}
+
 func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
@@ -2411,13 +2423,23 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	}
 	// DUPR id/rating are never typed by hand (DUPR forbids it) — for a signed-in
 	// user, attach them from their SSO-connected DUPR account, the source of truth.
+	// Load the connection once; reuse it for the sanctioned-event gate below.
+	var conn model.DuprConnection
 	if linkUserID != "" {
-		if c, err := s.DuprConnection(linkUserID); err == nil && c.Connected {
-			req.DuprID = c.DuprID
-			if c.DoublesRating != nil {
-				req.DuprRating = c.DoublesRating
+		conn, _ = s.DuprConnection(linkUserID)
+		if conn.Connected {
+			req.DuprID = conn.DuprID
+			if conn.DoublesRating != nil {
+				req.DuprRating = conn.DoublesRating
 			}
 		}
+	}
+	// A DUPR-sanctioned event REQUIRES a self-registering player to have DUPR
+	// connected — their results must be submittable to DUPR. An organizer adding
+	// players (req.Self == false) is trusted and not blocked. Anonymous self-
+	// registration (linkUserID == "") is also blocked here: no account, no connection.
+	if req.Self && !conn.Connected && s.eventIsSanctioned(eventID) {
+		return model.Registration{}, ErrDuprNotConnected
 	}
 	fields := map[string]any{
 		"full_name":        req.FullName,

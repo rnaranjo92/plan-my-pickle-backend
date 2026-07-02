@@ -1073,6 +1073,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
+		// Sanctioned event requires a connected DUPR account to self-register.
+		if errors.Is(err, service.ErrDuprNotConnected) {
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

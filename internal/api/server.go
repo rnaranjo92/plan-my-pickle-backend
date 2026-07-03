@@ -299,6 +299,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/duration", s.ownerOnly("match", "id", s.setMatchDuration))
 	mux.HandleFunc("POST /matches/{id}/day", s.ownerOnly("match", "id", s.setMatchDay))
 	mux.HandleFunc("DELETE /matches/{id}", s.ownerOnly("match", "id", s.deleteMatch))
+	mux.HandleFunc("POST /matches/{id}/dupr/remove", s.ownerOnly("match", "id", s.removeMatchFromDupr))
 	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
 	mux.HandleFunc("POST /events/{id}/day-cap", s.ownerOnly("event", "id", s.setDayCap))
 	mux.HandleFunc("POST /events/{id}/day-ends", s.ownerOnly("event", "id", s.setDayEnds))
@@ -2563,6 +2564,17 @@ func (s *Server) registerDuprTesters(w http.ResponseWriter, r *http.Request) {
 // removeFromDupr reverses the event's submitted results on DUPR (delete leg).
 func (s *Server) removeFromDupr(w http.ResponseWriter, r *http.Request) {
 	sum, err := s.svc.RemoveEventFromDupr(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
+}
+
+// removeMatchFromDupr reverses ONE match's submitted result on DUPR (per-game
+// delete leg) — leaves the local match + score, just un-submits it from DUPR.
+func (s *Server) removeMatchFromDupr(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.svc.RemoveMatchFromDupr(r.PathValue("id"))
 	if err != nil {
 		status(w, err)
 		return

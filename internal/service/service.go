@@ -7001,6 +7001,58 @@ func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error)
 	return sum, nil
 }
 
+// RemoveMatchFromDupr reverses a SINGLE match's already-submitted result on DUPR
+// (the per-game delete leg). It deletes just that match on DUPR and "un-submits"
+// it locally (back to pending, provider_ref/attempts cleared, dupr_gen bumped) so
+// it can be re-imported. The local match + score are left untouched. Owner-gated
+// at the handler. Returns a summary (Removed 0 / Failed 0 = nothing was on DUPR).
+func (s *Service) RemoveMatchFromDupr(matchID string) (DuprRemoveSummary, error) {
+	// Find the submission (and its event) so we can lock the right event.
+	head, err := s.sb.SelectOne("dupr_submissions",
+		"match_id=eq."+store.Q(matchID)+"&select=event_id")
+	if err != nil {
+		return DuprRemoveSummary{}, err
+	}
+	if head == nil {
+		return DuprRemoveSummary{}, nil // never queued to DUPR — nothing to remove
+	}
+	eventID := asStr(head, "event_id")
+	defer s.lockDuprEvent(eventID)() // serialize vs the import flush / reconciler
+	// Re-read the authoritative row UNDER the lock (a concurrent flush may have
+	// just changed status/provider_ref/dupr_gen).
+	sub, err := s.sb.SelectOne("dupr_submissions",
+		"match_id=eq."+store.Q(matchID)+"&select=id,match_id,provider_ref,dupr_gen")
+	if err != nil {
+		return DuprRemoveSummary{}, err
+	}
+	if sub == nil {
+		return DuprRemoveSummary{}, nil
+	}
+	var sum DuprRemoveSummary
+	code := asStr(sub, "provider_ref")
+	if code == "" {
+		return sum, nil // queued but never landed on DUPR — nothing to delete there
+	}
+	// DUPR delete validates the identifier against the one used at CREATE, so pass
+	// the same generation identifier (not the raw match_id).
+	ident := duprIdentifier(asStr(sub, "match_id"), asInt(sub, "dupr_gen"))
+	if err := s.Dupr.DeleteMatch(code, ident); err != nil {
+		sum.Failed++
+		sum.Errors = append(sum.Errors, err.Error())
+		return sum, nil
+	}
+	// Un-submit locally: gone from DUPR, re-importable. Bump dupr_gen so a re-import
+	// uses a BRAND-NEW identifier — DUPR won't let a deleted match's id be reused.
+	_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(asStr(sub, "id")),
+		map[string]any{
+			"status": "pending", "provider_ref": nil, "submitted_at": nil,
+			"attempts": 0, "next_attempt_at": nil, "error": nil,
+			"dupr_gen": asInt(sub, "dupr_gen") + 1,
+		})
+	sum.Removed++
+	return sum, nil
+}
+
 func (s *Service) markSubmission(id, status, ref, errMsg string) error {
 	var submittedAt any
 	if status == "submitted" {

@@ -172,19 +172,23 @@ var ErrPremiumRequired = errors.New("a Premium subscription is required")
 // their DUPR account does not hold. The message names the tier.
 var ErrDuprEntitlementRequired = errors.New("your DUPR account isn't eligible for this event's tier")
 
-// normalizeDuprEntitlement validates an event's required DUPR entitlement code,
-// returning "" for anything that isn't a gated tier (so a stray value can't
-// silently lock an event nobody can join).
+// normalizeDuprEntitlement validates an event's required DUPR gate, returning
+// "" for anything that isn't a gated tier (so a stray value can't silently lock
+// an event nobody can join). Per DUPR's guidance there is ONE user-facing tier:
+// DUPR_PLUS ("DUPR+"), which requires BOTH the PREMIUM_L1 and VERIFIED_L1
+// entitlements. The legacy per-entitlement values fold into it.
 func normalizeDuprEntitlement(code string) string {
 	switch strings.ToUpper(strings.TrimSpace(code)) {
-	case "PREMIUM_L1":
-		return "PREMIUM_L1"
-	case "VERIFIED_L1":
-		return "VERIFIED_L1"
+	case "DUPR_PLUS", "PREMIUM_L1", "VERIFIED_L1":
+		return "DUPR_PLUS"
 	default:
 		return ""
 	}
 }
+
+// duprPlusEntitlements are the DUPR entitlement codes a player must ALL hold to
+// enter a DUPR+ event.
+var duprPlusEntitlements = []string{"PREMIUM_L1", "VERIFIED_L1"}
 
 // containsFold reports whether want appears in list, case-insensitively.
 func containsFold(list []string, want string) bool {
@@ -198,14 +202,10 @@ func containsFold(list []string, want string) bool {
 
 // duprEntitlementLabel is the human name for a gated tier, for error messages.
 func duprEntitlementLabel(code string) string {
-	switch code {
-	case "PREMIUM_L1":
-		return "DUPR+ Premium"
-	case "VERIFIED_L1":
-		return "DUPR Verified"
-	default:
-		return code
+	if code == "DUPR_PLUS" {
+		return "DUPR+"
 	}
+	return code
 }
 
 // ------------------------------------------------------------------ events
@@ -2513,16 +2513,21 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		if sanctioned && !conn.Connected {
 			return model.Registration{}, ErrDuprNotConnected
 		}
-		// Premium / Verified tier: the connected player must hold the entitlement
-		// (DUPR's entitlements.tournaments). Fail OPEN if DUPR can't be reached —
-		// a lookup error must never wrongfully block a legitimate registration.
+		// DUPR+ tier: the connected player must hold ALL of the DUPR+ entitlements
+		// (Premium + Verified, per DUPR's guidance — one consumer-facing name).
+		// Fail OPEN if DUPR can't be reached — a lookup error must never
+		// wrongfully block a legitimate registration.
 		if minEnt != "" && conn.Connected {
 			ents, err := s.Dupr.GetEntitlements(conn.DuprID)
 			if err != nil {
 				log.Printf("dupr: entitlements lookup for %s failed (allowing registration): %v", conn.DuprID, err)
-			} else if !containsFold(ents, minEnt) {
-				return model.Registration{}, fmt.Errorf("%w: this event requires %s",
-					ErrDuprEntitlementRequired, duprEntitlementLabel(minEnt))
+			} else {
+				for _, need := range duprPlusEntitlements {
+					if !containsFold(ents, need) {
+						return model.Registration{}, fmt.Errorf("%w: this event requires a %s membership",
+							ErrDuprEntitlementRequired, duprEntitlementLabel(minEnt))
+					}
+				}
 			}
 		}
 	}

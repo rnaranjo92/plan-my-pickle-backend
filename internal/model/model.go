@@ -33,10 +33,11 @@ type Event struct {
 	VenueLat             *float64 `json:"venueLat,omitempty"`
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
-	// DuprMinEntitlement, when set, gates self-registration on a DUPR entitlement
-	// code the player must hold: "PREMIUM_L1" (DUPR+ premium) or "VERIFIED_L1"
-	// (identity-verified). Empty = a standard sanctioned event (BASIC_L1 only).
-	// Setting this implies DuprSanctioned.
+	// DuprMinEntitlement, when set to "DUPR_PLUS", gates self-registration on a
+	// DUPR+ membership — the player must hold BOTH the PREMIUM_L1 and VERIFIED_L1
+	// entitlements (DUPR's one consumer-facing tier). Empty = a standard
+	// sanctioned event (any connected DUPR account). Setting this implies
+	// DuprSanctioned.
 	DuprMinEntitlement string `json:"duprMinEntitlement,omitempty"`
 	// CashPrize flags a cash-prize event; CashPrizeAmount is the optional pot size.
 	CashPrize       bool     `json:"cashPrize"`
@@ -678,8 +679,8 @@ type CreateEventRequest struct {
 	VenueLat             *float64       `json:"venueLat"`
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
-	// DuprMinEntitlement: "" | "PREMIUM_L1" | "VERIFIED_L1" — gates self-register
-	// on the DUPR tier the player must hold. Non-empty implies DuprSanctioned.
+	// DuprMinEntitlement: "" | "DUPR_PLUS" — gates self-register on a DUPR+
+	// membership (Premium + Verified). Non-empty implies DuprSanctioned.
 	DuprMinEntitlement string         `json:"duprMinEntitlement"`
 	CashPrize          bool           `json:"cashPrize"`
 	CashPrizeAmount    *float64       `json:"cashPrizeAmount,omitempty"`

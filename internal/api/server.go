@@ -1111,6 +1111,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		// Premium / Verified event requires a DUPR entitlement the player lacks.
+		if errors.Is(err, service.ErrDuprEntitlementRequired) {
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

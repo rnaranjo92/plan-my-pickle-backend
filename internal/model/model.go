@@ -33,6 +33,11 @@ type Event struct {
 	VenueLat             *float64 `json:"venueLat,omitempty"`
 	VenueLng             *float64 `json:"venueLng,omitempty"`
 	DuprSanctioned       bool     `json:"duprSanctioned"`
+	// DuprMinEntitlement, when set, gates self-registration on a DUPR entitlement
+	// code the player must hold: "PREMIUM_L1" (DUPR+ premium) or "VERIFIED_L1"
+	// (identity-verified). Empty = a standard sanctioned event (BASIC_L1 only).
+	// Setting this implies DuprSanctioned.
+	DuprMinEntitlement string `json:"duprMinEntitlement,omitempty"`
 	// CashPrize flags a cash-prize event; CashPrizeAmount is the optional pot size.
 	CashPrize       bool     `json:"cashPrize"`
 	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
@@ -673,9 +678,12 @@ type CreateEventRequest struct {
 	VenueLat             *float64       `json:"venueLat"`
 	VenueLng             *float64       `json:"venueLng"`
 	DuprSanctioned       bool           `json:"duprSanctioned"`
-	CashPrize            bool           `json:"cashPrize"`
-	CashPrizeAmount      *float64       `json:"cashPrizeAmount,omitempty"`
-	Consolation          bool           `json:"consolation"` // single_elim back-draw
+	// DuprMinEntitlement: "" | "PREMIUM_L1" | "VERIFIED_L1" — gates self-register
+	// on the DUPR tier the player must hold. Non-empty implies DuprSanctioned.
+	DuprMinEntitlement string         `json:"duprMinEntitlement"`
+	CashPrize          bool           `json:"cashPrize"`
+	CashPrizeAmount    *float64       `json:"cashPrizeAmount,omitempty"`
+	Consolation        bool           `json:"consolation"` // single_elim back-draw
 	AutoAdjust           bool           `json:"autoAdjust"`
 	TeamSize             int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
 	StartsAt             string         `json:"startsAt"`    // RFC3339 UTC, "" = none

@@ -293,6 +293,53 @@ func (d *RealDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 	}, nil
 }
 
+// GetEntitlements fetches a user's tournament entitlement codes (BASIC_L1,
+// PREMIUM_L1, VERIFIED_L1) so registration into premium/verified events can be
+// gated. Response shape: {status, displayName, entitlements:{tournaments:[...]}}
+// — parsed from the standard {result:...} envelope, falling back to the raw body.
+//
+// ENDPOINT PATH: DUPR's "Subscriptions Controller / getSubscriptions". The path
+// below mirrors the other resource routes (/user/{v}/{id}, /club/{v}/members) as
+// /subscriptions/{v}/{id}; confirm against DUPR's API explorer if entitlements
+// come back empty for a user you know is entitled. Callers fail OPEN on error, so
+// a wrong path degrades to "not gated", never a wrongful block.
+func (d *RealDupr) GetEntitlements(duprID string) ([]string, error) {
+	duprID = strings.TrimSpace(duprID)
+	if duprID == "" {
+		return nil, nil
+	}
+	raw, code, err := d.authed(http.MethodGet,
+		fmt.Sprintf("/subscriptions/%s/%s", d.version, url.PathEscape(duprID)), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusNotFound {
+		return nil, nil
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("dupr subscriptions http %d: %s", code, string(raw))
+	}
+	type entShape struct {
+		Entitlements struct {
+			Tournaments []string `json:"tournaments"`
+		} `json:"entitlements"`
+	}
+	// Try the standard {result:{...}} envelope first, then the bare body — the
+	// gating example doc shows the fields at top level.
+	var env duprEnvelope
+	if json.Unmarshal(raw, &env) == nil && len(env.Result) > 0 {
+		var e entShape
+		if json.Unmarshal(env.Result, &e) == nil && len(e.Entitlements.Tournaments) > 0 {
+			return e.Entitlements.Tournaments, nil
+		}
+	}
+	var e entShape
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return nil, err
+	}
+	return e.Entitlements.Tournaments, nil
+}
+
 // parseDuprRating reads a DUPR rating value that may be a JSON number, the
 // string "NR"/"" (unrated), or null → 0.
 func parseDuprRating(raw json.RawMessage) float64 {

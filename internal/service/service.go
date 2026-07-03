@@ -167,6 +167,47 @@ var ErrDuprNotConnected = errors.New("connect your DUPR account to register for 
 // sanctioning) was requested by a non-premium account.
 var ErrPremiumRequired = errors.New("a Premium subscription is required")
 
+// ErrDuprEntitlementRequired means a player tried to SELF-register for a DUPR
+// event that gates on a higher entitlement tier (DUPR+ Premium or Verified) that
+// their DUPR account does not hold. The message names the tier.
+var ErrDuprEntitlementRequired = errors.New("your DUPR account isn't eligible for this event's tier")
+
+// normalizeDuprEntitlement validates an event's required DUPR entitlement code,
+// returning "" for anything that isn't a gated tier (so a stray value can't
+// silently lock an event nobody can join).
+func normalizeDuprEntitlement(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "PREMIUM_L1":
+		return "PREMIUM_L1"
+	case "VERIFIED_L1":
+		return "VERIFIED_L1"
+	default:
+		return ""
+	}
+}
+
+// containsFold reports whether want appears in list, case-insensitively.
+func containsFold(list []string, want string) bool {
+	for _, v := range list {
+		if strings.EqualFold(strings.TrimSpace(v), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// duprEntitlementLabel is the human name for a gated tier, for error messages.
+func duprEntitlementLabel(code string) string {
+	switch code {
+	case "PREMIUM_L1":
+		return "DUPR+ Premium"
+	case "VERIFIED_L1":
+		return "DUPR Verified"
+	default:
+		return code
+	}
+}
+
 // ------------------------------------------------------------------ events
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
@@ -174,9 +215,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
 	}
+	// A premium/verified DUPR tier implies a sanctioned event (BASIC_L1 baseline
+	// plus the gated tier), so normalize it up front.
+	minEnt := normalizeDuprEntitlement(req.DuprMinEntitlement)
+	sanctioned := req.DuprSanctioned || minEnt != ""
 	// DUPR sanctioning is a Premium feature — enforce server-side so the UI lock
 	// can't be bypassed.
-	if req.DuprSanctioned && !s.IsPremium(ownerID) {
+	if sanctioned && !s.IsPremium(ownerID) {
 		return "", ErrPremiumRequired
 	}
 	format := req.Format
@@ -243,7 +288,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"contact_phone":          orNull(req.ContactPhone),
 		"zelle_handle":           orNull(req.ZelleHandle),
 		"club_id":                orNull(req.ClubID),
-		"dupr_sanctioned":        req.DuprSanctioned,
+		"dupr_sanctioned":        sanctioned,
+		"dupr_min_entitlement":   orNull(minEnt),
 		"cash_prize":             req.CashPrize,
 		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
 		"consolation":            req.Consolation,
@@ -921,9 +967,12 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	if ev == nil {
 		return ErrNotFound
 	}
+	// A premium/verified DUPR tier implies a sanctioned event.
+	minEnt := normalizeDuprEntitlement(req.DuprMinEntitlement)
+	sanctioned := req.DuprSanctioned || minEnt != ""
 	// DUPR sanctioning is Premium — allowed if the owner subscribes OR a one-time
 	// per-event pass was bought for this event.
-	if req.DuprSanctioned && !s.eventPremiumUnlocked(ev) {
+	if sanctioned && !s.eventPremiumUnlocked(ev) {
 		return ErrPremiumRequired
 	}
 
@@ -955,7 +1004,8 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"game_duration_minutes":  clampGameDuration(req.GameDurationMinutes),
 		"registration_fee_cents": req.RegistrationFeeCents,
 		"location":               orNull(req.Location),
-		"dupr_sanctioned":        req.DuprSanctioned,
+		"dupr_sanctioned":        sanctioned,
+		"dupr_min_entitlement":   orNull(minEnt),
 		"auto_adjust":            req.AutoAdjust,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
@@ -2405,9 +2455,22 @@ func (s *Service) RegisterDuprTestAccounts(eventID string) (DuprTestSummary, err
 // eventIsSanctioned reports whether an event is DUPR-sanctioned (best-effort: a
 // lookup failure returns false so it can't wrongly block a registration).
 func (s *Service) eventIsSanctioned(eventID string) bool {
+	sanctioned, _ := s.eventDuprGate(eventID)
+	return sanctioned
+}
+
+// eventDuprGate returns an event's DUPR gating: whether it's sanctioned (requires
+// a connected account) and the minimum entitlement tier a self-registrant must
+// hold ("" | PREMIUM_L1 | VERIFIED_L1). Best-effort — a lookup failure returns
+// (false, "") so it can't wrongly block a registration.
+func (s *Service) eventDuprGate(eventID string) (sanctioned bool, minEnt string) {
 	ev, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(eventID)+"&select=dupr_sanctioned")
-	return err == nil && ev != nil && asBool(ev, "dupr_sanctioned")
+		"id=eq."+store.Q(eventID)+"&select=dupr_sanctioned,dupr_min_entitlement")
+	if err != nil || ev == nil {
+		return false, ""
+	}
+	minEnt = normalizeDuprEntitlement(asStr(ev, "dupr_min_entitlement"))
+	return asBool(ev, "dupr_sanctioned") || minEnt != "", minEnt
 }
 
 func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
@@ -2445,8 +2508,23 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	// unlinked player — but then no dupr_id is ever attached, and the real backstop
 	// (SubmitPendingToDupr fails a match with any participant missing a dupr_id)
 	// still keeps un-DUPR'd results out of DUPR.
-	if req.Self && !conn.Connected && s.eventIsSanctioned(eventID) {
-		return model.Registration{}, ErrDuprNotConnected
+	if req.Self {
+		sanctioned, minEnt := s.eventDuprGate(eventID)
+		if sanctioned && !conn.Connected {
+			return model.Registration{}, ErrDuprNotConnected
+		}
+		// Premium / Verified tier: the connected player must hold the entitlement
+		// (DUPR's entitlements.tournaments). Fail OPEN if DUPR can't be reached —
+		// a lookup error must never wrongfully block a legitimate registration.
+		if minEnt != "" && conn.Connected {
+			ents, err := s.Dupr.GetEntitlements(conn.DuprID)
+			if err != nil {
+				log.Printf("dupr: entitlements lookup for %s failed (allowing registration): %v", conn.DuprID, err)
+			} else if !containsFold(ents, minEnt) {
+				return model.Registration{}, fmt.Errorf("%w: this event requires %s",
+					ErrDuprEntitlementRequired, duprEntitlementLabel(minEnt))
+			}
+		}
 	}
 	fields := map[string]any{
 		"full_name":        req.FullName,

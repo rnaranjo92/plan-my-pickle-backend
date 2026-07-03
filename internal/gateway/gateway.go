@@ -145,6 +145,10 @@ type DuprGateway interface {
 	// ClubMembers fetches a DUPR club's member roster (clubID "" -> the gateway's
 	// configured club). Restricted partners get only connected users.
 	ClubMembers(clubID string) ([]DuprMember, error)
+	// GetEntitlements fetches a user's tournament entitlement codes (e.g.
+	// BASIC_L1, PREMIUM_L1, VERIFIED_L1) so we can gate registration into
+	// premium / verified DUPR events. Returns the codes in entitlements.tournaments.
+	GetEntitlements(duprID string) ([]string, error)
 }
 
 type MockDupr struct {
@@ -195,4 +199,13 @@ func (m *MockDupr) ClubMembers(string) ([]DuprMember, error) {
 		{DuprID: "MOCK01", FullName: "Mock Member One", Singles: "3.50", Doubles: "3.50"},
 		{DuprID: "MOCK02", FullName: "Mock Member Two", Singles: "4.00", Doubles: "3.90"},
 	}, nil
+}
+
+// GetEntitlements grants a connected mock user every tier so dev/test flows can
+// register into premium/verified events; an empty id gets nothing (restricted).
+func (m *MockDupr) GetEntitlements(duprID string) ([]string, error) {
+	if duprID == "" {
+		return nil, nil
+	}
+	return []string{"BASIC_L1", "PREMIUM_L1", "VERIFIED_L1"}, nil
 }

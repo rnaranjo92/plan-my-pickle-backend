@@ -6569,6 +6569,21 @@ func (s *Service) StartMatch(matchID string) (int, error) {
 			court = l
 		}
 	}
+	// A match can only start once BOTH sides are decided — a bracket game whose
+	// feeder hasn't finished has no participants on one team (shown as "TBD"),
+	// and starting it would let a half-empty game go live and even get scored.
+	parts, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&select=team")
+	if err != nil {
+		return 0, err
+	}
+	teams := map[int]bool{}
+	for _, p := range parts {
+		teams[asInt(p, "team")] = true
+	}
+	if !teams[1] || !teams[2] {
+		return 0, errors.New("this match can't start yet — its opponent is still TBD (waiting on an earlier result)")
+	}
 	if _, err := s.sb.Update("matches",
 		"id=eq."+store.Q(matchID)+"&status=eq.scheduled",
 		map[string]any{"status": "in_progress"}); err != nil {

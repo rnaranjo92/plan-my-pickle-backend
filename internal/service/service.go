@@ -6632,6 +6632,15 @@ func duprIdentifier(matchID string, gen int) string {
 	return matchID + "-g" + strconv.Itoa(gen)
 }
 
+// isDuprIdentifierConflict reports whether a DUPR error is an identifier-uniqueness
+// rejection ("Match with identifier already exists" / "Provide a unique identifier
+// for this match") — the signal to bump the generation and re-create with a fresh id.
+func isDuprIdentifierConflict(errMsg string) bool {
+	e := strings.ToLower(errMsg)
+	return strings.Contains(e, "identifier") &&
+		(strings.Contains(e, "exist") || strings.Contains(e, "unique"))
+}
+
 // SubmitPendingToDupr flushes queued results to DUPR for a sanctioned event —
 // the organizer-initiated "Import to DUPR" action. (#11)
 func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error) {
@@ -6816,10 +6825,27 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 			} else {
 				sum.Submitted++ // newly created
 			}
+		} else if res.Permanent && existingCode == "" && isDuprIdentifierConflict(res.Error) {
+			// "Identifier already exists" on a CREATE = this match is already on DUPR
+			// under the current generation's identifier, but we lost its matchCode
+			// (drift, e.g. a create whose local write failed). Bump the generation and
+			// keep it retryable so the next import creates cleanly with a FRESH
+			// identifier rather than dead-ending on the collision.
+			if _, err := s.sb.Update("dupr_submissions", "id=eq."+store.Q(subID),
+				map[string]any{
+					"status": "pending", "attempts": 0, "next_attempt_at": nil,
+					"error": orNull(res.Error), "dupr_gen": asInt(p, "dupr_gen") + 1,
+				}); err != nil {
+				log.Printf("dupr: gen-bump write failed for %s: %v", subID, err)
+			}
+			sum.Failed++
+			sum.Details = append(sum.Details, res.Error+" — will re-create with a fresh identifier on the next import")
 		} else if res.Permanent {
-			// A DUPR 4xx (bad payload, invalid dupr_id, "identifier already exists")
-			// won't fix itself — go terminal now instead of burning 10 retries.
-			_ = s.markSubmission(subID, "failed", "", res.Error)
+			// A DUPR 4xx (bad payload, invalid dupr_id) won't fix itself — go terminal
+			// now instead of burning 10 retries. PRESERVE provider_ref (an update that
+			// permanently failed keeps its matchCode so a later retry updates the right
+			// match; a create-fail has none anyway).
+			_ = s.markSubmission(subID, "failed", existingCode, res.Error)
 			sum.Failed++
 			reason := res.Error
 			if reason == "" {

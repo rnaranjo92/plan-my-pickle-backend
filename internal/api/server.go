@@ -795,14 +795,13 @@ func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// Defense-in-depth: reject a payload whose clientId isn't our configured DUPR
-	// client key. The shared secret is the primary gate, but if it ever leaks
-	// (it rode in ?token= on legacy URLs → proxy logs), this stops an attacker
-	// from POSTing an arbitrary {duprId, rating} to corrupt a player's rating.
+	// Defense-in-depth signal: warn if the payload's clientId doesn't match our
+	// configured client key. We only LOG (don't reject) because DUPR's clientId
+	// and our client KEY may be different values — rejecting on an unconfirmed
+	// field would fail-close every legit rating webhook. The shared secret is the
+	// real gate. If DUPR confirms clientId == clientKey, this can become a reject.
 	if key := os.Getenv("DUPR_CLIENT_KEY"); key != "" && p.ClientID != "" && p.ClientID != key {
-		log.Printf("dupr webhook: clientId mismatch (got %q) — rejected", p.ClientID)
-		w.WriteHeader(http.StatusForbidden)
-		return
+		log.Printf("dupr webhook: clientId %q != configured client key (allowed; secret already verified)", p.ClientID)
 	}
 	if p.Message.DuprID != "" {
 		if err := s.svc.ApplyDuprRating(p.Message.DuprID,

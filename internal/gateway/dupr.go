@@ -485,9 +485,10 @@ func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
 	} else {
 		body["matchId"] = p.MatchCode // fallback; shouldn't happen for a real match
 	}
-	// The identifier is a CREATE-only uniqueness key; DUPR matches an update by
-	// matchId. Drop it so DUPR can't reuse-reject a legitimate re-score.
-	delete(body, "identifier")
+	// KEEP the identifier on update: DUPR's update endpoint REQUIRES it (dropping it
+	// → 400 "Provide a unique identifier for this match"). It's the SAME per-generation
+	// identifier used at create, so DUPR matches the existing match and updates it —
+	// it does NOT reuse-reject on update (verified: re-scores succeed with it present).
 	raw, code, err := d.authed(http.MethodPost,
 		fmt.Sprintf("/match/%s/update", d.version), body)
 	if err != nil {

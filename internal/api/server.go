@@ -784,13 +784,35 @@ func (s *Server) duprWebhook(w http.ResponseWriter, r *http.Request) {
 			} `json:"rating"`
 		} `json:"message"`
 	}
-	if err := json.Unmarshal(body, &p); err == nil && p.Message.DuprID != "" {
+	if err := json.Unmarshal(body, &p); err != nil {
+		// Silently ignoring a malformed body is an operational blind spot — a DUPR
+		// schema change would stop all rating updates with zero logs.
+		shown := body
+		if len(shown) > 200 {
+			shown = shown[:200]
+		}
+		log.Printf("dupr webhook: unparseable payload: %v: %s", err, shown)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// Defense-in-depth: reject a payload whose clientId isn't our configured DUPR
+	// client key. The shared secret is the primary gate, but if it ever leaks
+	// (it rode in ?token= on legacy URLs → proxy logs), this stops an attacker
+	// from POSTing an arbitrary {duprId, rating} to corrupt a player's rating.
+	if key := os.Getenv("DUPR_CLIENT_KEY"); key != "" && p.ClientID != "" && p.ClientID != key {
+		log.Printf("dupr webhook: clientId mismatch (got %q) — rejected", p.ClientID)
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if p.Message.DuprID != "" {
 		if err := s.svc.ApplyDuprRating(p.Message.DuprID,
 			ratingPtr(p.Message.Rating.Doubles),
 			ratingPtr(p.Message.Rating.Singles)); err != nil {
 			log.Printf("dupr webhook: apply rating for %s failed: %v",
 				p.Message.DuprID, err)
 		}
+	} else {
+		log.Printf("dupr webhook: no duprId in payload (event=%q) — ignored", p.Event)
 	}
 	w.WriteHeader(http.StatusOK)
 }

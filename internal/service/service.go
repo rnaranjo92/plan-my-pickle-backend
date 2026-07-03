@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -6627,7 +6628,18 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 // > 0) — used by the background reconciler to heal transient failures without
 // auto-submitting a fresh, never-attempted result (which would push to official
 // DUPR ratings without the organizer's manual Import).
+// duprFlushLocks serializes flushDuprSubmissions per event so a manual "Import
+// to DUPR" and the background reconciler can't race the same row (double-create /
+// clobbered provider_ref). The identifier idempotency is a backstop, not the
+// primary defense.
+var duprFlushLocks sync.Map // eventID -> *sync.Mutex
+
 func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImportSummary, error) {
+	muAny, _ := duprFlushLocks.LoadOrStore(eventID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
 		return DuprImportSummary{}, err
@@ -6762,16 +6774,37 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 			return sum, err
 		}
 		if res.OK {
-			s.markSubmission(subID, "submitted", res.DuprMatchID, "")
+			// CRITICAL write: the match is now on DUPR, so the provider_ref MUST
+			// land locally — otherwise we lose the matchCode and can neither update
+			// nor delete it, orphaning a real result on official ratings. Retry the
+			// write once and alarm loudly if it still fails (far worse than a failed
+			// submit — the reconciler can't recover a lost provider_ref).
+			if e := s.markSubmission(subID, "submitted", res.DuprMatchID, ""); e != nil {
+				log.Printf("dupr: ALARM submit succeeded (match=%s code=%s) but provider_ref write failed: %v — retrying",
+					matchID, res.DuprMatchID, e)
+				if e2 := s.markSubmission(subID, "submitted", res.DuprMatchID, ""); e2 != nil {
+					log.Printf("dupr: ALARM provider_ref write STILL failing for match=%s code=%s: %v — result is on DUPR but locally unrecorded",
+						matchID, res.DuprMatchID, e2)
+				}
+			}
 			if existingCode != "" {
 				sum.Updated++ // corrected an existing DUPR match
 			} else {
 				sum.Submitted++ // newly created
 			}
+		} else if res.Permanent {
+			// A DUPR 4xx (bad payload, invalid dupr_id, "identifier already exists")
+			// won't fix itself — go terminal now instead of burning 10 retries.
+			_ = s.markSubmission(subID, "failed", "", res.Error)
+			sum.Failed++
+			reason := res.Error
+			if reason == "" {
+				reason = "DUPR rejected the submission"
+			}
+			sum.Details = append(sum.Details, reason)
 		} else {
-			// Transient DUPR failure (5xx / timeout / network / unparseable): keep
-			// the row retryable with backoff instead of dropping it, until the
-			// attempt cap flips it to a terminal 'failed'.
+			// Transient DUPR failure (5xx / 429 / timeout / network): keep the row
+			// retryable with backoff until the attempt cap flips it to 'failed'.
 			s.markSubmissionRetry(subID, asInt(p, "attempts"), res.Error)
 			sum.Failed++
 			reason := res.Error
@@ -6839,18 +6872,19 @@ func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error)
 	return sum, nil
 }
 
-func (s *Service) markSubmission(id, status, ref, errMsg string) {
+func (s *Service) markSubmission(id, status, ref, errMsg string) error {
 	var submittedAt any
 	if status == "submitted" {
 		submittedAt = now()
 	}
-	_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
+	_, err := s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
 		"status":          status,
 		"provider_ref":    orNull(ref),
 		"error":           orNull(errMsg),
 		"submitted_at":    submittedAt,
 		"next_attempt_at": nil, // terminal (or skipped) → no more retries
 	})
+	return err
 }
 
 // duprMaxAttempts caps retries of a transiently-failing submission before it is
@@ -6903,7 +6937,8 @@ func dueNow(ts string) bool {
 	if err != nil {
 		return true
 	}
-	return !t.After(time.Now())
+	// UTC on both sides (duprNextAttempt writes UTC) — compare absolute instants.
+	return !t.After(time.Now().UTC())
 }
 
 // ReconcileDuprSubmissions retries transient DUPR failures that are now due,
@@ -8043,8 +8078,18 @@ func (s *Service) wipeAllMatches(eventID string) error {
 	if len(toDelete) > 0 {
 		go func() {
 			for _, d := range toDelete {
-				if e := s.Dupr.DeleteMatch(d[0], d[1]); e != nil {
-					log.Printf("dupr: delete match %s on wipe failed: %v", d[0], e)
+				// The local rows are already gone, so this is the only chance to
+				// reverse these on DUPR — retry a transient failure a few times
+				// (404 = already gone counts as success in DeleteMatch).
+				var e error
+				for attempt := 0; attempt < 3; attempt++ {
+					if e = s.Dupr.DeleteMatch(d[0], d[1]); e == nil {
+						break
+					}
+					time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+				}
+				if e != nil {
+					log.Printf("dupr: delete match %s on wipe FAILED after retries: %v (may still be live on DUPR)", d[0], e)
 				}
 			}
 		}()

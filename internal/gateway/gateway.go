@@ -97,6 +97,10 @@ type DuprResult struct {
 	OK          bool
 	DuprMatchID string
 	Error       string
+	// Permanent marks a failure that retrying can't fix (a DUPR 4xx: bad payload,
+	// invalid dupr_id, "identifier already exists") vs a transient one (5xx / 429 /
+	// network) worth backing off and retrying.
+	Permanent bool
 }
 
 // DuprRating is a player's current DUPR ratings, looked up by DUPR id. Found is

@@ -188,7 +188,31 @@ func (d *RealDupr) cachedToken() string {
 }
 
 // authed makes a bearer-authenticated request and returns the raw body + status.
+// permanentDuprStatus reports whether a DUPR HTTP status is a permanent failure
+// (a 4xx that retrying won't fix), vs transient (5xx / 429 rate-limit / network).
+func permanentDuprStatus(code int) bool {
+	return code >= 400 && code < 500 && code != 429
+}
+
+// invalidateToken clears the cached bearer so the next call re-authenticates.
+func (d *RealDupr) invalidateToken() {
+	d.mu.Lock()
+	d.token = ""
+	d.mu.Unlock()
+}
+
+// authed makes a bearer-authenticated request; on a 401 (token expired/rotated
+// mid-window) it force-refreshes the token and retries ONCE.
 func (d *RealDupr) authed(method, path string, body any) ([]byte, int, error) {
+	raw, code, err := d.authedOnce(method, path, body)
+	if err == nil && code == http.StatusUnauthorized {
+		d.invalidateToken()
+		return d.authedOnce(method, path, body)
+	}
+	return raw, code, err
+}
+
+func (d *RealDupr) authedOnce(method, path string, body any) ([]byte, int, error) {
 	tok, err := d.accessToken()
 	if err != nil {
 		return nil, 0, err
@@ -443,7 +467,7 @@ func (d *RealDupr) SubmitMatch(p DuprPayload) (DuprResult, error) {
 	}
 	if code < 200 || code >= 300 {
 		log.Printf("dupr: match create http %d: %s", code, string(raw))
-		return DuprResult{OK: false,
+		return DuprResult{OK: false, Permanent: permanentDuprStatus(code),
 			Error: fmt.Sprintf("dupr http %d: %s", code, snippet(raw))}, nil
 	}
 	return parseMatchResult(raw), nil
@@ -461,6 +485,9 @@ func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
 	} else {
 		body["matchId"] = p.MatchCode // fallback; shouldn't happen for a real match
 	}
+	// The identifier is a CREATE-only uniqueness key; DUPR matches an update by
+	// matchId. Drop it so DUPR can't reuse-reject a legitimate re-score.
+	delete(body, "identifier")
 	raw, code, err := d.authed(http.MethodPost,
 		fmt.Sprintf("/match/%s/update", d.version), body)
 	if err != nil {
@@ -468,7 +495,7 @@ func (d *RealDupr) UpdateMatch(p DuprPayload) (DuprResult, error) {
 	}
 	if code < 200 || code >= 300 {
 		log.Printf("dupr: match update http %d: %s", code, string(raw))
-		return DuprResult{OK: false,
+		return DuprResult{OK: false, Permanent: permanentDuprStatus(code),
 			Error: fmt.Sprintf("dupr http %d: %s", code, snippet(raw))}, nil
 	}
 	res := parseMatchResult(raw)
@@ -492,6 +519,10 @@ func (d *RealDupr) DeleteMatch(matchCode, identifier string) error {
 		map[string]any{"matchCode": matchCode, "identifier": identifier})
 	if err != nil {
 		return err
+	}
+	// 404 = the match is already gone on DUPR — the desired end state, treat as success.
+	if code == http.StatusNotFound {
+		return nil
 	}
 	if code < 200 || code >= 300 {
 		return fmt.Errorf("dupr delete http %d: %s", code, string(raw))

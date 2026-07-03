@@ -3576,6 +3576,28 @@ func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
 	return nil
 }
 
+// DisconnectDupr fully unlinks a user's DUPR account: deletes the account-level
+// connection AND clears the dupr_id/rating/reliability from their player rows, so
+// nothing carries a DUPR id without a live connection (and a future re-connect —
+// to the same or a different DUPR account — starts clean). A local unlink only:
+// DUPR exposes no partner unsubscribe, and the shared rating webhook is harmless
+// once there's no matching connection to apply a rating to.
+func (s *Service) DisconnectDupr(userID string) error {
+	if userID == "" {
+		return errors.New("must be signed in to disconnect DUPR")
+	}
+	if err := s.sb.Delete("dupr_connections", "user_id=eq."+store.Q(userID)); err != nil {
+		return err
+	}
+	// Best-effort: clear the DUPR fields on this account's player rows.
+	_, _ = s.sb.Update("players", "user_id=eq."+store.Q(userID), map[string]any{
+		"dupr_id":          nil,
+		"dupr_rating":      nil,
+		"dupr_reliability": nil,
+	})
+	return nil
+}
+
 // linkDuprPlayers adopts orphan player rows carrying duprID (created by a DUPR
 // roster import, no account) onto the account, then auto-joins the clubs whose
 // events those players are registered in. Best-effort — never breaks ConnectDupr.

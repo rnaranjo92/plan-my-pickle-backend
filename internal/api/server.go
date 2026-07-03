@@ -63,6 +63,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/dupr/sso-url", requireAuth(s.duprSsoURL))
 	mux.HandleFunc("POST /me/dupr/connect", requireAuth(s.duprConnect))
 	mux.HandleFunc("GET /me/dupr/connection", requireAuth(s.duprConnection))
+	mux.HandleFunc("DELETE /me/dupr/connection", requireAuth(s.duprDisconnect))
 	// DUPR rating webhook (DUPR posts here — public; validated by clientId +
 	// only updates an existing connected DUPR id).
 	mux.HandleFunc("POST /dupr/webhook", s.duprWebhook)
@@ -865,6 +866,15 @@ func (s *Server) duprConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, conn)
+}
+
+// duprDisconnect fully unlinks the caller's own DUPR account (self-only).
+func (s *Server) duprDisconnect(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DisconnectDupr(userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"connected": false})
 }
 
 // setDivisionOrder reorders the event's divisions so the organizer controls

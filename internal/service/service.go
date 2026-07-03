@@ -6656,11 +6656,20 @@ func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error)
 // primary defense.
 var duprFlushLocks sync.Map // eventID -> *sync.Mutex
 
-func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImportSummary, error) {
+// lockDuprEvent serializes ALL DUPR-submission mutations for one event — the
+// import flush, "Remove from DUPR", and the schedule wipe — so they can't
+// interleave (e.g. a flush's UpdateMatch racing a remove that clears provider_ref
+// and bumps dupr_gen). Returns the unlock func: `defer s.lockDuprEvent(id)()`.
+// None of these three paths call each other, so no nested acquisition / deadlock.
+func (s *Service) lockDuprEvent(eventID string) func() {
 	muAny, _ := duprFlushLocks.LoadOrStore(eventID, &sync.Mutex{})
 	mu := muAny.(*sync.Mutex)
 	mu.Lock()
-	defer mu.Unlock()
+	return mu.Unlock
+}
+
+func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImportSummary, error) {
+	defer s.lockDuprEvent(eventID)()
 
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
@@ -6860,6 +6869,7 @@ type DuprRemoveSummary struct {
 // cleared) so it can be re-imported. Local scores are left untouched — unlike a
 // schedule wipe, this only touches DUPR. Owner-gated at the handler.
 func (s *Service) RemoveEventFromDupr(eventID string) (DuprRemoveSummary, error) {
+	defer s.lockDuprEvent(eventID)() // serialize vs the import flush / reconciler
 	subs, err := s.sb.Select("dupr_submissions",
 		"event_id=eq."+store.Q(eventID)+"&status=eq.submitted&select=id,match_id,provider_ref,dupr_gen")
 	if err != nil {
@@ -6920,20 +6930,26 @@ const duprMaxAttempts = 10
 func (s *Service) markSubmissionRetry(id string, attempts int, errMsg string) {
 	attempts++
 	if attempts >= duprMaxAttempts {
-		_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
+		if _, err := s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
 			"status":          "failed",
 			"attempts":        attempts,
 			"error":           orNull(errMsg + " — gave up after " + strconv.Itoa(attempts) + " attempts"),
 			"next_attempt_at": nil,
-		})
+		}); err != nil {
+			log.Printf("dupr: markSubmissionRetry(terminal) write failed for %s: %v", id, err)
+		}
 		return
 	}
-	_, _ = s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
+	// If this write fails, the next flush re-attempts the DUPR create with the SAME
+	// generation identifier — the identifier idempotency is the double-create guard.
+	if _, err := s.sb.Update("dupr_submissions", "id=eq."+store.Q(id), map[string]any{
 		"status":          "pending",
 		"attempts":        attempts,
 		"error":           orNull(errMsg),
 		"next_attempt_at": duprNextAttempt(attempts),
-	})
+	}); err != nil {
+		log.Printf("dupr: markSubmissionRetry(backoff) write failed for %s: %v", id, err)
+	}
 }
 
 // duprNextAttempt returns when to retry after `attempts` failures: exponential
@@ -8077,6 +8093,7 @@ func (f *feedUpdates) flush(s *Service) error {
 // wipeAllMatches clears an event's schedule. Deleting matches/rounds cascades to
 // match_participants via the FK ON DELETE CASCADE, so no explicit child delete.
 func (s *Service) wipeAllMatches(eventID string) error {
+	defer s.lockDuprEvent(eventID)() // serialize the dupr_submissions delete vs a flush
 	// Snapshot any results already pushed to DUPR so we can reverse them after the
 	// local wipe (best-effort, async — never block/​slow regeneration).
 	var toDelete [][2]string // {matchCode, identifier}

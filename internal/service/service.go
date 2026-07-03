@@ -1330,6 +1330,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "pikelbol":
 		// Real event: Pikelbol Adiks 2026 Masters — 9 teams of 8, Premier.
 		return s.seedPikelbol(ownerID)
+	case "greensretro":
+		// Real event: GREENS vs RETRO club day (Jul 4) — 4 courts, manual schedule.
+		return s.seedGreensRetro(ownerID)
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
@@ -1874,6 +1877,135 @@ func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 // 8, Premier (team_size 6). Genders are a BEST-GUESS from first names — the
 // organizer reviews/fixes them in Manage Teams, then generates the schedule. It
 // deliberately does NOT auto-generate ties (lineups depend on corrected genders).
+// seedGreensRetro builds the real "GREENS vs RETRO" club day (Saturday, July 4,
+// 8:35 AM) from the printed schedule: four division courts (3-6) with named
+// doubles pairings at set times, cumulative-points scoring ("add all scores in
+// all 3 games", win by 2, no playoffs). The two Court-3 matchups annotated
+// "3x rounds" repeat three times; every other listed matchup is one game.
+// Matches are created MANUALLY (CreateManualGame) so the printed court + order
+// are preserved exactly — no Build schedule needed (in-app slot times are the
+// standard cascade approximation of the printed times).
+func (s *Service) seedGreensRetro(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "GREENS vs RETRO", "format": "doubles",
+		"partner_mode": "rotating", "scoring_mode": "points",
+		"tournament_format": "round_robin", "num_courts": 6,
+		"points_to_win": 11, "win_by": 2, "best_of": 1,
+		"dupr_sanctioned": false, "status": "open",
+		"starts_at": "2026-07-04T15:35:00Z", // Sat Jul 4, 8:35 AM PDT
+		"description": "Official scorers: Myles and Kay — please report your score " +
+			"to them after each game. Each team plays 3 games per match; add all " +
+			"scores in all 3 games; win by 2 points. No playoffs. Open play after " +
+			"the games on Courts 5 and 6.",
+		"owner_id": ownerID,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed greensretro event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 6); err != nil {
+		return eventID, fmt.Errorf("seed greensretro courts: %w", err)
+	}
+
+	// One division per court, in the printed order.
+	divs := []struct {
+		name  string
+		court int
+	}{
+		{"Intermediate 3", 3},
+		{"Intermediate 2", 4},
+		{"Intermediate 1", 5},
+		{"Intermediate 1 + Senior", 6},
+	}
+	bracketByCourt := map[int]string{}
+	for i, d := range divs {
+		brRows, err := s.sb.Insert("brackets", map[string]any{
+			"event_id": eventID, "name": d.name, "division_type": "open",
+			"min_rating": 2.5, "max_rating": 5.0, "dupr_min": 2.5, "dupr_max": 5.0,
+			"sort_order": i,
+		})
+		if err != nil || len(brRows) == 0 {
+			return eventID, fmt.Errorf("seed greensretro bracket %q: %w", d.name, err)
+		}
+		bracketByCourt[d.court] = asStr(brRows[0], "id")
+	}
+
+	// Roster per division (players appear once even when they play twice;
+	// Franze plays on Courts 5 AND 6 but is registered once, under Int 1).
+	roster := map[int][]string{
+		3: {"Angelica", "Pao", "Genergy", "Joyce", "Jon", "Lloyd", "Ed",
+			"DocLet", "Twinkle", "Jane"},
+		4: {"Sheila", "Rose Lefty", "Arleen", "Carina", "Mico", "Little Mario",
+			"Carlos", "Raul", "Pete", "Araceli", "Marlon"},
+		5: {"Francia", "Rose", "Ofel", "Chona", "Erin", "Jobert", "Franze"},
+		6: {"Kuya Mario", "Bobby", "Rafa", "Pete Sr", "Edwin", "KC"},
+	}
+	idByName := map[string]string{}
+	for court, names := range roster {
+		playerRows := make([]map[string]any, len(names))
+		for i, n := range names {
+			playerRows[i] = map[string]any{"full_name": n}
+		}
+		plRows, err := s.sb.Insert("players", playerRows)
+		if err != nil || len(plRows) != len(names) {
+			return eventID, fmt.Errorf("seed greensretro players (court %d): %w", court, err)
+		}
+		regRows := make([]map[string]any, len(plRows))
+		for i, pr := range plRows {
+			idByName[asStr(pr, "full_name")] = asStr(pr, "id")
+			regRows[i] = map[string]any{
+				"event_id": eventID, "player_id": asStr(pr, "id"),
+				"bracket_id": bracketByCourt[court], "payment_status": "comped",
+			}
+		}
+		if _, err := s.sb.Insert("registrations", regRows); err != nil {
+			return eventID, fmt.Errorf("seed greensretro regs (court %d): %w", court, err)
+		}
+	}
+
+	// The printed schedule: court → ordered matchups (team1 pair vs team2 pair),
+	// each with how many rounds it repeats ("3x rounds" per the annotations).
+	type matchup struct {
+		t1a, t1b, t2a, t2b string
+		rounds             int
+	}
+	schedule := map[int][]matchup{
+		3: {
+			{"Angelica", "Pao", "Genergy", "Joyce", 3},   // 8:35 · 3x rounds
+			{"Jon", "Lloyd", "Ed", "Genergy", 3},         // 9:20 · 3x rounds
+			{"DocLet", "Twinkle", "Jane", "Joyce", 1},    // 10:15
+		},
+		4: {
+			{"Sheila", "Rose Lefty", "Arleen", "Carina", 1}, // 8:35
+			{"Mico", "Little Mario", "Carlos", "Raul", 1},   // 9:20
+			{"Pete", "Araceli", "Marlon", "Carina", 1},      // 10:30
+		},
+		5: {
+			{"Francia", "Rose", "Ofel", "Chona", 1},  // 8:35
+			{"Erin", "Jobert", "Franze", "Chona", 1}, // 9:40 (open play after)
+		},
+		6: {
+			{"Kuya Mario", "Bobby", "Rafa", "Franze", 1}, // 8:35
+			{"Pete Sr", "Edwin", "Rafa", "KC", 1},        // 9:40 (open play after)
+		},
+	}
+	for court, games := range schedule {
+		wave := 0
+		for _, g := range games {
+			for r := 0; r < g.rounds; r++ {
+				if _, err := s.CreateManualGame(eventID, bracketByCourt[court],
+					court, wave, 0, 0,
+					[]string{idByName[g.t1a], idByName[g.t1b]},
+					[]string{idByName[g.t2a], idByName[g.t2b]}); err != nil {
+					return eventID, fmt.Errorf("seed greensretro game (court %d wave %d): %w", court, wave, err)
+				}
+				wave++
+			}
+		}
+	}
+	return eventID, nil
+}
+
 func (s *Service) seedPikelbol(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
 		"name": "Pikelbol Adiks 2026 Masters", "format": "doubles",

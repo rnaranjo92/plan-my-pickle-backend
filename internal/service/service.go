@@ -1937,6 +1937,9 @@ func (s *Service) seedGreensRetro(ownerID string) (string, error) {
 		"partner_mode": "rotating", "scoring_mode": "points",
 		"tournament_format": "round_robin", "num_courts": 6,
 		"points_to_win": 11, "win_by": 2, "best_of": 1,
+		// 15-minute games: each Int-3 matchup plays its 3 rounds inside one
+		// printed 45-minute window (8:35-9:20 etc.) on a shared 15-min wave grid.
+		"game_duration_minutes": 15,
 		"dupr_sanctioned": false, "status": "open",
 		"starts_at": "2026-07-04T15:35:00Z", // Sat Jul 4, 8:35 AM PDT
 		"description": "Official scorers: Myles and Kay — please report your score " +
@@ -2009,50 +2012,53 @@ func (s *Service) seedGreensRetro(ownerID string) (string, error) {
 		}
 	}
 
-	// The schedule (per Kim's organizer feedback 2026-07-03): division → ordered
-	// matchups, each with how many rounds it repeats and WHICH court it plays on
-	// (Intermediate 3's three matchups each play 3 rounds and spread across
-	// Courts 1 / 2 / 3 — court 0 = the division's own printed court).
+	// The schedule (organizer feedback 2026-07-03 v2): every Intermediate 3
+	// matchup plays 3 rounds ON COURT 3, with all three rounds squeezed into its
+	// printed 45-min window. The whole day runs on a shared 15-minute wave grid
+	// (event game_duration=15), so wave n starts at 8:35 + 15n:
+	//   w0 8:35 · w1 8:50 · w2 9:05 · w3 9:20 · w4 9:35 · w5 9:50
+	//   w6 10:05 · w7 10:20 · w8 10:35
+	// Int-3: rounds fill w0-2 (8:35-9:20), w3-5 (9:20-10:15), w6-8 (10:15-11:00).
+	// Other courts pin their printed times to the nearest wave.
 	type matchup struct {
 		t1a, t1b, t2a, t2b string
 		rounds             int
-		court              int
+		wave               int // starting wave; rounds occupy wave, wave+1, ...
 	}
+	// Whole day on a 15-minute wave grid: wave n starts 8:35 + 15n, so the
+	// 3-round blocks are w0-2 (8:35-9:20), w3-5 (9:20-10:05), w6-8 (10:05-10:50)
+	// — each matchup's three rounds squeezed back-to-back on its own court, all
+	// divisions aligned. (The printed 10:15/10:30 block edges can't BOTH sit on
+	// one shared grid; blocks land within ~10 min and day-of starts are manual.)
 	schedule := map[int][]matchup{
-		3: {
-			{"Angelica", "Pao", "Genergy", "Joyce", 3, 1}, // 8:35 · 3 rounds · Court 1
-			{"Jon", "Lloyd", "Ed", "Genergy", 3, 2},       // 9:20 · 3 rounds · Court 2
-			{"DocLet", "Twinkle", "Jane", "Joyce", 3, 3},  // 10:15 · 3 rounds · Court 3
+		3: { // Intermediate 3 — all on Court 3, 3 rounds per matchup
+			{"Angelica", "Pao", "Genergy", "Joyce", 3, 0}, // block 1
+			{"Jon", "Lloyd", "Ed", "Genergy", 3, 3},       // block 2
+			{"DocLet", "Twinkle", "Jane", "Joyce", 3, 6},  // block 3
 		},
-		4: {
-			{"Sheila", "Rose Lefty", "Arleen", "Carina", 1, 0}, // 8:35
-			{"Mico", "Little Mario", "Carlos", "Raul", 1, 0},   // 9:20
-			{"Pete", "Araceli", "Marlon", "Carina", 1, 0},      // 10:30
+		4: { // Intermediate 2 — all on Court 4, 3 rounds per matchup
+			{"Sheila", "Rose Lefty", "Arleen", "Carina", 3, 0}, // block 1
+			{"Mico", "Little Mario", "Carlos", "Raul", 3, 3},   // block 2
+			{"Pete", "Araceli", "Marlon", "Carina", 3, 6},      // block 3
 		},
 		5: {
 			{"Francia", "Rose", "Ofel", "Chona", 1, 0},  // 8:35
-			{"Erin", "Jobert", "Franze", "Chona", 1, 0}, // 9:40 (open play after)
+			{"Erin", "Jobert", "Franze", "Chona", 1, 4}, // ~9:40 (open play after)
 		},
 		6: {
 			{"Kuya Mario", "Bobby", "Rafa", "Franze", 1, 0}, // 8:35
-			{"Pete Sr", "Edwin", "Rafa", "KC", 1, 0},        // 9:40 (open play after)
+			{"Pete Sr", "Edwin", "Rafa", "KC", 1, 4},        // ~9:40 (open play after)
 		},
 	}
-	for divCourt, games := range schedule {
-		wave := 0
+	for court, games := range schedule {
 		for _, g := range games {
-			court := g.court
-			if court == 0 {
-				court = divCourt
-			}
 			for r := 0; r < g.rounds; r++ {
-				if _, err := s.CreateManualGame(eventID, bracketByCourt[divCourt],
-					court, wave, 0, 0,
+				if _, err := s.CreateManualGame(eventID, bracketByCourt[court],
+					court, g.wave+r, 0, 0,
 					[]string{idByName[g.t1a], idByName[g.t1b]},
 					[]string{idByName[g.t2a], idByName[g.t2b]}); err != nil {
-					return eventID, fmt.Errorf("seed greensretro game (court %d wave %d): %w", court, wave, err)
+					return eventID, fmt.Errorf("seed greensretro game (court %d wave %d): %w", court, g.wave+r, err)
 				}
-				wave++
 			}
 		}
 	}

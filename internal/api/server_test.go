@@ -586,7 +586,10 @@ func TestPublicEvents(t *testing.T) {
 		{"id":"e2","name":"Test","listed":true},
 		{"id":"e3","name":"Bday Smash Test 2","listed":true},
 		{"id":"e4","name":"TEST · Doubles 3.0-4.0 · 150","listed":true},
-		{"id":"e5","name":"SoCal Contest","listed":true}
+		{"id":"e5","name":"SoCal Contest","listed":true},
+		{"id":"e6","name":"Demo Open Slam","listed":true},
+		{"id":"e7","name":"dbg","listed":true},
+		{"id":"e8","name":"authcheck","listed":true}
 	]`)
 	h := newTestServer(t, m)
 	rec := httptest.NewRecorder()

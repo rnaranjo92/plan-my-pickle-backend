@@ -479,8 +479,11 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 }
 
 // publicFeedTestName spots QA/test event names ("Test", "Bday Smash Test 2",
-// "TEST · Doubles 3.0-4.0 · 150") so the marketing feed never shows them.
-var publicFeedTestName = regexp.MustCompile(`(?i)\btest\b`)
+// "TEST · Doubles 3.0-4.0 · 150", "Demo Open Slam", "dbg", "authcheck") so the
+// marketing feed never shows them. Word-boundary match keeps real names like
+// "SoCal Contest" visible; junk on the homepage costs more than the rare
+// false positive (an organizer with "demo" in a real event name can rename).
+var publicFeedTestName = regexp.MustCompile(`(?i)\b(test|demo|dbg|debug|authcheck)\b`)
 
 // PublicEvents returns up to `limit` publicly-listed events (listed=eq.true),
 // ordered by scheduled start, mapped to the SAFE public projection for the
@@ -1425,7 +1428,7 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		"name": name, "format": format, "partner_mode": partnerMode,
 		"scoring_mode": "wins", "tournament_format": tournFmt, "num_courts": courts,
 		"points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID,
+		"location": "Test Courts", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1538,7 +1541,7 @@ func (s *Service) seedMultiDivMixed(ownerID, tournFmt, label string) (string, er
 		"name": "TEST · Mixed Doubles · 150 · 3 div · " + label, "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": tournFmt,
 		"num_courts": 12, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID,
+		"location": "Test Courts", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1644,7 +1647,7 @@ func (s *Service) seedPodium(ownerID string) (string, error) {
 		"name": "TEST · Podium · gold/silver/bronze", "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "pools_playoff",
 		"num_courts": 4, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID,
+		"location": "Test Courts", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1865,7 +1868,7 @@ func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 		"scoring_mode": "wins", "tournament_format": "round_robin", "num_courts": 8,
 		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": teamSize,
 		"dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID,
+		"location": "Test Courts", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed mlp event: %w", err)
@@ -2089,7 +2092,7 @@ func (s *Service) seedPikelbol(ownerID string) (string, error) {
 		"tournament_format": "round_robin", "num_courts": 6,
 		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": 6,
 		"dupr_sanctioned": false, "status": "open",
-		"location": "San Diego", "owner_id": ownerID,
+		"location": "San Diego", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed pikelbol event: %w", err)

@@ -2009,37 +2009,44 @@ func (s *Service) seedGreensRetro(ownerID string) (string, error) {
 		}
 	}
 
-	// The printed schedule: court → ordered matchups (team1 pair vs team2 pair),
-	// each with how many rounds it repeats ("3x rounds" per the annotations).
+	// The schedule (per Kim's organizer feedback 2026-07-03): division → ordered
+	// matchups, each with how many rounds it repeats and WHICH court it plays on
+	// (Intermediate 3's three matchups each play 3 rounds and spread across
+	// Courts 1 / 2 / 3 — court 0 = the division's own printed court).
 	type matchup struct {
 		t1a, t1b, t2a, t2b string
 		rounds             int
+		court              int
 	}
 	schedule := map[int][]matchup{
 		3: {
-			{"Angelica", "Pao", "Genergy", "Joyce", 3},   // 8:35 · 3x rounds
-			{"Jon", "Lloyd", "Ed", "Genergy", 3},         // 9:20 · 3x rounds
-			{"DocLet", "Twinkle", "Jane", "Joyce", 1},    // 10:15
+			{"Angelica", "Pao", "Genergy", "Joyce", 3, 1}, // 8:35 · 3 rounds · Court 1
+			{"Jon", "Lloyd", "Ed", "Genergy", 3, 2},       // 9:20 · 3 rounds · Court 2
+			{"DocLet", "Twinkle", "Jane", "Joyce", 3, 3},  // 10:15 · 3 rounds · Court 3
 		},
 		4: {
-			{"Sheila", "Rose Lefty", "Arleen", "Carina", 1}, // 8:35
-			{"Mico", "Little Mario", "Carlos", "Raul", 1},   // 9:20
-			{"Pete", "Araceli", "Marlon", "Carina", 1},      // 10:30
+			{"Sheila", "Rose Lefty", "Arleen", "Carina", 1, 0}, // 8:35
+			{"Mico", "Little Mario", "Carlos", "Raul", 1, 0},   // 9:20
+			{"Pete", "Araceli", "Marlon", "Carina", 1, 0},      // 10:30
 		},
 		5: {
-			{"Francia", "Rose", "Ofel", "Chona", 1},  // 8:35
-			{"Erin", "Jobert", "Franze", "Chona", 1}, // 9:40 (open play after)
+			{"Francia", "Rose", "Ofel", "Chona", 1, 0},  // 8:35
+			{"Erin", "Jobert", "Franze", "Chona", 1, 0}, // 9:40 (open play after)
 		},
 		6: {
-			{"Kuya Mario", "Bobby", "Rafa", "Franze", 1}, // 8:35
-			{"Pete Sr", "Edwin", "Rafa", "KC", 1},        // 9:40 (open play after)
+			{"Kuya Mario", "Bobby", "Rafa", "Franze", 1, 0}, // 8:35
+			{"Pete Sr", "Edwin", "Rafa", "KC", 1, 0},        // 9:40 (open play after)
 		},
 	}
-	for court, games := range schedule {
+	for divCourt, games := range schedule {
 		wave := 0
 		for _, g := range games {
+			court := g.court
+			if court == 0 {
+				court = divCourt
+			}
 			for r := 0; r < g.rounds; r++ {
-				if _, err := s.CreateManualGame(eventID, bracketByCourt[court],
+				if _, err := s.CreateManualGame(eventID, bracketByCourt[divCourt],
 					court, wave, 0, 0,
 					[]string{idByName[g.t1a], idByName[g.t1b]},
 					[]string{idByName[g.t2a], idByName[g.t2b]}); err != nil {

@@ -579,7 +579,15 @@ func TestGetEventNotFound(t *testing.T) {
 
 func TestPublicEvents(t *testing.T) {
 	m := newMockSupabase(t)
-	m.seed("events", `[{"id":"e1","name":"Listed One","listed":true}]`)
+	// QA/test-named events stay out of the marketing feed even when listed —
+	// but only on a whole-word "test" match ("Contest"/"Tested" still show).
+	m.seed("events", `[
+		{"id":"e1","name":"Listed One","listed":true},
+		{"id":"e2","name":"Test","listed":true},
+		{"id":"e3","name":"Bday Smash Test 2","listed":true},
+		{"id":"e4","name":"TEST · Doubles 3.0-4.0 · 150","listed":true},
+		{"id":"e5","name":"SoCal Contest","listed":true}
+	]`)
 	h := newTestServer(t, m)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events/public", nil))
@@ -590,8 +598,17 @@ func TestPublicEvents(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("body not a JSON array: %v", err)
 	}
-	if len(got) != 1 || got[0]["name"] != "Listed One" {
-		t.Fatalf("public events = %v", got)
+	names := make([]string, len(got))
+	for i, e := range got {
+		names[i] = e["name"].(string)
+	}
+	if len(got) != 2 {
+		t.Fatalf("public events = %v, want only [Listed One, SoCal Contest]", names)
+	}
+	for _, n := range names {
+		if n != "Listed One" && n != "SoCal Contest" {
+			t.Fatalf("test-named event leaked into the public feed: %v", names)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"hash/crc32"
 	"log"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -477,6 +478,10 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 	return out, nil
 }
 
+// publicFeedTestName spots QA/test event names ("Test", "Bday Smash Test 2",
+// "TEST · Doubles 3.0-4.0 · 150") so the marketing feed never shows them.
+var publicFeedTestName = regexp.MustCompile(`(?i)\btest\b`)
+
 // PublicEvents returns up to `limit` publicly-listed events (listed=eq.true),
 // ordered by scheduled start, mapped to the SAFE public projection for the
 // planmypickle.com marketing feed. No owner scoping, no PII — anyone may read it.
@@ -488,15 +493,27 @@ func (s *Service) PublicEvents(limit int) ([]model.PublicEvent, error) {
 	}
 	// starts_at NULLs sort last so dated tournaments lead the feed. Order by
 	// start ascending (soonest first), then created_at desc as a stable tiebreak
-	// for events that have no scheduled start yet.
+	// for events that have no scheduled start yet. Over-fetch 3× because the
+	// test-name filter below drops rows after the query.
 	rows, err := s.sb.Select("events",
-		"listed=eq.true&select=*&order=starts_at.asc.nullslast,created_at.desc&limit="+strconv.Itoa(limit))
+		"listed=eq.true&select=*&order=starts_at.asc.nullslast,created_at.desc&limit="+strconv.Itoa(limit*3))
 	if err != nil {
 		return nil, err
 	}
 	events := make([]model.Event, 0, len(rows))
 	for _, r := range rows {
-		events = append(events, mapEvent(r))
+		e := mapEvent(r)
+		// The marketing feed skips events that are obviously QA/test runs —
+		// "Test", "Bday Smash Test", "TEST · Doubles…" — even if their owner left
+		// the public-listing toggle on. Word-boundary match so a legit name like
+		// "SoCal Contest" or "Tested Champions" still shows.
+		if publicFeedTestName.MatchString(e.Name) {
+			continue
+		}
+		events = append(events, e)
+		if len(events) == limit {
+			break
+		}
 	}
 
 	// Batched registered-player counts (mirrors ListEvents): one query for every

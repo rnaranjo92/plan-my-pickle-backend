@@ -70,6 +70,9 @@ func main() {
 	if ck, cs := os.Getenv("DUPR_CLIENT_KEY"), os.Getenv("DUPR_CLIENT_SECRET"); ck != "" && cs != "" {
 		svc.Dupr = gateway.NewRealDupr(ck, cs,
 			os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_SSO_BASE"),
+			// User-token API host (entitlements + token refresh). Defaults to
+			// UAT api.uat.dupr.gg — set DUPR_USER_API_BASE=https://api.dupr.gg for prod.
+			os.Getenv("DUPR_USER_API_BASE"),
 			os.Getenv("DUPR_API_VERSION"), os.Getenv("DUPR_CLUB_ID"))
 		log.Printf("DUPR: partner API configured")
 		// Register our rating webhook (best-effort; idempotent by URL). The

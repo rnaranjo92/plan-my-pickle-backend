@@ -145,10 +145,14 @@ type DuprGateway interface {
 	// ClubMembers fetches a DUPR club's member roster (clubID "" -> the gateway's
 	// configured club). Restricted partners get only connected users.
 	ClubMembers(clubID string) ([]DuprMember, error)
-	// GetEntitlements fetches a user's tournament entitlement codes (e.g.
-	// BASIC_L1, PREMIUM_L1, VERIFIED_L1) so we can gate registration into
-	// premium / verified DUPR events. Returns the codes in entitlements.tournaments.
-	GetEntitlements(duprID string) ([]string, error)
+	// GetEntitlements fetches a user's entitlement codes (BASIC_L1, PREMIUM_L1,
+	// VERIFIED_L1, ...) via POST /subscription/active using the USER's SSO
+	// access token (not the partner token), so DUPR+ registration gating can
+	// be enforced. Returns ErrDuprUserTokenExpired on a 401 — refresh + retry.
+	GetEntitlements(userToken string) ([]string, error)
+	// RefreshUserToken exchanges a user's SSO refresh token for a fresh access
+	// token (GET /auth/{v}/refresh with x-refresh-token).
+	RefreshUserToken(refreshToken string) (string, error)
 }
 
 type MockDupr struct {
@@ -201,11 +205,15 @@ func (m *MockDupr) ClubMembers(string) ([]DuprMember, error) {
 	}, nil
 }
 
-// GetEntitlements grants a connected mock user every tier so dev/test flows can
-// register into premium/verified events; an empty id gets nothing (restricted).
-func (m *MockDupr) GetEntitlements(duprID string) ([]string, error) {
-	if duprID == "" {
+// GetEntitlements grants a mock user with any token every tier so dev/test
+// flows can register into DUPR+ events; an empty token gets nothing.
+func (m *MockDupr) GetEntitlements(userToken string) ([]string, error) {
+	if userToken == "" {
 		return nil, nil
 	}
 	return []string{"BASIC_L1", "PREMIUM_L1", "VERIFIED_L1"}, nil
+}
+
+func (m *MockDupr) RefreshUserToken(refreshToken string) (string, error) {
+	return "mock-user-token", nil
 }

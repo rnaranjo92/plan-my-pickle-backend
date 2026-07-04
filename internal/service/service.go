@@ -190,6 +190,52 @@ func normalizeDuprEntitlement(code string) string {
 // enter a DUPR+ event.
 var duprPlusEntitlements = []string{"PREMIUM_L1", "VERIFIED_L1"}
 
+// duprEntCache caches each user's entitlement codes — DUPR's integration doc
+// allows caching entitlements for up to 24 hours, which keeps registration
+// bursts from hammering /subscription/active. Keyed by our auth user id.
+var duprEntCache sync.Map // userID -> duprEntEntry
+
+type duprEntEntry struct {
+	codes []string
+	at    time.Time
+}
+
+// userEntitlements returns the DUPR entitlement codes for a connected user,
+// using the 24h cache, the stored SSO user token, and a refresh-once retry when
+// the access token has expired (persisting the refreshed token).
+func (s *Service) userEntitlements(userID string) ([]string, error) {
+	if e, ok := duprEntCache.Load(userID); ok {
+		if ent := e.(duprEntEntry); time.Since(ent.at) < 24*time.Hour {
+			return ent.codes, nil
+		}
+	}
+	conn, err := s.sb.SelectOne("dupr_connections",
+		"user_id=eq."+store.Q(userID)+"&select=user_token,refresh_token")
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil {
+		return nil, errors.New("no dupr connection")
+	}
+	codes, err := s.Dupr.GetEntitlements(asStr(conn, "user_token"))
+	if errors.Is(err, gateway.ErrDuprUserTokenExpired) {
+		// Access token expired (UAT 7d / prod 30d): mint a fresh one from the
+		// refresh token, persist it, and retry once.
+		fresh, rerr := s.Dupr.RefreshUserToken(asStr(conn, "refresh_token"))
+		if rerr != nil {
+			return nil, fmt.Errorf("user token expired and refresh failed: %w", rerr)
+		}
+		_, _ = s.sb.Update("dupr_connections", "user_id=eq."+store.Q(userID),
+			map[string]any{"user_token": fresh})
+		codes, err = s.Dupr.GetEntitlements(fresh)
+	}
+	if err != nil {
+		return nil, err
+	}
+	duprEntCache.Store(userID, duprEntEntry{codes: codes, at: time.Now()})
+	return codes, nil
+}
+
 // containsFold reports whether want appears in list, case-insensitively.
 func containsFold(list []string, want string) bool {
 	for _, v := range list {
@@ -2647,12 +2693,13 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		}
 		// DUPR+ tier: the connected player must hold ALL of the DUPR+ entitlements
 		// (Premium + Verified, per DUPR's guidance — one consumer-facing name).
+		// Checked with the user's own SSO token (24h-cached, auto-refreshed).
 		// Fail OPEN if DUPR can't be reached — a lookup error must never
 		// wrongfully block a legitimate registration.
 		if minEnt != "" && conn.Connected {
-			ents, err := s.Dupr.GetEntitlements(conn.DuprID)
+			ents, err := s.userEntitlements(linkUserID)
 			if err != nil {
-				log.Printf("dupr: entitlements lookup for %s failed (allowing registration): %v", conn.DuprID, err)
+				log.Printf("dupr: entitlements lookup for user %s failed (allowing registration): %v", linkUserID, err)
 			} else {
 				for _, need := range duprPlusEntitlements {
 					if !containsFold(ents, need) {

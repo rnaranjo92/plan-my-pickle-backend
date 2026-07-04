@@ -20,6 +20,7 @@ func main() {
 	club := os.Getenv("DUPR_CLUB_ID")
 	gw := gateway.NewRealDupr(ck, cs,
 		os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_SSO_BASE"),
+		os.Getenv("DUPR_USER_API_BASE"),
 		os.Getenv("DUPR_API_VERSION"), club)
 
 	fmt.Printf("== ClubMembers(club=%q) ==\n", club)

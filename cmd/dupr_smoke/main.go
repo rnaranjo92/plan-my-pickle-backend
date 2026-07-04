@@ -42,6 +42,7 @@ func main() {
 	}
 	gw := gateway.NewRealDupr(ck, cs,
 		os.Getenv("DUPR_BASE_URL"), os.Getenv("DUPR_SSO_BASE"),
+		os.Getenv("DUPR_USER_API_BASE"),
 		os.Getenv("DUPR_API_VERSION"), club)
 
 	// Pre-check: confirm each DUPR id is known (a bad id would fail the create).

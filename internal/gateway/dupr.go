@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,7 @@ type RealDupr struct {
 	clientSecret string
 	baseURL      string // no trailing slash
 	ssoBase      string // SSO iframe host, e.g. https://uat.dupr.gg
+	userAPIBase  string // user-token API host, e.g. https://api.uat.dupr.gg
 	version      string // path version segment, e.g. v1.0
 	clubID       string // optional club to attribute submitted matches to
 	http         *http.Client
@@ -42,12 +44,17 @@ type RealDupr struct {
 
 // NewRealDupr builds the live gateway. baseURL/version/clubID may be empty to
 // take the UAT defaults (so production only needs the base URL overridden).
-func NewRealDupr(clientKey, clientSecret, baseURL, ssoBase, version, clubID string) *RealDupr {
+func NewRealDupr(clientKey, clientSecret, baseURL, ssoBase, userAPIBase, version, clubID string) *RealDupr {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = "https://uat.mydupr.com/api"
 	}
 	if strings.TrimSpace(ssoBase) == "" {
 		ssoBase = "https://uat.dupr.gg"
+	}
+	// The user-token API (SSO access tokens: getBasicInfo, /subscription/active,
+	// /auth/{v}/refresh). Prod: https://api.dupr.gg — set DUPR_USER_API_BASE.
+	if strings.TrimSpace(userAPIBase) == "" {
+		userAPIBase = "https://api.uat.dupr.gg"
 	}
 	if strings.TrimSpace(version) == "" {
 		version = "v1.0"
@@ -57,6 +64,7 @@ func NewRealDupr(clientKey, clientSecret, baseURL, ssoBase, version, clubID stri
 		clientSecret: strings.TrimSpace(clientSecret),
 		baseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		ssoBase:      strings.TrimRight(strings.TrimSpace(ssoBase), "/"),
+		userAPIBase:  strings.TrimRight(strings.TrimSpace(userAPIBase), "/"),
 		version:      strings.Trim(strings.TrimSpace(version), "/"),
 		clubID:       strings.TrimSpace(clubID),
 		http:         &http.Client{Timeout: 8 * time.Second},
@@ -293,51 +301,113 @@ func (d *RealDupr) GetPlayerRating(duprID string) (DuprRating, error) {
 	}, nil
 }
 
-// GetEntitlements fetches a user's tournament entitlement codes (BASIC_L1,
-// PREMIUM_L1, VERIFIED_L1) so registration into premium/verified events can be
-// gated. Response shape: {status, displayName, entitlements:{tournaments:[...]}}
-// — parsed from the standard {result:...} envelope, falling back to the raw body.
+// ErrDuprUserTokenExpired signals that the user's SSO access token was rejected
+// (401) — the caller should refresh it via RefreshUserToken and retry once.
+var ErrDuprUserTokenExpired = errors.New("dupr user access token expired")
+
+// GetEntitlements fetches a user's entitlement codes (BASIC_L1 / PREMIUM_L1 /
+// VERIFIED_L1 / ...) so DUPR+ registration gating can be enforced.
 //
-// ENDPOINT PATH: DUPR's "Subscriptions Controller / getSubscriptions". The path
-// below mirrors the other resource routes (/user/{v}/{id}, /club/{v}/members) as
-// /subscriptions/{v}/{id}; confirm against DUPR's API explorer if entitlements
-// come back empty for a user you know is entitled. Callers fail OPEN on error, so
-// a wrong path degrades to "not gated", never a wrongful block.
-func (d *RealDupr) GetEntitlements(duprID string) ([]string, error) {
-	duprID = strings.TrimSpace(duprID)
-	if duprID == "" {
-		return nil, nil
+// Contract (confirmed against api.uat.dupr.gg/v3/api-docs/public, 2026-07-03):
+// POST {userAPIBase}/subscription/active with the USER's SSO access token as
+// the bearer — NOT the partner token. Response: {subscriptions:[{displayName,
+// entitlements:{<operation>:[codes...]}}]}; codes are collected across every
+// subscription and operation ("tournaments" today). A 401 returns
+// ErrDuprUserTokenExpired so the caller can refresh + retry.
+func (d *RealDupr) GetEntitlements(userToken string) ([]string, error) {
+	userToken = strings.TrimSpace(userToken)
+	if userToken == "" {
+		return nil, errors.New("no dupr user token")
 	}
-	raw, code, err := d.authed(http.MethodGet,
-		fmt.Sprintf("/subscriptions/%s/%s", d.version, url.PathEscape(duprID)), nil)
+	req, err := http.NewRequest(http.MethodPost,
+		d.userAPIBase+"/subscription/active", nil)
 	if err != nil {
 		return nil, err
 	}
-	if code == http.StatusNotFound {
-		return nil, nil
-	}
-	if code < 200 || code >= 300 {
-		return nil, fmt.Errorf("dupr subscriptions http %d: %s", code, string(raw))
-	}
-	type entShape struct {
-		Entitlements struct {
-			Tournaments []string `json:"tournaments"`
-		} `json:"entitlements"`
-	}
-	// Try the standard {result:{...}} envelope first, then the bare body — the
-	// gating example doc shows the fields at top level.
-	var env duprEnvelope
-	if json.Unmarshal(raw, &env) == nil && len(env.Result) > 0 {
-		var e entShape
-		if json.Unmarshal(env.Result, &e) == nil && len(e.Entitlements.Tournaments) > 0 {
-			return e.Entitlements.Tournaments, nil
-		}
-	}
-	var e entShape
-	if err := json.Unmarshal(raw, &e); err != nil {
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := d.http.Do(req)
+	if err != nil {
 		return nil, err
 	}
-	return e.Entitlements.Tournaments, nil
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrDuprUserTokenExpired
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("dupr subscription/active http %d: %s", resp.StatusCode, snippet(raw))
+	}
+	type subsShape struct {
+		Subscriptions []struct {
+			Entitlements map[string][]string `json:"entitlements"`
+		} `json:"subscriptions"`
+	}
+	collect := func(s subsShape) []string {
+		var out []string
+		for _, sub := range s.Subscriptions {
+			for _, codes := range sub.Entitlements {
+				out = append(out, codes...)
+			}
+		}
+		return out
+	}
+	// Bare body per the spec; tolerate a {result:...} envelope defensively.
+	var bare subsShape
+	if json.Unmarshal(raw, &bare) == nil && len(bare.Subscriptions) > 0 {
+		return collect(bare), nil
+	}
+	var env duprEnvelope
+	if json.Unmarshal(raw, &env) == nil && len(env.Result) > 0 {
+		var wrapped subsShape
+		if json.Unmarshal(env.Result, &wrapped) == nil {
+			return collect(wrapped), nil
+		}
+	}
+	return nil, nil // parsed but no subscriptions → no entitlements
+}
+
+// RefreshUserToken exchanges a user's SSO refresh token for a fresh access
+// token: GET {userAPIBase}/auth/v1.0/refresh with the refresh token in the
+// x-refresh-token header (the refresh token IS the credential). v1.0 returns
+// the new access token as a raw string in the standard {result:...} envelope.
+func (d *RealDupr) RefreshUserToken(refreshToken string) (string, error) {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return "", errors.New("no dupr refresh token")
+	}
+	req, err := http.NewRequest(http.MethodGet,
+		d.userAPIBase+"/auth/v1.0/refresh", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("x-refresh-token", refreshToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("dupr token refresh http %d: %s", resp.StatusCode, snippet(raw))
+	}
+	var env duprEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return "", err
+	}
+	var token string
+	if err := json.Unmarshal(env.Result, &token); err != nil || token == "" {
+		// v2.0 shape fallback: {result:{accessToken:...}}.
+		var v2 struct {
+			AccessToken string `json:"accessToken"`
+		}
+		if json.Unmarshal(env.Result, &v2) == nil && v2.AccessToken != "" {
+			return v2.AccessToken, nil
+		}
+		return "", fmt.Errorf("dupr token refresh: unrecognized response: %s", snippet(raw))
+	}
+	return token, nil
 }
 
 // parseDuprRating reads a DUPR rating value that may be a JSON number, the

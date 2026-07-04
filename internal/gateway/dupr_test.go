@@ -11,7 +11,7 @@ import (
 // duprWithToken builds a RealDupr whose HTTP transport is rt, with a pre-cached
 // bearer token so methods skip the auth exchange and go straight to the call.
 func duprWithToken(rt rtFunc) *RealDupr {
-	d := NewRealDupr("ck", "cs", "https://dupr.test/api", "https://sso.test", "v1.0", "club1")
+	d := NewRealDupr("ck", "cs", "https://dupr.test/api", "https://sso.test", "", "v1.0", "club1")
 	d.http = newClient(rt)
 	d.token = "cached-token"
 	d.expiry = time.Now().Add(time.Hour)
@@ -19,7 +19,7 @@ func duprWithToken(rt rtFunc) *RealDupr {
 }
 
 func TestDuprSsoURL(t *testing.T) {
-	d := NewRealDupr("mykey", "secret", "", "", "", "")
+	d := NewRealDupr("mykey", "secret", "", "", "", "", "")
 	u, origin := d.SsoURL()
 	enc := base64.StdEncoding.EncodeToString([]byte("mykey"))
 	if !strings.Contains(u, enc) {
@@ -132,7 +132,7 @@ func TestDuprMatchHTTPError(t *testing.T) {
 // endpoint. Covers accessToken()'s token-fetch + caching.
 func TestDuprAuthFetch(t *testing.T) {
 	var authHit bool
-	d := NewRealDupr("ck", "cs", "https://dupr.test/api", "", "v1.0", "")
+	d := NewRealDupr("ck", "cs", "https://dupr.test/api", "", "", "v1.0", "")
 	d.http = newClient(func(r *http.Request) (*http.Response, error) {
 		if strings.Contains(r.URL.Path, "/auth/") {
 			authHit = true
@@ -154,7 +154,7 @@ func TestDuprAuthFetch(t *testing.T) {
 }
 
 func TestDuprAuthFailure(t *testing.T) {
-	d := NewRealDupr("ck", "cs", "https://dupr.test/api", "", "v1.0", "")
+	d := NewRealDupr("ck", "cs", "https://dupr.test/api", "", "", "v1.0", "")
 	d.http = newClient(func(r *http.Request) (*http.Response, error) {
 		return resp(401, `{"status":"UNAUTHORIZED"}`), nil
 	})
@@ -164,7 +164,7 @@ func TestDuprAuthFailure(t *testing.T) {
 }
 
 func TestDuprMatchBody(t *testing.T) {
-	d := NewRealDupr("ck", "cs", "", "", "", "club9")
+	d := NewRealDupr("ck", "cs", "", "", "", "", "club9")
 	body := d.matchBody(DuprPayload{
 		MatchID:      "m1",
 		Team1DuprIDs: []string{"A", "B"},

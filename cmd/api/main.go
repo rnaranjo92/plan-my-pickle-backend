@@ -65,7 +65,7 @@ func main() {
 	}
 	// Real DUPR (rating verification + sanctioned-match submission) only when the
 	// partner Client Key + Secret are set; otherwise the mock stands in. Base URL
-	// defaults to UAT — set DUPR_BASE_URL=https://api.dupr.com/api for production.
+	// defaults to UAT — set DUPR_BASE_URL=https://prod.mydupr.com/api for production.
 	// DUPR_API_VERSION / DUPR_CLUB_ID are optional. Secrets live in the env, never code.
 	if ck, cs := os.Getenv("DUPR_CLIENT_KEY"), os.Getenv("DUPR_CLIENT_SECRET"); ck != "" && cs != "" {
 		svc.Dupr = gateway.NewRealDupr(ck, cs,

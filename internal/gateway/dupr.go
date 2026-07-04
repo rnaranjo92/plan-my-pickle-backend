@@ -21,7 +21,7 @@ import (
 // otherwise the server keeps MockDupr. Auth is a client-key/secret exchange for
 // a short-lived bearer token, cached until just before expiry.
 //
-// Base URLs: UAT https://uat.mydupr.com/api · prod https://api.dupr.com/api.
+// Base URLs: UAT https://uat.mydupr.com/api · prod https://prod.mydupr.com/api.
 // Endpoints: POST /auth/{v}/token, GET /user/{v}/{duprId}, POST /match/{v}/create.
 type RealDupr struct {
 	clientKey    string

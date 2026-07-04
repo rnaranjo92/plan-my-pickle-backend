@@ -476,6 +476,9 @@ func (d *RealDupr) matchBody(p DuprPayload) map[string]any {
 		body["event"] = p.EventName
 	}
 	// Submit as a club match when a club is configured (clubId must be numeric).
+	// Without one, submit as a PARTNER match — DUPR's doc: "For PARTNER
+	// submissions, the clubId field should be omitted" — so no club is required
+	// to run sanctioned events (club mode only adds club attribution/roster).
 	if d.clubID != "" {
 		body["matchSource"] = "CLUB"
 		if id, e := strconv.ParseInt(d.clubID, 10, 64); e == nil {
@@ -483,6 +486,8 @@ func (d *RealDupr) matchBody(p DuprPayload) map[string]any {
 		} else {
 			body["clubId"] = d.clubID
 		}
+	} else {
+		body["matchSource"] = "PARTNER"
 	}
 	return body
 }

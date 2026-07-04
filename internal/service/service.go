@@ -2041,9 +2041,9 @@ func (s *Service) seedGreensRetro(ownerID string) (string, error) {
 			{"Mico", "Little Mario", "Carlos", "Raul", 3, 3},   // block 2
 			{"Pete", "Araceli", "Marlon", "Carina", 3, 6},      // block 3
 		},
-		5: {
-			{"Francia", "Rose", "Ofel", "Chona", 1, 0},  // 8:35
-			{"Erin", "Jobert", "Franze", "Chona", 1, 4}, // ~9:40 (open play after)
+		5: { // Intermediate 1 — all on Court 5, 3 rounds per matchup
+			{"Francia", "Rose", "Ofel", "Chona", 3, 0},  // block 1 (8:35-)
+			{"Erin", "Jobert", "Franze", "Chona", 3, 4}, // block 2 (~9:40-, open play after)
 		},
 		6: {
 			{"Kuya Mario", "Bobby", "Rafa", "Franze", 1, 0}, // 8:35

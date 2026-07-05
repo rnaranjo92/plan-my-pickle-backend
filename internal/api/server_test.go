@@ -629,6 +629,36 @@ func TestRosterEmpty(t *testing.T) {
 	}
 }
 
+func TestSanctionCSV(t *testing.T) {
+	m := newMockSupabase(t)
+	m.seed("events", `[{"id":"e1","name":"Sanctioned Slam","owner_id":"owner-1","dupr_sanctioned":true}]`)
+	h := newTestServer(t, m)
+
+	// Anonymous → 401 (owner-only export).
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events/e1/sanction.csv", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anon status = %d, want 401", rec.Code)
+	}
+
+	// Owner → 200 CSV with the sanction header row.
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/events/e1/sanction.csv", nil)
+	req.Header.Set("Authorization", "Bearer "+authToken(t, "owner-1"))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/csv" {
+		t.Fatalf("content-type = %q, want text/csv", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Sanction-Ready Export") ||
+		!strings.Contains(body, "DUPR sanctioned,yes") {
+		t.Fatalf("csv missing expected headers: %q", body)
+	}
+}
+
 func TestOwnerOnlyForbidsNonOwner(t *testing.T) {
 	m := newMockSupabase(t)
 	// The event is owned by someone else; a different authed caller => 403.

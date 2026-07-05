@@ -261,6 +261,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Downloadable results export (standings + matches) for the organizer.
 	mux.HandleFunc("GET /events/{id}/results.csv", s.ownerOnly("event", "id", s.resultsCSV))
 	mux.HandleFunc("GET /events/{id}/roster.csv", s.ownerOnly("event", "id", s.rosterCSV))
+	mux.HandleFunc("GET /events/{id}/sanction.csv", s.ownerOnly("event", "id", s.sanctionCSV))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -1152,6 +1153,20 @@ func (s *Server) resultsCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", `attachment; filename="results.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// sanctionCSV streams the sanction-ready export (players + DUPR ids + per-game
+// scores + DUPR submission state per completed match). Owner-only.
+func (s *Server) sanctionCSV(w http.ResponseWriter, r *http.Request) {
+	data, err := s.svc.SanctionCSV(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="sanction.csv"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }

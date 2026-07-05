@@ -7924,6 +7924,151 @@ func (s *Service) ResultsCSV(eventID string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// SanctionCSV builds the sanction-ready export: one row per completed,
+// really-played match with every player's name AND DUPR id, the per-game
+// scores, the winner, and the match's DUPR submission state (status + match
+// code). It's the paper trail a sanctioned event needs — verification of what
+// was (or wasn't) pushed to DUPR, or the source sheet for a manual submission.
+func (s *Service) SanctionCSV(eventID string) ([]byte, error) {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return nil, err
+	}
+	brackets, err := s.GetBrackets(eventID)
+	if err != nil {
+		return nil, err
+	}
+	divName := make(map[string]string, len(brackets))
+	for _, b := range brackets {
+		divName[b.ID] = b.Name
+	}
+	pool, err := s.EventPoolMatches(eventID)
+	if err != nil {
+		return nil, err
+	}
+	all := pool
+	for _, b := range brackets {
+		bm, err := s.BracketMatches(b.ID)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, bm...)
+	}
+
+	// Participants with DUPR ids, one bulk query (the match Sides projection is
+	// spectator-safe and carries names only).
+	type part struct{ name, dupr string }
+	sides := map[string]map[int][]part{} // match id -> team -> players
+	ids := make([]string, 0, len(all))
+	for _, m := range all {
+		ids = append(ids, m.ID)
+	}
+	if len(ids) > 0 {
+		rows, err := s.sb.SelectAll("match_participants",
+			"match_id="+store.In(ids)+
+				"&select=match_id,team,player:players!player_id(full_name,dupr_id)")
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			mid := asStr(r, "match_id")
+			team := asInt(r, "team")
+			p := part{}
+			if pl := asMap(r, "player"); pl != nil {
+				p = part{name: asStr(pl, "full_name"), dupr: asStr(pl, "dupr_id")}
+			}
+			if sides[mid] == nil {
+				sides[mid] = map[int][]part{}
+			}
+			sides[mid][team] = append(sides[mid][team], p)
+		}
+	}
+
+	// DUPR submission state per match (absent rows = never queued).
+	type subState struct{ status, code string }
+	subs := map[string]subState{}
+	if rows, err := s.sb.Select("dupr_submissions",
+		"event_id=eq."+store.Q(eventID)+"&select=match_id,status,provider_ref"); err == nil {
+		for _, r := range rows {
+			subs[asStr(r, "match_id")] = subState{
+				status: asStr(r, "status"), code: asStr(r, "provider_ref"),
+			}
+		}
+	}
+
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
+	write := func(rec ...string) error { return cw.Write(rec) }
+	if err := write("PlanMyPickle Sanction-Ready Export", ev.Name); err != nil {
+		return nil, err
+	}
+	sanctioned := "no"
+	if ev.DuprSanctioned {
+		sanctioned = "yes"
+	}
+	_ = write("DUPR sanctioned", sanctioned)
+	_ = write()
+	if err := write("Division", "Stage", "Date",
+		"Team 1 Player A", "DUPR ID", "Team 1 Player B", "DUPR ID",
+		"Team 2 Player A", "DUPR ID", "Team 2 Player B", "DUPR ID",
+		"Game scores", "Winner", "DUPR status", "DUPR match code"); err != nil {
+		return nil, err
+	}
+	// cell returns the nth player/dupr pair of a side, blank-padded (singles
+	// leave the B columns empty).
+	cell := func(ps []part, n int) (string, string) {
+		if n >= len(ps) {
+			return "", ""
+		}
+		return ps[n].name, ps[n].dupr
+	}
+	for _, m := range all {
+		// Only completed, really-played results belong on a sanction sheet —
+		// no byes, forfeits, retirements, walkovers, or unplayed games.
+		if m.Status != "completed" || m.Team1Score == nil || m.Team2Score == nil {
+			continue
+		}
+		if m.ResultType != "" && m.ResultType != "normal" {
+			continue
+		}
+		div := ""
+		if m.BracketID != nil {
+			div = divName[*m.BracketID]
+		}
+		date := ""
+		if m.CompletedAt != nil && len(*m.CompletedAt) >= 10 {
+			date = (*m.CompletedAt)[:10]
+		}
+		t1 := sides[m.ID][1]
+		t2 := sides[m.ID][2]
+		if len(t1) == 0 || len(t2) == 0 {
+			continue // bye / incomplete side
+		}
+		t1a, t1aID := cell(t1, 0)
+		t1b, t1bID := cell(t1, 1)
+		t2a, t2aID := cell(t2, 0)
+		t2b, t2bID := cell(t2, 1)
+		sub := subs[m.ID]
+		if sub.status == "" {
+			sub.status = "not queued"
+		}
+		if err := write(
+			csvSafe(div), matchStageLabel(m), date,
+			csvSafe(t1a), csvSafe(t1aID), csvSafe(t1b), csvSafe(t1bID),
+			csvSafe(t2a), csvSafe(t2aID), csvSafe(t2b), csvSafe(t2bID),
+			matchScoreText(m), csvSafe(matchWinnerText(m)),
+			sub.status, sub.code,
+		); err != nil {
+			return nil, err
+		}
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // matchStageLabel describes where a match sits: a pool round number, or the
 // bracket tier + round for a playoff match.
 func matchStageLabel(m model.Match) string {

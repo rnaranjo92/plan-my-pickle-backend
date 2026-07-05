@@ -34,6 +34,7 @@ type Service struct {
 	Pay    gateway.PaymentGateway
 	Sms    gateway.SmsGateway
 	Dupr   gateway.DuprGateway
+	Email  gateway.EmailGateway
 	Courts courts.Finder
 }
 
@@ -43,6 +44,7 @@ func New() *Service {
 		Pay:    gateway.NewMockPayment(),
 		Sms:    gateway.NewMockSms(),
 		Dupr:   gateway.NewMockDupr(),
+		Email:  &gateway.MockEmail{},
 		Courts: courts.NewFinder(), // Google Places if PMP_PLACES_KEY set, else OSM
 	}
 }

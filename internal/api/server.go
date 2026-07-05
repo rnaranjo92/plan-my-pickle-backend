@@ -1132,6 +1132,17 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if name := strings.TrimSpace(req.FullName); name != "" {
 		s.svc.AddFeedItem(r.PathValue("id"), "registered", name+" registered", reg.ID)
 	}
+	// Branded confirmation email, off the request path (best-effort; a mail
+	// hiccup never fails the registration). Fires only from this handler —
+	// bulk imports and seeders deliberately don't email.
+	if email := strings.TrimSpace(req.Email); email != "" {
+		bracketID := ""
+		if reg.BracketID != nil {
+			bracketID = *reg.BracketID
+		}
+		go s.svc.SendRegistrationEmail(
+			r.PathValue("id"), email, req.FullName, bracketID)
+	}
 	// For anonymous self-registration, tell the client whether an account already
 	// exists for this email, so the thank-you screen nudges sign-in vs sign-up.
 	if userID(r) == "" {

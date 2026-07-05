@@ -54,6 +54,16 @@ func main() {
 	} else {
 		log.Printf("Payments: mock — set STRIPE_SECRET_KEY (+ STRIPE_WEBHOOK_SECRET) to take real payments")
 	}
+	// Real transactional email (registration confirmations) only when Resend is
+	// configured; otherwise the mock records sends without delivering. The from
+	// address must be on a domain verified in the Resend dashboard.
+	if rk := os.Getenv("RESEND_API_KEY"); rk != "" {
+		from := env("EMAIL_FROM", "PlanMyPickle <hello@planmypickle.com>")
+		svc.Email = gateway.NewResendGateway(rk, from)
+		log.Printf("Email: Resend configured (from %s)", from)
+	} else {
+		log.Printf("Email: mock — set RESEND_API_KEY (+ optional EMAIL_FROM) to send real email")
+	}
 	// Real SMS (game-starting alerts) only when Twilio is configured; otherwise
 	// the mock records notifications without sending. from = E.164 number or a
 	// Messaging Service SID (MG…). Secrets live in the platform env, never code.

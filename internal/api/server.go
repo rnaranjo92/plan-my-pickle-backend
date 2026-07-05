@@ -262,6 +262,14 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/results.csv", s.ownerOnly("event", "id", s.resultsCSV))
 	mux.HandleFunc("GET /events/{id}/roster.csv", s.ownerOnly("event", "id", s.rosterCSV))
 	mux.HandleFunc("GET /events/{id}/sanction.csv", s.ownerOnly("event", "id", s.sanctionCSV))
+
+	// Vendor Village: public list (spectators see the booths); organizer-only
+	// create/update/delete + the "push this deal to players" send.
+	mux.HandleFunc("GET /events/{id}/vendors", s.listVendors)
+	mux.HandleFunc("POST /events/{id}/vendors", s.ownerOnly("event", "id", s.createVendor))
+	mux.HandleFunc("POST /vendors/{id}", s.ownerOnly("vendor", "id", s.updateVendor))
+	mux.HandleFunc("DELETE /vendors/{id}", s.ownerOnly("vendor", "id", s.deleteVendor))
+	mux.HandleFunc("POST /vendors/{id}/notify", s.ownerOnly("vendor", "id", s.notifyVendorDeal))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -1169,6 +1177,69 @@ func (s *Server) sanctionCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="sanction.csv"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// listVendors returns an event's Vendor Village entries (public — spectators
+// browse the booths too).
+func (s *Server) listVendors(w http.ResponseWriter, r *http.Request) {
+	vs, err := s.svc.ListVendors(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, vs)
+}
+
+// createVendor adds a Vendor Village entry to the event (owner-only).
+func (s *Server) createVendor(w http.ResponseWriter, r *http.Request) {
+	var req model.VendorRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	v, err := s.svc.CreateVendor(r.PathValue("id"), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, v)
+}
+
+// updateVendor edits a Vendor Village entry (owner-only).
+func (s *Server) updateVendor(w http.ResponseWriter, r *http.Request) {
+	var req model.VendorRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	v, err := s.svc.UpdateVendor(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// deleteVendor removes a Vendor Village entry (owner-only).
+func (s *Server) deleteVendor(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteVendor(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// notifyVendorDeal pushes an organizer-composed vendor deal to the event's
+// players (and posts it to the feed). Owner-only.
+func (s *Server) notifyVendorDeal(w http.ResponseWriter, r *http.Request) {
+	var req model.VendorNotifyRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.NotifyVendorDeal(r.PathValue("id"), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"notified": n})
 }
 
 // rosterCSV streams the event's registrant roster as a CSV download (owner-only).

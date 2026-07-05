@@ -1017,3 +1017,34 @@ type Profile struct {
 	SkillLevel *float64 `json:"skillLevel,omitempty"`
 	PhotoURL   string   `json:"photoUrl,omitempty"`
 }
+
+// Vendor is one Vendor Village entry on an event — a booth, food truck, or
+// sponsor the organizer wants attendees to see (and optionally get a push
+// about). Managed by the organizer; listed publicly on the event views.
+type Vendor struct {
+	ID        string `json:"id"`
+	EventID   string `json:"eventId"`
+	Name      string `json:"name"`
+	Tagline   string `json:"tagline,omitempty"`
+	Booth     string `json:"booth,omitempty"`
+	Promo     string `json:"promo,omitempty"`
+	LinkURL   string `json:"linkUrl,omitempty"`
+	LogoURL   string `json:"logoUrl,omitempty"`
+	SortOrder int    `json:"sortOrder"`
+}
+
+// VendorRequest carries an organizer's create/update of a Vendor Village entry.
+type VendorRequest struct {
+	Name      string `json:"name"`
+	Tagline   string `json:"tagline"`
+	Booth     string `json:"booth"`
+	Promo     string `json:"promo"`
+	LinkURL   string `json:"linkUrl"`
+	LogoURL   string `json:"logoUrl"`
+	SortOrder int    `json:"sortOrder"`
+}
+
+// VendorNotifyRequest is the organizer-composed push about a vendor deal.
+type VendorNotifyRequest struct {
+	Message string `json:"message"`
+}

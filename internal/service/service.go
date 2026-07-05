@@ -1960,7 +1960,7 @@ func (s *Service) seedGreensRetro(ownerID string) (string, error) {
 		// 15-minute games: each Int-3 matchup plays its 3 rounds inside one
 		// printed 45-minute window (8:35-9:20 etc.) on a shared 15-min wave grid.
 		"game_duration_minutes": 15,
-		"dupr_sanctioned": false, "status": "open",
+		"dupr_sanctioned":       false, "status": "open",
 		"starts_at": "2026-07-04T15:35:00Z", // Sat Jul 4, 8:35 AM PDT
 		"description": "Official scorers: Myles and Kay — please report your score " +
 			"to them after each game. Each team plays 3 games per match; add all " +
@@ -5457,6 +5457,9 @@ type DuprImportSummary struct {
 	Updated   int `json:"updated"`   // corrections to an existing DUPR match
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
+	// Queued counts rows deferred to the next background pass because this pass
+	// hit the per-chunk DUPR call cap (rate-limit prudence on large events).
+	Queued int `json:"queued,omitempty"`
 	// Details carries the per-match reason for each skip/fail so the UI can show
 	// WHY nothing was submitted (e.g. "bye / incomplete side", "dupr http 409 …").
 	Details []string `json:"details,omitempty"`
@@ -6954,7 +6957,7 @@ func isDuprIdentifierConflict(errMsg string) bool {
 // SubmitPendingToDupr flushes queued results to DUPR for a sanctioned event —
 // the organizer-initiated "Import to DUPR" action. (#11)
 func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error) {
-	return s.flushDuprSubmissions(eventID, false)
+	return s.flushDuprSubmissions(eventID, false, nil)
 }
 
 // flushDuprSubmissions submits an event's due, still-pending DUPR rows. When
@@ -6980,7 +6983,23 @@ func (s *Service) lockDuprEvent(eventID string) func() {
 	return mu.Unlock
 }
 
-func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImportSummary, error) {
+// duprSubmitChunk caps how many DUPR match calls (create/update) one flush pass
+// makes. DUPR's bulk endpoint accepts 100 matches per request and documents no
+// per-minute throttle; per their team's guidance we stay well under the ceiling
+// (80) rather than riding it. A pass that hits the cap leaves the remainder
+// pending and self-continues in the background after duprChunkPause — so a
+// 300-game event submits in ~4 waves without holding the import HTTP request
+// open past the server's 15s write timeout.
+const duprSubmitChunk = 80
+
+// duprChunkPause spaces the background continuation passes ("submit 80, wait,
+// submit the next 80"), mirroring the reconciler's own 2-minute cadence.
+const duprChunkPause = 2 * time.Minute
+
+// onlyIDs, when non-nil, restricts the pass to those dupr_submissions row ids —
+// used by the chunked background continuation so it finishes exactly the rows
+// the organizer's Import covered, and can't sweep in results scored since.
+func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool, onlyIDs map[string]bool) (DuprImportSummary, error) {
 	defer s.lockDuprEvent(eventID)()
 
 	ev, err := s.GetEvent(eventID)
@@ -7010,7 +7029,20 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 	}
 
 	var sum DuprImportSummary
+	calls := 0                     // DUPR API calls made this pass (create/update)
+	queuedIDs := map[string]bool{} // rows deferred past the chunk cap
 	for _, p := range pendings {
+		subID := asStr(p, "id")
+		if onlyIDs != nil && !onlyIDs[subID] {
+			continue // a continuation pass finishes ITS rows only
+		}
+		// Chunk cap reached: leave the rest pending for the background
+		// continuation (below) / the reconciler's next tick.
+		if calls >= duprSubmitChunk {
+			queuedIDs[subID] = true
+			sum.Queued++
+			continue
+		}
 		// The reconciler respects the backoff window and never auto-submits a fresh
 		// (never-attempted) result; a manual import does neither.
 		if retryOnly && !dueNow(asStr(p, "next_attempt_at")) {
@@ -7019,7 +7051,6 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 		if retryOnly && asInt(p, "attempts") == 0 {
 			continue
 		}
-		subID := asStr(p, "id")
 		matchID := asStr(p, "match_id")
 		m, err := s.sb.SelectOne("matches",
 			"id=eq."+store.Q(matchID)+"&select=team1_score,team2_score,winning_team,result_type,games,completed_at")
@@ -7107,6 +7138,7 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 			Team1Score: g1t1, Team2Score: g1t2, Games: pairs,
 		}
 		// Already submitted (re-scored) → update the DUPR match; else create it.
+		calls++
 		var res gateway.DuprResult
 		if existingCode != "" {
 			res, err = s.Dupr.UpdateMatch(payload)
@@ -7172,6 +7204,25 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool) (DuprImpo
 				reason = "DUPR rejected the submission"
 			}
 			sum.Details = append(sum.Details, reason)
+		}
+	}
+	if sum.Queued > 0 {
+		sum.Details = append(sum.Details, fmt.Sprintf(
+			"%d more queued — submitting in the background in batches of %d every %d min",
+			sum.Queued, duprSubmitChunk, int(duprChunkPause.Minutes())))
+		// A manual import self-continues so the organizer doesn't have to re-tap
+		// Import once per chunk — scoped to the snapshot of rows THIS import
+		// covered. The per-event lock serializes overlapping passes; if the
+		// process restarts mid-chain the leftovers stay pending and the next
+		// manual Import picks them up. The reconciler (retryOnly) doesn't chain —
+		// its 2-minute ticker already provides the cadence.
+		if !retryOnly {
+			go func() {
+				time.Sleep(duprChunkPause)
+				if _, err := s.flushDuprSubmissions(eventID, false, queuedIDs); err != nil {
+					log.Printf("dupr: background chunk flush (event %s): %v", eventID, err)
+				}
+			}()
 		}
 	}
 	return sum, nil
@@ -7380,7 +7431,7 @@ func (s *Service) ReconcileDuprSubmissions() error {
 			continue
 		}
 		seen[eid] = true
-		if _, err := s.flushDuprSubmissions(eid, true); err != nil {
+		if _, err := s.flushDuprSubmissions(eid, true, nil); err != nil {
 			log.Printf("dupr reconcile: event %s: %v", eid, err)
 		}
 	}

@@ -154,6 +154,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/clubs", requireAuth(s.myClubs))
 	mux.HandleFunc("GET /clubs/{id}", optionalAuth(s.getClub))
 	mux.HandleFunc("POST /clubs/{id}", requireAuth(s.updateClub))
+	mux.HandleFunc("DELETE /clubs/{id}", requireAuth(s.deleteClub))
 	mux.HandleFunc("POST /clubs/{id}/logo", requireAuth(s.uploadClubLogo))
 	mux.HandleFunc("GET /clubs/{id}/members", s.clubMembers)
 	mux.HandleFunc("GET /clubs/{id}/events", s.clubEvents)
@@ -1612,6 +1613,15 @@ func (s *Server) myClubs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, c)
+}
+
+// deleteClub removes a club (owner-only; events survive unlinked).
+func (s *Server) deleteClub(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteClub(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // clubMembers lists a club's members (public).

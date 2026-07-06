@@ -56,6 +56,16 @@ func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubReques
 	return err
 }
 
+// DeleteClub removes a club (owner-only). The schema makes this safe:
+// club_members cascade away and events.club_id is SET NULL — the club's
+// events live on, just no longer club-branded.
+func (s *Service) DeleteClub(clubID, callerID string) error {
+	if err := s.requireClubOwner(clubID, callerID); err != nil {
+		return err
+	}
+	return s.sb.Delete("clubs", "id=eq."+store.Q(clubID))
+}
+
 // GetClub returns a club for public viewing, with member/event counts and the
 // caller's flags (isOwner/isMember; callerID "" for anonymous).
 func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {

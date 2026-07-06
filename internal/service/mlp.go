@@ -1099,25 +1099,45 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 			}
 		}
 	}
-	out := make([]model.TeamEventStanding, 0, len(st))
-	for _, v := range st {
-		out = append(out, *v)
+	// Build from the ordered teams slice, NOT the map — map iteration order is
+	// random per call, and anything the comparator can't split kept that random
+	// order, so tied teams shuffled on every poll (visible flicker on the TV).
+	out := make([]model.TeamEventStanding, 0, len(teams))
+	for _, t := range teams {
+		if v := st[t.ID]; v != nil {
+			out = append(out, *v)
+		}
+	}
+	// Head-to-head applies to TWO-way ties only. In a 3-way circle
+	// (A beat B, B beat C, C beat A) h2h makes the comparator intransitive,
+	// so the sorted order depended on input order — another flicker source.
+	tiedAt := map[int]int{}
+	for _, v := range out {
+		tiedAt[v.TiesWon]++
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.TiesWon != b.TiesWon {
 			return a.TiesWon > b.TiesWon
 		}
-		// Head-to-head: if these two met and one won, it ranks higher.
-		if ab, ba := h2h[a.TeamID+"|"+b.TeamID], h2h[b.TeamID+"|"+a.TeamID]; ab != ba {
-			return ab
+		if tiedAt[a.TiesWon] == 2 {
+			if ab, ba := h2h[a.TeamID+"|"+b.TeamID], h2h[b.TeamID+"|"+a.TeamID]; ab != ba {
+				return ab
+			}
 		}
 		// Line differential — not raw wins, so simply having played more ties
 		// can't let a worse record jump a better one mid-tournament.
 		if ldi, ldj := a.LinesWon-a.LinesLost, b.LinesWon-b.LinesLost; ldi != ldj {
 			return ldi > ldj
 		}
-		return (a.PointsFor - a.PointsAgainst) > (b.PointsFor - b.PointsAgainst)
+		if pdi, pdj := a.PointsFor-a.PointsAgainst, b.PointsFor-b.PointsAgainst; pdi != pdj {
+			return pdi > pdj
+		}
+		// Fully tied: fixed alphabetical order so the board never reshuffles.
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.TeamID < b.TeamID
 	})
 	return out, nil
 }

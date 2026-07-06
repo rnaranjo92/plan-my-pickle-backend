@@ -36,6 +36,8 @@ type Service struct {
 	Dupr   gateway.DuprGateway
 	Email  gateway.EmailGateway
 	Courts courts.Finder
+	// Serializes DrainDuprPendingDeletes (reconciler tick vs post-wipe kick).
+	duprDeleteDrain sync.Mutex
 }
 
 func New() *Service {
@@ -7418,6 +7420,11 @@ func dueNow(ts string) bool {
 // organizer re-clicking Import. Only already-attempted rows (attempts > 0) are
 // retried; a fresh, never-imported result is left for the organizer's action.
 func (s *Service) ReconcileDuprSubmissions() error {
+	// Drain the durable delete queue first — reversals left over from a wipe
+	// (best-effort; a missing table pre-migration just logs).
+	if err := s.DrainDuprPendingDeletes(); err != nil {
+		log.Printf("dupr reconcile: pending-delete drain: %v", err)
+	}
 	rows, err := s.sb.Select("dupr_submissions",
 		"status=eq.pending&attempts=gt.0&select=event_id,next_attempt_at")
 	if err != nil {
@@ -8686,6 +8693,26 @@ func (s *Service) wipeAllMatches(eventID string) error {
 			}
 		}
 	}
+	// DURABLY queue the DUPR-side reversals BEFORE deleting the local rows — the
+	// old in-memory goroutine (3 quick retries) orphaned real results on official
+	// ratings whenever DUPR was down or the backend restarted mid-wipe. Rows in
+	// dupr_pending_deletes survive restarts; the 2-minute reconciler drains them
+	// with backoff. If the queue table is missing (migration not run yet), fall
+	// back to the old immediate best-effort goroutine rather than losing them.
+	queued := false
+	if len(toDelete) > 0 {
+		rows := make([]map[string]any, len(toDelete))
+		for i, d := range toDelete {
+			rows[i] = map[string]any{
+				"event_id": eventID, "provider_ref": d[0], "identifier": d[1],
+			}
+		}
+		if _, err := s.sb.Insert("dupr_pending_deletes", rows); err != nil {
+			log.Printf("dupr: pending-delete queue insert failed (falling back to inline deletes): %v", err)
+		} else {
+			queued = true
+		}
+	}
 	_ = s.sb.Delete("dupr_submissions", "event_id=eq."+store.Q(eventID))
 	if err := s.sb.Delete("matches", "event_id=eq."+store.Q(eventID)); err != nil {
 		return err
@@ -8693,12 +8720,17 @@ func (s *Service) wipeAllMatches(eventID string) error {
 	if err := s.sb.Delete("rounds", "event_id=eq."+store.Q(eventID)); err != nil {
 		return err
 	}
-	if len(toDelete) > 0 {
+	if queued {
+		// Drain immediately so the normal case still reverses within seconds —
+		// the queue is the safety net, not a 2-minute delay.
+		go func() {
+			if err := s.DrainDuprPendingDeletes(); err != nil {
+				log.Printf("dupr: pending-delete drain after wipe: %v", err)
+			}
+		}()
+	} else if len(toDelete) > 0 {
 		go func() {
 			for _, d := range toDelete {
-				// The local rows are already gone, so this is the only chance to
-				// reverse these on DUPR — retry a transient failure a few times
-				// (404 = already gone counts as success in DeleteMatch).
 				var e error
 				for attempt := 0; attempt < 3; attempt++ {
 					if e = s.Dupr.DeleteMatch(d[0], d[1]); e == nil {
@@ -8711,6 +8743,48 @@ func (s *Service) wipeAllMatches(eventID string) error {
 				}
 			}
 		}()
+	}
+	return nil
+}
+
+// duprPendingDeleteMaxAttempts caps queue retries. At the 30-minute backoff
+// ceiling this is roughly a day of trying; beyond that the row stays put (with
+// its error) as a visible record, and every reconciler pass logs an ALARM.
+const duprPendingDeleteMaxAttempts = 40
+
+// DrainDuprPendingDeletes processes due rows in the durable DUPR-delete queue:
+// deletes the match on DUPR (404 = already gone counts as success) and removes
+// the row; failures back off exponentially. Called by the reconciler ticker and
+// kicked immediately after a wipe. Serialized so overlapping callers don't race
+// the same row.
+func (s *Service) DrainDuprPendingDeletes() error {
+	s.duprDeleteDrain.Lock()
+	defer s.duprDeleteDrain.Unlock()
+	rows, err := s.sb.Select("dupr_pending_deletes",
+		"select=id,provider_ref,identifier,attempts,next_attempt_at&order=created_at.asc&limit=100")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		attempts := asInt(r, "attempts")
+		if attempts >= duprPendingDeleteMaxAttempts {
+			log.Printf("dupr: ALARM pending delete %s (code %s) exhausted %d attempts — result may still be live on DUPR",
+				asStr(r, "id"), asStr(r, "provider_ref"), attempts)
+			continue
+		}
+		if !dueNow(asStr(r, "next_attempt_at")) {
+			continue
+		}
+		id := asStr(r, "id")
+		if err := s.Dupr.DeleteMatch(asStr(r, "provider_ref"), asStr(r, "identifier")); err != nil {
+			_, _ = s.sb.Update("dupr_pending_deletes", "id=eq."+store.Q(id), map[string]any{
+				"attempts":        attempts + 1,
+				"next_attempt_at": duprNextAttempt(attempts + 1),
+				"error":           err.Error(),
+			})
+			continue
+		}
+		_ = s.sb.Delete("dupr_pending_deletes", "id=eq."+store.Q(id))
 	}
 	return nil
 }

@@ -281,6 +281,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /vendors/{id}/checkout", optionalAuth(s.vendorCheckout))
 	// Organizer confirms an off-platform booth payment (cash / Zelle).
 	mux.HandleFunc("POST /vendors/{id}/mark-paid", s.ownerOnly("vendor", "id", s.vendorMarkPaid))
+	// Tap-through counter (public, best-effort) + court sponsors for the board.
+	mux.HandleFunc("POST /vendors/{id}/click", s.vendorClick)
+	mux.HandleFunc("GET /events/{id}/court-sponsors", s.courtSponsors)
 
 	// "Player Score Confirm" (Premium add-on): participants act via their own
 	// registration check_in_token (?t=) — winner reports, loser confirms or
@@ -1335,6 +1338,27 @@ func (s *Server) vendorCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// vendorClick bumps a vendor's tap-through counter (public, best-effort).
+func (s *Server) vendorClick(w http.ResponseWriter, r *http.Request) {
+	if !s.regLimiter.allow("vendor-click:" + r.PathValue("id")) {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) // silently drop floods
+		return
+	}
+	s.svc.RecordVendorClick(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// courtSponsors returns court number -> sponsoring vendor name (public — the
+// TV board reads it).
+func (s *Server) courtSponsors(w http.ResponseWriter, r *http.Request) {
+	m, err := s.svc.CourtSponsors(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 // vendorMarkPaid records an off-platform booth payment (owner-only).

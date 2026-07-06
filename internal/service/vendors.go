@@ -42,7 +42,9 @@ func mapVendor(r map[string]any) model.Vendor {
 			}
 			return "unpaid"
 		}(),
-		PayToken: asStr(r, "pay_token"),
+		PayToken:     asStr(r, "pay_token"),
+		SponsorCourt: asInt(r, "sponsor_court"),
+		Clicks:       asInt(r, "clicks"),
 	}
 }
 
@@ -135,14 +137,15 @@ func vendorRow(req model.VendorRequest) (map[string]any, error) {
 		return nil, errors.New("booth fee must be between $0 and $10,000")
 	}
 	return map[string]any{
-		"name":       name,
-		"tagline":    strings.TrimSpace(req.Tagline),
-		"booth":      strings.TrimSpace(req.Booth),
-		"promo":      strings.TrimSpace(req.Promo),
-		"link_url":   strings.TrimSpace(req.LinkURL),
-		"logo_url":   strings.TrimSpace(req.LogoURL),
-		"sort_order": req.SortOrder,
-		"fee_cents":  req.FeeCents,
+		"name":          name,
+		"tagline":       strings.TrimSpace(req.Tagline),
+		"booth":         strings.TrimSpace(req.Booth),
+		"promo":         strings.TrimSpace(req.Promo),
+		"link_url":      strings.TrimSpace(req.LinkURL),
+		"logo_url":      strings.TrimSpace(req.LogoURL),
+		"sort_order":    req.SortOrder,
+		"fee_cents":     req.FeeCents,
+		"sponsor_court": req.SponsorCourt,
 	}, nil
 }
 
@@ -375,4 +378,36 @@ func (s *Service) MarkVendorPaid(vendorID string) error {
 	s.AddFeedItem(v.EventID, "announcement",
 		v.Name+" is confirmed for the Vendor Village!", vendorID)
 	return nil
+}
+
+// RecordVendorClick bumps a vendor's tap-through counter (public, best-effort
+// — the organizer's proof a booth reached people). Rate-limited upstream.
+func (s *Service) RecordVendorClick(vendorID string) {
+	// Atomic increment via RPC would be ideal; a read-then-write is fine for
+	// this best-effort counter (undercounting a race is acceptable).
+	v, err := s.sb.SelectOne("vendors", "id=eq."+store.Q(vendorID)+"&select=clicks,status")
+	if err != nil || v == nil || asStr(v, "status") != "approved" {
+		return
+	}
+	_, _ = s.sb.Update("vendors", "id=eq."+store.Q(vendorID),
+		map[string]any{"clicks": asInt(v, "clicks") + 1})
+}
+
+// CourtSponsors maps court number -> vendor name for an event's approved
+// court-sponsoring vendors ("Court 3 · presented by X"). Public.
+func (s *Service) CourtSponsors(eventID string) (map[int]string, error) {
+	rows, err := s.sb.Select("vendors",
+		"event_id=eq."+store.Q(eventID)+"&status=eq.approved&sponsor_court=gt.0"+
+			"&select=name,sponsor_court&order=sort_order.asc")
+	if err != nil {
+		return nil, err
+	}
+	out := map[int]string{}
+	for _, r := range rows {
+		c := asInt(r, "sponsor_court")
+		if _, taken := out[c]; !taken {
+			out[c] = asStr(r, "name")
+		}
+	}
+	return out, nil
 }

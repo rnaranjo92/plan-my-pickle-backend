@@ -2,17 +2,17 @@
 package model
 
 type Event struct {
-	ID                   string   `json:"id"`
-	Name                 string   `json:"name"`
-	Format               string   `json:"format"`           // singles | doubles
-	PartnerMode          string   `json:"partnerMode"`      // fixed | rotating | na
-	TournamentFormat     string   `json:"tournamentFormat"` // round_robin | single_elim | pools_playoff
-	ScoringMode          string   `json:"scoringMode"`      // points | wins
-	NumCourts            int      `json:"numCourts"`
-	PointsToWin          int      `json:"pointsToWin"`
-	WinBy                int      `json:"winBy"`
-	BestOf               int      `json:"bestOf"` // games per match: 1 (single) or 3 (best of 3)
-	GameDurationMinutes  int      `json:"gameDurationMinutes"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Format              string `json:"format"`           // singles | doubles
+	PartnerMode         string `json:"partnerMode"`      // fixed | rotating | na
+	TournamentFormat    string `json:"tournamentFormat"` // round_robin | single_elim | pools_playoff
+	ScoringMode         string `json:"scoringMode"`      // points | wins
+	NumCourts           int    `json:"numCourts"`
+	PointsToWin         int    `json:"pointsToWin"`
+	WinBy               int    `json:"winBy"`
+	BestOf              int    `json:"bestOf"` // games per match: 1 (single) or 3 (best of 3)
+	GameDurationMinutes int    `json:"gameDurationMinutes"`
 	// MinPoolRounds / MaxPoolRounds bound the pool-play round-robin length
 	// (0 = unset). Max caps a full RR (partial round-robin); min tops it up by
 	// repeating matchups so everyone gets a guaranteed number of games.
@@ -362,9 +362,9 @@ type EventTeam struct {
 
 // TeamMember is a roster member; Gender (M|F) drives line eligibility.
 type TeamMember struct {
-	ID       string  `json:"id"`
-	TeamID   string  `json:"teamId"`
-	PlayerID *string `json:"playerId,omitempty"`
+	ID         string   `json:"id"`
+	TeamID     string   `json:"teamId"`
+	PlayerID   *string  `json:"playerId,omitempty"`
 	FullName   string   `json:"fullName"`
 	Gender     string   `json:"gender"` // M | F
 	CheckedIn  bool     `json:"checkedIn"`
@@ -468,21 +468,21 @@ type RecordFlexResultRequest struct {
 }
 
 type Registration struct {
-	ID            string   `json:"id"`
-	EventID       string   `json:"eventId"`
-	PlayerID      string   `json:"playerId"`
-	FullName      string   `json:"fullName"`
-	BracketID     *string  `json:"bracketId,omitempty"`
-	PaymentStatus string   `json:"paymentStatus"`
-	CheckedIn     bool     `json:"checkedIn"`
-	CheckInToken  *string  `json:"checkInToken,omitempty"`
-	Phone         string   `json:"phone"`
+	ID            string  `json:"id"`
+	EventID       string  `json:"eventId"`
+	PlayerID      string  `json:"playerId"`
+	FullName      string  `json:"fullName"`
+	BracketID     *string `json:"bracketId,omitempty"`
+	PaymentStatus string  `json:"paymentStatus"`
+	CheckedIn     bool    `json:"checkedIn"`
+	CheckInToken  *string `json:"checkInToken,omitempty"`
+	Phone         string  `json:"phone"`
 	// PhotoURL is the registrant's account profile photo (pmp_profiles via the
 	// linked user_id), used as their roster avatar; empty for name-only players
 	// (the UI falls back to initials).
-	PhotoURL      string   `json:"photoUrl,omitempty"`
-	DuprID        *string  `json:"duprId,omitempty"`
-	DuprRating    *float64 `json:"duprRating,omitempty"`
+	PhotoURL   string   `json:"photoUrl,omitempty"`
+	DuprID     *string  `json:"duprId,omitempty"`
+	DuprRating *float64 `json:"duprRating,omitempty"`
 	// OutsideRating is true when the player's DUPR rating falls outside their
 	// chosen division's rating band (a soft flag, not a block).
 	OutsideRating bool `json:"outsideRating"`
@@ -546,7 +546,7 @@ type Match struct {
 	Stage     string  `json:"stage"` // pool | bracket
 	// BracketTier classifies a bracket match for rendering: main | consolation |
 	// winners | losers | grand_final. Empty/"main" for ordinary brackets.
-	BracketTier     string   `json:"bracketTier,omitempty"`
+	BracketTier string `json:"bracketTier,omitempty"`
 	// BracketGroup tags a Compass Draw match's direction (east | west | north |
 	// south | east_r5 | …) so the UI can split the draw into per-direction
 	// brackets. Empty/absent for every non-compass match.
@@ -658,49 +658,49 @@ type DuprConnection struct {
 }
 
 type CreateEventRequest struct {
-	Name                 string         `json:"name"`
-	Format               string         `json:"format"`           // singles|doubles (default doubles)
-	PartnerMode          string         `json:"partnerMode"`      // fixed|rotating (default rotating)
-	TournamentFormat     string         `json:"tournamentFormat"` // default round_robin
-	ScoringMode          string         `json:"scoringMode"`      // default wins
-	NumCourts            int            `json:"numCourts"`
-	PointsToWin          int            `json:"pointsToWin"`
-	WinBy                int            `json:"winBy"`
-	BestOf               int            `json:"bestOf"`
-	GameDurationMinutes  int            `json:"gameDurationMinutes"`
-	MinPoolRounds        int            `json:"minPoolRounds"`
-	MaxPoolRounds        int            `json:"maxPoolRounds"`
-	RegistrationFeeCents int            `json:"registrationFeeCents"`
-	ZelleHandle          string         `json:"zelleHandle,omitempty"`
-	ClubID               string         `json:"clubId,omitempty"`
-	Location             string         `json:"location"`
-	ContactPhone         string         `json:"contactPhone"`
-	VenueNotes           string         `json:"venueNotes"`
-	WaiverURL            string         `json:"waiverUrl"`
-	VenueName            string         `json:"venueName"`
-	VenueAddress         string         `json:"venueAddress"`
-	VenuePhone           string         `json:"venuePhone"`
-	VenueWebsite         string         `json:"venueWebsite"`
-	VenueLat             *float64       `json:"venueLat"`
-	VenueLng             *float64       `json:"venueLng"`
-	DuprSanctioned       bool           `json:"duprSanctioned"`
+	Name                 string   `json:"name"`
+	Format               string   `json:"format"`           // singles|doubles (default doubles)
+	PartnerMode          string   `json:"partnerMode"`      // fixed|rotating (default rotating)
+	TournamentFormat     string   `json:"tournamentFormat"` // default round_robin
+	ScoringMode          string   `json:"scoringMode"`      // default wins
+	NumCourts            int      `json:"numCourts"`
+	PointsToWin          int      `json:"pointsToWin"`
+	WinBy                int      `json:"winBy"`
+	BestOf               int      `json:"bestOf"`
+	GameDurationMinutes  int      `json:"gameDurationMinutes"`
+	MinPoolRounds        int      `json:"minPoolRounds"`
+	MaxPoolRounds        int      `json:"maxPoolRounds"`
+	RegistrationFeeCents int      `json:"registrationFeeCents"`
+	ZelleHandle          string   `json:"zelleHandle,omitempty"`
+	ClubID               string   `json:"clubId,omitempty"`
+	Location             string   `json:"location"`
+	ContactPhone         string   `json:"contactPhone"`
+	VenueNotes           string   `json:"venueNotes"`
+	WaiverURL            string   `json:"waiverUrl"`
+	VenueName            string   `json:"venueName"`
+	VenueAddress         string   `json:"venueAddress"`
+	VenuePhone           string   `json:"venuePhone"`
+	VenueWebsite         string   `json:"venueWebsite"`
+	VenueLat             *float64 `json:"venueLat"`
+	VenueLng             *float64 `json:"venueLng"`
+	DuprSanctioned       bool     `json:"duprSanctioned"`
 	// DuprMinEntitlement: "" | "DUPR_PLUS" — gates self-register on a DUPR+
 	// membership (Premium + Verified). Non-empty implies DuprSanctioned.
-	DuprMinEntitlement string         `json:"duprMinEntitlement"`
-	CashPrize          bool           `json:"cashPrize"`
-	CashPrizeAmount    *float64       `json:"cashPrizeAmount,omitempty"`
-	Consolation        bool           `json:"consolation"` // single_elim back-draw
-	AutoAdjust           bool           `json:"autoAdjust"`
-	TeamSize             int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
-	StartsAt             string         `json:"startsAt"`    // RFC3339 UTC, "" = none
-	EndsAt               string         `json:"endsAt"`      // RFC3339 UTC, "" = none
-	Description          string         `json:"description"`
-	AdminPasscode        string         `json:"adminPasscode"`
-	Brackets             []BracketInput `json:"brackets"`
-	Listed               bool           `json:"listed"`
-	PlayerScoring        bool           `json:"playerScoring"`
-	ScoreConfirmMinutes  int            `json:"scoreConfirmMinutes"`
-	PosterURL            string         `json:"posterUrl"`
+	DuprMinEntitlement  string         `json:"duprMinEntitlement"`
+	CashPrize           bool           `json:"cashPrize"`
+	CashPrizeAmount     *float64       `json:"cashPrizeAmount,omitempty"`
+	Consolation         bool           `json:"consolation"` // single_elim back-draw
+	AutoAdjust          bool           `json:"autoAdjust"`
+	TeamSize            int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
+	StartsAt            string         `json:"startsAt"` // RFC3339 UTC, "" = none
+	EndsAt              string         `json:"endsAt"`   // RFC3339 UTC, "" = none
+	Description         string         `json:"description"`
+	AdminPasscode       string         `json:"adminPasscode"`
+	Brackets            []BracketInput `json:"brackets"`
+	Listed              bool           `json:"listed"`
+	PlayerScoring       bool           `json:"playerScoring"`
+	ScoreConfirmMinutes int            `json:"scoreConfirmMinutes"`
+	PosterURL           string         `json:"posterUrl"`
 }
 
 type RegisterRequest struct {
@@ -1053,6 +1053,10 @@ type Vendor struct {
 	FeeCents      int    `json:"feeCents"`
 	PaymentStatus string `json:"paymentStatus,omitempty"`
 	PayToken      string `json:"payToken,omitempty"`
+	// SponsorCourt: this vendor "presents" court N ("Court 3 · presented by X"
+	// on the board + court calls); 0 = none. Clicks counts card tap-throughs.
+	SponsorCourt int `json:"sponsorCourt"`
+	Clicks       int `json:"clicks"`
 }
 
 // VendorApplyRequest is the public "Become a vendor" application form.
@@ -1068,14 +1072,15 @@ type VendorApplyRequest struct {
 
 // VendorRequest carries an organizer's create/update of a Vendor Village entry.
 type VendorRequest struct {
-	Name      string `json:"name"`
-	Tagline   string `json:"tagline"`
-	Booth     string `json:"booth"`
-	Promo     string `json:"promo"`
-	LinkURL   string `json:"linkUrl"`
-	LogoURL   string `json:"logoUrl"`
-	SortOrder int    `json:"sortOrder"`
-	FeeCents  int    `json:"feeCents"`
+	Name         string `json:"name"`
+	Tagline      string `json:"tagline"`
+	Booth        string `json:"booth"`
+	Promo        string `json:"promo"`
+	LinkURL      string `json:"linkUrl"`
+	LogoURL      string `json:"logoUrl"`
+	SortOrder    int    `json:"sortOrder"`
+	FeeCents     int    `json:"feeCents"`
+	SponsorCourt int    `json:"sponsorCourt"`
 }
 
 // VendorNotifyRequest is the organizer-composed push about a vendor deal.

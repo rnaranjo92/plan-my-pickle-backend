@@ -790,3 +790,31 @@ func TestCorsAllowedOriginsParse(t *testing.T) {
 		}
 	}
 }
+
+func TestShortLinkRedirect(t *testing.T) {
+	m := newMockSupabase(t)
+	m.seed("short_links", `[{"code":"Ab3x9Cd","target":"https://app.planmypickle.com/?report=m1&t=tok1"}]`)
+	h := newTestServer(t, m)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/r/Ab3x9Cd", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "https://app.planmypickle.com/?report=m1&t=tok1" {
+		t.Fatalf("location = %q", loc)
+	}
+}
+
+func TestSmsBodiesFitOneSegment(t *testing.T) {
+	// GSM-7 single segment = 160 chars. Short link = 38 chars
+	// (api.planmypickle.com/r/ + 7-char code + https://).
+	link := "https://api.planmypickle.com/r/Ab3x9Cd"
+	start := "PlanMyPickle: You're up! Court 12, round 10. Report score: " + link + " Reply STOP to opt out."
+	confirm := "PlanMyPickle: opponents reported 11-9. Confirm or dispute (60m auto-confirm): " + link + " Reply STOP to opt out."
+	for name, body := range map[string]string{"start": start, "confirm": confirm} {
+		if len(body) > 160 {
+			t.Fatalf("%s SMS is %d chars (>160 = 2 segments): %q", name, len(body), body)
+		}
+	}
+}

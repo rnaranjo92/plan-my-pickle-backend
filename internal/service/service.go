@@ -6926,8 +6926,9 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 				"&select=player_id,check_in_token"); err == nil {
 			for _, r := range regs {
 				if tok := asStr(r, "check_in_token"); tok != "" {
-					reportLink[asStr(r, "player_id")] =
-						fmt.Sprintf("https://app.planmypickle.com/?report=%s&t=%s", matchID, tok)
+					// Shortened so the whole text stays in ONE SMS segment.
+					reportLink[asStr(r, "player_id")] = s.ShortLink(fmt.Sprintf(
+						"https://app.planmypickle.com/?report=%s&t=%s", matchID, tok))
 				}
 			}
 		}
@@ -6940,7 +6941,8 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 		// for compliance (the Messaging Service also auto-handles STOP/HELP).
 		body := fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Reply STOP to opt out.", court, roundNumber)
 		if link := reportLink[rc.playerID]; link != "" {
-			body = fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Winners report the score after: %s Reply STOP to opt out.",
+			// Terse + short link = one SMS segment (the long form was two).
+			body = fmt.Sprintf("PlanMyPickle: You're up! %s, round %d. Report score: %s Reply STOP to opt out.",
 				court, roundNumber, link)
 		}
 		ins, err := s.sb.Insert("notifications", map[string]any{

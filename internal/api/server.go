@@ -94,6 +94,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Public marketing feed for planmypickle.com: recent/upcoming publicly-listed
 	// events in a SAFE projection (no auth, no PII). Served cross-origin.
 	mux.HandleFunc("GET /events/public", s.publicEvents)
+	// Short-link redirect (SMS links): /r/<code> -> 302 to the full token URL.
+	mux.HandleFunc("GET /r/{code}", s.shortLink)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
@@ -2795,6 +2797,16 @@ func (s *Server) nearbyEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+// shortLink 302-redirects an SMS short code to its stored full URL.
+func (s *Server) shortLink(w http.ResponseWriter, r *http.Request) {
+	target, err := s.svc.ResolveShortLink(r.PathValue("code"))
+	if err != nil || target == "" {
+		http.Error(w, "link not found", http.StatusNotFound)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // publicEvents serves the planmypickle.com marketing feed: up to 20 recent /

@@ -248,8 +248,10 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 		if tok == "" {
 			continue
 		}
-		link := fmt.Sprintf("https://app.planmypickle.com/?report=%s&t=%s", matchID, tok)
-		body := fmt.Sprintf("PlanMyPickle: your opponents reported %s. Confirm or dispute (%d min, then it auto-confirms): %s Reply STOP to opt out.",
+		// Short link + terse copy = one SMS segment.
+		link := s.ShortLink(fmt.Sprintf(
+			"https://app.planmypickle.com/?report=%s&t=%s", matchID, tok))
+		body := fmt.Sprintf("PlanMyPickle: opponents reported %s. Confirm or dispute (%dm auto-confirm): %s Reply STOP to opt out.",
 			scoreTxt, minutes, link)
 		ins, err := s.sb.Insert("notifications", map[string]any{
 			"event_id": eventID, "match_id": matchID, "type": "score_confirm",

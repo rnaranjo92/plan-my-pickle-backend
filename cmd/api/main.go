@@ -119,6 +119,19 @@ func main() {
 		log.Printf("DUPR: mock — set DUPR_CLIENT_KEY, DUPR_CLIENT_SECRET to verify ratings + submit matches")
 	}
 
+	// Player Score Confirm: auto-confirm reported scores whose window passed.
+	// Always on (independent of DUPR/Stripe config); 1-minute tick against the
+	// organizer-set windows (minimum granularity is a minute).
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.AutoConfirmDueScoreReports(); err != nil {
+				log.Printf("score-confirm: auto-confirm pass failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

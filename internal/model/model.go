@@ -72,6 +72,11 @@ type Event struct {
 	LastActivityAt   *string `json:"lastActivityAt,omitempty"`
 	// Listed = organizer opted this event into the public "Nearby" discovery feed.
 	Listed bool `json:"listed"`
+	// PlayerScoring = the Premium "Player Score Confirm" add-on: winners report
+	// scores from their token links; losers confirm/dispute; auto-confirm after
+	// ScoreConfirmMinutes. Organizer scoring always overrides.
+	PlayerScoring       bool `json:"playerScoring"`
+	ScoreConfirmMinutes int  `json:"scoreConfirmMinutes"`
 	// PosterURL is the uploaded event poster (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
@@ -693,6 +698,8 @@ type CreateEventRequest struct {
 	AdminPasscode        string         `json:"adminPasscode"`
 	Brackets             []BracketInput `json:"brackets"`
 	Listed               bool           `json:"listed"`
+	PlayerScoring        bool           `json:"playerScoring"`
+	ScoreConfirmMinutes  int            `json:"scoreConfirmMinutes"`
 	PosterURL            string         `json:"posterUrl"`
 }
 

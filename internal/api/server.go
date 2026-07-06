@@ -281,6 +281,15 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /vendors/{id}/checkout", optionalAuth(s.vendorCheckout))
 	// Organizer confirms an off-platform booth payment (cash / Zelle).
 	mux.HandleFunc("POST /vendors/{id}/mark-paid", s.ownerOnly("vendor", "id", s.vendorMarkPaid))
+
+	// "Player Score Confirm" (Premium add-on): participants act via their own
+	// registration check_in_token (?t=) — winner reports, loser confirms or
+	// disputes; the organizer's score list powers match-card chips.
+	mux.HandleFunc("GET /matches/{id}/score-report", s.scoreReportState)
+	mux.HandleFunc("POST /matches/{id}/score-report", s.scoreReport)
+	mux.HandleFunc("POST /matches/{id}/score-report/confirm", s.scoreConfirm)
+	mux.HandleFunc("POST /matches/{id}/score-report/dispute", s.scoreDispute)
+	mux.HandleFunc("GET /events/{id}/score-reports", s.ownerOnly("event", "id", s.listScoreReports))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -1387,6 +1396,103 @@ func (s *Server) notifyVendorDeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"notified": n})
+}
+
+// scoreToken pulls the participant token (?t= / X-Registration-Token) and
+// applies the per-match rate limit shared by all score-report actions.
+func (s *Server) scoreToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !s.regLimiter.allow("score:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many requests right now, try again shortly"))
+		return "", false
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("t"))
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("X-Registration-Token"))
+	}
+	return token, true
+}
+
+// scoreReportState returns the report/confirm page state (participant-only).
+func (s *Server) scoreReportState(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.scoreToken(w, r)
+	if !ok {
+		return
+	}
+	st, err := s.svc.GetScoreReportState(r.PathValue("id"), token)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// scoreReport records the winning side's score (participant-only).
+func (s *Server) scoreReport(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.scoreToken(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Team1Score int `json:"team1Score"`
+		Team2Score int `json:"team2Score"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	st, err := s.svc.ReportScore(r.PathValue("id"), token, req.Team1Score, req.Team2Score)
+	if err != nil {
+		if errors.Is(err, service.ErrScoreReportExists) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, st)
+}
+
+// scoreConfirm finalizes a pending report (opposite side only).
+func (s *Server) scoreConfirm(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.scoreToken(w, r)
+	if !ok {
+		return
+	}
+	st, err := s.svc.ConfirmScore(r.PathValue("id"), token)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// scoreDispute freezes a pending report for the organizer to resolve.
+func (s *Server) scoreDispute(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.scoreToken(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Note string `json:"note"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	st, err := s.svc.DisputeScore(r.PathValue("id"), token, req.Note)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// listScoreReports powers the organizer's match-card chips (owner-only).
+func (s *Server) listScoreReports(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.svc.ListScoreReports(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 // rosterCSV streams the event's registrant roster as a CSV download (owner-only).
@@ -3198,9 +3304,9 @@ func (rl *rateLimiter) allow(key string) bool {
 // never auto-sent), so this restriction is defense-in-depth: it stops a random
 // third-party site from driving the API from a signed-in user's browser.
 var corsAllowedOrigins = []string{
-	"https://app.planmypickle.com",  // Flutter app
-	"https://planmypickle.com",      // apex marketing site (public feed)
-	"https://www.planmypickle.com",  // www marketing site (public feed)
+	"https://app.planmypickle.com", // Flutter app
+	"https://planmypickle.com",     // apex marketing site (public feed)
+	"https://www.planmypickle.com", // www marketing site (public feed)
 	"http://localhost:3000",
 	"http://localhost:8080",
 }

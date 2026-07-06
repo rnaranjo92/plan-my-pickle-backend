@@ -349,6 +349,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
 		"listed":                 req.Listed,
+		"player_scoring":         req.PlayerScoring,
+		"score_confirm_minutes":  clampConfirmMinutes(req.ScoreConfirmMinutes),
 		"poster_url":             orNull(req.PosterURL),
 		"venue_name":             orNull(req.VenueName),
 		"venue_address":          orNull(req.VenueAddress),
@@ -1079,12 +1081,14 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"auto_adjust":            req.AutoAdjust,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
-		"listed":        req.Listed,
-		"contact_phone": orNull(req.ContactPhone),
-		"zelle_handle":  orNull(req.ZelleHandle),
-		"starts_at":     orNull(req.StartsAt),
-		"ends_at":       orNull(req.EndsAt),
-		"description":   orNull(req.Description),
+		"listed":                req.Listed,
+		"player_scoring":        req.PlayerScoring,
+		"score_confirm_minutes": clampConfirmMinutes(req.ScoreConfirmMinutes),
+		"contact_phone":         orNull(req.ContactPhone),
+		"zelle_handle":          orNull(req.ZelleHandle),
+		"starts_at":             orNull(req.StartsAt),
+		"ends_at":               orNull(req.EndsAt),
+		"description":           orNull(req.Description),
 	}
 	// Rotate the scorekeeper passcode on edit (plaintext, mirrors create). Set-only:
 	// an empty field leaves the current passcode untouched — we never wipe it, since
@@ -5185,6 +5189,10 @@ func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t
 	if len(out) == 0 {
 		return ErrNotFound
 	}
+	// Any open player score report is now superseded — a recorded score (from
+	// the organizer, the confirm path, or the auto-confirm timer) is final and
+	// a stale pending report must never auto-confirm over it later.
+	s.supersedeScoreReport(matchID)
 	// The updated row (return=representation) carries the routing columns.
 	if err := s.advanceAfterScore(out[0]); err != nil {
 		return err
@@ -6862,17 +6870,18 @@ func (s *Service) UnstartMatch(matchID string) error {
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
 	prows, err := s.sb.Select("match_participants",
-		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(phone,user_id)")
+		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(id,phone,user_id)")
 	if err != nil {
 		return 0, err
 	}
-	var phones []string
+	type recipient struct{ phone, playerID string }
+	var phones []recipient
 	var userIDs []string // OneSignal external_ids = Supabase user ids
 	seenUser := map[string]bool{}
 	for _, r := range prows {
 		if p := asMap(r, "player"); p != nil {
 			if ph := asStr(p, "phone"); ph != "" {
-				phones = append(phones, ph)
+				phones = append(phones, recipient{phone: ph, playerID: asStr(p, "id")})
 			}
 			// Players with a linked account get a push too; skip those without
 			// a user_id, and de-dupe (a user could be on both teams in odd setups).
@@ -6888,11 +6897,36 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	_ = s.sendPush(userIDs, "Match starting",
 		fmt.Sprintf("You're up on %s", court), "")
 
+	// Player Score Confirm on (Premium): each player's start text also carries
+	// THEIR personal report link, so the winners can submit right off the court.
+	reportLink := map[string]string{} // playerID -> personal link
+	if ev, err := s.scoreReportEvent(eventID); err == nil && s.playerScoringEnabled(ev) && len(phones) > 0 {
+		ids := make([]string, 0, len(phones))
+		for _, rc := range phones {
+			ids = append(ids, rc.playerID)
+		}
+		if regs, err := s.sb.Select("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id="+store.In(ids)+
+				"&select=player_id,check_in_token"); err == nil {
+			for _, r := range regs {
+				if tok := asStr(r, "check_in_token"); tok != "" {
+					reportLink[asStr(r, "player_id")] =
+						fmt.Sprintf("https://app.planmypickle.com/?report=%s&t=%s", matchID, tok)
+				}
+			}
+		}
+	}
+
 	sent := 0
-	for _, phone := range phones {
+	for _, rc := range phones {
+		phone := rc.phone
 		// Wording mirrors the registered A2P sample; the STOP footer is required
 		// for compliance (the Messaging Service also auto-handles STOP/HELP).
 		body := fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Reply STOP to opt out.", court, roundNumber)
+		if link := reportLink[rc.playerID]; link != "" {
+			body = fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Winners report the score after: %s Reply STOP to opt out.",
+				court, roundNumber, link)
+		}
 		ins, err := s.sb.Insert("notifications", map[string]any{
 			"event_id": eventID, "match_id": matchID, "type": "game_starting",
 			"to_address": phone, "body": body,

@@ -15,22 +15,32 @@ import (
 // deal push reuses the same OneSignal path as match-start notifications.
 
 func mapVendor(r map[string]any) model.Vendor {
+	status := asStr(r, "status")
+	if status == "" {
+		status = "approved" // pre-0052 rows have no status column
+	}
 	return model.Vendor{
-		ID:        asStr(r, "id"),
-		EventID:   asStr(r, "event_id"),
-		Name:      asStr(r, "name"),
-		Tagline:   asStr(r, "tagline"),
-		Booth:     asStr(r, "booth"),
-		Promo:     asStr(r, "promo"),
-		LinkURL:   asStr(r, "link_url"),
-		LogoURL:   asStr(r, "logo_url"),
-		SortOrder: asInt(r, "sort_order"),
+		ID:           asStr(r, "id"),
+		EventID:      asStr(r, "event_id"),
+		Name:         asStr(r, "name"),
+		Tagline:      asStr(r, "tagline"),
+		Booth:        asStr(r, "booth"),
+		Promo:        asStr(r, "promo"),
+		LinkURL:      asStr(r, "link_url"),
+		LogoURL:      asStr(r, "logo_url"),
+		SortOrder:    asInt(r, "sort_order"),
+		Status:       status,
+		ContactEmail: asStr(r, "contact_email"),
+		ContactPhone: asStr(r, "contact_phone"),
+		Pitch:        asStr(r, "pitch"),
 	}
 }
 
 // ListVendors returns an event's Vendor Village entries in display order.
-// Public — spectators see these.
-func (s *Service) ListVendors(eventID string) ([]model.Vendor, error) {
+// Public callers (spectators, the strip) get APPROVED vendors only; the owner
+// (includeAll) also sees pending applications and rejected rows, with contact
+// details. The public projection strips applicant contact info regardless.
+func (s *Service) ListVendors(eventID string, includeAll bool) ([]model.Vendor, error) {
 	rows, err := s.sb.Select("vendors",
 		"event_id=eq."+store.Q(eventID)+"&select=*&order=sort_order.asc,created_at.asc")
 	if err != nil {
@@ -38,9 +48,72 @@ func (s *Service) ListVendors(eventID string) ([]model.Vendor, error) {
 	}
 	out := make([]model.Vendor, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, mapVendor(r))
+		v := mapVendor(r)
+		if !includeAll {
+			if v.Status != "approved" {
+				continue
+			}
+			// PII-free public shape: applicants' contact details are for the
+			// organizer only.
+			v.ContactEmail, v.ContactPhone, v.Pitch = "", "", ""
+		}
+		out = append(out, v)
 	}
 	return out, nil
+}
+
+// ApplyVendor records a PUBLIC vendor application (status pending) from the
+// event's "Become a vendor" link. Rate-limited + captcha-gated at the handler.
+func (s *Service) ApplyVendor(eventID string, req model.VendorApplyRequest) (model.Vendor, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return model.Vendor{}, errors.New("business name is required")
+	}
+	if strings.TrimSpace(req.ContactEmail) == "" &&
+		strings.TrimSpace(req.ContactPhone) == "" {
+		return model.Vendor{}, errors.New("an email or phone is required so the organizer can reach you")
+	}
+	// The event must exist and be visible; applications to a deleted event 404.
+	if ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=id"); err != nil {
+		return model.Vendor{}, err
+	} else if ev == nil {
+		return model.Vendor{}, ErrNotFound
+	}
+	ins, err := s.sb.Insert("vendors", map[string]any{
+		"event_id":      eventID,
+		"name":          name,
+		"tagline":       strings.TrimSpace(req.Tagline),
+		"pitch":         strings.TrimSpace(req.Pitch),
+		"link_url":      strings.TrimSpace(req.LinkURL),
+		"contact_email": strings.TrimSpace(req.ContactEmail),
+		"contact_phone": strings.TrimSpace(req.ContactPhone),
+		"status":        "pending",
+	})
+	if err != nil {
+		return model.Vendor{}, err
+	}
+	if len(ins) == 0 {
+		return model.Vendor{}, errors.New("vendor application insert returned no row")
+	}
+	return mapVendor(ins[0]), nil
+}
+
+// SetVendorStatus approves or rejects a vendor application (owner-gated
+// upstream). Approving flips it straight onto the public Vendor Village strip.
+func (s *Service) SetVendorStatus(vendorID, status string) (model.Vendor, error) {
+	if status != "approved" && status != "rejected" && status != "pending" {
+		return model.Vendor{}, fmt.Errorf("invalid vendor status %q", status)
+	}
+	upd, err := s.sb.Update("vendors", "id=eq."+store.Q(vendorID),
+		map[string]any{"status": status})
+	if err != nil {
+		return model.Vendor{}, err
+	}
+	if len(upd) == 0 {
+		return model.Vendor{}, ErrNotFound
+	}
+	return mapVendor(upd[0]), nil
 }
 
 func vendorRow(req model.VendorRequest) (map[string]any, error) {

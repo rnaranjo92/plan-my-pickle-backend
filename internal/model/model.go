@@ -1031,6 +1031,24 @@ type Vendor struct {
 	LinkURL   string `json:"linkUrl,omitempty"`
 	LogoURL   string `json:"logoUrl,omitempty"`
 	SortOrder int    `json:"sortOrder"`
+	// Status: pending (public application awaiting review) | approved (shown
+	// on the public strip) | rejected. Organizer-added vendors are approved.
+	Status string `json:"status"`
+	// Applicant contact details — owner-only; stripped from public reads.
+	ContactEmail string `json:"contactEmail,omitempty"`
+	ContactPhone string `json:"contactPhone,omitempty"`
+	Pitch        string `json:"pitch,omitempty"`
+}
+
+// VendorApplyRequest is the public "Become a vendor" application form.
+type VendorApplyRequest struct {
+	Name         string `json:"name"`
+	Tagline      string `json:"tagline"`
+	Pitch        string `json:"pitch"`
+	LinkURL      string `json:"linkUrl"`
+	ContactEmail string `json:"contactEmail"`
+	ContactPhone string `json:"contactPhone"`
+	CaptchaToken string `json:"captchaToken"`
 }
 
 // VendorRequest carries an organizer's create/update of a Vendor Village entry.

@@ -263,13 +263,18 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/roster.csv", s.ownerOnly("event", "id", s.rosterCSV))
 	mux.HandleFunc("GET /events/{id}/sanction.csv", s.ownerOnly("event", "id", s.sanctionCSV))
 
-	// Vendor Village: public list (spectators see the booths); organizer-only
-	// create/update/delete + the "push this deal to players" send.
-	mux.HandleFunc("GET /events/{id}/vendors", s.listVendors)
+	// Vendor Village: public list (spectators see APPROVED booths; the owner
+	// also sees pending applications); organizer-only create/update/delete +
+	// the "push this deal to players" send. The public "Become a vendor" form
+	// posts applications (rate-limited + captcha, like self-registration);
+	// approve/reject is owner-only.
+	mux.HandleFunc("GET /events/{id}/vendors", optionalAuth(s.listVendors))
 	mux.HandleFunc("POST /events/{id}/vendors", s.ownerOnly("event", "id", s.createVendor))
+	mux.HandleFunc("POST /events/{id}/vendor-apply", s.applyVendor)
 	mux.HandleFunc("POST /vendors/{id}", s.ownerOnly("vendor", "id", s.updateVendor))
 	mux.HandleFunc("DELETE /vendors/{id}", s.ownerOnly("vendor", "id", s.deleteVendor))
 	mux.HandleFunc("POST /vendors/{id}/notify", s.ownerOnly("vendor", "id", s.notifyVendorDeal))
+	mux.HandleFunc("POST /vendors/{id}/status", s.ownerOnly("vendor", "id", s.setVendorStatus))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -1190,15 +1195,63 @@ func (s *Server) sanctionCSV(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// listVendors returns an event's Vendor Village entries (public — spectators
-// browse the booths too).
+// listVendors returns an event's Vendor Village entries. Anonymous/spectator
+// callers get approved vendors in a PII-free shape; the event owner also gets
+// pending applications with the applicant's contact details.
 func (s *Server) listVendors(w http.ResponseWriter, r *http.Request) {
-	vs, err := s.svc.ListVendors(r.PathValue("id"))
+	eventID := r.PathValue("id")
+	includeAll := false
+	if uid := userID(r); uid != "" {
+		if owner, err := s.svc.OwnerOf("event", eventID); err == nil && owner == uid {
+			includeAll = true
+		}
+	}
+	vs, err := s.svc.ListVendors(eventID, includeAll)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, vs)
+}
+
+// applyVendor records a PUBLIC vendor application from the "Become a vendor"
+// link. Same abuse guards as self-registration: per-event rate limit + captcha
+// for anonymous callers.
+func (s *Server) applyVendor(w http.ResponseWriter, r *http.Request) {
+	var req model.VendorApplyRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.regLimiter.allow("vendor:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many applications right now, try again shortly"))
+		return
+	}
+	if userID(r) == "" && !s.captcha.Verify(req.CaptchaToken, "") {
+		writeErr(w, http.StatusForbidden, errors.New("please complete the human check and try again"))
+		return
+	}
+	v, err := s.svc.ApplyVendor(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, v)
+}
+
+// setVendorStatus approves/rejects a vendor application (owner-only).
+func (s *Server) setVendorStatus(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	v, err := s.svc.SetVendorStatus(r.PathValue("id"), req.Status)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // createVendor adds a Vendor Village entry to the event (owner-only).

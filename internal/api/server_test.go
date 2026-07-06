@@ -659,6 +659,80 @@ func TestSanctionCSV(t *testing.T) {
 	}
 }
 
+func TestVendorApplicationFlow(t *testing.T) {
+	// The mock store returns canned bodies (no real state), so each assertion
+	// exercises one read/write against a fixed vendors table: a pending
+	// application must be OWNER-visible (with contact info) but hidden from
+	// the public list; approved rows show publicly with contact stripped.
+	m := newMockSupabase(t)
+	m.seed("events", `[{"id":"e1","name":"Slam","owner_id":"owner-1"}]`)
+	m.seed("vendors", `[
+		{"id":"v1","event_id":"e1","name":"Squeeze Lemonade","status":"pending","contact_email":"v@x.com","pitch":"fresh"},
+		{"id":"v2","event_id":"e1","name":"Paddle Demos","status":"approved","contact_email":"p@x.com"}
+	]`)
+	h := newTestServer(t, m)
+
+	// Public application → 201 (insert echoes the canned table's first row).
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/events/e1/vendor-apply",
+		strings.NewReader(`{"name":"Squeeze Lemonade","contactEmail":"v@x.com","pitch":"fresh"}`))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("apply status = %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Application without any contact info → 400.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/events/e1/vendor-apply",
+		strings.NewReader(`{"name":"No Contact"}`))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("contactless apply = %d, want 400", rec.Code)
+	}
+
+	// Anonymous list → pending hidden, approved shown, contact stripped.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events/e1/vendors", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "Squeeze") {
+		t.Fatalf("pending application leaked to public list: %s", body)
+	}
+	if !strings.Contains(body, "Paddle Demos") {
+		t.Fatalf("approved vendor missing from public list: %s", body)
+	}
+	if strings.Contains(body, "@x.com") {
+		t.Fatalf("contact info leaked publicly: %s", body)
+	}
+
+	// Owner list → pending row visible WITH contact email.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/events/e1/vendors", nil)
+	req.Header.Set("Authorization", "Bearer "+authToken(t, "owner-1"))
+	h.ServeHTTP(rec, req)
+	if body := rec.Body.String(); !strings.Contains(body, "Squeeze") ||
+		!strings.Contains(body, "v@x.com") {
+		t.Fatalf("owner list missing pending application/contact: %s", body)
+	}
+
+	// Approve: owner → 200; non-owner → 403.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/vendors/v1/status",
+		strings.NewReader(`{"status":"approved"}`))
+	req.Header.Set("Authorization", "Bearer "+authToken(t, "owner-1"))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner approve = %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/vendors/v1/status",
+		strings.NewReader(`{"status":"rejected"}`))
+	req.Header.Set("Authorization", "Bearer "+authToken(t, "not-owner"))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner approve = %d, want 403", rec.Code)
+	}
+}
+
 func TestOwnerOnlyForbidsNonOwner(t *testing.T) {
 	m := newMockSupabase(t)
 	// The event is owned by someone else; a different authed caller => 403.

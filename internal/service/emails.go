@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
@@ -125,4 +126,56 @@ func registrationEmailBody(fullName, eventName, when, where, division, eventURL 
 		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
 	}
 	return htmlBody, tb.String()
+}
+
+// SendVendorApprovedEmail tells an applicant their booth was approved — with
+// the payment link when a booth fee is set. Best-effort, off the request path.
+func (s *Service) SendVendorApprovedEmail(v model.Vendor) {
+	email := strings.TrimSpace(v.ContactEmail)
+	if email == "" || s.Email == nil || !s.Email.Live() {
+		return
+	}
+	ev, err := s.GetEvent(v.EventID)
+	if err != nil {
+		log.Printf("email: vendor approval skipped (event fetch): %v", err)
+		return
+	}
+	payURL := ""
+	if v.FeeCents > 0 && v.PaymentStatus != "paid" && v.PayToken != "" {
+		payURL = fmt.Sprintf(
+			"https://app.planmypickle.com/?vendorpay=%s&t=%s", v.ID, v.PayToken)
+	}
+	fee := ""
+	if v.FeeCents > 0 {
+		fee = fmt.Sprintf("$%.2f", float64(v.FeeCents)/100)
+	}
+	subject := "You're in! Vendor spot approved — " + ev.Name
+
+	esc := html.EscapeString
+	action := ""
+	textAction := "You're all set — see you at the event!\n"
+	if payURL != "" {
+		action = fmt.Sprintf(`<a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Pay the booth fee (%s)</a>
+<p style="margin:10px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">Secure checkout — funds go to the event organizer.</p>`, payURL, esc(fee))
+		textAction = fmt.Sprintf("Pay the booth fee (%s): %s\n", fee, payURL)
+	}
+	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    <div style="background:#16245c;padding:22px 26px">
+      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">VENDOR SPOT APPROVED</p>
+      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
+    </div>
+    <div style="padding:24px 26px">
+      <p style="margin:0 0 10px;color:#16203a;font-size:15px">Great news — <b>%s</b> is approved for the Vendor Village at <b>%s</b>. Your booth now shows on the event page for every player and spectator.</p>
+      %s
+    </div>
+  </div>
+  <p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a></p>
+</div>`, esc(ev.Name), esc(v.Name), esc(ev.Name), action)
+
+	text := fmt.Sprintf("Vendor spot approved — %s\n\n%s is approved for the Vendor Village. Your booth now shows on the event page.\n\n%s",
+		ev.Name, v.Name, textAction)
+	if err := s.Email.SendEmail(email, subject, htmlBody, text); err != nil {
+		log.Printf("email: vendor approval to %s failed: %v", email, err)
+	}
 }

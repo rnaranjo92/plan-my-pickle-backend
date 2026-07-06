@@ -1038,6 +1038,11 @@ type Vendor struct {
 	ContactEmail string `json:"contactEmail,omitempty"`
 	ContactPhone string `json:"contactPhone,omitempty"`
 	Pitch        string `json:"pitch,omitempty"`
+	// Booth fee (organizer-set) + its payment state. PayToken gates the public
+	// pay page (vendors have no accounts) — owner-only, stripped publicly.
+	FeeCents      int    `json:"feeCents"`
+	PaymentStatus string `json:"paymentStatus,omitempty"`
+	PayToken      string `json:"payToken,omitempty"`
 }
 
 // VendorApplyRequest is the public "Become a vendor" application form.
@@ -1060,6 +1065,7 @@ type VendorRequest struct {
 	LinkURL   string `json:"linkUrl"`
 	LogoURL   string `json:"logoUrl"`
 	SortOrder int    `json:"sortOrder"`
+	FeeCents  int    `json:"feeCents"`
 }
 
 // VendorNotifyRequest is the organizer-composed push about a vendor deal.

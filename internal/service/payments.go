@@ -247,6 +247,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.EventPassID != "" {
 			return s.grantEventPass(evt.EventPassID)
 		}
+		// A vendor booth fee — confirm the booth.
+		if evt.VendorID != "" {
+			return s.MarkVendorPaid(evt.VendorID)
+		}
 		if evt.RegistrationID == "" {
 			return nil // nothing to attribute the payment to
 		}

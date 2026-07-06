@@ -1,10 +1,12 @@
 package service
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
@@ -33,6 +35,14 @@ func mapVendor(r map[string]any) model.Vendor {
 		ContactEmail: asStr(r, "contact_email"),
 		ContactPhone: asStr(r, "contact_phone"),
 		Pitch:        asStr(r, "pitch"),
+		FeeCents:     asInt(r, "fee_cents"),
+		PaymentStatus: func() string {
+			if ps := asStr(r, "payment_status"); ps != "" {
+				return ps
+			}
+			return "unpaid"
+		}(),
+		PayToken: asStr(r, "pay_token"),
 	}
 }
 
@@ -53,9 +63,9 @@ func (s *Service) ListVendors(eventID string, includeAll bool) ([]model.Vendor, 
 			if v.Status != "approved" {
 				continue
 			}
-			// PII-free public shape: applicants' contact details are for the
-			// organizer only.
-			v.ContactEmail, v.ContactPhone, v.Pitch = "", "", ""
+			// PII-free public shape: applicants' contact details and the pay
+			// token are for the organizer only.
+			v.ContactEmail, v.ContactPhone, v.Pitch, v.PayToken = "", "", "", ""
 		}
 		out = append(out, v)
 	}
@@ -121,6 +131,9 @@ func vendorRow(req model.VendorRequest) (map[string]any, error) {
 	if name == "" {
 		return nil, errors.New("vendor name is required")
 	}
+	if req.FeeCents < 0 || req.FeeCents > 1_000_000 {
+		return nil, errors.New("booth fee must be between $0 and $10,000")
+	}
 	return map[string]any{
 		"name":       name,
 		"tagline":    strings.TrimSpace(req.Tagline),
@@ -129,6 +142,7 @@ func vendorRow(req model.VendorRequest) (map[string]any, error) {
 		"link_url":   strings.TrimSpace(req.LinkURL),
 		"logo_url":   strings.TrimSpace(req.LogoURL),
 		"sort_order": req.SortOrder,
+		"fee_cents":  req.FeeCents,
 	}, nil
 }
 
@@ -219,4 +233,146 @@ func (s *Service) NotifyVendorDeal(vendorID string, req model.VendorNotifyReques
 		fmt.Sprintf("%s: %s", vendor.Name, msg), vendorID)
 
 	return len(userIDs), nil
+}
+
+// AuthorizeVendorAction verifies a public pay-page caller: the vendor's
+// pay_token (vendors have no accounts) OR the event owner's JWT. Mirrors
+// AuthorizeRegistrationAction's IDOR stance.
+func (s *Service) AuthorizeVendorAction(vendorID, token, callerUserID string) (bool, error) {
+	v, err := s.sb.SelectOne("vendors",
+		"id=eq."+store.Q(vendorID)+"&select=event_id,pay_token")
+	if err != nil {
+		return false, err
+	}
+	if v == nil {
+		return false, ErrNotFound
+	}
+	if token != "" && subtle.ConstantTimeCompare(
+		[]byte(token), []byte(asStr(v, "pay_token"))) == 1 {
+		return true, nil
+	}
+	if callerUserID != "" {
+		if owner, err := s.OwnerOf("event", asStr(v, "event_id")); err == nil &&
+			owner == callerUserID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// VendorPayInfo is the public pay page's view of a booth fee (token-gated).
+type VendorPayInfo struct {
+	VendorName    string `json:"vendorName"`
+	EventName     string `json:"eventName"`
+	FeeCents      int    `json:"feeCents"`
+	Currency      string `json:"currency"`
+	PaymentStatus string `json:"paymentStatus"`
+	Status        string `json:"status"`
+}
+
+// GetVendorPayInfo returns what the pay page shows (authorization happens at
+// the handler via AuthorizeVendorAction).
+func (s *Service) GetVendorPayInfo(vendorID string) (VendorPayInfo, error) {
+	v, err := s.sb.SelectOne("vendors", "id=eq."+store.Q(vendorID)+"&select=*")
+	if err != nil {
+		return VendorPayInfo{}, err
+	}
+	if v == nil {
+		return VendorPayInfo{}, ErrNotFound
+	}
+	vendor := mapVendor(v)
+	info := VendorPayInfo{
+		VendorName:    vendor.Name,
+		FeeCents:      vendor.FeeCents,
+		Currency:      "usd",
+		PaymentStatus: vendor.PaymentStatus,
+		Status:        vendor.Status,
+	}
+	if ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(vendor.EventID)+"&select=name,currency"); err == nil && ev != nil {
+		info.EventName = asStr(ev, "name")
+		if c := strings.ToLower(asStr(ev, "currency")); c != "" {
+			info.Currency = c
+		}
+	}
+	return info, nil
+}
+
+// CreateVendorCheckoutSession opens a Stripe Checkout for a vendor's booth fee
+// — the same Connect destination charge as entry fees: funds settle to the
+// organizer's connected account, the platform takes min(5%, $5).
+func (s *Service) CreateVendorCheckoutSession(vendorID, successURL, cancelURL string) (string, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	v, err := s.sb.SelectOne("vendors", "id=eq."+store.Q(vendorID)+"&select=*")
+	if err != nil {
+		return "", err
+	}
+	if v == nil {
+		return "", ErrNotFound
+	}
+	vendor := mapVendor(v)
+	if vendor.Status != "approved" {
+		return "", errors.New("this application hasn't been approved yet")
+	}
+	if vendor.PaymentStatus == "paid" {
+		return "", errors.New("this booth fee is already paid")
+	}
+	if vendor.FeeCents <= 0 {
+		return "", errors.New("no booth fee is set for this vendor")
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(vendor.EventID)+"&select=name,currency,owner_id")
+	if err != nil {
+		return "", err
+	}
+	if ev == nil {
+		return "", ErrNotFound
+	}
+	currency := strings.ToLower(asStr(ev, "currency"))
+	if currency == "" {
+		currency = "usd"
+	}
+	orow, err := s.organizerPaymentRow(asStr(ev, "owner_id"))
+	if err != nil {
+		return "", err
+	}
+	if orow == nil || asStr(orow, "stripe_account_id") == "" ||
+		!asBool(orow, "charges_enabled") {
+		return "", ErrOrganizerNotConnected
+	}
+	name := strings.TrimSpace(asStr(ev, "name"))
+	if name == "" {
+		name = "Tournament"
+	}
+	return gw.CreateCheckoutSession(gateway.CheckoutParams{
+		VendorID:            vendorID,
+		AmountCents:         vendor.FeeCents,
+		Currency:            currency,
+		ProductName:         name + " — vendor booth (" + vendor.Name + ")",
+		DestinationAccount:  asStr(orow, "stripe_account_id"),
+		ApplicationFeeCents: platformFeeCents(vendor.FeeCents),
+		SuccessURL:          successURL,
+		CancelURL:           cancelURL,
+	})
+}
+
+// MarkVendorPaid flips a vendor's booth fee to paid (Stripe webhook, or the
+// organizer's manual confirm for cash/Zelle) and posts the confirmation on the
+// event feed.
+func (s *Service) MarkVendorPaid(vendorID string) error {
+	upd, err := s.sb.Update("vendors", "id=eq."+store.Q(vendorID),
+		map[string]any{"payment_status": "paid"})
+	if err != nil {
+		return err
+	}
+	if len(upd) == 0 {
+		return ErrNotFound
+	}
+	v := mapVendor(upd[0])
+	s.AddFeedItem(v.EventID, "announcement",
+		v.Name+" is confirmed for the Vendor Village!", vendorID)
+	return nil
 }

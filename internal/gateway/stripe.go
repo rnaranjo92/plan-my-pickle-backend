@@ -149,6 +149,9 @@ func (g *StripeGateway) RetrieveAccount(accountID string) (ConnectAccount, error
 // connected account, ApplicationFeeCents is the platform's cut.
 type CheckoutParams struct {
 	RegistrationID      string
+	// VendorID, when set (booth-fee checkout), rides in metadata instead of a
+	// registration id so the webhook marks the vendor paid.
+	VendorID            string
 	AmountCents         int
 	Currency            string
 	ProductName         string
@@ -202,9 +205,14 @@ func (g *StripeGateway) CreateCheckoutSession(p CheckoutParams) (string, error) 
 		params.PaymentIntentData.ApplicationFeeAmount = stripe.Int64(int64(p.ApplicationFeeCents))
 	}
 	params.Context = ctx
-	params.AddMetadata("registration_id", p.RegistrationID)
-	// Also stamp the PaymentIntent so the metadata survives onto the charge.
-	params.PaymentIntentData.AddMetadata("registration_id", p.RegistrationID)
+	if p.VendorID != "" {
+		params.AddMetadata("vendor_id", p.VendorID)
+		params.PaymentIntentData.AddMetadata("vendor_id", p.VendorID)
+	} else {
+		params.AddMetadata("registration_id", p.RegistrationID)
+		// Also stamp the PaymentIntent so the metadata survives onto the charge.
+		params.PaymentIntentData.AddMetadata("registration_id", p.RegistrationID)
+	}
 
 	sess, err := g.client.sessions.New(params)
 	if err != nil {
@@ -300,6 +308,8 @@ type WebhookEvent struct {
 	RegistrationID string
 	// checkout.session.completed (mode=payment) — a one-time per-event Premium pass.
 	EventPassID string
+	// checkout.session.completed (mode=payment) — a vendor booth fee.
+	VendorID string
 	// account.updated
 	AccountID      string
 	ChargesEnabled bool
@@ -358,6 +368,7 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			Type:           string(event.Type),
 			RegistrationID: sess.Metadata["registration_id"],
 			EventPassID:    sess.Metadata["event_pass_id"],
+			VendorID:       sess.Metadata["vendor_id"],
 		}, nil
 	case stripe.EventTypeCustomerSubscriptionUpdated,
 		stripe.EventTypeCustomerSubscriptionDeleted:

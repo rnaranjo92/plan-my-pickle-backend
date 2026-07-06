@@ -275,6 +275,12 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /vendors/{id}", s.ownerOnly("vendor", "id", s.deleteVendor))
 	mux.HandleFunc("POST /vendors/{id}/notify", s.ownerOnly("vendor", "id", s.notifyVendorDeal))
 	mux.HandleFunc("POST /vendors/{id}/status", s.ownerOnly("vendor", "id", s.setVendorStatus))
+	// Booth-fee self-service (vendors have no accounts — pay_token gates, like
+	// registrations' check_in_token): the pay page's info read + Stripe checkout.
+	mux.HandleFunc("GET /vendors/{id}/pay-info", optionalAuth(s.vendorPayInfo))
+	mux.HandleFunc("POST /vendors/{id}/checkout", optionalAuth(s.vendorCheckout))
+	// Organizer confirms an off-platform booth payment (cash / Zelle).
+	mux.HandleFunc("POST /vendors/{id}/mark-paid", s.ownerOnly("vendor", "id", s.vendorMarkPaid))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
 	mux.HandleFunc("GET /events/{id}/checklist", s.ownerOnly("event", "id", s.checklist))
@@ -1238,7 +1244,9 @@ func (s *Server) applyVendor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, v)
 }
 
-// setVendorStatus approves/rejects a vendor application (owner-only).
+// setVendorStatus approves/rejects a vendor application (owner-only). An
+// approval emails the applicant (best-effort) — with the booth-fee pay link
+// when a fee is set.
 func (s *Server) setVendorStatus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status string `json:"status"`
@@ -1251,7 +1259,82 @@ func (s *Server) setVendorStatus(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	if req.Status == "approved" {
+		go s.svc.SendVendorApprovedEmail(v)
+	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+// authorizeVendor gates the public booth-fee endpoints against IDOR: per-vendor
+// rate limit, then the vendor's pay_token (?t= / X-Vendor-Token) or the event
+// owner's JWT.
+func (s *Server) authorizeVendor(w http.ResponseWriter, r *http.Request) bool {
+	vendorID := r.PathValue("id")
+	if !s.regLimiter.allow("vendor-action:" + vendorID) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many requests right now, try again shortly"))
+		return false
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("t"))
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("X-Vendor-Token"))
+	}
+	allowed, err := s.svc.AuthorizeVendorAction(vendorID, token, userID(r))
+	if errors.Is(err, service.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return false
+	}
+	if !allowed {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return false
+	}
+	return true
+}
+
+// vendorPayInfo returns what the booth-fee pay page shows (token-gated).
+func (s *Server) vendorPayInfo(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeVendor(w, r) {
+		return
+	}
+	info, err := s.svc.GetVendorPayInfo(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// vendorCheckout opens a Stripe Checkout for the booth fee (token-gated) and
+// returns its URL.
+func (s *Server) vendorCheckout(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeVendor(w, r) {
+		return
+	}
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.CreateVendorCheckoutSession(r.PathValue("id"), req.SuccessURL, req.CancelURL)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// vendorMarkPaid records an off-platform booth payment (owner-only).
+func (s *Server) vendorMarkPaid(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.MarkVendorPaid(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"paid": true})
 }
 
 // createVendor adds a Vendor Village entry to the event (owner-only).

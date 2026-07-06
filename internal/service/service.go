@@ -9037,11 +9037,17 @@ func (s *Service) seedScoreConfirm(ownerID string) (string, error) {
 	}
 	bracketID := asStr(brRows[0], "id")
 	for i, n := range []string{"Alex Tester", "Blake Tester", "Casey Tester", "Drew Tester"} {
+		// Kim's real number rides on player 1 so the SMS legs work out of the
+		// box; the rest get placeholders (edit one to a second real number for
+		// the full report -> confirm two-phone dance).
+		phone := fmt.Sprintf("+1555010%04d", 100+i)
+		if i == 0 {
+			phone = "+16508085145"
+		}
 		if _, err := s.RegisterPlayer(eventID, model.RegisterRequest{
 			FullName:  n,
 			BracketID: bracketID,
-			// Placeholder distinct phones (edit two to real numbers to test SMS).
-			Phone: fmt.Sprintf("+1555010%04d", 100+i),
+			Phone:     phone,
 		}, ""); err != nil {
 			return eventID, err
 		}

@@ -1421,6 +1421,11 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
+	case "scoreconfirm":
+		// Player Score Confirm test bed: 4-player singles RR, feature ON,
+		// 3-min auto-confirm, premium_pass set. Add real phones to two
+		// players, start their match, and walk report -> confirm by text.
+		return s.seedScoreConfirm(ownerID)
 	case "mixedmulti150":
 		// Multi-division mixed doubles, own builder (3 brackets).
 		return s.seedMultiDivMixed(ownerID, "single_elim", "single-elim")
@@ -8989,4 +8994,60 @@ func strp(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+
+// seedScoreConfirm stands up the "Player Score Confirm" test bed: a 4-player
+// SINGLES round-robin with player_scoring ON (3-minute auto-confirm) and
+// premium_pass set so the Premium gate always passes for the test. Flow to
+// test: edit two players' phones to real numbers (Players tab), start their
+// match (both get the start SMS with their personal report links), the winner
+// reports, the loser confirms/disputes — or waits out the auto-confirm.
+func (s *Service) seedScoreConfirm(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "TEST · Score Confirm · singles", "format": "singles",
+		"partner_mode": "na", "scoring_mode": "wins",
+		"tournament_format": "round_robin", "num_courts": 2,
+		"points_to_win": 11, "win_by": 2, "best_of": 1,
+		"dupr_sanctioned": false, "status": "open",
+		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		// The feature under test:
+		"player_scoring": true, "score_confirm_minutes": 3,
+		// Guarantee the Premium gate passes regardless of subscription state.
+		"premium_pass": true,
+		// Started an hour ago so the LIVE gate is already open.
+		"starts_at": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+		"description": "Score-confirm test bed: put YOUR real phone numbers on " +
+			"two players (Players tab), start their match, then report the " +
+			"score from the winner's texted link and confirm from the loser's.",
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed scoreconfirm event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 2); err != nil {
+		return eventID, err
+	}
+	brRows, err := s.sb.Insert("brackets", map[string]any{
+		"event_id": eventID, "name": "Open", "division_type": "singles",
+		"sort_order": 0,
+	})
+	if err != nil || len(brRows) == 0 {
+		return eventID, fmt.Errorf("seed scoreconfirm bracket: %w", err)
+	}
+	bracketID := asStr(brRows[0], "id")
+	for i, n := range []string{"Alex Tester", "Blake Tester", "Casey Tester", "Drew Tester"} {
+		if _, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+			FullName:  n,
+			BracketID: bracketID,
+			// Placeholder distinct phones (edit two to real numbers to test SMS).
+			Phone: fmt.Sprintf("+1555010%04d", 100+i),
+		}, ""); err != nil {
+			return eventID, err
+		}
+	}
+	if _, err := s.GenerateSchedule(eventID, true, true); err != nil {
+		return eventID, err
+	}
+	return eventID, nil
 }

@@ -6555,31 +6555,41 @@ func (s *Service) ChampionFeedText(matchID string) (eventID, text string) {
 		m.Status != "completed" || m.BracketGroup != "" {
 		return "", ""
 	}
-	if m.BracketTier != "" && m.BracketTier != "main" {
+	isGrandFinal := m.BracketTier == "grand_final"
+	if m.BracketTier != "" && m.BracketTier != "main" && !isGrandFinal {
 		return "", ""
 	}
 	if m.BracketSlot == nil || *m.BracketSlot != 0 || m.BracketRound == nil {
 		return "", ""
 	}
-	// Confirm it's the FINAL round of this bracket's main tier (not an early slot-0).
-	rows, err := s.sb.SelectAll("matches",
-		"bracket_id=eq."+store.Q(*m.BracketID)+
-			"&stage=eq.bracket&select=bracket_round,bracket_tier")
-	if err != nil {
-		return "", ""
-	}
-	maxRound := 0
-	for _, r := range rows {
-		t := asStr(r, "bracket_tier")
-		if t != "" && t != "main" {
-			continue
+	if isGrandFinal {
+		// Double-elim decider: game 1's team 1 is the undefeated WB champion —
+		// their win ends it. The LB champion winning game 1 forces the reset
+		// (round 2), whose winner is champion outright (resolveGrandFinal).
+		if *m.BracketRound == 1 && *m.WinningTeam != 1 {
+			return "", ""
 		}
-		if rr := asInt(r, "bracket_round"); rr > maxRound {
-			maxRound = rr
+	} else {
+		// Confirm it's the FINAL round of this bracket's main tier (not an early slot-0).
+		rows, err := s.sb.SelectAll("matches",
+			"bracket_id=eq."+store.Q(*m.BracketID)+
+				"&stage=eq.bracket&select=bracket_round,bracket_tier")
+		if err != nil {
+			return "", ""
 		}
-	}
-	if *m.BracketRound != maxRound {
-		return "", ""
+		maxRound := 0
+		for _, r := range rows {
+			t := asStr(r, "bracket_tier")
+			if t != "" && t != "main" {
+				continue
+			}
+			if rr := asInt(r, "bracket_round"); rr > maxRound {
+				maxRound = rr
+			}
+		}
+		if *m.BracketRound != maxRound {
+			return "", ""
+		}
 	}
 	// Winner (pair) name + division name.
 	winner := "The champions"
@@ -8997,7 +9007,6 @@ func strp(s string) *string {
 	}
 	return &s
 }
-
 
 // seedScoreConfirm stands up the "Player Score Confirm" test bed: a 4-player
 // SINGLES round-robin with player_scoring ON (3-minute auto-confirm) and

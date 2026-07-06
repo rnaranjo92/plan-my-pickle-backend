@@ -357,6 +357,9 @@ type EventTeam struct {
 	BracketID *string      `json:"bracketId,omitempty"`
 	Name      string       `json:"name"`
 	Seed      *int         `json:"seed,omitempty"`
+	// BannerURL is the team's custom banner (Manage Teams upload) — shown on
+	// tie cards in Live scoring, Standings, and the Live TV board.
+	BannerURL string       `json:"bannerUrl,omitempty"`
 	Members   []TeamMember `json:"members,omitempty"`
 }
 
@@ -413,6 +416,7 @@ type SetLineupRequest struct {
 type TeamEventStanding struct {
 	TeamID        string `json:"teamId"`
 	Name          string `json:"name"`
+	BannerURL     string `json:"bannerUrl,omitempty"`
 	TiesWon       int    `json:"tiesWon"`
 	TiesLost      int    `json:"tiesLost"`
 	LinesWon      int    `json:"linesWon"`

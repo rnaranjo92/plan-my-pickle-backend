@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"sort"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -25,9 +26,10 @@ var tieLineOrder = []string{"wd", "md", "mx1", "mx2"}
 
 func mapEventTeam(m map[string]any) model.EventTeam {
 	t := model.EventTeam{
-		ID:      asStr(m, "id"),
-		EventID: asStr(m, "event_id"),
-		Name:    asStr(m, "name"),
+		ID:        asStr(m, "id"),
+		EventID:   asStr(m, "event_id"),
+		Name:      asStr(m, "name"),
+		BannerURL: asStr(m, "banner_url"),
 	}
 	if b := asStr(m, "bracket_id"); b != "" {
 		t.BracketID = &b
@@ -41,8 +43,8 @@ func mapEventTeam(m map[string]any) model.EventTeam {
 
 func mapTeamMember(m map[string]any) model.TeamMember {
 	tm := model.TeamMember{
-		ID:       asStr(m, "id"),
-		TeamID:   asStr(m, "team_id"),
+		ID:        asStr(m, "id"),
+		TeamID:    asStr(m, "team_id"),
 		FullName:  asStr(m, "full_name"),
 		Gender:    asStr(m, "gender"),
 		CheckedIn: asBool(m, "checked_in"),
@@ -1053,7 +1055,7 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 	}
 	st := map[string]*model.TeamEventStanding{}
 	for _, t := range teams {
-		st[t.ID] = &model.TeamEventStanding{TeamID: t.ID, Name: t.Name}
+		st[t.ID] = &model.TeamEventStanding{TeamID: t.ID, Name: t.Name, BannerURL: t.BannerURL}
 	}
 	h2h := map[string]bool{} // h2h[winnerID+"|"+loserID] = true (pool ties)
 	for _, tie := range ties {
@@ -1118,4 +1120,34 @@ func (s *Service) TeamEventStandings(eventID string) ([]model.TeamEventStanding,
 		return (a.PointsFor - a.PointsAgainst) > (b.PointsFor - b.PointsAgainst)
 	})
 	return out, nil
+}
+
+// SetTeamBanner uploads a team's custom banner (owner-gated at the handler)
+// and stores its public URL — shown on tie cards, standings, and the TV board.
+func (s *Service) SetTeamBanner(teamID, contentType string, data []byte) (string, error) {
+	var ext string
+	switch contentType {
+	case "image/jpeg", "image/jpg":
+		contentType, ext = "image/jpeg", "jpg"
+	case "image/png":
+		ext = "png"
+	default:
+		return "", errors.New("banner must be a JPEG or PNG")
+	}
+	if len(data) == 0 {
+		return "", errors.New("empty banner")
+	}
+	if len(data) > 5*1024*1024 {
+		return "", errors.New("banner too large (max 5 MB)")
+	}
+	url, err := s.sb.StorageUpload("avatars", "team-"+teamID+"."+ext, contentType, data)
+	if err != nil {
+		return "", err
+	}
+	url = fmt.Sprintf("%s?v=%08x", url, crc32.ChecksumIEEE(data))
+	if _, err := s.sb.Update("event_teams", "id=eq."+store.Q(teamID),
+		map[string]any{"banner_url": url}); err != nil {
+		return "", err
+	}
+	return url, nil
 }

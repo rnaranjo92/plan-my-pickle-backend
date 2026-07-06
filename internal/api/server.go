@@ -287,6 +287,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Tap-through counter (public, best-effort) + court sponsors for the board.
 	mux.HandleFunc("POST /vendors/{id}/click", s.vendorClick)
 	mux.HandleFunc("GET /events/{id}/court-sponsors", s.courtSponsors)
+	// Team banner upload (MLP events) — owner-only via the team's event.
+	mux.HandleFunc("POST /teams/{id}/banner", s.ownerOnly("team", "id", s.uploadTeamBanner))
 
 	// "Player Score Confirm" (Premium add-on): participants act via their own
 	// registration check_in_token (?t=) — winner reports, loser confirms or
@@ -1712,6 +1714,21 @@ func (s *Server) myFollowers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// uploadTeamBanner uploads an MLP team's banner (owner-only).
+func (s *Server) uploadTeamBanner(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	url, err := s.svc.SetTeamBanner(r.PathValue("id"), r.Header.Get("Content-Type"), data)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"bannerUrl": url})
 }
 
 // uploadClubLogo uploads a club logo (owner-only — enforced in the service).

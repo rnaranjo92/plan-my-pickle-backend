@@ -25,11 +25,13 @@ import (
 // ErrScoreReportExists means this match already has a report in flight.
 var ErrScoreReportExists = errors.New("a score was already reported for this match — confirm or dispute it instead")
 
-// scoreParticipant resolves a registration token to the caller's team on a
-// match. Returns the team (1/2), the event id, and the caller's player id.
-func (s *Service) scoreParticipant(matchID, token string) (int, string, string, error) {
+// scoreParticipant resolves the caller to their team on a match — via their
+// registration token (SMS links, no account needed) OR their signed-in user
+// id (the in-app Report/Confirm button; the linked players row identifies
+// them). Returns the team (1/2), the event id, and the caller's player id.
+func (s *Service) scoreParticipant(matchID, token, callerUserID string) (int, string, string, error) {
 	token = strings.TrimSpace(token)
-	if token == "" {
+	if token == "" && strings.TrimSpace(callerUserID) == "" {
 		return 0, "", "", errors.New("missing link token")
 	}
 	m, err := s.sb.SelectOne("matches",
@@ -41,16 +43,31 @@ func (s *Service) scoreParticipant(matchID, token string) (int, string, string, 
 		return 0, "", "", ErrNotFound
 	}
 	eventID := asStr(m, "event_id")
-	reg, err := s.sb.SelectOne("registrations",
-		"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+
-			"&select=player_id")
-	if err != nil {
-		return 0, "", "", err
+	var playerID string
+	if token != "" {
+		reg, err := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+
+				"&select=player_id")
+		if err != nil {
+			return 0, "", "", err
+		}
+		if reg == nil {
+			return 0, "", "", errors.New("this link doesn't match a player in this event")
+		}
+		playerID = asStr(reg, "player_id")
+	} else {
+		// Signed-in path: the caller's linked players row must be registered
+		// in this event.
+		pl, err := s.sb.SelectOne("players",
+			"user_id=eq."+store.Q(callerUserID)+"&select=id")
+		if err != nil {
+			return 0, "", "", err
+		}
+		if pl == nil {
+			return 0, "", "", errors.New("your account isn't linked to a player in this event")
+		}
+		playerID = asStr(pl, "id")
 	}
-	if reg == nil {
-		return 0, "", "", errors.New("this link doesn't match a player in this event")
-	}
-	playerID := asStr(reg, "player_id")
 	parts, err := s.sb.Select("match_participants",
 		"match_id=eq."+store.Q(matchID)+"&player_id=eq."+store.Q(playerID)+"&select=team")
 	if err != nil {
@@ -95,8 +112,8 @@ type ScoreReportState struct {
 }
 
 // GetScoreReportState returns the page state for a participant (token-gated).
-func (s *Service) GetScoreReportState(matchID, token string) (ScoreReportState, error) {
-	team, eventID, _, err := s.scoreParticipant(matchID, token)
+func (s *Service) GetScoreReportState(matchID, token, callerUserID string) (ScoreReportState, error) {
+	team, eventID, _, err := s.scoreParticipant(matchID, token, callerUserID)
 	if err != nil {
 		return ScoreReportState{}, err
 	}
@@ -143,8 +160,8 @@ func (s *Service) GetScoreReportState(matchID, token string) (ScoreReportState, 
 
 // ReportScore records the winning side's score and notifies the losing side
 // to confirm or dispute.
-func (s *Service) ReportScore(matchID, token string, t1, t2 int) (ScoreReportState, error) {
-	team, eventID, _, err := s.scoreParticipant(matchID, token)
+func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (ScoreReportState, error) {
+	team, eventID, _, err := s.scoreParticipant(matchID, token, callerUserID)
 	if err != nil {
 		return ScoreReportState{}, err
 	}
@@ -194,7 +211,7 @@ func (s *Service) ReportScore(matchID, token string, t1, t2 int) (ScoreReportSta
 	// Notify the LOSING side to confirm/dispute — each player gets their own
 	// token link. Best-effort; the auto-confirm timer covers a missed message.
 	go s.notifyScoreConfirm(eventID, matchID, 3-team, t1, t2, minutes)
-	return s.GetScoreReportState(matchID, token)
+	return s.GetScoreReportState(matchID, token, callerUserID)
 }
 
 // notifyScoreConfirm texts + pushes the given team's players their personal
@@ -274,8 +291,8 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 
 // ConfirmScore finalizes a pending report (opposite-side participant only) via
 // the SAME RecordScore path the organizer uses (bracket advance, DUPR queue…).
-func (s *Service) ConfirmScore(matchID, token string) (ScoreReportState, error) {
-	team, _, _, err := s.scoreParticipant(matchID, token)
+func (s *Service) ConfirmScore(matchID, token, callerUserID string) (ScoreReportState, error) {
+	team, _, _, err := s.scoreParticipant(matchID, token, callerUserID)
 	if err != nil {
 		return ScoreReportState{}, err
 	}
@@ -296,13 +313,13 @@ func (s *Service) ConfirmScore(matchID, token string) (ScoreReportState, error) 
 	if err := s.finalizeScoreReport(rep, "confirmed"); err != nil {
 		return ScoreReportState{}, err
 	}
-	return s.GetScoreReportState(matchID, token)
+	return s.GetScoreReportState(matchID, token, callerUserID)
 }
 
 // DisputeScore freezes a pending report and flags the organizer (the bracket
 // does not advance; the organizer's console entry resolves it).
-func (s *Service) DisputeScore(matchID, token, note string) (ScoreReportState, error) {
-	team, eventID, _, err := s.scoreParticipant(matchID, token)
+func (s *Service) DisputeScore(matchID, token, note, callerUserID string) (ScoreReportState, error) {
+	team, eventID, _, err := s.scoreParticipant(matchID, token, callerUserID)
 	if err != nil {
 		return ScoreReportState{}, err
 	}
@@ -328,7 +345,7 @@ func (s *Service) DisputeScore(matchID, token, note string) (ScoreReportState, e
 			"A reported score was disputed — enter the final score in the app to resolve it.",
 			"https://app.planmypickle.com/?e="+eventID)
 	}
-	return s.GetScoreReportState(matchID, token)
+	return s.GetScoreReportState(matchID, token, callerUserID)
 }
 
 // finalizeScoreReport records the reported score through RecordScore and marks

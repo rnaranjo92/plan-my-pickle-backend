@@ -291,10 +291,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// "Player Score Confirm" (Premium add-on): participants act via their own
 	// registration check_in_token (?t=) — winner reports, loser confirms or
 	// disputes; the organizer's score list powers match-card chips.
-	mux.HandleFunc("GET /matches/{id}/score-report", s.scoreReportState)
-	mux.HandleFunc("POST /matches/{id}/score-report", s.scoreReport)
-	mux.HandleFunc("POST /matches/{id}/score-report/confirm", s.scoreConfirm)
-	mux.HandleFunc("POST /matches/{id}/score-report/dispute", s.scoreDispute)
+	mux.HandleFunc("GET /matches/{id}/score-report", optionalAuth(s.scoreReportState))
+	mux.HandleFunc("POST /matches/{id}/score-report", optionalAuth(s.scoreReport))
+	mux.HandleFunc("POST /matches/{id}/score-report/confirm", optionalAuth(s.scoreConfirm))
+	mux.HandleFunc("POST /matches/{id}/score-report/dispute", optionalAuth(s.scoreDispute))
 	mux.HandleFunc("GET /events/{id}/score-reports", s.ownerOnly("event", "id", s.listScoreReports))
 	mux.HandleFunc("POST /events/{id}/finance", s.ownerOnly("event", "id", s.addFinanceEntry))
 	mux.HandleFunc("DELETE /finance/{id}", s.ownerOnly("finance", "id", s.deleteFinanceEntry))
@@ -1445,7 +1445,7 @@ func (s *Server) scoreReportState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	st, err := s.svc.GetScoreReportState(r.PathValue("id"), token)
+	st, err := s.svc.GetScoreReportState(r.PathValue("id"), token, userID(r))
 	if err != nil {
 		status(w, err)
 		return
@@ -1466,7 +1466,7 @@ func (s *Server) scoreReport(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	st, err := s.svc.ReportScore(r.PathValue("id"), token, req.Team1Score, req.Team2Score)
+	st, err := s.svc.ReportScore(r.PathValue("id"), token, userID(r), req.Team1Score, req.Team2Score)
 	if err != nil {
 		if errors.Is(err, service.ErrScoreReportExists) {
 			writeErr(w, http.StatusConflict, err)
@@ -1484,7 +1484,7 @@ func (s *Server) scoreConfirm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	st, err := s.svc.ConfirmScore(r.PathValue("id"), token)
+	st, err := s.svc.ConfirmScore(r.PathValue("id"), token, userID(r))
 	if err != nil {
 		status(w, err)
 		return
@@ -1504,7 +1504,7 @@ func (s *Server) scoreDispute(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	st, err := s.svc.DisputeScore(r.PathValue("id"), token, req.Note)
+	st, err := s.svc.DisputeScore(r.PathValue("id"), token, req.Note, userID(r))
 	if err != nil {
 		status(w, err)
 		return

@@ -767,16 +767,18 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+"&order=created_at.asc"+
-			"&select=checked_in,player:players!player_id(id,full_name),bracket:brackets!bracket_id(name)")
+			"&select=checked_in,player:players!player_id(id,full_name,user_id),bracket:brackets!bracket_id(name)")
 	if err != nil {
 		return nil, err
 	}
 	out := make([]model.RosterEntry, 0, len(rows))
+	uids := make([]string, 0, len(rows))
 	for _, r := range rows {
-		name, pid := "", ""
+		name, pid, uid := "", "", ""
 		if p := asMap(r, "player"); p != nil {
 			name = strings.TrimSpace(asStr(p, "full_name"))
 			pid = asStr(p, "id")
+			uid = asStr(p, "user_id")
 		}
 		if name == "" {
 			continue
@@ -791,6 +793,15 @@ func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 			Division:  div,
 			CheckedIn: asBool(r, "checked_in"),
 		})
+		uids = append(uids, uid)
+	}
+	// Roster avatars: batch-load linked accounts' profile photos (one query);
+	// name-only players fall back to initials in the UI.
+	photos := s.photosByUser(uids)
+	for i := range out {
+		if uids[i] != "" {
+			out[i].PhotoURL = photos[uids[i]]
+		}
 	}
 	return out, nil
 }

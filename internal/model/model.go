@@ -992,6 +992,9 @@ type RosterEntry struct {
 	FullName  string `json:"fullName"`
 	Division  string `json:"division,omitempty"`
 	CheckedIn bool   `json:"checkedIn"`
+	// PhotoURL is the linked account's profile photo (pmp_profiles); empty for
+	// name-only players — the UI falls back to initials.
+	PhotoURL string `json:"photoUrl,omitempty"`
 }
 
 // PlayerProfile is a PUBLIC player page: name + DUPR id/ratings (when the player

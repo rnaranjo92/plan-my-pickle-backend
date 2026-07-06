@@ -3531,6 +3531,101 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, 
 	return matchID, nil
 }
 
+// RemapCourt takes a court out of service mid-tournament: every UNPLAYED
+// (scheduled) game on court [from] moves to another court. When [to] > 0 the
+// games land on that specific court (a swap); otherwise they spread across the
+// event's other courts, always onto the court with the earliest free slot.
+// Moved games are APPENDED after each target court's last occupied slot, so
+// nothing double-books; live and completed games keep their court. Returns how
+// many games moved.
+func (s *Service) RemapCourt(eventID string, from, to int) (int, error) {
+	if from <= 0 {
+		return 0, errors.New("pick the court to take offline")
+	}
+	if from == to {
+		return 0, errors.New("that is the same court")
+	}
+	courts, err := s.sb.Select("courts",
+		"event_id=eq."+store.Q(eventID)+"&select=id,court_number&order=court_number")
+	if err != nil {
+		return 0, err
+	}
+	fromID := ""
+	type target struct {
+		id  string
+		num int
+	}
+	var targets []target
+	for _, c := range courts {
+		n := asInt(c, "court_number")
+		id := asStr(c, "id")
+		if n == from {
+			fromID = id
+			continue
+		}
+		if to > 0 && n != to {
+			continue
+		}
+		targets = append(targets, target{id: id, num: n})
+	}
+	if fromID == "" {
+		return 0, fmt.Errorf("court %d not found", from)
+	}
+	if len(targets) == 0 {
+		if to > 0 {
+			return 0, fmt.Errorf("court %d not found", to)
+		}
+		return 0, errors.New("no other court to move games to")
+	}
+	// The games to move, kept in their current time order.
+	moved, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(fromID)+
+			"&status=eq.scheduled&select=id,play_order&order=play_order")
+	if err != nil {
+		return 0, err
+	}
+	if len(moved) == 0 {
+		return 0, nil
+	}
+	// Each target's next free slot = one past its last occupied play_order
+	// (scheduled + live games both hold their slot).
+	ids := make([]string, len(targets))
+	next := map[string]int{}
+	for i, t := range targets {
+		ids[i] = t.id
+		next[t.id] = 0
+	}
+	occupied, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=in.("+strings.Join(ids, ",")+")"+
+			"&status=in.(scheduled,in_progress)&play_order=not.is.null&select=court_id,play_order")
+	if err != nil {
+		return 0, err
+	}
+	for _, r := range occupied {
+		cid := asStr(r, "court_id")
+		if po := asInt(r, "play_order"); po+1 > next[cid] {
+			next[cid] = po + 1
+		}
+	}
+	// Place each moved game on the target with the earliest free slot (ties →
+	// lowest court number), appending as we go — conflict-free by construction.
+	for _, m := range moved {
+		best := targets[0]
+		for _, t := range targets[1:] {
+			if next[t.id] < next[best.id] ||
+				(next[t.id] == next[best.id] && t.num < best.num) {
+				best = t
+			}
+		}
+		if _, err := s.sb.Update("matches", "id=eq."+store.Q(asStr(m, "id")),
+			map[string]any{"court_id": best.id, "play_order": next[best.id]}); err != nil {
+			return 0, err
+		}
+		next[best.id]++
+	}
+	return len(moved), nil
+}
+
 // ClearArrangement un-places every SCHEDULED game (keeping the matchups) so the
 // organizer can position them manually on the Board. court_id is the placement
 // FK (SetMatchCourt writes it; the DTO resolves courtNumber back from it) and

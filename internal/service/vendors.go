@@ -44,6 +44,7 @@ func mapVendor(r map[string]any) model.Vendor {
 		}(),
 		PayToken:     asStr(r, "pay_token"),
 		SponsorCourt: asInt(r, "sponsor_court"),
+		IsSponsor:    asBool(r, "is_sponsor"),
 		Clicks:       asInt(r, "clicks"),
 	}
 }
@@ -145,6 +146,7 @@ func vendorRow(req model.VendorRequest) (map[string]any, error) {
 		"logo_url":      strings.TrimSpace(req.LogoURL),
 		"sort_order":    req.SortOrder,
 		"fee_cents":     req.FeeCents,
+		"is_sponsor":    req.IsSponsor,
 		"sponsor_court": req.SponsorCourt,
 	}, nil
 }
@@ -351,14 +353,26 @@ func (s *Service) CreateVendorCheckoutSession(vendorID, successURL, cancelURL st
 		name = "Tournament"
 	}
 	return gw.CreateCheckoutSession(gateway.CheckoutParams{
-		VendorID:            vendorID,
-		AmountCents:         vendor.FeeCents,
-		Currency:            currency,
-		ProductName:         name + " — vendor booth (" + vendor.Name + ")",
-		DestinationAccount:  asStr(orow, "stripe_account_id"),
-		ApplicationFeeCents: platformFeeCents(vendor.FeeCents),
-		SuccessURL:          successURL,
-		CancelURL:           cancelURL,
+		VendorID:    vendorID,
+		AmountCents: vendor.FeeCents,
+		Currency:    currency,
+		ProductName: name + func() string {
+			if vendor.IsSponsor {
+				return " — event sponsorship (" + vendor.Name + ")"
+			}
+			return " — vendor booth (" + vendor.Name + ")"
+		}(),
+		DestinationAccount: asStr(orow, "stripe_account_id"),
+		// Sponsor slots are B2B — flat 10%, uncapped. Booth fees keep the
+		// player-fee formula min(5%, $5).
+		ApplicationFeeCents: func() int {
+			if vendor.IsSponsor {
+				return vendor.FeeCents / 10
+			}
+			return platformFeeCents(vendor.FeeCents)
+		}(),
+		SuccessURL: successURL,
+		CancelURL:  cancelURL,
 	})
 }
 

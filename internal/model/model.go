@@ -1093,7 +1093,10 @@ type Vendor struct {
 	// SponsorCourt: this vendor "presents" court N ("Court 3 · presented by X"
 	// on the board + court calls); 0 = none. Clicks counts card tap-throughs.
 	SponsorCourt int `json:"sponsorCourt"`
-	Clicks       int `json:"clicks"`
+	// IsSponsor marks a paid SPONSOR SLOT (organizer-sold): same Village rails,
+	// but its payment carries a flat 10% uncapped platform fee (B2B).
+	IsSponsor bool `json:"isSponsor,omitempty"`
+	Clicks    int  `json:"clicks"`
 }
 
 // VendorApplyRequest is the public "Become a vendor" application form.
@@ -1118,6 +1121,7 @@ type VendorRequest struct {
 	SortOrder    int    `json:"sortOrder"`
 	FeeCents     int    `json:"feeCents"`
 	SponsorCourt int    `json:"sponsorCourt"`
+	IsSponsor    bool   `json:"isSponsor"`
 }
 
 // VendorNotifyRequest is the organizer-composed push about a vendor deal.

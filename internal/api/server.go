@@ -56,6 +56,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
+	mux.HandleFunc("POST /me/profile", requireAuth(s.saveProfileDetails))
+	mux.HandleFunc("GET /partners", requireAuth(s.partnerDirectory))
 	mux.HandleFunc("POST /me/photo", requireAuth(s.uploadPhoto))
 	mux.HandleFunc("DELETE /me/photo", requireAuth(s.clearPhoto))
 	// DUPR account connection (SSO consent flow): the iframe URL, the callback
@@ -426,6 +428,40 @@ func (s *Server) clearPhoto(w http.ResponseWriter, r *http.Request) {
 }
 
 // myFeed returns the caller's cross-event activity stream (the NewsFeed tab).
+// saveProfileDetails stores the caller's partner-finder fields (gender/city/
+// seeking flag).
+func (s *Server) saveProfileDetails(w http.ResponseWriter, r *http.Request) {
+	var req model.ProfileDetailsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetMyProfileDetails(userID(r), req.Gender, req.City, req.SeekingPartner); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// partnerDirectory lists "looking for a partner" players (?gender=&city=&min=&max=).
+func (s *Server) partnerDirectory(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	parseF := func(k string) *float64 {
+		if v := strings.TrimSpace(q.Get(k)); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				return &f
+			}
+		}
+		return nil
+	}
+	res, err := s.svc.PartnerDirectory(userID(r), q.Get("gender"), q.Get("city"),
+		parseF("min"), parseF("max"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) myFeed(w http.ResponseWriter, r *http.Request) {
 	items, err := s.svc.MyFeed(userID(r))
 	if err != nil {

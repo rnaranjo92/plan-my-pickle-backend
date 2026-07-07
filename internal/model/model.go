@@ -1045,6 +1045,24 @@ type Profile struct {
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	SkillLevel *float64 `json:"skillLevel,omitempty"`
 	PhotoURL   string   `json:"photoUrl,omitempty"`
+	// Partner-finder fields (account-level, pmp_profiles).
+	Gender         string `json:"gender,omitempty"`
+	City           string `json:"city,omitempty"`
+	SeekingPartner bool   `json:"seekingPartner"`
+}
+
+// ProfileDetailsRequest saves the caller's partner-finder fields.
+type ProfileDetailsRequest struct {
+	Gender         string `json:"gender"`
+	City           string `json:"city"`
+	SeekingPartner bool   `json:"seekingPartner"`
+}
+
+// PartnerResult is one find-a-partner directory row.
+type PartnerResult struct {
+	UserSearchResult
+	Gender string `json:"gender,omitempty"`
+	City   string `json:"city,omitempty"`
 }
 
 // Vendor is one Vendor Village entry on an event — a booth, food truck, or

@@ -6218,6 +6218,62 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		out = append(out, fi)
 		itemIDs = append(itemIDs, fi.ID)
 	}
+	// Activity from people I follow: their community posts and the latest items
+	// from events they play in — the "wall" half of the NewsFeed (top 10 each,
+	// merged into the same newest-first stream below).
+	if followees, err := s.followEdges(userID, "follower_id", "followee_id"); err == nil && len(followees) > 0 {
+		if crows, err := s.sb.Select("feed_items",
+			"author_id="+store.In(followees)+"&select=*&order=created_at.desc&limit=10"); err == nil {
+			for _, r := range crows {
+				fi := mapFeedItem(r)
+				fi.ReactionCounts = map[string]int{}
+				fi.MyReactions = []string{}
+				out = append(out, fi)
+			}
+		}
+		if fpls, err := s.sb.Select("players",
+			"user_id="+store.In(followees)+"&select=id"); err == nil && len(fpls) > 0 {
+			fpids := make([]string, 0, len(fpls))
+			for _, p := range fpls {
+				if id := asStr(p, "id"); id != "" {
+					fpids = append(fpids, id)
+				}
+			}
+			fEvents := map[string]struct{}{}
+			if regs, err := s.sb.Select("registrations",
+				"player_id="+store.In(fpids)+"&select=event_id&order=created_at.desc&limit=100"); err == nil {
+				for _, r := range regs {
+					if id := asStr(r, "event_id"); id != "" {
+						if _, mine := idSet[id]; !mine { // my events are already in
+							fEvents[id] = struct{}{}
+						}
+					}
+				}
+			}
+			if len(fEvents) > 0 {
+				fids := make([]string, 0, len(fEvents))
+				for id := range fEvents {
+					fids = append(fids, id)
+				}
+				fIn := store.In(fids)
+				if rows, err := s.sb.Select("events", "id="+fIn+"&select=id,name"); err == nil {
+					for _, r := range rows {
+						names[asStr(r, "id")] = asStr(r, "name")
+					}
+				}
+				if frows, err := s.sb.Select("feed_items",
+					"event_id="+fIn+"&select=*&order=created_at.desc&limit=10"); err == nil {
+					for _, r := range frows {
+						fi := mapFeedItem(r)
+						fi.ReactionCounts = map[string]int{}
+						fi.MyReactions = []string{}
+						fi.EventName = names[fi.EventID]
+						out = append(out, fi)
+					}
+				}
+			}
+		}
+	}
 	// My own community posts (standalone user posts, no event). County-scoped
 	// visibility to OTHERS lands in a later phase; the author always sees theirs.
 	seen := map[string]bool{}
@@ -6439,8 +6495,12 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	// organizers who never registered as a player). Best-effort: a missing
 	// profiles table (pre-migration 0035) just leaves no photo, never errors.
 	if pr, err := s.sb.SelectOne("pmp_profiles",
-		"user_id=eq."+store.Q(userID)+"&select=photo_url"); err == nil && pr != nil {
+		"user_id=eq."+store.Q(userID)+
+			"&select=photo_url,gender,city,seeking_partner"); err == nil && pr != nil {
 		p.PhotoURL = asStr(pr, "photo_url")
+		p.Gender = asStr(pr, "gender")
+		p.City = asStr(pr, "city")
+		p.SeekingPartner = asBool(pr, "seeking_partner")
 	}
 	row, err := s.sb.SelectOne("players",
 		"user_id=eq."+store.Q(userID)+

@@ -488,3 +488,71 @@ func (s *Service) LeagueStandings(leagueID string) ([]model.Standing, error) {
 	})
 	return out, nil
 }
+
+// CopyRoster registers every player from a previous session into a target
+// event — the league "season roster" move (same crew, new week, one tap).
+// The route enforces ownership of the TARGET; the source is verified here so
+// a caller can't siphon another organizer's roster. Players already in the
+// target are skipped; divisions carry over by (case-insensitive) name match.
+func (s *Service) CopyRoster(targetEventID, fromEventID, callerID string) (added, skipped int, err error) {
+	if targetEventID == fromEventID {
+		return 0, 0, errors.New("source and target are the same event")
+	}
+	srcOwner, err := s.OwnerOf("event", fromEventID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if srcOwner == "" || srcOwner != callerID {
+		return 0, 0, ErrForbidden
+	}
+	srcRegs, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(fromEventID)+"&select=player_id,bracket_id")
+	if err != nil {
+		return 0, 0, err
+	}
+	existing := map[string]bool{}
+	if rows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(targetEventID)+"&select=player_id"); err == nil {
+		for _, r := range rows {
+			existing[asStr(r, "player_id")] = true
+		}
+	}
+	// Division mapping by name: source bracket_id -> name -> target bracket id.
+	srcName := map[string]string{}
+	if bks, err := s.GetBrackets(fromEventID); err == nil {
+		for _, b := range bks {
+			srcName[b.ID] = strings.ToLower(strings.TrimSpace(b.Name))
+		}
+	}
+	tgtByName := map[string]string{}
+	if bks, err := s.GetBrackets(targetEventID); err == nil {
+		for _, b := range bks {
+			tgtByName[strings.ToLower(strings.TrimSpace(b.Name))] = b.ID
+		}
+	}
+	rows := []map[string]any{}
+	for _, r := range srcRegs {
+		pid := asStr(r, "player_id")
+		if pid == "" || existing[pid] {
+			skipped++
+			continue
+		}
+		existing[pid] = true // a doubles pair shares players across rows
+		row := map[string]any{
+			"event_id":       targetEventID,
+			"player_id":      pid,
+			"check_in_token": newID(),
+		}
+		if bid := tgtByName[srcName[asStr(r, "bracket_id")]]; bid != "" {
+			row["bracket_id"] = bid
+		}
+		rows = append(rows, row)
+		added++
+	}
+	if len(rows) > 0 {
+		if _, err := s.sb.Insert("registrations", rows); err != nil {
+			return 0, 0, err
+		}
+	}
+	return added, skipped, nil
+}

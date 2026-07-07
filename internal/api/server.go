@@ -267,6 +267,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Downloadable results export (standings + matches) for the organizer.
 	mux.HandleFunc("GET /events/{id}/results.csv", s.ownerOnly("event", "id", s.resultsCSV))
 	mux.HandleFunc("GET /events/{id}/roster.csv", s.ownerOnly("event", "id", s.rosterCSV))
+	// League "season roster": copy a previous session's roster into this event.
+	mux.HandleFunc("POST /events/{id}/copy-roster", s.ownerOnly("event", "id", s.copyRoster))
 	// Take a court offline / swap its unplayed games onto another court.
 	mux.HandleFunc("POST /events/{id}/remap-court", s.ownerOnly("event", "id", s.remapCourt))
 	mux.HandleFunc("GET /events/{id}/sanction.csv", s.ownerOnly("event", "id", s.sanctionCSV))
@@ -1579,6 +1581,21 @@ func (s *Server) remapCourt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"moved": moved})
+}
+
+func (s *Server) copyRoster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FromEventID string `json:"fromEventId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	added, skipped, err := s.svc.CopyRoster(r.PathValue("id"), req.FromEventID, userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"added": added, "skipped": skipped})
 }
 
 func (s *Server) rosterCSV(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,8 @@ func TestServiceMore(t *testing.T) {
 	// Payments via the default MockPayment gateway.
 	_, _ = s.CollectPayment("r1", "manual")
 	_ = s.CollectPaymentManually("r1")
+	// Stripe webhook apply: records the captured amount + grants the paid cart.
+	_ = s.CollectPaidFromStripe("r1", 4500, true, false)
 
 	// DUPR via the default MockDupr gateway.
 	_ = s.ApplyDuprRating("D1", nil, nil)

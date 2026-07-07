@@ -180,6 +180,14 @@ func (s *Service) CreateCheckoutSession(registrationID, successURL, cancelURL st
 		return "", errors.New("this event has no entry fee")
 	}
 	currency = strings.ToLower(currency)
+	// Snapshot the add-on cart being charged, so the webhook grants exactly this
+	// selection regardless of any /addons edit made after the amount is locked.
+	cart, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(registrationID)+"&select=addon_tee,addon_grips")
+	if err != nil {
+		return "", err
+	}
+	teeSel, gripsSel := asBool(cart, "addon_tee"), asBool(cart, "addon_grips")
 	ownerID := asStr(ev, "owner_id")
 	if ownerID == "" {
 		return "", ErrOrganizerNotConnected
@@ -212,6 +220,8 @@ func (s *Service) CreateCheckoutSession(registrationID, successURL, cancelURL st
 		ProductName:         name,
 		DestinationAccount:  accountID,
 		ApplicationFeeCents: platformFeeCents(fee),
+		AddonTee:            teeSel,
+		AddonGrips:          gripsSel,
 		SuccessURL:          successURL,
 		CancelURL:           cancelURL,
 	})
@@ -255,9 +265,11 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.RegistrationID == "" {
 			return nil // nothing to attribute the payment to
 		}
-		// Reuse the existing mark-paid path so the registration's payment_status
-		// and payments row are written exactly as the organizer's manual confirm.
-		return s.CollectPaymentManually(evt.RegistrationID)
+		// Record what Stripe ACTUALLY captured (not a recomputed total), and set
+		// the add-on flags to exactly what the paid session covered — so a cart
+		// edited after the session's amount was locked can neither overstate the
+		// recorded revenue nor grant unpaid goods.
+		return s.CollectPaidFromStripe(evt.RegistrationID, evt.AmountCents, evt.AddonTee, evt.AddonGrips)
 	case "account.updated":
 		if evt.AccountID == "" {
 			return nil

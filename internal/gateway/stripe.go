@@ -157,8 +157,12 @@ type CheckoutParams struct {
 	ProductName         string
 	DestinationAccount  string
 	ApplicationFeeCents int
-	SuccessURL          string
-	CancelURL           string
+	// Add-on cart snapshot at checkout creation — stamped into metadata so the
+	// webhook grants EXACTLY what was paid for, immune to later cart edits.
+	AddonTee   bool
+	AddonGrips bool
+	SuccessURL string
+	CancelURL  string
 }
 
 // CreateCheckoutSession opens a hosted Checkout Session (mode=payment) for one
@@ -212,6 +216,18 @@ func (g *StripeGateway) CreateCheckoutSession(p CheckoutParams) (string, error) 
 		params.AddMetadata("registration_id", p.RegistrationID)
 		// Also stamp the PaymentIntent so the metadata survives onto the charge.
 		params.PaymentIntentData.AddMetadata("registration_id", p.RegistrationID)
+		// Snapshot the paid-for add-on cart so the webhook can't be tricked by a
+		// cart edit made after this session's amount was locked in.
+		bit := func(b bool) string {
+			if b {
+				return "1"
+			}
+			return "0"
+		}
+		params.AddMetadata("addon_tee", bit(p.AddonTee))
+		params.AddMetadata("addon_grips", bit(p.AddonGrips))
+		params.PaymentIntentData.AddMetadata("addon_tee", bit(p.AddonTee))
+		params.PaymentIntentData.AddMetadata("addon_grips", bit(p.AddonGrips))
 	}
 
 	sess, err := g.client.sessions.New(params)
@@ -306,6 +322,11 @@ type WebhookEvent struct {
 	Type string
 	// checkout.session.completed (mode=payment)
 	RegistrationID string
+	// The amount Stripe actually captured (smallest currency unit) + the add-on
+	// cart that was paid for — the source of truth for what to record/grant.
+	AmountCents int
+	AddonTee    bool
+	AddonGrips  bool
 	// checkout.session.completed (mode=payment) — a one-time per-event Premium pass.
 	EventPassID string
 	// checkout.session.completed (mode=payment) — a vendor booth fee.
@@ -369,6 +390,9 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			RegistrationID: sess.Metadata["registration_id"],
 			EventPassID:    sess.Metadata["event_pass_id"],
 			VendorID:       sess.Metadata["vendor_id"],
+			AmountCents:    int(sess.AmountTotal),
+			AddonTee:       sess.Metadata["addon_tee"] == "1",
+			AddonGrips:     sess.Metadata["addon_grips"] == "1",
 		}, nil
 	case stripe.EventTypeCustomerSubscriptionUpdated,
 		stripe.EventTypeCustomerSubscriptionDeleted:

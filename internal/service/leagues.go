@@ -506,7 +506,7 @@ func (s *Service) CopyRoster(targetEventID, fromEventID, callerID string) (added
 		return 0, 0, ErrForbidden
 	}
 	srcRegs, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(fromEventID)+"&select=player_id,bracket_id")
+		"event_id=eq."+store.Q(fromEventID)+"&select=player_id,bracket_id,partner_id,partner_name")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -545,6 +545,15 @@ func (s *Service) CopyRoster(targetEventID, fromEventID, callerID string) (added
 		}
 		if bid := tgtByName[srcName[asStr(r, "bracket_id")]]; bid != "" {
 			row["bracket_id"] = bid
+		}
+		// Carry doubles pairing across sessions: partner_id (a player id, valid
+		// once that partner is also copied — both sides are in this loop) and the
+		// free-text partner_name for unregistered partners.
+		if p := asStr(r, "partner_id"); p != "" {
+			row["partner_id"] = p
+		}
+		if pn := asStr(r, "partner_name"); pn != "" {
+			row["partner_name"] = pn
 		}
 		rows = append(rows, row)
 		added++

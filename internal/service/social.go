@@ -24,7 +24,7 @@ func (s *Service) SearchUsers(callerID, q string) ([]model.UserSearchResult, err
 	// makes the 80-row window deterministic (not an arbitrary slice for "jo").
 	rows, err := s.sb.Select("players",
 		"full_name=ilike.*"+store.Q(likeEscape(q))+"*&user_id=not.is.null"+
-			"&select=user_id,full_name,doubles_rating&order=full_name.asc&limit=80")
+			"&select=user_id,full_name,dupr_rating&order=full_name.asc&limit=80")
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func (s *Service) SearchUsers(callerID, q string) ([]model.UserSearchResult, err
 		}
 		seen[uid] = true
 		names[uid] = asStr(r, "full_name")
-		ratings[uid] = asFloatPtr(r, "doubles_rating")
+		ratings[uid] = asFloatPtr(r, "dupr_rating")
 		order = append(order, uid)
 		if len(order) >= 25 {
 			break
@@ -163,7 +163,7 @@ func (s *Service) decorateUsers(callerID string, ids []string,
 	if names == nil {
 		names, ratings = map[string]string{}, map[string]*float64{}
 		if prows, err := s.sb.Select("players",
-			"user_id="+store.In(ids)+"&select=user_id,full_name,doubles_rating"); err == nil {
+			"user_id="+store.In(ids)+"&select=user_id,full_name,dupr_rating"); err == nil {
 			for _, p := range prows {
 				uid := asStr(p, "user_id")
 				if uid == "" {
@@ -171,7 +171,7 @@ func (s *Service) decorateUsers(callerID string, ids []string,
 				}
 				if _, ok := names[uid]; !ok {
 					names[uid] = asStr(p, "full_name")
-					ratings[uid] = asFloatPtr(p, "doubles_rating")
+					ratings[uid] = asFloatPtr(p, "dupr_rating")
 				}
 			}
 		}

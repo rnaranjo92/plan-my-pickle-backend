@@ -1425,6 +1425,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "podium":
 		// A small, pre-played single-elim showing gold/silver/bronze.
 		return s.seedPodium(ownerID)
+	case "multichamp":
+		// 4 divisions: one played to a full podium, three still live.
+		return s.seedMultiDivPartialChamp(ownerID)
 	case "scoreconfirm":
 		// Player Score Confirm test bed: 4-player singles RR, feature ON,
 		// 3-min auto-confirm, premium_pass set. Add real phones to two
@@ -1664,6 +1667,131 @@ func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs 
 	}
 	_, err = s.sb.Insert("registrations", regRows)
 	return err
+}
+
+// autoPlayBracket scores every ready (both-sides-filled) scheduled match in ONE
+// division to 11-7, up to maxIters passes — so pools finish, the medal playoff
+// seeds, and bracket winners advance. A high maxIters plays a division to its
+// full podium; maxIters=1 plays a single pool pass (leaves it in progress).
+func (s *Service) autoPlayBracket(eventID, bracketID string, maxIters int) error {
+	for iter := 0; iter < maxIters; iter++ {
+		rows, err := s.sb.SelectAll("matches",
+			"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+
+				"&status=eq.scheduled&select=id,match_participants(team)")
+		if err != nil {
+			return err
+		}
+		scoredAny := false
+		for _, r := range rows {
+			teams := map[int]bool{}
+			if ps, ok := r["match_participants"].([]any); ok {
+				for _, p := range ps {
+					if pm, ok := p.(map[string]any); ok {
+						teams[asInt(pm, "team")] = true
+					}
+				}
+			}
+			if teams[1] && teams[2] {
+				if err := s.applyScore(asStr(r, "id"), 11, 7); err != nil {
+					return err
+				}
+				scoredAny = true
+			}
+		}
+		if !scoredAny {
+			break
+		}
+	}
+	return nil
+}
+
+// startOneScheduled flips one ready scheduled match in a division to in_progress
+// so the division reads as LIVE (a match on court right now).
+func (s *Service) startOneScheduled(eventID, bracketID string) {
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+
+			"&status=eq.scheduled&select=id,match_participants(team)")
+	if err != nil {
+		return
+	}
+	for _, r := range rows {
+		teams := map[int]bool{}
+		if ps, ok := r["match_participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					teams[asInt(pm, "team")] = true
+				}
+			}
+		}
+		if teams[1] && teams[2] {
+			_, _ = s.StartMatch(asStr(r, "id"))
+			return
+		}
+	}
+}
+
+// seedMultiDivPartialChamp builds a 4-division pools->playoff event where ONE
+// division is played to a full gold/silver/bronze podium while the other three
+// are still LIVE (one pool pass + a match in progress). Shows how a finished
+// division's champions coexist with divisions still in play. Returns the id.
+func (s *Service) seedMultiDivPartialChamp(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "TEST · Multi-div · 1 champ + 3 live", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "pools_playoff",
+		"num_courts": 8, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
+		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 8); err != nil {
+		return "", fmt.Errorf("seed courts: %w", err)
+	}
+	divs := []struct {
+		name   string
+		lo, hi float64
+	}{
+		{"2.5 - 3.0", 2.5, 3.0},
+		{"3.0 - 3.5", 3.0, 3.5},
+		{"3.5 - 4.0", 3.5, 4.0},
+		{"4.0 - 4.5", 4.0, 4.5},
+	}
+	var brIDs []string
+	for i, d := range divs {
+		brRows, err := s.sb.Insert("brackets", map[string]any{
+			"event_id": eventID, "name": d.name, "division_type": "mixed_doubles",
+			"min_rating": d.lo, "max_rating": d.hi, "dupr_min": d.lo, "dupr_max": d.hi,
+			"sort_order": i,
+		})
+		if err != nil || len(brRows) == 0 {
+			return "", fmt.Errorf("seed bracket %d: %w", i, err)
+		}
+		bid := asStr(brRows[0], "id")
+		brIDs = append(brIDs, bid)
+		// Distinct startN (i*20) + prefix keep names/phones/ids unique per division.
+		if err := s.seedDivPairs(eventID, bid,
+			fmt.Sprintf("%sd%d", eventID[:6], i), i*20, 8, d.lo, d.hi); err != nil {
+			return "", err
+		}
+	}
+	if _, err := s.GenerateSchedule(eventID, false, true); err != nil {
+		return "", fmt.Errorf("seed schedule: %w", err)
+	}
+	// Division 0 -> played all the way to a gold/silver/bronze podium.
+	if err := s.autoPlayBracket(eventID, brIDs[0], 80); err != nil {
+		return "", fmt.Errorf("seed div0 podium: %w", err)
+	}
+	// Divisions 1-3 -> one pool pass, then a live match each (still in progress).
+	for _, bid := range brIDs[1:] {
+		if err := s.autoPlayBracket(eventID, bid, 1); err != nil {
+			return "", err
+		}
+		s.startOneScheduled(eventID, bid)
+	}
+	// Event overall stays in progress (three divisions live) — not completed.
+	s.syncEventStatus(eventID)
+	return eventID, nil
 }
 
 // seedPodium builds a SMALL pools→playoff doubles event and AUTO-PLAYS every match

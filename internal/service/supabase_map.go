@@ -381,7 +381,7 @@ const matchSelect = "id,bracket_id,stage,bracket_tier,bracket_group,bracket_roun
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
 
 func mapFeedItem(m map[string]any) model.FeedItem {
-	return model.FeedItem{
+	fi := model.FeedItem{
 		ID:        asStr(m, "id"),
 		EventID:   asStr(m, "event_id"),
 		Type:      asStr(m, "type"),
@@ -390,6 +390,13 @@ func mapFeedItem(m map[string]any) model.FeedItem {
 		RefID:     asStrPtr(m, "ref_id"),
 		CreatedAt: asStr(m, "created_at"),
 	}
+	// `event`-type posts stash the poster URL + start time in meta so the card
+	// renders like the old upcoming-event card, but as a real, reactable item.
+	if meta := asMap(m, "meta"); meta != nil {
+		fi.PosterURL = asStrPtr(meta, "poster_url")
+		fi.StartsAt = asStrPtr(meta, "starts_at")
+	}
+	return fi
 }
 
 func mapFeedComment(m map[string]any) model.FeedComment {

@@ -61,6 +61,68 @@ func (s *Service) CreateCommunityPost(userID, email, text string) (model.FeedIte
 	return fi, nil
 }
 
+// ensureEventPosts makes sure each given event has its single `event`-type
+// feed post — the item that represents the event itself in the NewsFeed so it
+// can be liked / commented like any other post. Idempotent + best-effort: it
+// bulk-checks which events already have a post and only inserts the missing
+// ones, so the feed self-heals for events created before event-posts existed
+// (and for seeder paths that direct-insert events, bypassing CreateEvent).
+func (s *Service) ensureEventPosts(eventIDs []string) {
+	if len(eventIDs) == 0 {
+		return
+	}
+	have := map[string]bool{}
+	if rows, err := s.sb.Select("feed_items",
+		"event_id="+store.In(eventIDs)+"&type=eq.event&select=event_id"); err == nil {
+		for _, r := range rows {
+			have[asStr(r, "event_id")] = true
+		}
+	}
+	missing := make([]string, 0)
+	for _, id := range eventIDs {
+		if id != "" && !have[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	evs := map[string]map[string]any{}
+	if rows, err := s.sb.Select("events",
+		"id="+store.In(missing)+"&select=id,name,owner_id,poster_url,starts_at"); err == nil {
+		for _, r := range rows {
+			evs[asStr(r, "id")] = r
+		}
+	}
+	batch := make([]map[string]any, 0, len(missing))
+	for _, id := range missing {
+		ev := evs[id]
+		if ev == nil {
+			continue
+		}
+		meta := map[string]any{}
+		if p := asStr(ev, "poster_url"); p != "" {
+			meta["poster_url"] = p
+		}
+		if st := asStr(ev, "starts_at"); st != "" {
+			meta["starts_at"] = st
+		}
+		owner := asStr(ev, "owner_id")
+		batch = append(batch, map[string]any{
+			"type":       "event",
+			"event_id":   id,
+			"ref_id":     id,
+			"text":       asStr(ev, "name"),
+			"author_id":  owner,
+			"actor_name": s.resolveDisplayName(owner, ""),
+			"meta":       meta,
+		})
+	}
+	if len(batch) > 0 {
+		_, _ = s.sb.Insert("feed_items", batch)
+	}
+}
+
 // DeleteCommunityPost removes a user's own community post (author-only).
 func (s *Service) DeleteCommunityPost(id, userID string) error {
 	if userID == "" {

@@ -927,6 +927,11 @@ type FeedItem struct {
 	ActorName *string `json:"actorName,omitempty"`
 	RefID     *string `json:"refId,omitempty"`
 	CreatedAt string  `json:"createdAt"`
+	// PosterURL + StartsAt are set only on `event`-type posts (an event that
+	// announced itself to the NewsFeed) — sourced from the item's meta JSON so
+	// the card can show the poster + date without a second fetch.
+	PosterURL *string `json:"posterUrl,omitempty"`
+	StartsAt  *string `json:"startsAt,omitempty"`
 	// EventName is the parent event's name. Attached only by MyFeed (the app's
 	// NewsFeed aggregates activity across many events and needs the label);
 	// empty on the per-event feed where the event is already in context.

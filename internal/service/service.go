@@ -438,6 +438,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if _, err := s.sb.Insert("courts", courtRows); err != nil {
 		return "", err
 	}
+	// Publish the event to the NewsFeed as a real, reactable post (best-effort).
+	s.ensureEventPosts([]string{id})
 	return id, nil
 }
 
@@ -6317,14 +6319,19 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		return []model.FeedItem{}, nil
 	}
 	idSet := map[string]struct{}{}
+	ownedIDs := []string{}
 	// Events they organize.
 	if rows, err := s.sb.Select("events", "owner_id=eq."+store.Q(userID)+"&select=id"); err == nil {
 		for _, r := range rows {
 			if id := asStr(r, "id"); id != "" {
 				idSet[id] = struct{}{}
+				ownedIDs = append(ownedIDs, id)
 			}
 		}
 	}
+	// Self-heal: make sure the organizer's events each have their `event`-type
+	// NewsFeed post (created before the feed select below so new ones show now).
+	s.ensureEventPosts(ownedIDs)
 	// Events they're registered to play in. players is a GLOBAL identity table
 	// (no event_id column), so go user -> their player rows -> those players'
 	// registrations' event_id. (Mirrors linkDuprPlayers.)

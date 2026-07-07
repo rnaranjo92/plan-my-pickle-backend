@@ -25,23 +25,23 @@ import "sort"
 // Lose* is where the loser advances (WB matches only). A "" tier feed means no
 // feed (the grand final's winner, or the LB has no loser feed).
 type DEMatch struct {
-	Tier         string // "winners" | "losers" | "grand_final"
-	Round, Slot  int
-	Side1, Side2 []string // seeded (WB round 1) or nil (TBD); {Bye} for a bye
+	Tier           string // "winners" | "losers" | "grand_final"
+	Round, Slot    int
+	Side1, Side2   []string // seeded (WB round 1) or nil (TBD); {Bye} for a bye
 	ResolvedWinner []string
 
-	WinTier              string
+	WinTier                    string
 	WinRound, WinSlot, WinTeam int
 
-	LoseTier               string
+	LoseTier                      string
 	LoseRound, LoseSlot, LoseTeam int
 }
 
 type DoubleElimPlan struct {
-	Size    int
+	Size     int
 	WBRounds int
 	LBRounds int
-	Matches []*DEMatch
+	Matches  []*DEMatch
 }
 
 // lbMatchCount returns the number of LB matches in losers round lr (1-indexed)

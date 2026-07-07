@@ -6,13 +6,13 @@ import "testing"
 
 func TestPrimitiveExtractors(t *testing.T) {
 	m := map[string]any{
-		"s":    "hello",
+		"s":     "hello",
 		"empty": "",
-		"fnum": float64(42),
-		"snum": "7",
-		"b":    true,
-		"f":    float64(3.5),
-		"fs":   "2.25",
+		"fnum":  float64(42),
+		"snum":  "7",
+		"b":     true,
+		"f":     float64(3.5),
+		"fs":    "2.25",
 	}
 
 	if asStr(m, "s") != "hello" || asStr(m, "missing") != "" {
@@ -358,7 +358,7 @@ func TestMapRegistration(t *testing.T) {
 	// In-band rating: no OutsideRating flag.
 	in := mapRegistration(map[string]any{
 		"id": "r1", "event_id": "e", "player_id": "p", "payment_status": "paid",
-		"player": map[string]any{"full_name": "Al", "phone": "555", "dupr_rating": float64(3.6)},
+		"player":  map[string]any{"full_name": "Al", "phone": "555", "dupr_rating": float64(3.6)},
 		"bracket": map[string]any{"min_rating": float64(3.0), "max_rating": float64(4.0)},
 	})
 	if in.FullName != "Al" || in.Phone != "555" {

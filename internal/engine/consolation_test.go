@@ -144,9 +144,9 @@ func TestConsolationWithByes(t *testing.T) {
 		size int
 		byes []int
 	}{
-		{8, []int{0, 1}},       // two byes
-		{8, []int{0, 2}},       // non-adjacent byes
-		{16, []int{0, 3, 7}},   // 3 byes
+		{8, []int{0, 1}},     // two byes
+		{8, []int{0, 2}},     // non-adjacent byes
+		{16, []int{0, 3, 7}}, // 3 byes
 		{16, []int{0, 1, 2, 3}},
 	} {
 		p := consConsistent(t, tc.size, byeSet(tc.byes...))
@@ -172,7 +172,7 @@ func TestConsolationContiguousRounds(t *testing.T) {
 	}{
 		{8, nil},
 		{8, []int{0}},
-		{8, []int{0, 2}},       // collapses the whole lowest round -> single round-1 final
+		{8, []int{0, 2}}, // collapses the whole lowest round -> single round-1 final
 		{16, []int{0, 3, 7}},
 		{16, []int{0, 1, 2, 3}},
 		{32, []int{0, 2, 4, 6, 8}},

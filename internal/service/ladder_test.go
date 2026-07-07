@@ -14,10 +14,10 @@ func TestLeapfrogReorder(t *testing.T) {
 	base := func() []string { return []string{"A", "B", "C", "D", "E"} }
 
 	cases := []struct {
-		name           string
-		order          []string
-		winner, loser  string
-		want           []string
+		name          string
+		order         []string
+		winner, loser string
+		want          []string
 	}{
 		{
 			// Adjacent swap: #2 beats #1 → they swap, nothing else moves.

@@ -158,4 +158,3 @@ func TestMockDuprMiscNoops(t *testing.T) {
 		t.Errorf("unexpected members: %+v", members)
 	}
 }
-

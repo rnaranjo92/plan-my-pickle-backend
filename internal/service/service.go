@@ -334,6 +334,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"best_of":                bestOf,
 		"game_duration_minutes":  gameMin,
 		"registration_fee_cents": req.RegistrationFeeCents,
+		"addon_tee_cents":        req.AddonTeeCents,
+		"addon_grips_cents":      req.AddonGripsCents,
 		"currency":               "USD",
 		"location":               orNull(req.Location),
 		"contact_phone":          orNull(req.ContactPhone),
@@ -1086,6 +1088,8 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"best_of":                normalizeBestOf(req.BestOf),
 		"game_duration_minutes":  clampGameDuration(req.GameDurationMinutes),
 		"registration_fee_cents": req.RegistrationFeeCents,
+		"addon_tee_cents":        req.AddonTeeCents,
+		"addon_grips_cents":      req.AddonGripsCents,
 		"location":               orNull(req.Location),
 		"dupr_sanctioned":        sanctioned,
 		"dupr_min_entitlement":   orNull(minEnt),
@@ -3015,7 +3019,7 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	// registered partner's player row (for paired doubles); partner_name is the
 	// free-text partner column.
 	base := "event_id=eq." + store.Q(eventID) +
-		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,%s" +
+		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,addon_tee,addon_grips,%s" +
 		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level,user_id)," +
 		"partner:players!partner_id(full_name)," +
 		"bracket:brackets(min_rating,max_rating)"
@@ -5656,16 +5660,10 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 	if reg == nil {
 		return false, ErrNotFound
 	}
-	eventID := asStr(reg, "event_id")
-	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=registration_fee_cents,currency")
+	fee, currency, _, err := s.registrationChargeCents(registrationID)
 	if err != nil {
 		return false, err
 	}
-	if ev == nil {
-		return false, ErrNotFound
-	}
-	fee := asInt(ev, "registration_fee_cents")
-	currency := asStr(ev, "currency")
 
 	// Free registration — nothing to charge, confirm immediately. Use
 	// provider="manual" (method "free"); the payments.provider CHECK constraint
@@ -5704,14 +5702,9 @@ func (s *Service) CollectPaymentManually(registrationID string) error {
 	if reg == nil {
 		return ErrNotFound
 	}
-	ev, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(asStr(reg, "event_id"))+"&select=registration_fee_cents,currency")
+	fee, currency, _, err := s.registrationChargeCents(registrationID)
 	if err != nil {
 		return err
-	}
-	fee, currency := 0, "usd"
-	if ev != nil {
-		fee, currency = asInt(ev, "registration_fee_cents"), asStr(ev, "currency")
 	}
 	_, err = s.recordPayment(registrationID, "manual", "", fee, currency, "paid", "paid")
 	return err
@@ -7912,7 +7905,7 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 	}
 
 	base := "event_id=eq." + store.Q(eventID) +
-		"&select=payment_status,checked_in,bracket_id,%s" +
+		"&select=payment_status,checked_in,bracket_id,addon_tee,addon_grips,%s" +
 		"player:players!player_id(full_name,phone,email,dupr_id)," +
 		"partner:players!partner_id(full_name)"
 	rows, err := s.sb.SelectAll("registrations", fmt.Sprintf(base, "partner_name,"))
@@ -7930,7 +7923,7 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 
 	w("PlanMyPickle Roster", csvSafe(ev.Name))
 	w()
-	w("Name", "Phone", "Email", "Division", "Partner", "Paid", "Checked in", "DUPR ID")
+	w("Name", "Phone", "Email", "Division", "Partner", "Paid", "Checked in", "DUPR ID", "Tee", "Grips")
 	for _, r := range rows {
 		var name, phone, email, dupr string
 		if p := asMap(r, "player"); p != nil {
@@ -7954,9 +7947,16 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 		if asBool(r, "checked_in") {
 			checked = "Yes"
 		}
+		tee, grips := "", ""
+		if asBool(r, "addon_tee") {
+			tee = "Yes"
+		}
+		if asBool(r, "addon_grips") {
+			grips = "Yes"
+		}
 		w(csvSafe(name), csvSafe(phone), csvSafe(email),
 			csvSafe(divName[asStr(r, "bracket_id")]), csvSafe(partner),
-			paid, checked, csvSafe(dupr))
+			paid, checked, csvSafe(dupr), tee, grips)
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {

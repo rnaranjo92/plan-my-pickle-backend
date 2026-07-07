@@ -16,23 +16,26 @@ type Event struct {
 	// MinPoolRounds / MaxPoolRounds bound the pool-play round-robin length
 	// (0 = unset). Max caps a full RR (partial round-robin); min tops it up by
 	// repeating matchups so everyone gets a guaranteed number of games.
-	MinPoolRounds        int      `json:"minPoolRounds"`
-	MaxPoolRounds        int      `json:"maxPoolRounds"`
-	RegistrationFeeCents int      `json:"registrationFeeCents"`
-	Currency             string   `json:"currency"`
-	ZelleHandle          *string  `json:"zelleHandle,omitempty"`
-	ClubID               *string  `json:"clubId,omitempty"`
-	Location             *string  `json:"location,omitempty"`
-	ContactPhone         *string  `json:"contactPhone,omitempty"`
-	VenueNotes           *string  `json:"venueNotes,omitempty"`
-	WaiverURL            *string  `json:"waiverUrl,omitempty"`
-	VenueName            *string  `json:"venueName,omitempty"`
-	VenueAddress         *string  `json:"venueAddress,omitempty"`
-	VenuePhone           *string  `json:"venuePhone,omitempty"`
-	VenueWebsite         *string  `json:"venueWebsite,omitempty"`
-	VenueLat             *float64 `json:"venueLat,omitempty"`
-	VenueLng             *float64 `json:"venueLng,omitempty"`
-	DuprSanctioned       bool     `json:"duprSanctioned"`
+	MinPoolRounds        int `json:"minPoolRounds"`
+	MaxPoolRounds        int `json:"maxPoolRounds"`
+	RegistrationFeeCents int `json:"registrationFeeCents"`
+	// Paid add-ons a registrant can buy with their entry (0 = not offered).
+	AddonTeeCents   int      `json:"addonTeeCents"`
+	AddonGripsCents int      `json:"addonGripsCents"`
+	Currency        string   `json:"currency"`
+	ZelleHandle     *string  `json:"zelleHandle,omitempty"`
+	ClubID          *string  `json:"clubId,omitempty"`
+	Location        *string  `json:"location,omitempty"`
+	ContactPhone    *string  `json:"contactPhone,omitempty"`
+	VenueNotes      *string  `json:"venueNotes,omitempty"`
+	WaiverURL       *string  `json:"waiverUrl,omitempty"`
+	VenueName       *string  `json:"venueName,omitempty"`
+	VenueAddress    *string  `json:"venueAddress,omitempty"`
+	VenuePhone      *string  `json:"venuePhone,omitempty"`
+	VenueWebsite    *string  `json:"venueWebsite,omitempty"`
+	VenueLat        *float64 `json:"venueLat,omitempty"`
+	VenueLng        *float64 `json:"venueLng,omitempty"`
+	DuprSanctioned  bool     `json:"duprSanctioned"`
 	// DuprMinEntitlement, when set to "DUPR_PLUS", gates self-registration on a
 	// DUPR+ membership — the player must hold BOTH the PREMIUM_L1 and VERIFIED_L1
 	// entitlements (DUPR's one consumer-facing tier). Empty = a standard
@@ -352,11 +355,11 @@ type RecordFixtureRequest struct {
 
 // EventTeam is a team in a team-format event, optionally scoped to a pool.
 type EventTeam struct {
-	ID        string       `json:"id"`
-	EventID   string       `json:"eventId"`
-	BracketID *string      `json:"bracketId,omitempty"`
-	Name      string       `json:"name"`
-	Seed      *int         `json:"seed,omitempty"`
+	ID        string  `json:"id"`
+	EventID   string  `json:"eventId"`
+	BracketID *string `json:"bracketId,omitempty"`
+	Name      string  `json:"name"`
+	Seed      *int    `json:"seed,omitempty"`
 	// BannerURL is the team's custom banner (Manage Teams upload) — shown on
 	// tie cards in Live scoring, Standings, and the Live TV board.
 	BannerURL string       `json:"bannerUrl,omitempty"`
@@ -478,9 +481,12 @@ type Registration struct {
 	FullName      string  `json:"fullName"`
 	BracketID     *string `json:"bracketId,omitempty"`
 	PaymentStatus string  `json:"paymentStatus"`
-	CheckedIn     bool    `json:"checkedIn"`
-	CheckInToken  *string `json:"checkInToken,omitempty"`
-	Phone         string  `json:"phone"`
+	// Paid add-ons this registrant opted into (charged with their entry fee).
+	AddonTee     bool    `json:"addonTee,omitempty"`
+	AddonGrips   bool    `json:"addonGrips,omitempty"`
+	CheckedIn    bool    `json:"checkedIn"`
+	CheckInToken *string `json:"checkInToken,omitempty"`
+	Phone        string  `json:"phone"`
 	// PhotoURL is the registrant's account profile photo (pmp_profiles via the
 	// linked user_id), used as their roster avatar; empty for name-only players
 	// (the UI falls back to initials).
@@ -675,6 +681,8 @@ type CreateEventRequest struct {
 	MinPoolRounds        int      `json:"minPoolRounds"`
 	MaxPoolRounds        int      `json:"maxPoolRounds"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
+	AddonTeeCents        int      `json:"addonTeeCents,omitempty"`
+	AddonGripsCents      int      `json:"addonGripsCents,omitempty"`
 	ZelleHandle          string   `json:"zelleHandle,omitempty"`
 	ClubID               string   `json:"clubId,omitempty"`
 	Location             string   `json:"location"`
@@ -890,6 +898,13 @@ type ShirtOrder struct {
 	Number         string `json:"number,omitempty"`
 	Color          string `json:"color,omitempty"`
 	Status         string `json:"status"`
+}
+
+// AddonsRequest sets a registrant's paid add-on choices (token- or owner-gated).
+type AddonsRequest struct {
+	Token string `json:"token"`
+	Tee   bool   `json:"tee"`
+	Grips bool   `json:"grips"`
 }
 
 type ShirtRequest struct {

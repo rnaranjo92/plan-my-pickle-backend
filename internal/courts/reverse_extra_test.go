@@ -136,8 +136,8 @@ func TestEnrichLabelsRelabelsGenericCourts(t *testing.T) {
 		return jsonResp(200, `{"results":[{"name":"Sunset Park","formatted":"100 Ocean Blvd"}]}`), nil
 	})
 	cs := []Court{
-		{Name: "Pickleball court", Lat: 10, Lng: 20},            // relabeled, gets address
-		{Name: "Named Already", Lat: 11, Lng: 21},               // skipped
+		{Name: "Pickleball court", Lat: 10, Lng: 20},                     // relabeled, gets address
+		{Name: "Named Already", Lat: 11, Lng: 21},                        // skipped
 		{Name: "Pickleball court", Lat: 12, Lng: 22, Address: "keep me"}, // name set, addr kept
 	}
 	EnrichLabels(cs)

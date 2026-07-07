@@ -16,10 +16,10 @@ import (
 // "row" they just wrote. Unseeded tables return an empty array, which exercises
 // each read method's empty-result path without erroring.
 type fakeSupabase struct {
-	mu    sync.Mutex
-	get   map[string]string // table -> JSON array of rows (GET)
-	rpc   map[string]string // function -> JSON body
-	reqs  []string          // "METHOD /path" captured for assertions
+	mu   sync.Mutex
+	get  map[string]string // table -> JSON array of rows (GET)
+	rpc  map[string]string // function -> JSON body
+	reqs []string          // "METHOD /path" captured for assertions
 }
 
 func newFake() *fakeSupabase {

@@ -39,7 +39,7 @@ func assertCompassFeedsValid(t *testing.T, p CompassPlan) {
 // each real entrant appeared in (East + at most one consolation = 2 for anyone
 // who loses East before the final; 1 for the East champion and finalist).
 type compassResult struct {
-	champByGroup map[string]int // group -> champion seed
+	champByGroup   map[string]int // group -> champion seed
 	bracketsPlayed map[int]map[string]bool
 }
 

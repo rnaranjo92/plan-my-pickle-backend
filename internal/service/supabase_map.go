@@ -158,6 +158,8 @@ func mapEvent(m map[string]any) model.Event {
 		DuprMinEntitlement:       asStr(m, "dupr_min_entitlement"),
 		CashPrize:                asBool(m, "cash_prize"),
 		CashPrizeAmount:          asFloatPtr(m, "cash_prize_amount"),
+		AddonTeeCents:            asInt(m, "addon_tee_cents"),
+		AddonGripsCents:          asInt(m, "addon_grips_cents"),
 		Consolation:              asBool(m, "consolation"),
 		AutoAdjust:               asBool(m, "auto_adjust"),
 		TeamSize:                 asInt(m, "team_size"),
@@ -489,6 +491,8 @@ func mapRegistration(m map[string]any) model.Registration {
 		BracketID:     asStrPtr(m, "bracket_id"),
 		PaymentStatus: asStr(m, "payment_status"),
 		CheckedIn:     asBool(m, "checked_in"),
+		AddonTee:      asBool(m, "addon_tee"),
+		AddonGrips:    asBool(m, "addon_grips"),
 		CheckInToken:  asStrPtr(m, "check_in_token"),
 		PartnerID:     asStrPtr(m, "partner_id"),
 		// partner_name may be absent (column added by a later migration); asStrPtr

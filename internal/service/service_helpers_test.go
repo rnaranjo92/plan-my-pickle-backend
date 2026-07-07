@@ -22,7 +22,9 @@ func TestServiceInternalHelpers(t *testing.T) {
 	safe(func() { _, _ = s.playerNamesByID("e1", []string{"p1", "p2"}) })
 	safe(func() { _ = s.spreadCourts("e1") })
 	safe(func() { _ = s.maybeSeedPlayoff("b1") })
-	safe(func() { _ = s.resolveGrandFinal(map[string]any{"id": "m1", "bracket_id": "b1", "bracket_slot": float64(1)}) })
+	safe(func() {
+		_ = s.resolveGrandFinal(map[string]any{"id": "m1", "bracket_id": "b1", "bracket_slot": float64(1)})
+	})
 	safe(func() { _ = s.copyGrandFinalTeams("m1", "m2") })
 	safe(func() { s.markSubmission("m1", "submitted", "ref", "") })
 	safe(func() { _ = s.advanceTeam("m1", 1, "m2", 1) })

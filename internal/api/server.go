@@ -133,6 +133,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// owner's JWT when present; otherwise the caller must send the registration's
 	// check_in_token (X-Registration-Token header or body). Gated by regLimiter too.
 	mux.HandleFunc("POST /registrations/{id}/pay", optionalAuth(s.pay))
+	mux.HandleFunc("POST /registrations/{id}/addons", optionalAuth(s.setAddons))
 	mux.HandleFunc("POST /registrations/{id}/shirt", optionalAuth(s.saveShirt))
 	// Start a Stripe Checkout Session for a registration's entry fee. Same IDOR
 	// guard as /pay: the registrant proves ownership with the registration's
@@ -2592,6 +2593,23 @@ func (s *Server) checkin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) uncheckin(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.UncheckIn(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setAddons records a registrant's paid add-on choices (tee / overgrips) —
+// token- or owner-gated like /pay and /shirt; charged with the entry fee.
+func (s *Server) setAddons(w http.ResponseWriter, r *http.Request) {
+	var req model.AddonsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.authorizeRegistration(w, r, req.Token) {
+		return
+	}
+	if err := s.svc.SetRegistrationAddons(r.PathValue("id"), req.Tee, req.Grips); err != nil {
 		status(w, err)
 		return
 	}

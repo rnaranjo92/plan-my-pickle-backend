@@ -40,7 +40,9 @@ func TestGenerateScheduleRoundRobin(t *testing.T) {
 	run(func() { _, _ = s.AutoScheduleByRating("e1", true, 1) })
 	run(func() { _ = s.applyScore("m1", 11, 6) })
 	run(func() { _ = s.RecordScore("m1", 11, 6) })
-	run(func() { _ = s.RecordSeries("m1", []model.GameScore{{Team1: 11, Team2: 6}, {Team1: 9, Team2: 11}, {Team1: 11, Team2: 7}}) })
+	run(func() {
+		_ = s.RecordSeries("m1", []model.GameScore{{Team1: 11, Team2: 6}, {Team1: 9, Team2: 11}, {Team1: 11, Team2: 7}})
+	})
 	run(func() { _ = s.ForfeitMatch("m1", 1, "retire", nil, nil) })
 }
 

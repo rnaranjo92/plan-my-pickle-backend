@@ -164,21 +164,22 @@ func (s *Service) CreateCheckoutSession(registrationID, successURL, cancelURL st
 	}
 	eventID := asStr(reg, "event_id")
 	ev, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(eventID)+"&select=name,registration_fee_cents,currency,owner_id")
+		"id=eq."+store.Q(eventID)+"&select=name,owner_id")
 	if err != nil {
 		return "", err
 	}
 	if ev == nil {
 		return "", ErrNotFound
 	}
-	fee := asInt(ev, "registration_fee_cents")
+	// Entry fee + any opted-in add-ons (tee / overgrips) in one charge.
+	fee, currency, _, err := s.registrationChargeCents(registrationID)
+	if err != nil {
+		return "", err
+	}
 	if fee <= 0 {
 		return "", errors.New("this event has no entry fee")
 	}
-	currency := strings.ToLower(asStr(ev, "currency"))
-	if currency == "" {
-		currency = "usd"
-	}
+	currency = strings.ToLower(currency)
 	ownerID := asStr(ev, "owner_id")
 	if ownerID == "" {
 		return "", ErrOrganizerNotConnected

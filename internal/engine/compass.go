@@ -51,9 +51,9 @@ const EastGroup = "east"
 // feed is set (its loser is eliminated). FeedsRound==0 means that bracket's
 // FINAL. A bye (East round 1) carries ResolvedWinner and produces no loser.
 type CompassMatchSpec struct {
-	Group        string
-	Round, Slot  int
-	Side1, Side2 []string
+	Group          string
+	Round, Slot    int
+	Side1, Side2   []string
 	ResolvedWinner []string
 
 	// Winner feed, WITHIN the same Group (0 round = this group's final).
@@ -61,7 +61,7 @@ type CompassMatchSpec struct {
 
 	// Loser drop into a consolation (East matches only); empty group = no drop
 	// (East final, or a bye that produced no loser).
-	LoserGroup                   string
+	LoserGroup                       string
 	LoserRound, LoserSlot, LoserTeam int
 }
 

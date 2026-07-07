@@ -13,19 +13,19 @@ func TestServiceCreateDeep(t *testing.T) {
 	s := newFakeSvc(t, seededFake())
 
 	req := model.CreateEventRequest{
-		Name:                "Test Event",
-		Format:              "doubles",
-		PartnerMode:         "rotating",
-		TournamentFormat:    "round_robin",
-		ScoringMode:         "wins",
-		NumCourts:           2,
-		PointsToWin:         11,
-		WinBy:               2,
-		BestOf:              1,
-		GameDurationMinutes: 25,
+		Name:                 "Test Event",
+		Format:               "doubles",
+		PartnerMode:          "rotating",
+		TournamentFormat:     "round_robin",
+		ScoringMode:          "wins",
+		NumCourts:            2,
+		PointsToWin:          11,
+		WinBy:                2,
+		BestOf:               1,
+		GameDurationMinutes:  25,
 		RegistrationFeeCents: 0,
-		Location:            "", // blank → no geocode network call
-		ContactPhone:        "5551234",
+		Location:             "", // blank → no geocode network call
+		ContactPhone:         "5551234",
 	}
 	_, _ = s.CreateEvent(req, "o1")
 	_ = s.UpdateEvent("e1", req)
@@ -47,10 +47,10 @@ func TestServiceCreateDeep(t *testing.T) {
 
 	// League with explicit divisions.
 	_, _ = s.CreateLeague("o1", model.CreateLeagueRequest{
-		Name:      "Season",
+		Name:       "Season",
 		LeagueType: "round_robin",
-		DayType:   "multi",
-		Divisions: []model.LeagueBracketInput{{Name: "Open", DivisionType: "open"}},
+		DayType:    "multi",
+		Divisions:  []model.LeagueBracketInput{{Name: "Open", DivisionType: "open"}},
 	})
 
 	// Division reconciliation (edit flow).

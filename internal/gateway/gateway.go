@@ -75,10 +75,10 @@ func (m *MockSms) Send(to, body string) (SmsResult, error) {
 
 // ---- DUPR ----
 type DuprPayload struct {
-	EventID      string
-	DuprEventID  string
-	EventName    string
-	MatchID      string // our match id (fallback identifier / delete reference)
+	EventID     string
+	DuprEventID string
+	EventName   string
+	MatchID     string // our match id (fallback identifier / delete reference)
 	// Identifier is the DUPR idempotency key sent on create. DUPR forbids reusing
 	// an identifier (even after a delete → "Match with identifier already exists"),
 	// so the caller derives a fresh one per create generation (e.g.
@@ -88,7 +88,7 @@ type DuprPayload struct {
 	MatchDate    string // when the match was played (yyyy-MM-dd); empty = today
 	Team1DuprIDs []string
 	Team2DuprIDs []string
-	Team1Score   int      // game 1 (legacy single-game field)
+	Team1Score   int // game 1 (legacy single-game field)
 	Team2Score   int
 	Games        [][2]int // per-game scores for a best-of-N match ([t1, t2] each)
 }

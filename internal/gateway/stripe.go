@@ -148,7 +148,7 @@ func (g *StripeGateway) RetrieveAccount(accountID string) (ConnectAccount, error
 // fee: AmountCents is the entry fee, DestinationAccount is the organizer's
 // connected account, ApplicationFeeCents is the platform's cut.
 type CheckoutParams struct {
-	RegistrationID      string
+	RegistrationID string
 	// VendorID, when set (booth-fee checkout), rides in metadata instead of a
 	// registration id so the webhook marks the vendor paid.
 	VendorID            string

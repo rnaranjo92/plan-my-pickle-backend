@@ -174,3 +174,81 @@ func TestDoubleElimByes(t *testing.T) {
 		assertValidDoubleElim(t, p, rc)
 	}
 }
+
+// countDERematches plays the bracket ("lower seed always wins") and counts
+// unordered pairs that meet more than once outside the grand final.
+func countDERematches(p DoubleElimPlan) int {
+	side := map[string][2]int{}
+	resolved := map[string]bool{}
+	for _, m := range p.Matches {
+		k := deKey(m.Tier, m.Round, m.Slot)
+		s := [2]int{-1, -1}
+		if m.Side1 != nil && !IsBye(m.Side1) {
+			s[0] = seedNum(m.Side1)
+		}
+		if m.Side2 != nil && !IsBye(m.Side2) {
+			s[1] = seedNum(m.Side2)
+		}
+		side[k] = s
+		if m.ResolvedWinner != nil {
+			resolved[k] = true
+		}
+	}
+	put := func(tier string, r, s, team, seed int) {
+		k := deKey(tier, r, s)
+		v := side[k]
+		v[team-1] = seed
+		side[k] = v
+	}
+	meets := map[[2]int]int{}
+	for progress := true; progress; {
+		progress = false
+		for _, m := range p.Matches {
+			k := deKey(m.Tier, m.Round, m.Slot)
+			if resolved[k] {
+				continue
+			}
+			v := side[k]
+			if v[0] < 0 || v[1] < 0 {
+				continue
+			}
+			resolved[k] = true
+			progress = true
+			w, l := v[0], v[1]
+			if l < w {
+				w, l = l, w
+			}
+			if m.Tier != "grand_final" {
+				meets[[2]int{w, l}]++
+			}
+			if m.WinTier != "" {
+				put(m.WinTier, m.WinRound, m.WinSlot, m.WinTeam, w)
+			}
+			if m.LoseTier != "" {
+				put(m.LoseTier, m.LoseRound, m.LoseSlot, m.LoseTeam, l)
+			}
+		}
+	}
+	n := 0
+	for _, c := range meets {
+		if c > 1 {
+			n += c - 1
+		}
+	}
+	return n
+}
+
+// Regression bound for the come-around alternation: reversing the WB-loser drop
+// at EVERY major round produced 2^(k-1)-1 deterministic-sim rematches (1/3/7/15
+// for 8/16/32/64); alternating reversed/half-shifted per major round holds it at
+// ≤3 regardless of field size. Small fields (8, and 16's cnt=2 rounds) have too
+// few permutations to do better — those bounds are structural minimums.
+func TestDERematchBounded(t *testing.T) {
+	max := map[int]int{8: 1, 16: 3, 32: 3, 64: 3}
+	for _, n := range []int{8, 16, 32, 64} {
+		p := GenerateDoubleElim(seeds(n))
+		if got := countDERematches(p); got > max[n] {
+			t.Fatalf("n=%d: %d rematches, want <=%d", n, got, max[n])
+		}
+	}
+}

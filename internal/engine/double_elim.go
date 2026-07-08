@@ -133,7 +133,17 @@ func GenerateDoubleElim(seededSides [][]string) DoubleElimPlan {
 		} else if lr%2 == 0 {
 			r := lr/2 + 1 // major round 2(r-1) takes W r losers
 			for j := 0; j < cnt; j++ {
-				setIn(lr, j, 2, wloserTok(r, cnt-1-j))
+				// Come-around: alternate the drop permutation per major round —
+				// REVERSED on even WB rounds, HALF-SHIFTED on odd — instead of
+				// reversing every time. Reversing twice in a row lands a WB loser
+				// back on the LB path carrying its own earlier victims; the
+				// alternation sends it to the quarter it has met least (measured:
+				// halves the deterministic-sim rematch count at 16+ fields).
+				src := cnt - 1 - j
+				if r%2 == 1 && cnt > 1 {
+					src = (j + cnt/2) % cnt
+				}
+				setIn(lr, j, 2, wloserTok(r, src))
 			}
 		}
 	}

@@ -860,7 +860,7 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 	if len(mids) > 0 {
 		rows, err := s.sb.Select("matches",
 			"id="+store.In(mids)+"&status=eq.completed"+
-				"&select=id,team1_score,team2_score,winning_team")
+				"&select=id,team1_score,team2_score,winning_team,counts_for_diff")
 		if err != nil {
 			return prof, err
 		}
@@ -868,6 +868,13 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 			t1, t2 := asIntPtr(m, "team1_score"), asIntPtr(m, "team2_score")
 			if t1 == nil || t2 == nil {
 				continue // a bye is a completed match with no score — not a game
+			}
+			// Forfeits/walkovers fabricate a points_to_win–0 score (counts_for_diff
+			// = false). Don't let those inflate a player's lifetime points or games
+			// played — the box-score reflects real games only (retirements, which
+			// carry a genuine partial score, keep counts_for_diff true and count).
+			if cd := m["counts_for_diff"]; cd != nil && cd == false {
+				continue
 			}
 			team := teamByMatch[asStr(m, "id")]
 			mine, opp := *t2, *t1
@@ -3699,13 +3706,18 @@ func (s *Service) CreateManualGame(eventID, bracketID string, court, playOrder, 
 			row["court_id"] = courtID
 			// Double-booking guard (defense-in-depth; the dialog only offers free
 			// courts): reject if a scheduled game already sits on this court at this
-			// wave (play_order rounds to the same slot).
+			// wave (play_order rounds to the same slot) ON THE SAME DAY. Same slot on
+			// a different tournament day is a different real time, not a conflict.
 			lo := strconv.FormatFloat(float64(playOrder)-0.5, 'f', 1, 64)
 			hi := strconv.FormatFloat(float64(playOrder)+0.5, 'f', 1, 64)
+			dayFilter := "&scheduled_day=is.null"
+			if scheduledDay >= 0 {
+				dayFilter = "&scheduled_day=eq." + strconv.Itoa(scheduledDay)
+			}
 			busy, err := s.sb.Select("matches",
 				"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
 					"&status=eq.scheduled&play_order=gte."+lo+"&play_order=lt."+hi+
-					"&select=id&limit=1")
+					dayFilter+"&select=id&limit=1")
 			if err != nil {
 				return "", err
 			}
@@ -3787,15 +3799,20 @@ func (s *Service) RemapCourt(eventID string, from, to int) (int, error) {
 		}
 		return 0, errors.New("no other court to move games to")
 	}
-	// The games to move, kept in their current time order.
+	// The games to move, kept in their current time order (with their players so
+	// we never drop two of them into the same wave when they share a player).
 	moved, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(fromID)+
-			"&status=eq.scheduled&select=id,play_order&order=play_order")
+			"&status=eq.scheduled&select=id,play_order,match_participants(player_id)&order=play_order")
 	if err != nil {
 		return 0, err
 	}
 	if len(moved) == 0 {
 		return 0, nil
+	}
+	movedSet := map[string]bool{}
+	for _, m := range moved {
+		movedSet[asStr(m, "id")] = true
 	}
 	// Each target's next free slot = one past its last occupied play_order
 	// (scheduled + live games both hold their slot).
@@ -3805,33 +3822,100 @@ func (s *Service) RemapCourt(eventID string, from, to int) (int, error) {
 		ids[i] = t.id
 		next[t.id] = 0
 	}
-	occupied, err := s.sb.SelectAll("matches",
-		"event_id=eq."+store.Q(eventID)+"&court_id=in.("+strings.Join(ids, ",")+")"+
-			"&status=in.(scheduled,in_progress)&play_order=not.is.null&select=court_id,play_order")
+	// Which play_order (wave) each player already occupies across the WHOLE event
+	// (excluding the games being moved), so a moved game can't be placed into a
+	// wave where one of its players is already on court — a real double-book.
+	playerSlots := map[string]map[int]bool{}
+	placed, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+
+			"&status=in.(scheduled,in_progress)&play_order=not.is.null"+
+			"&select=id,court_id,play_order,match_participants(player_id)")
 	if err != nil {
 		return 0, err
 	}
-	for _, r := range occupied {
+	for _, r := range placed {
 		cid := asStr(r, "court_id")
-		if po := asInt(r, "play_order"); po+1 > next[cid] {
+		po := asInt(r, "play_order")
+		// Rebuild each target's next-free slot from the same authoritative read.
+		if _, isTarget := next[cid]; isTarget && po+1 > next[cid] {
 			next[cid] = po + 1
 		}
+		if movedSet[asStr(r, "id")] {
+			continue // the moved games vacate their slots
+		}
+		if ps, ok := r["match_participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					if pid := asStr(pm, "player_id"); pid != "" {
+						if playerSlots[pid] == nil {
+							playerSlots[pid] = map[int]bool{}
+						}
+						playerSlots[pid][po] = true
+					}
+				}
+			}
+		}
 	}
-	// Place each moved game on the target with the earliest free slot (ties →
-	// lowest court number), appending as we go — conflict-free by construction.
+	playersOf := func(m map[string]any) []string {
+		out := []string{}
+		if ps, ok := m["match_participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					if pid := asStr(pm, "player_id"); pid != "" {
+						out = append(out, pid)
+					}
+				}
+			}
+		}
+		return out
+	}
+	conflicts := func(players []string, slot int) bool {
+		for _, pid := range players {
+			if playerSlots[pid] != nil && playerSlots[pid][slot] {
+				return true
+			}
+		}
+		return false
+	}
+	// Place each moved game on the target whose next free slot is earliest AND
+	// free of the game's players; if every court's next slot collides, bump the
+	// earliest court forward until a player-free wave opens. Conflict-free by
+	// construction (courts AND players).
 	for _, m := range moved {
-		best := targets[0]
-		for _, t := range targets[1:] {
-			if next[t.id] < next[best.id] ||
-				(next[t.id] == next[best.id] && t.num < best.num) {
-				best = t
+		players := playersOf(m)
+		cand := append([]target{}, targets...)
+		sort.SliceStable(cand, func(a, b int) bool {
+			if next[cand[a].id] != next[cand[b].id] {
+				return next[cand[a].id] < next[cand[b].id]
+			}
+			return cand[a].num < cand[b].num
+		})
+		var chosen target
+		slot := -1
+		for _, t := range cand {
+			if !conflicts(players, next[t.id]) {
+				chosen, slot = t, next[t.id]
+				break
+			}
+		}
+		if slot < 0 {
+			chosen = cand[0]
+			slot = next[chosen.id]
+			for conflicts(players, slot) {
+				slot++
 			}
 		}
 		if _, err := s.sb.Update("matches", "id=eq."+store.Q(asStr(m, "id")),
-			map[string]any{"court_id": best.id, "play_order": next[best.id]}); err != nil {
+			map[string]any{"court_id": chosen.id, "play_order": slot}); err != nil {
 			return 0, err
 		}
-		next[best.id]++
+		next[chosen.id] = slot + 1
+		for _, pid := range players {
+			if playerSlots[pid] == nil {
+				playerSlots[pid] = map[int]bool{}
+			}
+			playerSlots[pid][slot] = true
+		}
 	}
 	return len(moved), nil
 }
@@ -5984,12 +6068,14 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 		return s.recordPayment(registrationID, "manual", "free", 0, currency, "paid", "paid")
 	}
 
-	// Fee-bearing, but no real payment processor is wired up (the mock always
-	// "succeeds"). Marking the registration paid here would let anyone
-	// self-confirm payment from the public endpoint, so instead record a pending
-	// intent. The organizer confirms receipt via the owner-only mark-paid action
-	// (CollectPaymentManually), or a real gateway's webhook once one is added.
-	if !s.Pay.Live() {
+	// Fee-bearing but not settled synchronously here: either no real processor is
+	// wired (the mock always "succeeds") OR the live gateway is hosted-checkout
+	// (Stripe/PayPal), whose Charge() is a no-op that always returns OK. In BOTH
+	// cases marking the registration paid here would let anyone self-confirm
+	// payment from the public endpoint (a $0 "paid" row). Record a PENDING intent
+	// instead — the organizer confirms via owner-only mark-paid, or the gateway's
+	// webhook (CollectPaidFromStripe) settles it when the money actually moves.
+	if !s.Pay.Live() || s.Pay.HostedCheckout() {
 		return s.recordPayment(registrationID, provider, "", fee, currency, "pending", "pending")
 	}
 
@@ -8289,29 +8375,48 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 		}
 		return 0
 	}
+	if byWins {
+		// USAP round-robin order: RECORD (matches won) first, then within each
+		// tied group HEAD-TO-HEAD *among the tied teams* (a sub-standing — the
+		// count of wins vs the other tied teams, which is transitive, unlike a
+		// pairwise comparator), then point DIFFERENTIAL, then points scored. No
+		// "fewest losses" / "fewest points against" steps (not USAP criteria).
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Wins > out[j].Wins })
+		for i := 0; i < len(out); {
+			j := i + 1
+			for j < len(out) && out[j].Wins == out[i].Wins {
+				j++
+			}
+			if grp := out[i:j]; len(grp) > 1 {
+				// Head-to-head wins against the OTHER teams in this tied group.
+				gw := make(map[string]int, len(grp))
+				for _, a := range grp {
+					w := 0
+					for _, b := range grp {
+						if a.PlayerID != b.PlayerID && h2h != nil {
+							w += h2h[a.PlayerID][b.PlayerID]
+						}
+					}
+					gw[a.PlayerID] = w
+				}
+				sort.SliceStable(grp, func(x, y int) bool {
+					a, b := grp[x], grp[y]
+					if gw[a.PlayerID] != gw[b.PlayerID] {
+						return gw[a.PlayerID] > gw[b.PlayerID]
+					}
+					if a.PointDiff != b.PointDiff {
+						return a.PointDiff > b.PointDiff
+					}
+					return a.PointsFor > b.PointsFor
+				})
+			}
+			i = j
+		}
+		return out, nil
+	}
+	// Points leaderboard (a user view, not USAP standings): points first.
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if byWins {
-			// USAP order: record, then HEAD-TO-HEAD, then point differential,
-			// then fewest points allowed, then points scored.
-			if a.Wins != b.Wins {
-				return a.Wins > b.Wins
-			}
-			if a.Losses != b.Losses {
-				return a.Losses < b.Losses
-			}
-			if c := h2hCmp(a, b); c != 0 {
-				return c > 0
-			}
-			if a.PointDiff != b.PointDiff {
-				return a.PointDiff > b.PointDiff
-			}
-			if a.PointsAgainst != b.PointsAgainst {
-				return a.PointsAgainst < b.PointsAgainst
-			}
-			return a.PointsFor > b.PointsFor
-		}
-		// Points leaderboard (a user view, not USAP standings): points first.
 		if a.PointsFor != b.PointsFor {
 			return a.PointsFor > b.PointsFor
 		}

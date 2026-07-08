@@ -6,8 +6,13 @@ import (
 )
 
 // Consolation back-draw: the first-round losers of a single-elimination main
-// bracket play their own single-elim down to a consolation champion (bronze), so
-// every entrant gets at least two matches (USA Pickleball Rule 12.J).
+// bracket play their own single-elim down to a consolation champion (bronze).
+// Every team that PLAYS round 1 therefore gets at least two matches (the USA
+// Pickleball Rule 12.J minimum). CAVEAT: in a non-power-of-two field the top
+// seeds receive a round-1 BYE and don't enter this tree; if such a seed loses
+// its first real (round-2) match it finishes with a single game. Routing those
+// bye-team first losses into consolation (a true ≥2-for-all guarantee) is a
+// deferred extension — don't rely on the minimum for round-1-bye teams.
 //
 // The main bracket has Size/2 round-1 matches; the loser of each drops into the
 // consolation tree, paired so two players from DIFFERENT main matches meet (never

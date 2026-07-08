@@ -762,8 +762,9 @@ func (s *Service) spawnDecider(tie map[string]any) error {
 	if err != nil {
 		return err
 	}
-	// Place the DreamBreaker on the first court, just after this tie's regulation
-	// slots, so it appears on the schedule the moment a tie reaches 2-2.
+	// Place the DreamBreaker on a FREE court (no game in progress), just after
+	// this tie's regulation slots, so simultaneous 2-2 deciders don't pile onto
+	// court 1 and a decider isn't scheduled onto a court still running a line.
 	court := ""
 	if cb, cerr := s.courtIDsByNumber(eventID); cerr == nil && len(cb) > 0 {
 		nums := make([]int, 0, len(cb))
@@ -771,9 +772,31 @@ func (s *Service) spawnDecider(tie map[string]any) error {
 			nums = append(nums, n)
 		}
 		sort.Ints(nums)
-		court = cb[nums[0]]
+		busy := map[string]bool{}
+		if rows, e := s.sb.Select("matches",
+			"event_id=eq."+store.Q(eventID)+
+				"&status=eq.in_progress&court_id=not.is.null&select=court_id"); e == nil {
+			for _, r := range rows {
+				busy[asStr(r, "court_id")] = true
+			}
+		}
+		court = cb[nums[0]] // fallback if every court is busy
+		for _, n := range nums {
+			if !busy[cb[n]] {
+				court = cb[n]
+				break
+			}
+		}
 	}
+	// Sort the DreamBreaker right AFTER this tie's regulation lines. A flat
+	// tie.play_order+100 can land BEFORE playoff regulation lines (they use a
+	// different play_order scale), so anchor to this tie's real max line order.
 	slot := asInt(tie, "play_order") + 100
+	if rows, e := s.sb.Select("matches",
+		"tie_id=eq."+store.Q(tieID)+"&play_order=not.is.null"+
+			"&select=play_order&order=play_order.desc&limit=1"); e == nil && len(rows) > 0 {
+		slot = asInt(rows[0], "play_order") + 1
+	}
 	// The DreamBreaker is a SINGLES rotation: all four players of each team take
 	// turns (swapping every 4 points on court). Record them all as the line's
 	// participants; the running score is kept like any game (to 21, win by 2).

@@ -439,10 +439,10 @@ func (s *Service) LeagueStandings(leagueID string) ([]model.Standing, error) {
 		}
 		// Event-wide standings (bracketID empty) by wins — the same per-event
 		// computation the dashboard uses. Best-effort per event so one bad event
-		// doesn't blank the whole league.
+		// doesn't blank the whole league (skip it, keep aggregating the rest).
 		st, serr := s.Standings(eid, "", true)
 		if serr != nil {
-			return nil, serr
+			continue
 		}
 		for _, row := range st {
 			cur, ok := agg[row.PlayerID]
@@ -510,12 +510,17 @@ func (s *Service) CopyRoster(targetEventID, fromEventID, callerID string) (added
 	if err != nil {
 		return 0, 0, err
 	}
+	// Fail loudly if we can't read the target's current roster — silently
+	// treating it as empty would defeat the duplicate-skip guard and re-register
+	// everyone.
 	existing := map[string]bool{}
-	if rows, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(targetEventID)+"&select=player_id"); err == nil {
-		for _, r := range rows {
-			existing[asStr(r, "player_id")] = true
-		}
+	exRows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(targetEventID)+"&select=player_id")
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, r := range exRows {
+		existing[asStr(r, "player_id")] = true
 	}
 	// Division mapping by name: source bracket_id -> name -> target bracket id.
 	srcName := map[string]string{}

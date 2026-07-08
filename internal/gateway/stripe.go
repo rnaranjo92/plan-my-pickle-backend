@@ -63,6 +63,11 @@ func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 // Live reports that this is a real payment processor.
 func (g *StripeGateway) Live() bool { return true }
 
+// HostedCheckout: Stripe money moves only via CreateCheckoutSession + the
+// webhook (CollectPaidFromStripe). Charge() below is a no-op, so the public
+// /pay path must record PENDING, never mark the registration paid.
+func (g *StripeGateway) HostedCheckout() bool { return true }
+
 // Charge satisfies PaymentGateway. Stripe Connect collects money through hosted
 // Checkout + webhooks (CreateCheckoutSession / VerifyWebhook), not a synchronous
 // server-side charge, so this is intentionally a no-op success: its only role in

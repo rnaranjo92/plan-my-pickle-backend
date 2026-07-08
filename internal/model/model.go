@@ -45,8 +45,10 @@ type Event struct {
 	// CashPrize flags a cash-prize event; CashPrizeAmount is the optional pot size.
 	CashPrize       bool     `json:"cashPrize"`
 	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
-	// Consolation enables a consolation back-draw for single_elim (first-round
-	// losers play down to a consolation champion / bronze — USAP 12.J ≥2 matches).
+	// Consolation enables a consolation back-draw for single_elim: first-round
+	// losers play down to a consolation champion / bronze, so every team that
+	// plays round 1 gets ≥2 matches (USAP 12.J). Note: a round-1-bye seed that
+	// loses its first real match is not back-drawn (see engine/consolation.go).
 	Consolation bool `json:"consolation"`
 	// AutoAdjust re-flows later match start times to follow ACTUAL game finishes
 	// (early or late) as scores come in, instead of the fixed planned slots.

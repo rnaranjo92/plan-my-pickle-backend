@@ -70,6 +70,10 @@ func NewPayPalGateway(clientID, clientSecret, baseURL, webhookID string) *PayPal
 // Live reports that this is a real payment processor.
 func (g *PayPalGateway) Live() bool { return true }
 
+// HostedCheckout: PayPal/Venmo money moves through a hosted order + capture, not
+// a synchronous Charge(), so the public /pay path records PENDING, not paid.
+func (g *PayPalGateway) HostedCheckout() bool { return true }
+
 // accessToken returns a cached OAuth2 client_credentials token, refreshing it a
 // minute before expiry. Thread-safe.
 func (g *PayPalGateway) accessToken() (string, error) {

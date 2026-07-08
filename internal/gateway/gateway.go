@@ -21,6 +21,12 @@ type PaymentGateway interface {
 	// endpoint only marks a fee-bearing registration "paid" when Live() is true,
 	// so the always-succeeds mock can't be used to self-confirm payment.
 	Live() bool
+	// HostedCheckout reports that money moves ONLY through a hosted flow +
+	// webhook (Stripe Checkout, PayPal) — never the synchronous Charge(). For
+	// these, the public /pay path must record a PENDING intent, never mark paid
+	// (their Charge() is a no-op that always "succeeds"). False for a real
+	// synchronous processor (or the mock), where Charge() is authoritative.
+	HostedCheckout() bool
 }
 
 type MockPayment struct {
@@ -33,6 +39,9 @@ func NewMockPayment() *MockPayment { return &MockPayment{ShouldSucceed: true} }
 
 // Live is false: the mock is not a real processor.
 func (m *MockPayment) Live() bool { return false }
+
+// HostedCheckout is false: the mock's Charge() is (test-)authoritative.
+func (m *MockPayment) HostedCheckout() bool { return false }
 
 func (m *MockPayment) Charge(_ string, amountCents int, currency, provider string) (PaymentResult, error) {
 	m.seq++

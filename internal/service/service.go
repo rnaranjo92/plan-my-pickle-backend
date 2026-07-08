@@ -347,6 +347,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
 		"consolation":            req.Consolation,
 		"auto_adjust":            req.AutoAdjust,
+		"auto_start_next":        req.AutoStartNext,
 		"team_size":              req.TeamSize,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
@@ -1096,6 +1097,7 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"dupr_sanctioned":        sanctioned,
 		"dupr_min_entitlement":   orNull(minEnt),
 		"auto_adjust":            req.AutoAdjust,
+		"auto_start_next":        req.AutoStartNext,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
 		"listed":                req.Listed,
@@ -5570,7 +5572,8 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 			}
 		}
 	}
-	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=dupr_sanctioned")
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=dupr_sanctioned,auto_start_next")
 	if err != nil {
 		return err
 	}
@@ -5590,7 +5593,51 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 	// showing a live badge), or back to "in_progress" if a re-score/undo reopens
 	// a match. Best-effort — never fail a recorded result over a status sync.
 	s.syncEventStatus(eventID)
+	// Opt-in: a finished game frees its court, so auto-start the next scheduled
+	// game waiting on it (both sides ready). Best-effort — never fail a recorded
+	// result over the convenience auto-start.
+	if ev != nil && asBool(ev, "auto_start_next") {
+		s.autoStartNextOnCourt(eventID, asStr(m, "court_id"))
+	}
 	return nil
+}
+
+// autoStartNextOnCourt flips the next ready scheduled game on a just-freed court
+// to in_progress (firing its start alerts), so play flows without the organizer
+// starting each game by hand. No-op if the court is still busy, has no queued
+// game, or the next game's opponent is still TBD. Best-effort.
+func (s *Service) autoStartNextOnCourt(eventID, courtID string) {
+	if courtID == "" {
+		return
+	}
+	// Court must actually be free — don't start a second game on an occupied court.
+	busy, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
+			"&status=eq.in_progress&select=id&limit=1")
+	if err != nil || len(busy) > 0 {
+		return
+	}
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
+			"&status=eq.scheduled&order=play_order.asc.nullslast,created_at.asc"+
+			"&select=id,match_participants(team)")
+	if err != nil {
+		return
+	}
+	for _, r := range rows {
+		teams := map[int]bool{}
+		if ps, ok := r["match_participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					teams[asInt(pm, "team")] = true
+				}
+			}
+		}
+		if teams[1] && teams[2] {
+			_, _ = s.StartMatch(asStr(r, "id"))
+			return
+		}
+	}
 }
 
 // resolveGrandFinal applies the "if necessary" rule after grand-final game 1.
@@ -6231,6 +6278,127 @@ func (s *Service) SetChecklistChecked(id string, checked bool) error {
 // DeleteChecklistItem removes an item (idempotent).
 func (s *Service) DeleteChecklistItem(id string) error {
 	return s.sb.Delete("checklist_items", "id=eq."+store.Q(id))
+}
+
+// ---------------------------------------------------------- freebies
+
+// Freebies lists an event's giveaway items (water, merch, …). Starts empty —
+// organizers add their own; no default seed (freebies vary wildly per event).
+func (s *Service) Freebies(eventID string) ([]model.Freebie, error) {
+	rows, err := s.sb.Select("event_freebies",
+		"event_id=eq."+store.Q(eventID)+"&select=*&order=sort_order,created_at")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Freebie, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapFreebie(r))
+	}
+	return out, nil
+}
+
+// AddFreebie appends a giveaway item with a stock cap (0 = untracked).
+func (s *Service) AddFreebie(eventID, name string, total int) (model.Freebie, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return model.Freebie{}, errors.New("name is required")
+	}
+	if total < 0 {
+		total = 0
+	}
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=id")
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if ev == nil {
+		return model.Freebie{}, ErrNotFound
+	}
+	order := 0
+	last, err := s.sb.Select("event_freebies",
+		"event_id=eq."+store.Q(eventID)+"&select=sort_order&order=sort_order.desc&limit=1")
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if len(last) > 0 {
+		order = asInt(last[0], "sort_order") + 1
+	}
+	out, err := s.sb.Insert("event_freebies", map[string]any{
+		"event_id": eventID, "name": name, "total_qty": total,
+		"given_qty": 0, "sort_order": order,
+	})
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if len(out) == 0 {
+		return model.Freebie{}, errors.New("insert returned no row")
+	}
+	return mapFreebie(out[0]), nil
+}
+
+// UpdateFreebie edits a freebie's name + stock. given_qty is re-clamped so it
+// never exceeds a newly-lowered cap.
+func (s *Service) UpdateFreebie(id, name string, total int) (model.Freebie, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return model.Freebie{}, errors.New("name is required")
+	}
+	if total < 0 {
+		total = 0
+	}
+	row, err := s.sb.SelectOne("event_freebies", "id=eq."+store.Q(id)+"&select=given_qty")
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if row == nil {
+		return model.Freebie{}, ErrNotFound
+	}
+	upd := map[string]any{"name": name, "total_qty": total}
+	if given := asInt(row, "given_qty"); total > 0 && given > total {
+		upd["given_qty"] = total
+	}
+	out, err := s.sb.Update("event_freebies", "id=eq."+store.Q(id), upd)
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if len(out) == 0 {
+		return model.Freebie{}, ErrNotFound
+	}
+	return mapFreebie(out[0]), nil
+}
+
+// AdjustFreebieGiven records a handout (delta +1) or undoes one (-1), clamping
+// to [0, total] so you can never tally out more than you stocked (total 0 =
+// untracked, no upper clamp).
+func (s *Service) AdjustFreebieGiven(id string, delta int) (model.Freebie, error) {
+	row, err := s.sb.SelectOne("event_freebies", "id=eq."+store.Q(id)+"&select=total_qty,given_qty")
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if row == nil {
+		return model.Freebie{}, ErrNotFound
+	}
+	total := asInt(row, "total_qty")
+	given := asInt(row, "given_qty") + delta
+	if given < 0 {
+		given = 0
+	}
+	if total > 0 && given > total {
+		given = total
+	}
+	out, err := s.sb.Update("event_freebies", "id=eq."+store.Q(id),
+		map[string]any{"given_qty": given})
+	if err != nil {
+		return model.Freebie{}, err
+	}
+	if len(out) == 0 {
+		return model.Freebie{}, ErrNotFound
+	}
+	return mapFreebie(out[0]), nil
+}
+
+// DeleteFreebie removes a giveaway item (idempotent).
+func (s *Service) DeleteFreebie(id string) error {
+	return s.sb.Delete("event_freebies", "id=eq."+store.Q(id))
 }
 
 // ------------------------------------------------------------------- Feed

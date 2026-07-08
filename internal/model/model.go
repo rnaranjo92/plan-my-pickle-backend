@@ -51,6 +51,9 @@ type Event struct {
 	// AutoAdjust re-flows later match start times to follow ACTUAL game finishes
 	// (early or late) as scores come in, instead of the fixed planned slots.
 	AutoAdjust bool `json:"autoAdjust"`
+	// AutoStartNext: when a game finishes (both sides' score recorded/confirmed),
+	// auto-start the next scheduled game waiting on that freed court.
+	AutoStartNext bool `json:"autoStartNext"`
 	// TeamSize > 0 marks an MLP-style team event (roster size per team; 4 = 2M/2W).
 	TeamSize int `json:"teamSize"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
@@ -550,6 +553,28 @@ type ChecklistItemRequest struct {
 	Checked bool   `json:"checked"`
 }
 
+// Freebie is one giveaway item an organizer stocks + tallies (water, shirts,
+// swag). TotalQty is the stock cap (0 = untracked); GivenQty is handed-out.
+type Freebie struct {
+	ID        string `json:"id"`
+	EventID   string `json:"eventId"`
+	Name      string `json:"name"`
+	TotalQty  int    `json:"totalQty"`
+	GivenQty  int    `json:"givenQty"`
+	SortOrder int    `json:"sortOrder"`
+}
+
+// FreebieRequest creates or edits a freebie (name + stock).
+type FreebieRequest struct {
+	Name     string `json:"name"`
+	TotalQty int    `json:"totalQty"`
+}
+
+// FreebieAdjustRequest records a handout (+1) or undoes one (-1).
+type FreebieAdjustRequest struct {
+	Delta int `json:"delta"`
+}
+
 type Match struct {
 	ID        string  `json:"id"`
 	BracketID *string `json:"bracketId,omitempty"`
@@ -703,6 +728,7 @@ type CreateEventRequest struct {
 	CashPrizeAmount     *float64       `json:"cashPrizeAmount,omitempty"`
 	Consolation         bool           `json:"consolation"` // single_elim back-draw
 	AutoAdjust          bool           `json:"autoAdjust"`
+	AutoStartNext       bool           `json:"autoStartNext"` // auto-start next game on a freed court
 	TeamSize            int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
 	StartsAt            string         `json:"startsAt"` // RFC3339 UTC, "" = none
 	EndsAt              string         `json:"endsAt"`   // RFC3339 UTC, "" = none

@@ -311,6 +311,11 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/checklist", s.ownerOnly("event", "id", s.addChecklistItem))
 	mux.HandleFunc("POST /checklist/{id}/check", s.ownerOnly("checklist", "id", s.setChecklistChecked))
 	mux.HandleFunc("DELETE /checklist/{id}", s.ownerOnly("checklist", "id", s.deleteChecklistItem))
+	mux.HandleFunc("GET /events/{id}/freebies", s.ownerOnly("event", "id", s.freebies))
+	mux.HandleFunc("POST /events/{id}/freebies", s.ownerOnly("event", "id", s.addFreebie))
+	mux.HandleFunc("POST /freebies/{id}", s.ownerOnly("freebie", "id", s.updateFreebie))
+	mux.HandleFunc("POST /freebies/{id}/adjust", s.ownerOnly("freebie", "id", s.adjustFreebie))
+	mux.HandleFunc("DELETE /freebies/{id}", s.ownerOnly("freebie", "id", s.deleteFreebie))
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/manual-game", s.ownerOnly("event", "id", s.manualGame))
 	mux.HandleFunc("POST /events/{id}/clear-arrangement", s.ownerOnly("event", "id", s.clearArrangement))
@@ -1877,6 +1882,62 @@ func (s *Server) setChecklistChecked(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteChecklistItem(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.DeleteChecklistItem(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) freebies(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.Freebies(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) addFreebie(w http.ResponseWriter, r *http.Request) {
+	var req model.FreebieRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.AddFreebie(r.PathValue("id"), req.Name, req.TotalQty)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) updateFreebie(w http.ResponseWriter, r *http.Request) {
+	var req model.FreebieRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.UpdateFreebie(r.PathValue("id"), req.Name, req.TotalQty)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) adjustFreebie(w http.ResponseWriter, r *http.Request) {
+	var req model.FreebieAdjustRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.AdjustFreebieGiven(r.PathValue("id"), req.Delta)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) deleteFreebie(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteFreebie(r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}

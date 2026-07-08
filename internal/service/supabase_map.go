@@ -162,6 +162,7 @@ func mapEvent(m map[string]any) model.Event {
 		AddonGripsCents:          asInt(m, "addon_grips_cents"),
 		Consolation:              asBool(m, "consolation"),
 		AutoAdjust:               asBool(m, "auto_adjust"),
+		AutoStartNext:            asBool(m, "auto_start_next"),
 		TeamSize:                 asInt(m, "team_size"),
 		StartsAt:                 asStrPtr(m, "starts_at"),
 		EndsAt:                   asStrPtr(m, "ends_at"),
@@ -345,6 +346,17 @@ func mapChecklistItem(m map[string]any) model.ChecklistItem {
 		EventID:   asStr(m, "event_id"),
 		Label:     asStr(m, "label"),
 		Checked:   asBool(m, "checked"),
+		SortOrder: asInt(m, "sort_order"),
+	}
+}
+
+func mapFreebie(m map[string]any) model.Freebie {
+	return model.Freebie{
+		ID:        asStr(m, "id"),
+		EventID:   asStr(m, "event_id"),
+		Name:      asStr(m, "name"),
+		TotalQty:  asInt(m, "total_qty"),
+		GivenQty:  asInt(m, "given_qty"),
 		SortOrder: asInt(m, "sort_order"),
 	}
 }

@@ -14,6 +14,7 @@ var ownerKindTable = map[string]string{
 	"round":        "rounds",
 	"finance":      "finance_entries",
 	"checklist":    "checklist_items",
+	"freebie":      "event_freebies",
 	"registration": "registrations",
 	"feed_item":    "feed_items",
 	"vendor":       "vendors",

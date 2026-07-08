@@ -5,29 +5,32 @@ import (
 	"sort"
 )
 
-// Compass Draw: one EAST main single-elimination bracket, plus a single-elim
-// CONSOLATION bracket per East losing round. The losers of East round r (every
-// round EXCEPT the final) drop together into one consolation tree named by
-// compass direction:
+// Compass Draw: one EAST main single-elimination bracket plus directional
+// consolation brackets, with SIDEWAYS feeding per the authoritative compass
+// layout (compassdraw.com / USTA): losing moves you to a new direction, so
+// everyone keeps playing.
 //
-//	East round 1 losers -> West
-//	East round 2 losers -> North
-//	East round 3 losers -> South
-//	East round 4+ losers -> a generic "East-R{n} consolation" (group east_r{n})
+//	East round 1 losers -> West        West round 1 losers  -> South
+//	East round 2 losers -> North       West round 2 losers  -> Southwest
+//	East round 3 losers -> Northeast   North round 1 losers -> Northwest
+//	East round 4+ losers -> generic    South round 1 losers -> Southeast
+//	  "East-R{n}" (group east_r{n})
 //
-// East's winner is the champion (1st), its finalist is 2nd. Each consolation's
-// winner is that direction's champion. Losing inside a consolation ends a team's
-// run (placement by depth reached) — there are NO sub-sub-consolations in this
-// MVP (a future extension would back-draw each consolation in turn).
+// East's winner is the champion (1st), its finalist 2nd; each direction's
+// winner is that direction's champion. A direction is only formed when its
+// feeding round has 2+ real losers (byes thin the droppers), and the terminal
+// directions (Northeast/Southwest/Northwest/Southeast + generics) end a run.
+// On a full 16 draw this is the classic 8-bracket compass where every entrant
+// is guaranteed 4 matches; an 8 draw forms the canonical East/West/North/South.
 //
 // Works for ANY field size: East is built by GenerateBracket (byes pad to the
-// next power of two), and each consolation is built by the same bye-aware token
+// next power of two), and each direction is built by the same bye-aware token
 // flow the back-draw consolation uses, so a non-power-of-two count of droppers
 // collapses cleanly (a lone dropper skips its bye to its first real match).
 
-// CompassDirection orders the consolation brackets by the East round they drop
-// from. Group is the stable id stored on every match (matches.bracket_group);
-// Label is a human name for the UI when a fixed compass name runs out.
+// compassGroup names the direction fed by East round r losers. Group is the
+// stable id stored on every match (matches.bracket_group); Label is the human
+// name for the UI when a fixed compass name runs out.
 func compassGroup(eastRound int) (group, label string) {
 	switch eastRound {
 	case 1:
@@ -35,7 +38,7 @@ func compassGroup(eastRound int) (group, label string) {
 	case 2:
 		return "north", "North"
 	case 3:
-		return "south", "South"
+		return "northeast", "Northeast"
 	default:
 		return fmt.Sprintf("east_r%d", eastRound), fmt.Sprintf("East-R%d", eastRound)
 	}
@@ -101,58 +104,105 @@ func GenerateCompass(seededSides [][]string) CompassPlan {
 		matches = append(matches, cm)
 	}
 
-	// A bye is an East round-1 match the generator already resolved (no loser to
-	// drop). Only round 1 can hold byes in a single-elim draw.
-	isBye := func(round, slot int) bool {
-		m := eastByKey[[2]int{round, slot}]
-		return m != nil && m.ResolvedWinner != nil
+	// emitted is a built direction bracket, keyed by STRUCTURAL (pre-relabel)
+	// coordinates so its own rounds can feed child directions the same bye-aware
+	// way East's rounds feed it.
+	type emitted struct {
+		byStruct     map[[2]int]*CompassMatchSpec
+		structRounds int
 	}
 
-	// For each East round EXCEPT the final, the losers of that round drop into one
-	// consolation bracket. The droppers are the round's matches in slot order; a
-	// bye match contributes no dropper (handled as an empty consolation slot).
-	for r := 1; r < east.Rounds; r++ {
-		group, label := compassGroup(r)
-		cnt := east.Size / (1 << r) // East round-r match count (full structure)
-
-		// Build this round's consolation as a single-elim tree among its droppers,
-		// reusing the bye-aware token flow. dropperBye(j) reports whether East
-		// round-r slot j was a bye (so it produces no loser to drop).
-		dropperBye := func(j int) bool { return isBye(r, j) }
-		cons, ok := buildConsolationTree(cnt, dropperBye)
+	// feedFrom builds direction `group` from the losers of a parent round:
+	// parentAt(j) returns the parent's real match at source slot j (nil = bye /
+	// collapsed, so no dropper), cnt is the parent round's structural slot count.
+	// Each parent match's LOSER is wired into its entry in the new tree.
+	feedFrom := func(group, label string, cnt int, parentAt func(j int) *CompassMatchSpec) *emitted {
+		cons, ok := buildConsolationTree(cnt, func(j int) bool { return parentAt(j) == nil })
 		if !ok {
-			continue // <2 real droppers (e.g. tiny field) — no consolation here.
+			return nil // <2 real droppers — direction not formed
 		}
 		brackets = append(brackets, CompassBracket{Group: group, Label: label, Rounds: cons.rounds})
-
-		// Emit the consolation matches (group-tagged) and their winner feeds.
+		e := &emitted{byStruct: map[[2]int]*CompassMatchSpec{}, structRounds: cons.structRounds}
 		for _, c := range cons.matches {
 			cm := &CompassMatchSpec{Group: group, Round: c.round, Slot: c.slot}
 			if c.feedsRound != 0 {
 				cm.FeedsRound, cm.FeedsSlot, cm.FeedsTeam = c.feedsRound, c.feedsSlot, c.feedsTeam
 			}
 			matches = append(matches, cm)
+			e.byStruct[[2]int{c.sround, c.sslot}] = cm
 		}
-
-		// Wire each East round-r match's LOSER into the slot where that dropper
-		// enters its first real consolation match.
 		for _, d := range cons.drops {
-			src := eastByKey[[2]int{r, d.source}]
-			if src == nil {
-				continue
+			if src := parentAt(d.source); src != nil {
+				src.LoserGroup = group
+				src.LoserRound, src.LoserSlot, src.LoserTeam = d.round, d.slot, d.team
 			}
-			src.LoserGroup = group
-			src.LoserRound, src.LoserSlot, src.LoserTeam = d.round, d.slot, d.team
 		}
+		return e
+	}
+
+	// East round r as a parent: a real match is one that exists and isn't a
+	// resolved bye (only round 1 can hold byes in a single-elim draw).
+	eastAt := func(r int) func(j int) *CompassMatchSpec {
+		return func(j int) *CompassMatchSpec {
+			m := eastByKey[[2]int{r, j}]
+			if m == nil || m.ResolvedWinner != nil {
+				return nil
+			}
+			return m
+		}
+	}
+	// A direction's structural round r as a parent for its child direction.
+	secAt := func(e *emitted, r int) (func(j int) *CompassMatchSpec, int) {
+		cnt := (1 << e.structRounds) / (1 << r)
+		return func(j int) *CompassMatchSpec { return e.byStruct[[2]int{r, j}] }, cnt
+	}
+
+	// East feeds: r=1 -> West, r=2 -> North, r=3 -> Northeast, r>=4 -> generic.
+	// Only rounds BEFORE the East final drop (the finalist takes 2nd place).
+	var west, north *emitted
+	for r := 1; r < east.Rounds; r++ {
+		group, label := compassGroup(r)
+		e := feedFrom(group, label, east.Size/(1<<r), eastAt(r))
+		switch r {
+		case 1:
+			west = e
+		case 2:
+			north = e
+		}
+	}
+	// Sideways feeds (the compass's whole point): West r1 -> South, West r2 ->
+	// Southwest, North r1 -> Northwest, South r1 -> Southeast. A direction only
+	// feeds a child from rounds BEFORE its own final (structRounds > r), and the
+	// child forms only with 2+ real droppers — both fall out of feedFrom.
+	var south *emitted
+	if west != nil && west.structRounds > 1 {
+		pf, cnt := secAt(west, 1)
+		south = feedFrom("south", "South", cnt, pf)
+	}
+	if west != nil && west.structRounds > 2 {
+		pf, cnt := secAt(west, 2)
+		feedFrom("southwest", "Southwest", cnt, pf)
+	}
+	if north != nil && north.structRounds > 1 {
+		pf, cnt := secAt(north, 1)
+		feedFrom("northwest", "Northwest", cnt, pf)
+	}
+	if south != nil && south.structRounds > 1 {
+		pf, cnt := secAt(south, 1)
+		feedFrom("southeast", "Southeast", cnt, pf)
 	}
 
 	return CompassPlan{Size: east.Size, Brackets: brackets, Matches: matches}
 }
 
 // consNode is one emitted consolation match (round/slot within its tree) and its
-// winner feed (feedsRound==0 = that tree's final).
+// winner feed (feedsRound==0 = that tree's final). sround/sslot preserve the
+// STRUCTURAL (pre-relabel) coordinates so a tree's own rounds can feed child
+// directions (the compass's sideways drops) even after bye-collapsed rounds are
+// renumbered away.
 type consNode struct {
 	round, slot                      int
+	sround, sslot                    int
 	feedsRound, feedsSlot, feedsTeam int
 }
 
@@ -163,9 +213,10 @@ type consDrop struct {
 }
 
 type consTree struct {
-	rounds  int
-	matches []*consNode
-	drops   []consDrop
+	rounds       int // emitted (relabeled) round count
+	structRounds int // full structural rounds of the padded lane
+	matches      []*consNode
+	drops        []consDrop
 }
 
 // buildConsolationTree builds a single-elim tree among `count` potential
@@ -228,7 +279,7 @@ func buildConsolationTree(count int, isBye func(j int) bool) (consTree, bool) {
 				next[j] = a
 			default:
 				mk := fmt.Sprintf("%d:%d", r, j)
-				node := &consNode{round: r, slot: j}
+				node := &consNode{round: r, slot: j, sround: r, sslot: j}
 				nodes = append(nodes, node)
 				byKey[mk] = node
 				record := func(team int, tk token) {
@@ -276,5 +327,5 @@ func buildConsolationTree(count int, isBye func(j int) bool) (consTree, bool) {
 		}
 		effRounds = len(ordered)
 	}
-	return consTree{rounds: effRounds, matches: nodes, drops: drops}, true
+	return consTree{rounds: effRounds, structRounds: structuralRounds, matches: nodes, drops: drops}, true
 }

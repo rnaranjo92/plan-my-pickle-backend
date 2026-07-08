@@ -23,12 +23,9 @@ func assertCompassFeedsValid(t *testing.T, p CompassPlan) {
 			}
 		}
 		if m.LoserGroup != "" {
-			if m.Group != EastGroup {
-				t.Fatalf("non-East match %s %d:%d has a loser drop", m.Group, m.Round, m.Slot)
-			}
 			if byKey[cmKey(m.LoserGroup, m.LoserRound, m.LoserSlot)] == nil {
-				t.Fatalf("east %d:%d loser-drops missing %s %d:%d",
-					m.Round, m.Slot, m.LoserGroup, m.LoserRound, m.LoserSlot)
+				t.Fatalf("%s %d:%d loser-drops missing %s %d:%d",
+					m.Group, m.Round, m.Slot, m.LoserGroup, m.LoserRound, m.LoserSlot)
 			}
 		}
 	}
@@ -41,6 +38,7 @@ func assertCompassFeedsValid(t *testing.T, p CompassPlan) {
 type compassResult struct {
 	champByGroup   map[string]int // group -> champion seed
 	bracketsPlayed map[int]map[string]bool
+	gamesPlayed    map[int]int // seed -> real matches played
 }
 
 func simulateCompass(p CompassPlan) compassResult {
@@ -66,7 +64,7 @@ func simulateCompass(p CompassPlan) compassResult {
 		v[team-1] = seed
 		side[k] = v
 	}
-	res := compassResult{champByGroup: map[string]int{}, bracketsPlayed: map[int]map[string]bool{}}
+	res := compassResult{champByGroup: map[string]int{}, bracketsPlayed: map[int]map[string]bool{}, gamesPlayed: map[int]int{}}
 	mark := func(seed int, group string) {
 		if seed < 0 {
 			return
@@ -96,6 +94,8 @@ func simulateCompass(p CompassPlan) compassResult {
 			}
 			mark(w, m.Group)
 			mark(l, m.Group)
+			res.gamesPlayed[w]++
+			res.gamesPlayed[l]++
 			// Winner advances within its group (or wins that group's final).
 			if m.FeedsRound != 0 {
 				put(m.Group, m.FeedsRound, m.FeedsSlot, m.FeedsTeam, w)
@@ -182,13 +182,12 @@ func TestCompassProgression(t *testing.T) {
 				if len(played) != 1 {
 					t.Fatalf("n=%d: seed %d lost East r%d (no consolation) yet played %v", n, s, lostR, played)
 				}
-			} else {
-				if !played[wantCons] {
-					t.Fatalf("n=%d: seed %d lost East r%d but didn't play its consolation %q (played %v)", n, s, lostR, wantCons, played)
-				}
-				if len(played) != 2 {
-					t.Fatalf("n=%d: seed %d played %d brackets %v, want exactly East + %q", n, s, len(played), played, wantCons)
-				}
+			} else if !played[wantCons] {
+				// Sideways feeding means a team can chain deeper (East -> West ->
+				// South -> Southeast), so only the FIRST drop is asserted here —
+				// the chain's later hops are the sideways drops validated by the
+				// feeds check + the direction champions below.
+				t.Fatalf("n=%d: seed %d lost East r%d but didn't play its consolation %q (played %v)", n, s, lostR, wantCons, played)
 			}
 		}
 
@@ -271,25 +270,67 @@ func simulateEastLossRounds(p CompassPlan) map[int]int {
 	return lost
 }
 
-// A direct slice check of the 8-team compass: East r1 losers -> West (4 droppers
-// -> a 3-match West bracket), r2 losers -> North (2 droppers -> 1 match). The r3
-// (final) losers form no consolation.
+// The canonical 8-team compass: East r1 losers -> West (4 droppers -> 3
+// matches), East r2 losers -> North (2 -> 1 match), West r1 losers -> South
+// (2 -> 1 match). No NE/SW/NW/SE at 8 (their feeding rounds are finals or too
+// thin), matching the published 8-player layout.
 func TestCompass8TeamShape(t *testing.T) {
 	p := GenerateCompass(seeds(8))
 	count := map[string]int{}
 	for _, m := range p.Matches {
 		count[m.Group]++
 	}
-	if count[EastGroup] != 7 {
-		t.Fatalf("east matches=%d want 7", count[EastGroup])
+	want := map[string]int{EastGroup: 7, "west": 3, "north": 1, "south": 1}
+	for g, w := range want {
+		if count[g] != w {
+			t.Fatalf("%s matches=%d want %d", g, count[g], w)
+		}
 	}
-	if count["west"] != 3 { // 4 droppers, single-elim => 3 matches
-		t.Fatalf("west matches=%d want 3", count["west"])
+	for _, g := range []string{"northeast", "southwest", "northwest", "southeast"} {
+		if count[g] != 0 {
+			t.Fatalf("%s matches=%d want 0 at an 8 draw", g, count[g])
+		}
 	}
-	if count["north"] != 1 { // 2 droppers => 1 match
-		t.Fatalf("north matches=%d want 1", count["north"])
+	// The canonical 8-compass guarantees every entrant 3 matches.
+	res := simulateCompass(p)
+	for s := 1; s <= 8; s++ {
+		if res.gamesPlayed[s] < 3 {
+			t.Fatalf("seed %d played %d games, want >=3 (8-compass guarantee)", s, res.gamesPlayed[s])
+		}
 	}
-	if count["south"] != 0 { // r3 is the final: no consolation
-		t.Fatalf("south matches=%d want 0 (final round has no consolation)", count["south"])
+}
+
+// The canonical full 16-team compass: all 8 directions with the authoritative
+// feeding (E r1->W, E r2->N, E r3->NE, W r1->S, W r2->SW, N r1->NW, S r1->SE),
+// and the format's selling point — every entrant is guaranteed 4 matches.
+func TestCompass16FullShape(t *testing.T) {
+	p := GenerateCompass(seeds(16))
+	assertCompassFeedsValid(t, p)
+	count := map[string]int{}
+	for _, m := range p.Matches {
+		count[m.Group]++
+	}
+	want := map[string]int{
+		EastGroup: 15, "west": 7, "north": 3, "northeast": 1,
+		"south": 3, "southwest": 1, "northwest": 1, "southeast": 1,
+	}
+	for g, w := range want {
+		if count[g] != w {
+			t.Fatalf("%s matches=%d want %d", g, count[g], w)
+		}
+	}
+	res := simulateCompass(p)
+	if res.champByGroup[EastGroup] != 1 {
+		t.Fatalf("East champion = s%d, want s1", res.champByGroup[EastGroup])
+	}
+	for _, g := range []string{"west", "north", "northeast", "south", "southwest", "northwest", "southeast"} {
+		if _, ok := res.champByGroup[g]; !ok {
+			t.Fatalf("direction %q never crowned a champion", g)
+		}
+	}
+	for s := 1; s <= 16; s++ {
+		if res.gamesPlayed[s] < 4 {
+			t.Fatalf("seed %d played %d games, want >=4 (16-compass guarantee)", s, res.gamesPlayed[s])
+		}
 	}
 }

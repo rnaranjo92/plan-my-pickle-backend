@@ -16,18 +16,27 @@ import (
 // "row" they just wrote. Unseeded tables return an empty array, which exercises
 // each read method's empty-result path without erroring.
 type fakeSupabase struct {
-	mu   sync.Mutex
-	get  map[string]string // table -> JSON array of rows (GET)
-	rpc  map[string]string // function -> JSON body
-	reqs []string          // "METHOD /path" captured for assertions
+	mu    sync.Mutex
+	get   map[string]string                  // table -> JSON array of rows (GET)
+	rpc   map[string]string                  // function -> JSON body
+	rpcFn map[string]func(body []byte) string // function -> payload-aware responder
+	reqs  []string                            // "METHOD /path" captured for assertions
 }
 
 func newFake() *fakeSupabase {
-	return &fakeSupabase{get: map[string]string{}, rpc: map[string]string{}}
+	return &fakeSupabase{get: map[string]string{}, rpc: map[string]string{},
+		rpcFn: map[string]func([]byte) string{}}
 }
 
 func (f *fakeSupabase) seed(table, json string) *fakeSupabase { f.get[table] = json; return f }
 func (f *fakeSupabase) seedRPC(fn, json string) *fakeSupabase { f.rpc[fn] = json; return f }
+
+// seedRPCFn seeds a PAYLOAD-AWARE responder — for RPCs whose result must vary
+// per call (e.g. pmp_standings keyed by p_event_id in a multi-session league).
+func (f *fakeSupabase) seedRPCFn(fn string, respond func(body []byte) string) *fakeSupabase {
+	f.rpcFn[fn] = respond
+	return f
+}
 
 func (f *fakeSupabase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -37,6 +46,11 @@ func (f *fakeSupabase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(path, "/rest/v1/rpc/"):
 		fn := strings.TrimPrefix(path, "/rest/v1/rpc/")
+		if respond, ok := f.rpcFn[fn]; ok {
+			b, _ := io.ReadAll(r.Body)
+			_, _ = w.Write([]byte(respond(b)))
+			return
+		}
 		if body, ok := f.rpc[fn]; ok {
 			_, _ = w.Write([]byte(body))
 			return

@@ -1430,6 +1430,10 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "multichamp":
 		// 4 divisions: one played to a full podium, three still live.
 		return s.seedMultiDivPartialChamp(ownerID)
+	case "overdue":
+		// 10-player round robin, first round live + backdated an hour with no
+		// scores → the Game-tab "Needs a score" overdue caution.
+		return s.seedOverdueGames(ownerID)
 	case "scoreconfirm":
 		// Player Score Confirm test bed: 4-player singles RR, feature ON,
 		// 3-min auto-confirm, premium_pass set. Add real phones to two
@@ -1792,6 +1796,74 @@ func (s *Service) seedMultiDivPartialChamp(ownerID string) (string, error) {
 		s.startOneScheduled(eventID, bid)
 	}
 	// Event overall stays in progress (three divisions live) — not completed.
+	s.syncEventStatus(eventID)
+	return eventID, nil
+}
+
+// seedOverdueGames builds a small round-robin doubles event, takes its FIRST
+// round live, then backdates that round's start to an hour ago with NO scores —
+// so on the Game tab (List view) those live games read as "past their time,
+// not entered" and float up under the amber "Needs a score" caution band. Lets
+// an organizer see + test that indicator without waiting out a real game clock.
+func (s *Service) seedOverdueGames(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "TEST · Overdue games (needs a score)", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins",
+		"tournament_format": "round_robin", "num_courts": 4, "points_to_win": 11,
+		"dupr_sanctioned": false, "status": "open", "location": "Test Courts",
+		"owner_id": ownerID, "listed": false,
+		// Short 15-min slots so "past its time" is unambiguous.
+		"game_duration_minutes": 15,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 4); err != nil {
+		return "", fmt.Errorf("seed courts: %w", err)
+	}
+	brRows, err := s.sb.Insert("brackets", map[string]any{
+		"event_id": eventID, "name": "3.0 - 3.5", "division_type": "mixed_doubles",
+		"min_rating": 3.0, "max_rating": 3.5, "dupr_min": 3.0, "dupr_max": 3.5,
+		"sort_order": 0,
+	})
+	if err != nil || len(brRows) == 0 {
+		return "", fmt.Errorf("seed bracket: %w", err)
+	}
+	bid := asStr(brRows[0], "id")
+	// 5 fixed pairs = 10 participants — a small round robin.
+	if err := s.seedDivPairs(eventID, bid, eventID[:6], 0, 5, 3.0, 3.5); err != nil {
+		return "", err
+	}
+	if _, err := s.GenerateSchedule(eventID, false, true); err != nil {
+		return "", fmt.Errorf("seed schedule: %w", err)
+	}
+	// Take the first round live with a backdated start (60 min ago).
+	rounds, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+"&order=round_number.asc&select=id&limit=1")
+	if err != nil || len(rounds) == 0 {
+		return eventID, nil
+	}
+	rid := asStr(rounds[0], "id")
+	past := time.Now().Add(-60 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
+	if _, err := s.sb.Update("rounds", "id=eq."+store.Q(rid),
+		map[string]any{"status": "active", "started_at": past}); err != nil {
+		return "", fmt.Errorf("seed round start: %w", err)
+	}
+	// Flip that round's ready games to in_progress, leaving them unscored.
+	mrows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&round_id=eq."+store.Q(rid)+
+			"&status=eq.scheduled&select=id")
+	if err == nil && len(mrows) > 0 {
+		ids := make([]string, 0, len(mrows))
+		for _, r := range mrows {
+			ids = append(ids, asStr(r, "id"))
+		}
+		if _, err := s.sb.Update("matches", "id="+store.In(ids),
+			map[string]any{"status": "in_progress"}); err != nil {
+			return "", fmt.Errorf("seed start matches: %w", err)
+		}
+	}
 	s.syncEventStatus(eventID)
 	return eventID, nil
 }

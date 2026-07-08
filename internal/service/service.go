@@ -348,6 +348,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"consolation":            req.Consolation,
 		"auto_adjust":            req.AutoAdjust,
 		"auto_start_next":        req.AutoStartNext,
+		"court_calls":            req.CourtCalls,
 		"team_size":              req.TeamSize,
 		"admin_passcode":         orNull(req.AdminPasscode),
 		"owner_id":               orNull(ownerID),
@@ -1098,6 +1099,7 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"dupr_min_entitlement":   orNull(minEnt),
 		"auto_adjust":            req.AutoAdjust,
 		"auto_start_next":        req.AutoStartNext,
+		"court_calls":            req.CourtCalls,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
 		"listed":                req.Listed,

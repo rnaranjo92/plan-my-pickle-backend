@@ -163,6 +163,7 @@ func mapEvent(m map[string]any) model.Event {
 		Consolation:              asBool(m, "consolation"),
 		AutoAdjust:               asBool(m, "auto_adjust"),
 		AutoStartNext:            asBool(m, "auto_start_next"),
+		CourtCalls:               asBool(m, "court_calls"),
 		TeamSize:                 asInt(m, "team_size"),
 		StartsAt:                 asStrPtr(m, "starts_at"),
 		EndsAt:                   asStrPtr(m, "ends_at"),

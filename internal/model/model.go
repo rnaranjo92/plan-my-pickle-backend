@@ -54,6 +54,9 @@ type Event struct {
 	// AutoStartNext: when a game finishes (both sides' score recorded/confirmed),
 	// auto-start the next scheduled game waiting on that freed court.
 	AutoStartNext bool `json:"autoStartNext"`
+	// CourtCalls: the TV/kiosk scoreboard defaults its PA-style voice court-call
+	// toggle ON for this event (device still needs one tap to unlock audio).
+	CourtCalls bool `json:"courtCalls"`
 	// TeamSize > 0 marks an MLP-style team event (roster size per team; 4 = 2M/2W).
 	TeamSize int `json:"teamSize"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
@@ -729,6 +732,7 @@ type CreateEventRequest struct {
 	Consolation         bool           `json:"consolation"` // single_elim back-draw
 	AutoAdjust          bool           `json:"autoAdjust"`
 	AutoStartNext       bool           `json:"autoStartNext"` // auto-start next game on a freed court
+	CourtCalls          bool           `json:"courtCalls"`    // TV scoreboard defaults voice court-calls on
 	TeamSize            int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
 	StartsAt            string         `json:"startsAt"` // RFC3339 UTC, "" = none
 	EndsAt              string         `json:"endsAt"`   // RFC3339 UTC, "" = none

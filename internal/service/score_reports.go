@@ -83,7 +83,7 @@ func (s *Service) scoreParticipant(matchID, token, callerUserID string) (int, st
 func (s *Service) scoreReportEvent(eventID string) (map[string]any, error) {
 	return s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+
-			"&select=id,name,owner_id,premium_pass,player_scoring,score_confirm_minutes")
+			"&select=id,name,owner_id,premium_pass,player_scoring,score_confirm_minutes,best_of")
 }
 
 // playerScoringEnabled reports whether the add-on is on AND the event is
@@ -171,6 +171,13 @@ func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (
 	}
 	if !s.playerScoringEnabled(ev) {
 		return ScoreReportState{}, errors.New("player score reporting isn't enabled for this event")
+	}
+	// Player Score Confirm captures ONE final score, but a best-of-N event needs
+	// the full per-game series — finalizing a single game would fail validation
+	// and leave the report stuck pending. Gate the feature off for best-of-N;
+	// the organizer enters those results.
+	if asInt(ev, "best_of") > 1 {
+		return ScoreReportState{}, errors.New("this event is best-of-3 — the organizer enters the series score")
 	}
 	m, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+"&select=status")
 	if err != nil {

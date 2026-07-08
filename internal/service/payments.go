@@ -275,7 +275,7 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 			return nil
 		}
 		_, err := s.sb.Update("organizer_payments",
-			"stripe_account_id="+store.Q(evt.AccountID),
+			"stripe_account_id=eq."+store.Q(evt.AccountID),
 			map[string]any{"charges_enabled": evt.ChargesEnabled, "updated_at": now()})
 		return err
 	default:

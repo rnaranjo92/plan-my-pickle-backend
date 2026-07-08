@@ -5572,18 +5572,28 @@ func (s *Service) crossPoolOrder(eventID, bracketID string, sides [][]string) []
 		}
 		return poolOf[u[0]]
 	}
-	// Per-pool ranked lists, preserving each side's division-wide order.
+	// Per-pool ranked lists, preserving each side's division-wide order. A side
+	// with NO pool tag (registered after the pools were generated — a walk-up)
+	// played zero pool games; it must never interleave as a pseudo-pool's #1 and
+	// displace a real runner-up from the medal bracket, so untagged sides queue
+	// AFTER every real pool tier, in their division order (matching the legacy
+	// behavior of sorting zero-game teams last).
 	perPool := map[string][][]string{}
 	var poolOrder []string
+	var untagged [][]string
 	for _, u := range sides {
 		g := sidePool(u)
+		if g == "" {
+			untagged = append(untagged, u)
+			continue
+		}
 		if _, seen := perPool[g]; !seen {
 			poolOrder = append(poolOrder, g)
 		}
 		perPool[g] = append(perPool[g], u)
 	}
 	if len(poolOrder) < 2 {
-		return sides // one pool — division order already correct
+		return sides // one (or no) real pool — division order already correct
 	}
 	// Interleave by tier: rank r of every pool (pools in order of their best
 	// side's division-wide position, which poolOrder already encodes).
@@ -5600,6 +5610,7 @@ func (s *Service) crossPoolOrder(eventID, bracketID string, sides [][]string) []
 			break
 		}
 	}
+	out = append(out, untagged...)
 	// Avoid a same-pool semifinal when possible: SF1 = out[0] v out[3],
 	// SF2 = out[1] v out[2]. Swapping 2↔3 flips both pairings — do it only when
 	// the current layout has a same-pool semi and the swapped one has none.

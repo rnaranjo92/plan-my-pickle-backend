@@ -77,3 +77,31 @@ func TestPoolGroupName(t *testing.T) {
 		t.Fatalf("overflow name = %s, want pool_27", poolGroupName(26))
 	}
 }
+
+// A unit registered AFTER pool generation (a walk-up) has no pool tag; it must
+// queue after every real pool tier — never interleave as a pseudo-pool's #1
+// into the medal semifinal with zero pool games played.
+func TestCrossPoolOrderExcludesWalkUps(t *testing.T) {
+	f := newFake().seed("matches", `[
+		{"bracket_group":"pool_a","participants":[{"player_id":"a1"},{"player_id":"a2"},{"player_id":"a3"},{"player_id":"a4"}]},
+		{"bracket_group":"pool_b","participants":[{"player_id":"b1"},{"player_id":"b2"},{"player_id":"b3"},{"player_id":"b4"}]}
+	]`)
+	s := newFakeSvc(t, f)
+
+	sides := [][]string{{"a1"}, {"b1"}, {"a2"}, {"b2"}, {"a3"}, {"b3"}, {"a4"}, {"b4"}, {"late"}}
+	out := s.crossPoolOrder("e1", "b1", sides)
+	if len(out) != 9 {
+		t.Fatalf("out len=%d want 9", len(out))
+	}
+	// Tier interleave with the walk-up LAST: a1 b1 a2 b2 … late.
+	want := []string{"a1", "b1", "a2", "b2", "a3", "b3", "a4", "b4", "late"}
+	for i, w := range want {
+		if out[i][0] != w {
+			t.Fatalf("out[%d]=%s want %s (full: %v)", i, out[i][0], w, out)
+		}
+	}
+	// The medal four (SF1 = 0v3, SF2 = 1v2) is cross-pool and walk-up-free.
+	if out[3][0] != "b2" {
+		t.Fatalf("seed 4 = %s, want b2 (not the zero-game walk-up)", out[3][0])
+	}
+}

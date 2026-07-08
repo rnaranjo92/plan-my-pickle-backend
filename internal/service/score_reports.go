@@ -83,7 +83,7 @@ func (s *Service) scoreParticipant(matchID, token, callerUserID string) (int, st
 func (s *Service) scoreReportEvent(eventID string) (map[string]any, error) {
 	return s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+
-			"&select=id,name,owner_id,premium_pass,player_scoring,score_confirm_minutes,best_of")
+			"&select=id,name,owner_id,premium_pass,player_scoring,score_confirm_minutes,best_of,points_to_win,win_by")
 }
 
 // playerScoringEnabled reports whether the add-on is on AND the event is
@@ -188,6 +188,22 @@ func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (
 	}
 	if t1 < 0 || t2 < 0 || t1 == t2 {
 		return ScoreReportState{}, errors.New("enter the final score (no ties)")
+	}
+	// Validate the reported score against the event's format NOW — the same rule
+	// RecordScore enforces at finalize. Otherwise a plausible-but-illegal score
+	// (e.g. 11-10 or 15-11 for an 11/win-by-2 event) would be stored as a report
+	// that can never be confirmed, and the auto-confirm ticker would retry it
+	// forever. So any report we accept here can actually be finalized.
+	ptw := asInt(ev, "points_to_win")
+	if ptw <= 0 {
+		ptw = 11
+	}
+	winBy := asInt(ev, "win_by")
+	if winBy <= 0 {
+		winBy = 2
+	}
+	if err := validateGame(t1, t2, ptw, winBy); err != nil {
+		return ScoreReportState{}, err
 	}
 	// The WINNING side reports (PBT/UTR convention): the reporter's team must
 	// be ahead in the submitted score.

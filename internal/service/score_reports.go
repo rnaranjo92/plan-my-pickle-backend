@@ -356,16 +356,25 @@ func (s *Service) DisputeScore(matchID, token, note, callerUserID string) (Score
 }
 
 // finalizeScoreReport records the reported score through RecordScore and marks
-// the report. RecordScore supersedes pending reports first (see its hook), so
-// mark AFTER recording.
+// the report. It first ATOMICALLY CLAIMS the report (pending → status): the
+// conditional update only matches while the row is still pending, so a report
+// superseded/confirmed/disputed by a concurrent organizer or confirm write
+// (between the caller's SELECT and here) is NOT re-recorded over the
+// authoritative score. Only the writer that wins the claim proceeds to record.
+// Claiming to a non-pending status also keeps supersedeScoreReport (which only
+// touches pending/disputed) from flipping it back.
 func (s *Service) finalizeScoreReport(rep map[string]any, status string) error {
-	if err := s.RecordScore(asStr(rep, "match_id"),
-		asInt(rep, "team1_score"), asInt(rep, "team2_score")); err != nil {
+	claimed, err := s.sb.Update("score_reports",
+		"id=eq."+store.Q(asStr(rep, "id"))+"&status=eq.pending",
+		map[string]any{"status": status, "resolved_at": now()})
+	if err != nil {
 		return err
 	}
-	_, err := s.sb.Update("score_reports", "id=eq."+store.Q(asStr(rep, "id")),
-		map[string]any{"status": status, "resolved_at": now()})
-	return err
+	if len(claimed) == 0 {
+		return nil // already resolved by a concurrent writer — nothing to do
+	}
+	return s.RecordScore(asStr(rep, "match_id"),
+		asInt(rep, "team1_score"), asInt(rep, "team2_score"))
 }
 
 // AutoConfirmDueScoreReports finalizes pending reports whose confirm window

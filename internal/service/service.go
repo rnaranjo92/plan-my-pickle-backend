@@ -6167,7 +6167,19 @@ func (s *Service) recordPayment(registrationID, provider, ref string, fee int, c
 			"status":          payStatus,
 			"paid_at":         paidAt,
 		}); err != nil {
-			return false, err
+			// Migration 0064 adds a partial unique index on payments
+			// (registration_id) WHERE status='paid'. Two concurrent paid writers
+			// (Stripe webhook + organizer mark-paid) both pass the read-then-check
+			// above, but the DB rejects the second insert — that's the intended
+			// idempotency (the fee is recorded exactly once), not an error.
+			es := err.Error()
+			if payStatus == "paid" && (strings.Contains(es, "duplicate") ||
+				strings.Contains(es, "23505") || strings.Contains(es, "409")) {
+				// already recorded by the race winner — fall through to the
+				// (idempotent) registration status update below.
+			} else {
+				return false, err
+			}
 		}
 	}
 	if _, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID),

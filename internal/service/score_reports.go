@@ -399,12 +399,20 @@ func (s *Service) finalizeScoreReport(rep map[string]any, status string) error {
 	if len(claimed) == 0 {
 		return nil // already resolved by a concurrent writer — nothing to do
 	}
-	if err := s.RecordScore(asStr(rep, "match_id"),
+	matchID := asStr(rep, "match_id")
+	if err := s.RecordScore(matchID,
 		asInt(rep, "team1_score"), asInt(rep, "team2_score")); err != nil {
-		// Recording failed AFTER we claimed the report — revert it to pending so
-		// the auto-confirm ticker / confirm path retries, instead of leaving it
-		// falsely marked resolved with no score recorded (a silent score loss).
-		// (If an organizer records the real score meanwhile, supersede then wins.)
+		// Recording failed after we claimed the report. Only REOPEN it (→ pending
+		// for retry) when the match genuinely didn't get scored: if the match is
+		// now 'completed' a real score is on record — this call's partial write,
+		// or a competing organizer/confirm write — and reverting would let the
+		// ticker re-record the player score over an authoritative one. Leave it
+		// resolved in that case (the organizer resolves any advancement hiccup).
+		if mm, e := s.sb.SelectOne("matches",
+			"id=eq."+store.Q(matchID)+"&select=status"); e == nil && mm != nil &&
+			asStr(mm, "status") == "completed" {
+			return err
+		}
 		_, _ = s.sb.Update("score_reports", "id=eq."+store.Q(id),
 			map[string]any{"status": "pending", "resolved_at": nil})
 		return err

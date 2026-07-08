@@ -380,13 +380,18 @@ func (s *Service) CreateVendorCheckoutSession(vendorID, successURL, cancelURL st
 // organizer's manual confirm for cash/Zelle) and posts the confirmation on the
 // event feed.
 func (s *Service) MarkVendorPaid(vendorID string) error {
-	upd, err := s.sb.Update("vendors", "id=eq."+store.Q(vendorID),
+	// Scope to a real unpaid→paid transition so a retried Stripe webhook (Stripe
+	// delivers at-least-once) or an organizer mark-paid racing the webhook is an
+	// idempotent no-op — otherwise it re-posts a duplicate "confirmed for the
+	// Vendor Village!" announcement to the public feed each redelivery.
+	upd, err := s.sb.Update("vendors",
+		"id=eq."+store.Q(vendorID)+"&payment_status=neq.paid",
 		map[string]any{"payment_status": "paid"})
 	if err != nil {
 		return err
 	}
 	if len(upd) == 0 {
-		return ErrNotFound
+		return nil // already paid (or gone) — no transition, don't re-announce
 	}
 	v := mapVendor(upd[0])
 	s.AddFeedItem(v.EventID, "announcement",

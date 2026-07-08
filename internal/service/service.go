@@ -6536,8 +6536,30 @@ func (s *Service) UpdateFreebie(id, name string, total int) (model.Freebie, erro
 
 // AdjustFreebieGiven records a handout (delta +1) or undoes one (-1), clamping
 // to [0, total] so you can never tally out more than you stocked (total 0 =
-// untracked, no upper clamp).
+// untracked, no upper clamp). The clamp + increment run as a SINGLE atomic SQL
+// statement (RPC pmp_adjust_freebie_given, migration 0065) so two volunteer
+// devices tapping at once can't lose a handout via a read-modify-write race.
 func (s *Service) AdjustFreebieGiven(id string, delta int) (model.Freebie, error) {
+	// Atomic path (migration 0065). On a SUCCESSFUL RPC we trust it and never
+	// fall back — falling back after it applied the delta would double-apply.
+	if body, rpcErr := s.sb.RPC("pmp_adjust_freebie_given",
+		map[string]any{"p_id": id, "p_delta": delta}); rpcErr == nil {
+		var m map[string]any
+		if json.Unmarshal(body, &m) != nil {
+			// Some PostgREST versions wrap a single-row result in an array.
+			var arr []map[string]any
+			if json.Unmarshal(body, &arr) == nil && len(arr) > 0 {
+				m = arr[0]
+			}
+		}
+		if asStr(m, "id") == "" {
+			return model.Freebie{}, ErrNotFound
+		}
+		return mapFreebie(m), nil
+	}
+	// Fallback for before migration 0065 is applied (RPC not found): non-atomic
+	// read-modify-write with the same clamp. Loses the race-freeness but keeps
+	// the feature working; the clamp still prevents over-giving.
 	row, err := s.sb.SelectOne("event_freebies", "id=eq."+store.Q(id)+"&select=total_qty,given_qty")
 	if err != nil {
 		return model.Freebie{}, err

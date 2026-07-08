@@ -5494,6 +5494,14 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 // marks the match completed and runs advancement. It does NOT validate; callers
 // that already trust the result (demo seeding via applyScore) use it directly.
 func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t1total, t2total int) error {
+	// A match already "completed" before this write means this is a re-score /
+	// correction, not a game finishing — so it must NOT re-trigger auto-start of
+	// the next game (which would start + text a later game at the wrong time).
+	freshCompletion := true
+	if cur, e := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=status"); e == nil && cur != nil {
+		freshCompletion = asStr(cur, "status") != "completed"
+	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1total, "team2_score": t2total, "winning_team": winner,
 		"games":  games,
@@ -5513,7 +5521,7 @@ func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t
 	// a stale pending report must never auto-confirm over it later.
 	s.supersedeScoreReport(matchID)
 	// The updated row (return=representation) carries the routing columns.
-	if err := s.advanceAfterScore(out[0]); err != nil {
+	if err := s.advanceAfterScore(out[0], freshCompletion); err != nil {
 		return err
 	}
 	// A scored tie line re-evaluates its tie (lines won -> winner; decider on 2-2).
@@ -5537,7 +5545,7 @@ func (s *Service) applyScore(matchID string, t1, t2 int) error {
 // the loser in medal play, auto-seed the playoff when pools complete, and queue
 // DUPR submissions for sanctioned events. Shared by RecordScore and
 // ForfeitMatch so a forfeit advances brackets exactly like a played result.
-func (s *Service) advanceAfterScore(m map[string]any) error {
+func (s *Service) advanceAfterScore(m map[string]any, freshCompletion bool) error {
 	matchID := asStr(m, "id")
 	winner := asInt(m, "winning_team")
 	stage := asStr(m, "stage")
@@ -5593,20 +5601,22 @@ func (s *Service) advanceAfterScore(m map[string]any) error {
 	// showing a live badge), or back to "in_progress" if a re-score/undo reopens
 	// a match. Best-effort — never fail a recorded result over a status sync.
 	s.syncEventStatus(eventID)
-	// Opt-in: a finished game frees its court, so auto-start the next scheduled
-	// game waiting on it (both sides ready). Best-effort — never fail a recorded
-	// result over the convenience auto-start.
-	if ev != nil && asBool(ev, "auto_start_next") {
-		s.autoStartNextOnCourt(eventID, asStr(m, "court_id"))
+	// Opt-in: a freshly-finished game frees its court, so auto-start the next
+	// scheduled game waiting on it (both sides ready, same day). Only on a fresh
+	// completion — a re-score/correction must not start a later game. Best-effort.
+	if freshCompletion && ev != nil && asBool(ev, "auto_start_next") {
+		s.autoStartNextOnCourt(eventID, asStr(m, "court_id"), asIntPtr(m, "scheduled_day"))
 	}
 	return nil
 }
 
 // autoStartNextOnCourt flips the next ready scheduled game on a just-freed court
 // to in_progress (firing its start alerts), so play flows without the organizer
-// starting each game by hand. No-op if the court is still busy, has no queued
-// game, or the next game's opponent is still TBD. Best-effort.
-func (s *Service) autoStartNextOnCourt(eventID, courtID string) {
+// starting each game by hand. Guards: the court must be free, the next game's
+// opponents both set (not TBD), it must be on the SAME tournament day as the one
+// that just finished (never start tomorrow's games early), and none of its
+// players may be live on another court right now. Best-effort.
+func (s *Service) autoStartNextOnCourt(eventID, courtID string, doneDay *int) {
 	if courtID == "" {
 		return
 	}
@@ -5620,24 +5630,73 @@ func (s *Service) autoStartNextOnCourt(eventID, courtID string) {
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
 			"&status=eq.scheduled&order=play_order.asc.nullslast,created_at.asc"+
-			"&select=id,match_participants(team)")
+			"&select=id,scheduled_day,match_participants(team,player_id)")
 	if err != nil {
 		return
 	}
+	live := s.playersInProgress(eventID)
 	for _, r := range rows {
+		// Never cross a day boundary — a game pinned to a different day than the
+		// one that just finished is tomorrow's, not "next".
+		if !sameSchedDay(doneDay, asIntPtr(r, "scheduled_day")) {
+			continue
+		}
 		teams := map[int]bool{}
+		busyPlayer := false
 		if ps, ok := r["match_participants"].([]any); ok {
 			for _, p := range ps {
-				if pm, ok := p.(map[string]any); ok {
-					teams[asInt(pm, "team")] = true
+				pm, ok := p.(map[string]any)
+				if !ok {
+					continue
+				}
+				teams[asInt(pm, "team")] = true
+				if pid := asStr(pm, "player_id"); pid != "" && live[pid] {
+					busyPlayer = true
 				}
 			}
 		}
-		if teams[1] && teams[2] {
+		if teams[1] && teams[2] && !busyPlayer {
 			_, _ = s.StartMatch(asStr(r, "id"))
 			return
 		}
 	}
+}
+
+// sameSchedDay: both unpinned (nil) = same flow/day; both pinned = equal; one
+// pinned + one not = don't cross (conservative — avoids an early next-day start).
+func sameSchedDay(a, b *int) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+// playersInProgress returns the set of player ids currently in an in-progress
+// match anywhere in the event, so auto-start won't pull a player who's mid-game
+// on another court.
+func (s *Service) playersInProgress(eventID string) map[string]bool {
+	out := map[string]bool{}
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+
+			"&status=eq.in_progress&select=match_participants(player_id)")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		if ps, ok := r["match_participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					if pid := asStr(pm, "player_id"); pid != "" {
+						out[pid] = true
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // resolveGrandFinal applies the "if necessary" rule after grand-final game 1.
@@ -5824,7 +5883,9 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	if len(out) == 0 {
 		return ErrNotFound
 	}
-	return s.advanceAfterScore(out[0])
+	// Forfeit/retire/walkover is an organizer action, not a played+acknowledged
+	// score — don't auto-start the next game off it.
+	return s.advanceAfterScore(out[0], false)
 }
 
 // DuprImportSummary is the result of flushing queued results to DUPR.
@@ -7395,10 +7456,17 @@ func (s *Service) StartMatch(matchID string) (int, error) {
 	if !teams[1] || !teams[2] {
 		return 0, errors.New("this match can't start yet — its opponent is still TBD (waiting on an earlier result)")
 	}
-	if _, err := s.sb.Update("matches",
+	upd, err := s.sb.Update("matches",
 		"id=eq."+store.Q(matchID)+"&status=eq.scheduled",
-		map[string]any{"status": "in_progress"}); err != nil {
+		map[string]any{"status": "in_progress"})
+	if err != nil {
 		return 0, err
+	}
+	// The status-guarded update changed nothing → the match was no longer
+	// scheduled (already started by another request or auto-start). Bail before
+	// firing a duplicate "you're up" SMS/push.
+	if len(upd) == 0 {
+		return 0, nil
 	}
 	// Reflect that play has begun on the parent pool round (if it was pending).
 	// (started_at is null on a pending round, so setting it here matches the old

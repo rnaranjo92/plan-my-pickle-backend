@@ -364,8 +364,9 @@ func (s *Service) DisputeScore(matchID, token, note, callerUserID string) (Score
 // Claiming to a non-pending status also keeps supersedeScoreReport (which only
 // touches pending/disputed) from flipping it back.
 func (s *Service) finalizeScoreReport(rep map[string]any, status string) error {
+	id := asStr(rep, "id")
 	claimed, err := s.sb.Update("score_reports",
-		"id=eq."+store.Q(asStr(rep, "id"))+"&status=eq.pending",
+		"id=eq."+store.Q(id)+"&status=eq.pending",
 		map[string]any{"status": status, "resolved_at": now()})
 	if err != nil {
 		return err
@@ -373,8 +374,17 @@ func (s *Service) finalizeScoreReport(rep map[string]any, status string) error {
 	if len(claimed) == 0 {
 		return nil // already resolved by a concurrent writer — nothing to do
 	}
-	return s.RecordScore(asStr(rep, "match_id"),
-		asInt(rep, "team1_score"), asInt(rep, "team2_score"))
+	if err := s.RecordScore(asStr(rep, "match_id"),
+		asInt(rep, "team1_score"), asInt(rep, "team2_score")); err != nil {
+		// Recording failed AFTER we claimed the report — revert it to pending so
+		// the auto-confirm ticker / confirm path retries, instead of leaving it
+		// falsely marked resolved with no score recorded (a silent score loss).
+		// (If an organizer records the real score meanwhile, supersede then wins.)
+		_, _ = s.sb.Update("score_reports", "id=eq."+store.Q(id),
+			map[string]any{"status": "pending", "resolved_at": nil})
+		return err
+	}
+	return nil
 }
 
 // AutoConfirmDueScoreReports finalizes pending reports whose confirm window

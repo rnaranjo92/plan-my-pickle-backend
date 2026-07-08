@@ -6182,7 +6182,14 @@ func (s *Service) recordPayment(registrationID, provider, ref string, fee int, c
 			}
 		}
 	}
-	if _, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID),
+	// Never let a non-paid write downgrade an already-paid registration: a
+	// registrant re-hitting the public /pay after mark-paid/webhook records a
+	// 'pending' intent, but their payment_status must stay 'paid'.
+	regFilter := "id=eq." + store.Q(registrationID)
+	if regStatus != "paid" {
+		regFilter += "&payment_status=neq.paid"
+	}
+	if _, err := s.sb.Update("registrations", regFilter,
 		map[string]any{"payment_status": regStatus}); err != nil {
 		return false, err
 	}

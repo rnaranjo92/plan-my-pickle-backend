@@ -357,10 +357,19 @@ func (s *Service) DisputeScore(matchID, token, note, callerUserID string) (Score
 	if asInt(rep, "reported_team") == team {
 		return ScoreReportState{}, errors.New("you reported this score — your opponents confirm or dispute it")
 	}
-	if _, err := s.sb.Update("score_reports", "id=eq."+store.Q(asStr(rep, "id")),
+	// Atomically flip pending → disputed: if a concurrent confirm/auto-confirm
+	// already finalized (and advanced the bracket) between the SELECT above and
+	// here, this matches 0 rows and we lose cleanly instead of stamping a phantom
+	// dispute onto an already-advanced match.
+	upd, err := s.sb.Update("score_reports",
+		"id=eq."+store.Q(asStr(rep, "id"))+"&status=eq.pending",
 		map[string]any{"status": "disputed", "dispute_note": strings.TrimSpace(note),
-			"resolved_at": now()}); err != nil {
+			"resolved_at": now()})
+	if err != nil {
 		return ScoreReportState{}, err
+	}
+	if len(upd) == 0 {
+		return ScoreReportState{}, errors.New("this score is no longer awaiting confirmation")
 	}
 	// Flag the organizer (push, best-effort): their console entry is final.
 	if ev, err := s.scoreReportEvent(eventID); err == nil && ev != nil {

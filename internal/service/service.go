@@ -3626,7 +3626,7 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 			}
 			total += n
 		} else {
-			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum)
+			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum, skill)
 			if err != nil {
 				return model.ScheduleResult{}, err
 			}
@@ -4711,7 +4711,52 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	return scheduled, nil
 }
 
-func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg, courtByNum map[int]string) (int, error) {
+// poolGroupName labels pool i (0-based) as pool_a, pool_b, … (wraps past z into
+// pool_27 etc. — fields that big don't occur in practice).
+func poolGroupName(i int) string {
+	if i < 26 {
+		return "pool_" + string(rune('a'+i))
+	}
+	return fmt.Sprintf("pool_%d", i+1)
+}
+
+// splitPools snake-seeds entrant units (fixed pairs / singles players) into
+// balanced pools. Standard tournament pooling: fields under 8 units stay ONE
+// pool (a plain round robin — the long-standing behavior); 8+ split into pools
+// of ~4-5 (ceil(n/5) pools, sizes within 1), snake-ordered by rating so pools
+// are even in strength (1→A, 2→B, 3→B, 4→A …).
+func splitPools(units [][]string, skill map[string]float64) [][][]string {
+	n := len(units)
+	if n < 8 {
+		return [][][]string{units}
+	}
+	rate := func(u []string) float64 {
+		if len(u) == 0 {
+			return 0
+		}
+		sum := 0.0
+		for _, id := range u {
+			sum += skill[id]
+		}
+		return sum / float64(len(u))
+	}
+	ordered := make([][]string, n)
+	copy(ordered, units)
+	sort.SliceStable(ordered, func(i, j int) bool { return rate(ordered[i]) > rate(ordered[j]) })
+	numPools := (n + 4) / 5
+	pools := make([][][]string, numPools)
+	for i, u := range ordered {
+		lap, pos := i/numPools, i%numPools
+		p := pos
+		if lap%2 == 1 {
+			p = numPools - 1 - pos // snake back
+		}
+		pools[p] = append(pools[p], u)
+	}
+	return pools
+}
+
+func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg, courtByNum map[int]string, skill map[string]float64) (int, error) {
 	format := engine.Doubles
 	if ev.Format == "singles" {
 		format = engine.Singles
@@ -4720,39 +4765,93 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	if ev.PartnerMode == "fixed" {
 		partner = engine.Fixed
 	}
-	var fixedPairs [][]string
-	if format == engine.Doubles && partner == engine.Fixed {
-		fixedPairs = pairsFromRegs(regs)
+
+	// TRUE POOLS (pools_playoff, fixed doubles + singles): split the field into
+	// balanced snake-seeded pools and round-robin WITHIN each pool, instead of
+	// one giant everyone-plays-everyone. Rotating doubles keeps the single
+	// social-mixer pool (partners rotate across the whole field by design), and
+	// plain round_robin events keep one pool (that IS the format).
+	type poolSched struct {
+		group    string // "" = untagged single pool
+		schedule []engine.RoundSpec
 	}
-	ids := make([]string, len(regs))
-	for i, r := range regs {
-		ids[i] = r.playerID
-	}
-	// Rounds only affects rotating doubles (singles & fixed doubles always run a
-	// full N-1 round-robin and ignore this). Scale the social mixer with the
-	// field instead of a magic 7: ~N-1, clamped to a practical 3..12 so small
-	// fields don't over-repeat and huge fields don't run all day.
-	rounds := 7
-	if format == engine.Doubles && partner == engine.Rotating {
-		rounds = len(ids) - 1
-		if rounds < 3 {
-			rounds = 3
+	var schedules []poolSched
+	if ev.TournamentFormat == "pools_playoff" && ev.Format == "singles" {
+		units := sidesForBracket(ev, regs) // one player per unit
+		pools := splitPools(units, skill)
+		for i, pool := range pools {
+			ids := make([]string, 0, len(pool))
+			for _, u := range pool {
+				ids = append(ids, u...)
+			}
+			g := poolGroupName(i)
+			if len(pools) == 1 {
+				g = ""
+			}
+			schedules = append(schedules, poolSched{g,
+				engine.GenerateSchedule(ids, format, partner, ev.NumCourts, nil, 7, ev.MinPoolRounds, ev.MaxPoolRounds)})
 		}
-		if rounds > 12 {
-			rounds = 12
+	} else if ev.TournamentFormat == "pools_playoff" && format == engine.Doubles && partner == engine.Fixed {
+		units := pairsFromRegs(regs)
+		pools := splitPools(units, skill)
+		for i, pool := range pools {
+			ids := make([]string, 0, len(pool)*2)
+			for _, u := range pool {
+				ids = append(ids, u...)
+			}
+			g := poolGroupName(i)
+			if len(pools) == 1 {
+				g = ""
+			}
+			schedules = append(schedules, poolSched{g,
+				engine.GenerateSchedule(ids, format, partner, ev.NumCourts, pool, 7, ev.MinPoolRounds, ev.MaxPoolRounds)})
 		}
+	} else {
+		var fixedPairs [][]string
+		if format == engine.Doubles && partner == engine.Fixed {
+			fixedPairs = pairsFromRegs(regs)
+		}
+		ids := make([]string, len(regs))
+		for i, r := range regs {
+			ids[i] = r.playerID
+		}
+		// Rounds only affects rotating doubles (singles & fixed doubles always run a
+		// full N-1 round-robin and ignore this). Scale the social mixer with the
+		// field instead of a magic 7: ~N-1, clamped to a practical 3..12 so small
+		// fields don't over-repeat and huge fields don't run all day.
+		rounds := 7
+		if format == engine.Doubles && partner == engine.Rotating {
+			rounds = len(ids) - 1
+			if rounds < 3 {
+				rounds = 3
+			}
+			if rounds > 12 {
+				rounds = 12
+			}
+		}
+		schedules = append(schedules, poolSched{"",
+			engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds, ev.MinPoolRounds, ev.MaxPoolRounds)})
 	}
-	schedule := engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds, ev.MinPoolRounds, ev.MaxPoolRounds)
 
 	// Batch every insert (rounds, matches, participants) into 3 bulk calls
 	// instead of ~3 per match. A big round-robin (e.g. 96 games) otherwise fires
 	// hundreds of sequential PostgREST calls and the request times out (502).
 	// PostgREST returns bulk-inserted rows in input order, so we zip ids by index.
-	roundRows := make([]map[string]any, 0, len(schedule))
-	for _, round := range schedule {
+	// Pools share round rows by number (pool A round 1 and pool B round 1 are the
+	// same wave of play).
+	maxRound := 0
+	for _, ps := range schedules {
+		for _, round := range ps.schedule {
+			if round.RoundNumber > maxRound {
+				maxRound = round.RoundNumber
+			}
+		}
+	}
+	roundRows := make([]map[string]any, 0, maxRound)
+	for rn := 1; rn <= maxRound; rn++ {
 		roundRows = append(roundRows, map[string]any{
 			"event_id": ev.ID, "bracket_id": bracketID,
-			"round_number": round.RoundNumber,
+			"round_number": rn,
 		})
 	}
 	if len(roundRows) == 0 {
@@ -4770,14 +4869,17 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	type pend struct{ t1, t2 []string }
 	matchRows := make([]map[string]any, 0)
 	pending := make([]pend, 0)
-	for _, round := range schedule {
-		rid := roundIDByNum[round.RoundNumber]
-		for _, m := range round.Matches {
-			matchRows = append(matchRows, map[string]any{
-				"event_id": ev.ID, "bracket_id": bracketID, "round_id": rid,
-				"court_id": orNull(courtByNum[m.CourtNumber]), "stage": "pool",
-			})
-			pending = append(pending, pend{m.Team1, m.Team2})
+	for _, ps := range schedules {
+		for _, round := range ps.schedule {
+			rid := roundIDByNum[round.RoundNumber]
+			for _, m := range round.Matches {
+				matchRows = append(matchRows, map[string]any{
+					"event_id": ev.ID, "bracket_id": bracketID, "round_id": rid,
+					"court_id": orNull(courtByNum[m.CourtNumber]), "stage": "pool",
+					"bracket_group": orNull(ps.group),
+				})
+				pending = append(pending, pend{m.Team1, m.Team2})
+			}
 		}
 	}
 	if len(matchRows) == 0 {
@@ -5428,7 +5530,87 @@ func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID, seeding strin
 		})
 		sides = pairs
 	}
-	return sides, nil
+	return s.crossPoolOrder(eventID, bracketID, sides), nil
+}
+
+// crossPoolOrder reorders playoff seeds for a TRUE-POOLS division (pool matches
+// tagged bracket_group=pool_*): sides regroup as per-pool ranked lists, then
+// interleave by finishing tier — every pool's #1 first (best record leading),
+// then every #2, and so on — so pool winners are the top seeds regardless of
+// raw division-wide stats (records across different pools aren't comparable).
+// Because the medal bracket pairs SF1 = 1v4, SF2 = 2v3, the natural two-pool
+// interleave [A1 B1 A2 B2] gives the standard cross-pool semis A1vB2 / B1vA2;
+// a final swap fixes any residual same-pool semi when an alternative exists.
+// A division with untagged pools (one pool / legacy) returns sides unchanged.
+func (s *Service) crossPoolOrder(eventID, bracketID string, sides [][]string) [][]string {
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+
+			"&stage=eq.pool&bracket_group=not.is.null"+
+			"&select=bracket_group,participants:match_participants(player_id)")
+	if err != nil || len(rows) == 0 {
+		return sides
+	}
+	poolOf := map[string]string{}
+	for _, r := range rows {
+		g := asStr(r, "bracket_group")
+		if ps, ok := r["participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					if pid := asStr(pm, "player_id"); pid != "" {
+						poolOf[pid] = g
+					}
+				}
+			}
+		}
+	}
+	if len(poolOf) == 0 {
+		return sides
+	}
+	sidePool := func(u []string) string {
+		if len(u) == 0 {
+			return ""
+		}
+		return poolOf[u[0]]
+	}
+	// Per-pool ranked lists, preserving each side's division-wide order.
+	perPool := map[string][][]string{}
+	var poolOrder []string
+	for _, u := range sides {
+		g := sidePool(u)
+		if _, seen := perPool[g]; !seen {
+			poolOrder = append(poolOrder, g)
+		}
+		perPool[g] = append(perPool[g], u)
+	}
+	if len(poolOrder) < 2 {
+		return sides // one pool — division order already correct
+	}
+	// Interleave by tier: rank r of every pool (pools in order of their best
+	// side's division-wide position, which poolOrder already encodes).
+	var out [][]string
+	for tier := 0; ; tier++ {
+		added := false
+		for _, g := range poolOrder {
+			if tier < len(perPool[g]) {
+				out = append(out, perPool[g][tier])
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	// Avoid a same-pool semifinal when possible: SF1 = out[0] v out[3],
+	// SF2 = out[1] v out[2]. Swapping 2↔3 flips both pairings — do it only when
+	// the current layout has a same-pool semi and the swapped one has none.
+	if len(out) >= 4 {
+		cur := sidePool(out[0]) == sidePool(out[3]) || sidePool(out[1]) == sidePool(out[2])
+		alt := sidePool(out[0]) == sidePool(out[2]) || sidePool(out[1]) == sidePool(out[3])
+		if cur && !alt {
+			out[2], out[3] = out[3], out[2]
+		}
+	}
+	return out
 }
 
 // maybeSeedPlayoff fills the medal-bracket skeleton's semifinals from standings

@@ -1407,28 +1407,28 @@ func (s *Service) seedDuprDemo(ownerID string) (string, error) {
 // shape: "mixed30" (15 fixed M/F pairs, round-robin), "doubles150" (75 fixed
 // pairs, single-elim), "singles80" (single-elim). Direct bulk inserts (4 calls)
 // so a 150-player field seeds in one request. Returns the new event id.
-// SeedNearbyEvents creates a handful of PUBLIC (listed) tournaments with real
-// venue coordinates around San Diego / Chula Vista (ZIP 91915), so the Play →
-// Nearby tab (list + map) has content to show. Owned by the caller, so they can
-// delete them afterward. Idempotent-ish: it just inserts; call once.
+// nearbySeedEvents are the PUBLIC demo tournaments around San Diego / Chula
+// Vista (ZIP 91915) used to populate the Play → Nearby tab for demos/screenshots.
+var nearbySeedEvents = []struct {
+	name, loc, format, tfmt string
+	lat, lng                float64
+	days, fee, courts       int
+}{
+	{"Chula Vista Summer Slam", "Veterans Park, Chula Vista", "doubles", "single_elim", 32.6401, -117.0842, 9, 2500, 8},
+	{"National City Open", "Las Palmas Park, National City", "singles", "single_elim", 32.6781, -117.0992, 14, 2000, 6},
+	{"Bonita Round Robin Social", "Rohr Park, Bonita", "doubles", "round_robin", 32.6576, -117.0300, 5, 1500, 4},
+	{"Coronado Beach Classic", "Coronado Community Center", "doubles", "pools_playoff", 32.6859, -117.1831, 21, 3500, 10},
+	{"El Cajon Dinkfest", "Wells Park, El Cajon", "doubles", "single_elim", 32.7948, -116.9625, 12, 3000, 8},
+	{"Imperial Beach Paddle Battle", "Sports Park, Imperial Beach", "singles", "round_robin", 32.5839, -117.1131, 7, 1500, 4},
+	{"La Mesa Championships", "Harry Griffen Park, La Mesa", "doubles", "single_elim", 32.7678, -117.0231, 28, 4000, 12},
+}
+
+// SeedNearbyEvents inserts the public demo tournaments (see nearbySeedEvents),
+// owned by the caller so they can be removed afterward with RemoveNearbyEvents.
 func (s *Service) SeedNearbyEvents(ownerID string) (int, error) {
 	base := time.Now().UTC()
-	type ev struct {
-		name, loc, format, tfmt string
-		lat, lng                float64
-		days, fee, courts       int
-	}
-	list := []ev{
-		{"Chula Vista Summer Slam", "Veterans Park, Chula Vista", "doubles", "single_elim", 32.6401, -117.0842, 9, 2500, 8},
-		{"National City Open", "Las Palmas Park, National City", "singles", "single_elim", 32.6781, -117.0992, 14, 2000, 6},
-		{"Bonita Round Robin Social", "Rohr Park, Bonita", "doubles", "round_robin", 32.6576, -117.0300, 5, 1500, 4},
-		{"Coronado Beach Classic", "Coronado Community Center", "doubles", "pools_playoff", 32.6859, -117.1831, 21, 3500, 10},
-		{"El Cajon Dinkfest", "Wells Park, El Cajon", "doubles", "single_elim", 32.7948, -116.9625, 12, 3000, 8},
-		{"Imperial Beach Paddle Battle", "Sports Park, Imperial Beach", "singles", "round_robin", 32.5839, -117.1131, 7, 1500, 4},
-		{"La Mesa Championships", "Harry Griffen Park, La Mesa", "doubles", "single_elim", 32.7678, -117.0231, 28, 4000, 12},
-	}
 	n := 0
-	for _, e := range list {
+	for _, e := range nearbySeedEvents {
 		partner := "fixed"
 		if e.format == "singles" {
 			partner = "na"
@@ -1447,6 +1447,20 @@ func (s *Service) SeedNearbyEvents(ownerID string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// RemoveNearbyEvents deletes the caller's public demo tournaments (matched by
+// the known seed names), for cleanup after a demo/screenshot session.
+func (s *Service) RemoveNearbyEvents(ownerID string) error {
+	// PostgREST in.() needs each string value double-quoted; encode the name so
+	// spaces/commas survive, keep the surrounding quotes literal (%22).
+	quoted := make([]string, len(nearbySeedEvents))
+	for i, e := range nearbySeedEvents {
+		quoted[i] = "%22" + store.Q(e.name) + "%22"
+	}
+	return s.sb.Delete("events",
+		"owner_id=eq."+store.Q(ownerID)+
+			"&name=in.("+strings.Join(quoted, ",")+")")
 }
 
 func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {

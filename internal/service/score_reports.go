@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
@@ -286,6 +287,11 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 	for pid, phone := range phoneByPlayer {
 		tok := tokenByPlayer[pid]
 		if tok == "" {
+			continue
+		}
+		// A2P 10DLC reaches US/Canada only — international players got the push
+		// above; skip a non-deliverable SMS instead of recording a failure.
+		if !gateway.IsNANP(phone) {
 			continue
 		}
 		// Short link + terse copy = one SMS segment.

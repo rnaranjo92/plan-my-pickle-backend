@@ -105,6 +105,22 @@ func toE164(raw string) string {
 	}
 }
 
+// IsNANP reports whether a stored phone number belongs to the North American
+// Numbering Plan (US/Canada, country code +1) — the only region our Twilio A2P
+// 10DLC campaign can reach. International numbers should fall back to push
+// notifications instead of a guaranteed-to-fail SMS. Matches toE164's rules:
+// an explicit "+" prefix must be +1 with 11 digits; bare 10-digit and 1+10
+// forms are treated as US.
+func IsNANP(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "+") {
+		d := digitsOnly(raw)
+		return len(d) == 11 && d[0] == '1'
+	}
+	d := digitsOnly(raw)
+	return len(d) == 10 || (len(d) == 11 && d[0] == '1')
+}
+
 func digitsOnly(s string) string {
 	var b strings.Builder
 	for _, r := range s {

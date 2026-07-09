@@ -8168,6 +8168,12 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	sent := 0
 	for _, rc := range phones {
 		phone := rc.phone
+		// Our A2P 10DLC campaign only reaches US/Canada numbers. International
+		// players are covered by the push above (if they have a linked account);
+		// skip the SMS rather than log a guaranteed carrier failure.
+		if !gateway.IsNANP(phone) {
+			continue
+		}
 		// Wording mirrors the registered A2P sample; the STOP footer is required
 		// for compliance (the Messaging Service also auto-handles STOP/HELP).
 		body := fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Reply STOP to opt out.", court, roundNumber)

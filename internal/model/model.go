@@ -1081,7 +1081,9 @@ type Profile struct {
 	DuprID     string   `json:"duprId"`
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	SkillLevel *float64 `json:"skillLevel,omitempty"`
-	PhotoURL   string   `json:"photoUrl,omitempty"`
+	// GamesPlayed: completed real matches across all the user's player rows.
+	GamesPlayed int    `json:"gamesPlayed"`
+	PhotoURL    string `json:"photoUrl,omitempty"`
 	// Partner-finder fields (account-level, pmp_profiles).
 	Gender         string `json:"gender,omitempty"`
 	City           string `json:"city,omitempty"`

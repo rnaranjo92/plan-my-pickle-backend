@@ -7367,7 +7367,57 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	p.DuprID = asStr(row, "dupr_id")
 	p.DuprRating = asFloatPtr(row, "dupr_rating")
 	p.SkillLevel = asFloatPtr(row, "skill_level")
+	p.GamesPlayed = s.gamesPlayedForUser(userID)
 	return p
+}
+
+// gamesPlayedForUser counts completed, real (counts_for_diff) matches the user
+// took part in across ALL their player rows (one per event registered). Byes
+// and forfeits/walkovers don't count. Best-effort: any error returns 0.
+func (s *Service) gamesPlayedForUser(userID string) int {
+	pls, err := s.sb.Select("players", "user_id=eq."+store.Q(userID)+"&select=id")
+	if err != nil || len(pls) == 0 {
+		return 0
+	}
+	pids := make([]string, 0, len(pls))
+	for _, pl := range pls {
+		if id := asStr(pl, "id"); id != "" {
+			pids = append(pids, id)
+		}
+	}
+	if len(pids) == 0 {
+		return 0
+	}
+	parts, err := s.sb.Select("match_participants",
+		"player_id="+store.In(pids)+"&select=match_id")
+	if err != nil || len(parts) == 0 {
+		return 0
+	}
+	seen := map[string]bool{}
+	mids := make([]string, 0, len(parts))
+	for _, pt := range parts {
+		if mid := asStr(pt, "match_id"); mid != "" && !seen[mid] {
+			seen[mid] = true
+			mids = append(mids, mid)
+		}
+	}
+	rows, err := s.sb.Select("matches",
+		"id="+store.In(mids)+"&status=eq.completed"+
+			"&select=team1_score,team2_score,counts_for_diff")
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, m := range rows {
+		if asIntPtr(m, "team1_score") == nil || asIntPtr(m, "team2_score") == nil {
+			continue // bye — not a game
+		}
+		if cd := m["counts_for_diff"]; cd != nil && cd == false {
+			continue // forfeit/walkover
+		}
+		n++
+	}
+	return n
 }
 
 // SetMyPhoto uploads the caller's avatar to the "avatars" Storage bucket and

@@ -1756,6 +1756,7 @@ func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs 
 	last := []string{"Lee", "Ng", "Diaz", "Park", "Cruz", "Hall", "Reed", "Shaw", "Vance", "Wood"}
 	count := pairs * 2
 	playerRows := make([]map[string]any, count)
+	used := map[string]bool{}
 	for i := 0; i < count; i++ {
 		n := startN + i + 1
 		rating := lo + float64(n%5)*0.1 // within [lo, hi)
@@ -1766,8 +1767,19 @@ func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs 
 		if n%2 == 1 {
 			first = male[n%len(male)]
 		}
+		// Clean "First Last" names (they read as real people on the leaderboard).
+		// Uniqueness for display: try a couple of alternate last names, and only
+		// as a last resort append the run number — so numbers rarely appear.
+		nm := first + " " + last[n%len(last)]
+		for k := 1; used[nm] && k <= len(last); k++ {
+			nm = first + " " + last[(n+k)%len(last)]
+		}
+		if used[nm] {
+			nm = fmt.Sprintf("%s %s %d", first, last[n%len(last)], n)
+		}
+		used[nm] = true
 		playerRows[i] = map[string]any{
-			"full_name":        fmt.Sprintf("%s %s %d", first, last[n%len(last)], n),
+			"full_name":        nm,
 			"dupr_id":          fmt.Sprintf("TST-%s-%d", prefix, n),
 			"dupr_rating":      rating,
 			"dupr_reliability": 85,
@@ -1911,7 +1923,7 @@ func (s *Service) autoPlayPartial(eventID, bracketID string, count int) error {
 // scoreboard reads full on any division, or all-divisions view. Returns the id.
 func (s *Service) seedTvDemo(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "Live-TV Showcase", "format": "doubles",
+		"name": "Riverside Doubles Classic", "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "round_robin",
 		"num_courts": 6, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
 		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID,

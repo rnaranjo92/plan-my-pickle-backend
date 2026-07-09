@@ -1423,8 +1423,9 @@ var nearbySeedEvents = []struct {
 	{"La Mesa Championships", "Harry Griffen Park, La Mesa", "doubles", "single_elim", 32.7678, -117.0231, 28, 4000, 12},
 }
 
-// SeedNearbyEvents inserts the public demo tournaments (see nearbySeedEvents),
-// owned by the caller so they can be removed afterward with RemoveNearbyEvents.
+// SeedNearbyEvents creates the public demo tournaments (see nearbySeedEvents)
+// through the PROVEN CreateEvent path (defaults, validation, status) rather than
+// a raw insert, owned by the caller so RemoveNearbyEvents can clean them up.
 func (s *Service) SeedNearbyEvents(ownerID string) (int, error) {
 	base := time.Now().UTC()
 	n := 0
@@ -1433,15 +1434,21 @@ func (s *Service) SeedNearbyEvents(ownerID string) (int, error) {
 		if e.format == "singles" {
 			partner = "na"
 		}
-		starts := base.AddDate(0, 0, e.days).Format("2006-01-02T16:00:00.000Z")
-		if _, err := s.sb.Insert("events", map[string]any{
-			"name": e.name, "format": e.format, "partner_mode": partner,
-			"scoring_mode": "wins", "tournament_format": e.tfmt, "num_courts": e.courts,
-			"points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-			"location": e.loc, "owner_id": ownerID, "listed": true,
-			"venue_lat": e.lat, "venue_lng": e.lng, "starts_at": starts,
-			"registration_fee_cents": e.fee,
-		}); err != nil {
+		lat, lng := e.lat, e.lng
+		starts := base.AddDate(0, 0, e.days).Format(time.RFC3339)
+		if _, err := s.CreateEvent(model.CreateEventRequest{
+			Name:                 e.name,
+			Format:               e.format,
+			PartnerMode:          partner,
+			TournamentFormat:     e.tfmt,
+			NumCourts:            e.courts,
+			RegistrationFeeCents: e.fee,
+			Location:             e.loc,
+			VenueLat:             &lat,
+			VenueLng:             &lng,
+			StartsAt:             starts,
+			Listed:               true,
+		}, ownerID); err != nil {
 			return n, err
 		}
 		n++

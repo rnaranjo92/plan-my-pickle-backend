@@ -491,7 +491,7 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 }
 
 // publicFeedTestName spots QA/test event names ("Test", "Bday Smash Test 2",
-// "TEST · Doubles 3.0-4.0 · 150", "Demo Open Slam", "dbg", "authcheck") so the
+// "Golden Coast Doubles Open", "Demo Open Slam", "dbg", "authcheck") so the
 // marketing feed never shows them. Word-boundary match keeps real names like
 // "SoCal Contest" visible; junk on the homepage costs more than the rare
 // false positive (an organizer with "demo" in a real event name can rename).
@@ -1458,15 +1458,15 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		return s.seedMultiDivMixed(ownerID, "pools_playoff", "pools-playoff")
 	case "mixed30":
 		name, format, partnerMode, tournFmt, divType =
-			"TEST · Mixed Doubles 3.0-4.0 · 30", "doubles", "fixed", "round_robin", "mixed_doubles"
+			"Spring Paddle Mixer", "doubles", "fixed", "round_robin", "mixed_doubles"
 		count, courts, doubles, mixed = 30, 6, true, true
 	case "doubles150":
 		name, format, partnerMode, tournFmt, divType =
-			"TEST · Doubles 3.0-4.0 · 150", "doubles", "fixed", "single_elim", "open"
+			"Golden Coast Doubles Open", "doubles", "fixed", "single_elim", "open"
 		count, courts, doubles = 150, 12, true
 	case "singles80":
 		name, format, partnerMode, tournFmt, divType =
-			"TEST · Singles 3.0-4.0 · 80", "singles", "na", "single_elim", "singles"
+			"Metro Singles Series", "singles", "na", "single_elim", "singles"
 		count, courts = 80, 10
 	default:
 		return "", fmt.Errorf("unknown seed kind %q (want podium|mixed30|mixedmulti150|poolsmulti150|doubles150|singles80|mlp6)", kind)
@@ -1476,7 +1476,7 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 		"name": name, "format": format, "partner_mode": partnerMode,
 		"scoring_mode": "wins", "tournament_format": tournFmt, "num_courts": courts,
 		"points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1586,10 +1586,10 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 // bracket scheduling. Returns the new event id.
 func (s *Service) seedMultiDivMixed(ownerID, tournFmt, label string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Mixed Doubles · 150 · 3 div · " + label, "format": "doubles",
+		"name": "Bayview Mixed Championships · " + label, "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": tournFmt,
 		"num_courts": 12, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1753,10 +1753,10 @@ func (s *Service) startOneScheduled(eventID, bracketID string) {
 // division's champions coexist with divisions still in play. Returns the id.
 func (s *Service) seedMultiDivPartialChamp(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Multi-div · 1 champ + 3 live", "format": "doubles",
+		"name": "Coastal Classic Championship", "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "pools_playoff",
 		"num_courts": 8, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -1818,10 +1818,10 @@ func (s *Service) seedMultiDivPartialChamp(ownerID string) (string, error) {
 // an organizer see + test that indicator without waiting out a real game clock.
 func (s *Service) seedOverdueGames(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Overdue games (needs a score)", "format": "doubles",
+		"name": "Sunset Courts Round Robin", "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins",
 		"tournament_format": "round_robin", "num_courts": 4, "points_to_win": 11,
-		"dupr_sanctioned": false, "status": "open", "location": "Test Courts",
+		"dupr_sanctioned": false, "status": "open", "location": "Riverside Racquet & Paddle Club",
 		"owner_id": ownerID, "listed": false,
 		// Short 15-min slots so "past its time" is unambiguous.
 		"game_duration_minutes": 15,
@@ -1885,10 +1885,10 @@ func (s *Service) seedOverdueGames(ownerID string) (string, error) {
 // creates the in-bracket bronze game the podium reads; single-elim's back-draw does not.
 func (s *Service) seedPodium(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Podium · gold/silver/bronze", "format": "doubles",
+		"name": "Harborside Invitational", "format": "doubles",
 		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "pools_playoff",
 		"num_courts": 4, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed event: %w", err)
@@ -2099,17 +2099,17 @@ func ratingInBand(min, max *float64, i, n int) float64 {
 // so QA can score them on the board and watch the tie roll up.
 func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 	teamSize, perGender := 4, 8
-	name := "TEST · MLP · 6 teams"
+	name := "City Team Cup — Challenger"
 	if premier {
 		teamSize, perGender = 6, 3
-		name = "TEST · MLP Premier · 6 teams"
+		name = "City Team Cup — Premier"
 	}
 	evRows, err := s.sb.Insert("events", map[string]any{
 		"name": name, "format": "doubles", "partner_mode": "fixed",
 		"scoring_mode": "wins", "tournament_format": "round_robin", "num_courts": 8,
 		"points_to_win": 11, "win_by": 2, "best_of": 1, "team_size": teamSize,
 		"dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID, "listed": false,
 	})
 	if err != nil || len(evRows) == 0 {
 		return "", fmt.Errorf("seed mlp event: %w", err)
@@ -2393,7 +2393,7 @@ func (s *Service) seedMlpScored(ownerID string) (string, error) {
 		return "", err
 	}
 	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
-		"name":   "TEST · MLP · scored",
+		"name":   "Bay Area Team League",
 		"status": "in_progress",
 	})
 	ties, err := s.ListTies(eventID)
@@ -2461,7 +2461,7 @@ func (s *Service) seedMlpComplete(ownerID string) (string, error) {
 		return "", err
 	}
 	_, _ = s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
-		"name":   "TEST · MLP · champion",
+		"name":   "Championship Team Finals",
 		"status": "in_progress",
 	})
 	pool, err := s.ListTies(eventID)
@@ -9985,12 +9985,12 @@ func strp(s string) *string {
 // reports, the loser confirms/disputes — or waits out the auto-confirm.
 func (s *Service) seedScoreConfirm(ownerID string) (string, error) {
 	evRows, err := s.sb.Insert("events", map[string]any{
-		"name": "TEST · Score Confirm · singles", "format": "singles",
+		"name": "Twilight Singles Social", "format": "singles",
 		"partner_mode": "na", "scoring_mode": "wins",
 		"tournament_format": "round_robin", "num_courts": 2,
 		"points_to_win": 11, "win_by": 2, "best_of": 1,
 		"dupr_sanctioned": false, "status": "open",
-		"location": "Test Courts", "owner_id": ownerID, "listed": false,
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID, "listed": false,
 		// The feature under test:
 		"player_scoring": true, "score_confirm_minutes": 3,
 		// Guarantee the Premium gate passes regardless of subscription state.

@@ -1423,6 +1423,61 @@ var nearbySeedEvents = []struct {
 	{"La Mesa Championships", "Harry Griffen Park, La Mesa", "doubles", "single_elim", 32.7678, -117.0231, 28, 4000, 12},
 }
 
+// testRename maps the old TEST-prefixed seed names to the legit screenshot
+// names (matching the current seeders). Events seeded before the rename keep
+// their old names until TidyTestEvents runs.
+var testRename = map[string]string{
+	"TEST · Overdue games (needs a score)": "Sunset Courts Round Robin",
+	"TEST · Multi-div · 1 champ + 3 live":  "Coastal Classic Championship",
+	"TEST · Podium · gold/silver/bronze":   "Harborside Invitational",
+	"TEST · Mixed Doubles 3.0-4.0 · 30":    "Spring Paddle Mixer",
+	"TEST · Doubles 3.0-4.0 · 150":         "Golden Coast Doubles Open",
+	"TEST · Singles 3.0-4.0 · 80":          "Metro Singles Series",
+	"TEST · Score Confirm · singles":       "Twilight Singles Social",
+	"TEST · MLP · 6 teams":                 "City Team Cup — Challenger",
+	"TEST · MLP Premier · 6 teams":         "City Team Cup — Premier",
+	"TEST · MLP · scored":                  "Bay Area Team League",
+	"TEST · MLP · champion":                "Championship Team Finals",
+}
+
+// TidyTestEvents renames the caller's leftover "TEST ·" events to legit names
+// and swaps the "Test Courts" venue for a real one — so old seeded events stop
+// reading as fake in screenshots. Returns how many were updated.
+func (s *Service) TidyTestEvents(ownerID string) (int, error) {
+	rows, err := s.sb.Select("events",
+		"owner_id=eq."+store.Q(ownerID)+"&select=id,name,location")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		name := asStr(r, "name")
+		upd := map[string]any{}
+		if nn, ok := testRename[name]; ok {
+			upd["name"] = nn
+		} else if strings.HasPrefix(name, "TEST") {
+			stripped := strings.TrimSpace(strings.TrimPrefix(
+				strings.TrimSpace(strings.TrimPrefix(name, "TEST")), "·"))
+			if stripped == "" {
+				stripped = "Pickleball Tournament"
+			}
+			upd["name"] = stripped
+		}
+		if asStr(r, "location") == "Test Courts" {
+			upd["location"] = "Riverside Racquet & Paddle Club"
+		}
+		if len(upd) == 0 {
+			continue
+		}
+		if _, err := s.sb.Update("events",
+			"id=eq."+store.Q(asStr(r, "id")), upd); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // SeedNearbyEvents creates the public demo tournaments (see nearbySeedEvents)
 // through the PROVEN CreateEvent path (defaults, validation, status) rather than
 // a raw insert, owned by the caller so RemoveNearbyEvents can clean them up.

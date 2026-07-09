@@ -1407,6 +1407,48 @@ func (s *Service) seedDuprDemo(ownerID string) (string, error) {
 // shape: "mixed30" (15 fixed M/F pairs, round-robin), "doubles150" (75 fixed
 // pairs, single-elim), "singles80" (single-elim). Direct bulk inserts (4 calls)
 // so a 150-player field seeds in one request. Returns the new event id.
+// SeedNearbyEvents creates a handful of PUBLIC (listed) tournaments with real
+// venue coordinates around San Diego / Chula Vista (ZIP 91915), so the Play →
+// Nearby tab (list + map) has content to show. Owned by the caller, so they can
+// delete them afterward. Idempotent-ish: it just inserts; call once.
+func (s *Service) SeedNearbyEvents(ownerID string) (int, error) {
+	base := time.Now().UTC()
+	type ev struct {
+		name, loc, format, tfmt string
+		lat, lng                float64
+		days, fee, courts       int
+	}
+	list := []ev{
+		{"Chula Vista Summer Slam", "Veterans Park, Chula Vista", "doubles", "single_elim", 32.6401, -117.0842, 9, 2500, 8},
+		{"National City Open", "Las Palmas Park, National City", "singles", "single_elim", 32.6781, -117.0992, 14, 2000, 6},
+		{"Bonita Round Robin Social", "Rohr Park, Bonita", "doubles", "round_robin", 32.6576, -117.0300, 5, 1500, 4},
+		{"Coronado Beach Classic", "Coronado Community Center", "doubles", "pools_playoff", 32.6859, -117.1831, 21, 3500, 10},
+		{"El Cajon Dinkfest", "Wells Park, El Cajon", "doubles", "single_elim", 32.7948, -116.9625, 12, 3000, 8},
+		{"Imperial Beach Paddle Battle", "Sports Park, Imperial Beach", "singles", "round_robin", 32.5839, -117.1131, 7, 1500, 4},
+		{"La Mesa Championships", "Harry Griffen Park, La Mesa", "doubles", "single_elim", 32.7678, -117.0231, 28, 4000, 12},
+	}
+	n := 0
+	for _, e := range list {
+		partner := "fixed"
+		if e.format == "singles" {
+			partner = "na"
+		}
+		starts := base.AddDate(0, 0, e.days).Format("2006-01-02T16:00:00.000Z")
+		if _, err := s.sb.Insert("events", map[string]any{
+			"name": e.name, "format": e.format, "partner_mode": partner,
+			"scoring_mode": "wins", "tournament_format": e.tfmt, "num_courts": e.courts,
+			"points_to_win": 11, "dupr_sanctioned": false, "status": "open",
+			"location": e.loc, "owner_id": ownerID, "listed": true,
+			"venue_lat": e.lat, "venue_lng": e.lng, "starts_at": starts,
+			"registration_fee_cents": e.fee,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	var (
 		name, format, partnerMode, tournFmt, divType string

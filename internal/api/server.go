@@ -371,6 +371,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
+	// Seed a set of PUBLIC tournaments near San Diego so the Play/Nearby tab
+	// (and its map) has content. Owned by the caller — deletable afterward.
+	mux.HandleFunc("POST /dev/seed-nearby", requireAuth(s.seedNearbyDemo))
 
 	return withCORS(mux)
 }
@@ -1138,6 +1141,20 @@ func (s *Server) seedTestTournament(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
+}
+
+func (s *Server) seedNearbyDemo(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.SeedNearbyEvents(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]int{"seeded": n})
 }
 
 func (s *Server) seedPlayoffDemo(w http.ResponseWriter, r *http.Request) {

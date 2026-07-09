@@ -1559,6 +1559,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 	case "multichamp":
 		// 4 divisions: one played to a full podium, three still live.
 		return s.seedMultiDivPartialChamp(ownerID)
+	case "tvdemo":
+		// Multi-division round-robin, every division mid-tournament (filled board).
+		return s.seedTvDemo(ownerID)
 	case "overdue":
 		// 10-player round robin, first round live + backdated an hour with no
 		// scores → the Game-tab "Needs a score" overdue caution.
@@ -1863,6 +1866,101 @@ func (s *Service) startOneScheduled(eventID, bracketID string) {
 			return
 		}
 	}
+}
+
+// autoPlayPartial scores the first `count` ready scheduled matches in a bracket
+// with VARIED scores (so the leaderboard/standings spread realistically),
+// leaving the rest scheduled. Unlike autoPlayBracket (which scores every ready
+// match), this stops at `count` so a round-robin ends up mid-tournament.
+func (s *Service) autoPlayPartial(eventID, bracketID string, count int) error {
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+
+			"&status=eq.scheduled&select=id,play_order,match_participants(team)&order=play_order")
+	if err != nil {
+		return err
+	}
+	scores := [][2]int{{11, 4}, {11, 9}, {12, 10}, {11, 2}, {9, 11}, {11, 8},
+		{11, 6}, {7, 11}, {11, 3}, {11, 7}, {10, 12}, {11, 5}}
+	scored := 0
+	for _, r := range rows {
+		if scored >= count {
+			break
+		}
+		teams := map[int]bool{}
+		if ps, ok := r["match_participants"].([]any); ok {
+			for _, p := range ps {
+				if pm, ok := p.(map[string]any); ok {
+					teams[asInt(pm, "team")] = true
+				}
+			}
+		}
+		if teams[1] && teams[2] {
+			sc := scores[scored%len(scores)]
+			if err := s.applyScore(asStr(r, "id"), sc[0], sc[1]); err != nil {
+				return err
+			}
+			scored++
+		}
+	}
+	return nil
+}
+
+// seedTvDemo builds a MULTI-DIVISION round-robin event where every division is
+// mid-tournament: ~60% of games scored (populated Leaderboard + Standings), two
+// matches live (Ongoing), and the rest scheduled (Up Next) — so the live TV
+// scoreboard reads full on any division, or all-divisions view. Returns the id.
+func (s *Service) seedTvDemo(ownerID string) (string, error) {
+	evRows, err := s.sb.Insert("events", map[string]any{
+		"name": "Live-TV Showcase", "format": "doubles",
+		"partner_mode": "fixed", "scoring_mode": "wins", "tournament_format": "round_robin",
+		"num_courts": 6, "points_to_win": 11, "dupr_sanctioned": false, "status": "open",
+		"location": "Riverside Racquet & Paddle Club", "owner_id": ownerID,
+		"listed": false, "court_calls": true,
+	})
+	if err != nil || len(evRows) == 0 {
+		return "", fmt.Errorf("seed event: %w", err)
+	}
+	eventID := asStr(evRows[0], "id")
+	if err := s.ensureCourts(eventID, 6); err != nil {
+		return "", fmt.Errorf("seed courts: %w", err)
+	}
+	divs := []struct {
+		name   string
+		lo, hi float64
+	}{
+		{"3.0 - 3.5", 3.0, 3.5}, {"3.5 - 4.0", 3.5, 4.0}, {"4.0 - 4.5", 4.0, 4.5},
+	}
+	var brIDs []string
+	for i, d := range divs {
+		brRows, err := s.sb.Insert("brackets", map[string]any{
+			"event_id": eventID, "name": d.name, "division_type": "mixed_doubles",
+			"min_rating": d.lo, "max_rating": d.hi, "dupr_min": d.lo, "dupr_max": d.hi,
+			"sort_order": i,
+		})
+		if err != nil || len(brRows) == 0 {
+			return "", fmt.Errorf("seed bracket %d: %w", i, err)
+		}
+		bid := asStr(brRows[0], "id")
+		brIDs = append(brIDs, bid)
+		if err := s.seedDivPairs(eventID, bid,
+			fmt.Sprintf("%stv%d", eventID[:6], i), i*20, 6, d.lo, d.hi); err != nil {
+			return "", err
+		}
+	}
+	if _, err := s.GenerateSchedule(eventID, false, true); err != nil {
+		return "", fmt.Errorf("seed schedule: %w", err)
+	}
+	// 6 pairs -> 15 round-robin games each. Score ~9 (60%), start 2 live, leave
+	// the rest scheduled: full Leaderboard/Standings + Ongoing + Up Next.
+	for _, bid := range brIDs {
+		if err := s.autoPlayPartial(eventID, bid, 9); err != nil {
+			return "", err
+		}
+		s.startOneScheduled(eventID, bid)
+		s.startOneScheduled(eventID, bid)
+	}
+	s.syncEventStatus(eventID)
+	return eventID, nil
 }
 
 // seedMultiDivPartialChamp builds a 4-division pools->playoff event where ONE

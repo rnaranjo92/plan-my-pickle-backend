@@ -107,6 +107,44 @@ func (s *Service) BackfillEventCoords(limit int) (int, error) {
 	return updated, nil
 }
 
+// BackfillEventCounties stamps county+state on LISTED events that already have
+// coords but no county (e.g. created before the county feature). Bounded by
+// limit; per-event failures are skipped, never fatal. Reverse-geocoding is
+// cached, so re-runs are cheap. Run once after deploy; safe to re-run.
+func (s *Service) BackfillEventCounties(limit int) (int, error) {
+	if limit <= 0 {
+		limit = DefaultBackfillCap
+	}
+	rows, err := s.sb.Select("events",
+		"listed=eq.true&venue_lat=not.is.null&venue_lng=not.is.null&county=is.null"+
+			"&select=id,venue_lat,venue_lng&limit="+strconv.Itoa(limit))
+	if err != nil {
+		return 0, err
+	}
+	updated := 0
+	for _, r := range rows {
+		id := asStr(r, "id")
+		lat, lng := asFloatPtr(r, "venue_lat"), asFloatPtr(r, "venue_lng")
+		if id == "" || lat == nil || lng == nil {
+			continue
+		}
+		county, state := courts.ReverseCounty(*lat, *lng)
+		if strings.TrimSpace(county) == "" {
+			continue // geocoder unset / no match / transient — skip, retry later
+		}
+		if _, err := s.sb.Update("events", "id=eq."+store.Q(id), map[string]any{
+			"county": county,
+			"state":  state,
+		}); err != nil {
+			log.Printf("BackfillEventCounties: update %s failed (continuing): %v", id, err)
+			continue
+		}
+		updated++
+	}
+	log.Printf("BackfillEventCounties: stamped county on %d/%d events", updated, len(rows))
+	return updated, nil
+}
+
 // DefaultBackfillCap bounds a single BackfillEventCoords run when no explicit
 // limit is given — keeps the ~1 req/sec loop to a few minutes at most.
 const DefaultBackfillCap = 200

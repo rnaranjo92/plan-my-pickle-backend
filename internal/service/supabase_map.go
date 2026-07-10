@@ -154,6 +154,8 @@ func mapEvent(m map[string]any) model.Event {
 		VenueWebsite:             asStrPtr(m, "venue_website"),
 		VenueLat:                 asFloatPtr(m, "venue_lat"),
 		VenueLng:                 asFloatPtr(m, "venue_lng"),
+		County:                   asStr(m, "county"),
+		State:                    asStr(m, "state"),
 		DuprSanctioned:           asBool(m, "dupr_sanctioned"),
 		DuprMinEntitlement:       asStr(m, "dupr_min_entitlement"),
 		CashPrize:                asBool(m, "cash_prize"),

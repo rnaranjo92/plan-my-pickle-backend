@@ -47,7 +47,7 @@ func TestReverseGeoapifyName(t *testing.T) {
 		}
 		return jsonResp(200, `{"results":[{"name":"Balboa Park","street":"6th Ave","formatted":"Balboa Park, San Diego"}]}`), nil
 	})
-	r := reverseGeoapify(32.7, -117.1)
+	r, _ := reverseGeoapify(32.7, -117.1)
 	if r.Name != "Balboa Park" || r.Address != "Balboa Park, San Diego" {
 		t.Fatalf("bad result: %+v", r)
 	}
@@ -57,7 +57,7 @@ func TestReverseGeoapifyFallsBackToStreet(t *testing.T) {
 	withGeoapify(t, "K", func(*http.Request) (*http.Response, error) {
 		return jsonResp(200, `{"results":[{"name":"","street":"6th Ave","formatted":"6th Ave, SD"}]}`), nil
 	})
-	r := reverseGeoapify(1, 2)
+	r, _ := reverseGeoapify(1, 2)
 	if r.Name != "6th Ave" {
 		t.Fatalf("expected street fallback, got %q", r.Name)
 	}
@@ -67,7 +67,7 @@ func TestReverseGeoapifyEmptyResults(t *testing.T) {
 	withGeoapify(t, "K", func(*http.Request) (*http.Response, error) {
 		return jsonResp(200, `{"results":[]}`), nil
 	})
-	if r := reverseGeoapify(1, 2); r.Name != "" || r.Address != "" {
+	if r, _ := reverseGeoapify(1, 2); r.Name != "" || r.Address != "" {
 		t.Fatalf("empty results should yield empty struct, got %+v", r)
 	}
 }
@@ -76,7 +76,7 @@ func TestReverseGeoapifyNon200(t *testing.T) {
 	withGeoapify(t, "K", func(*http.Request) (*http.Response, error) {
 		return jsonResp(500, `oops`), nil
 	})
-	if r := reverseGeoapify(1, 2); r != (reverseResult{}) {
+	if r, err := reverseGeoapify(1, 2); r != (reverseResult{}) || err == nil {
 		t.Fatalf("non-200 should yield empty struct, got %+v", r)
 	}
 }
@@ -85,7 +85,7 @@ func TestReverseGeoapifyMalformed(t *testing.T) {
 	withGeoapify(t, "K", func(*http.Request) (*http.Response, error) {
 		return jsonResp(200, `{bad`), nil
 	})
-	if r := reverseGeoapify(1, 2); r != (reverseResult{}) {
+	if r, _ := reverseGeoapify(1, 2); r != (reverseResult{}) {
 		t.Fatalf("malformed JSON should yield empty struct, got %+v", r)
 	}
 }
@@ -94,8 +94,8 @@ func TestReverseGeoapifyTransportError(t *testing.T) {
 	withGeoapify(t, "K", func(*http.Request) (*http.Response, error) {
 		return nil, io.ErrUnexpectedEOF
 	})
-	if r := reverseGeoapify(1, 2); r != (reverseResult{}) {
-		t.Fatalf("transport error should yield empty struct, got %+v", r)
+	if r, err := reverseGeoapify(1, 2); r != (reverseResult{}) || err == nil {
+		t.Fatalf("transport error should yield empty struct + error, got %+v (err=%v)", r, err)
 	}
 }
 

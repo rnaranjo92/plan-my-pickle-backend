@@ -53,6 +53,16 @@ var reverseCache sync.Map // string -> reverseResult
 type reverseResult struct {
 	Name    string
 	Address string
+	County  string
+	State   string
+}
+
+// ReverseCounty resolves a coordinate to its county + state (US), best-effort
+// and cached. Returns empty strings when the geocoder key is unset or there's no
+// match — callers then fall back to distance-only behaviour.
+func ReverseCounty(lat, lng float64) (county, state string) {
+	r := reverseLookup(lat, lng)
+	return r.County, r.State
 }
 
 // EnrichLabels reverse-geocodes courts that still have no real name (the generic
@@ -88,12 +98,19 @@ func EnrichLabels(cs []Court) {
 }
 
 func reverseLookup(lat, lng float64) reverseResult {
-	key := fmt.Sprintf("%.4f,%.4f", lat, lng)
+	// Coarsen to ~1km — county/label resolution never needs 11m precision, and a
+	// coarser key raises the cache hit-rate (incl. the IP→GPS handoff).
+	key := fmt.Sprintf("%.2f,%.2f", lat, lng)
 	if v, ok := reverseCache.Load(key); ok {
 		return v.(reverseResult)
 	}
-	r := reverseGeoapify(lat, lng)
-	reverseCache.Store(key, r)
+	r, err := reverseGeoapify(lat, lng)
+	// NEVER cache a transient failure (network/429/5xx) as a false negative — that
+	// would make a place's county vanish until restart. Only cache stable results
+	// (success, or a genuine 200-with-no-match).
+	if err == nil {
+		reverseCache.Store(key, r)
+	}
 	return r
 }
 
@@ -199,34 +216,47 @@ func PlaceAutocomplete(query, kind string) []string {
 	return out
 }
 
-// reverseGeoapify resolves a coordinate to a place name + address via Geoapify.
-// Prefers a POI/park name, then the street. Returns an empty result on any
-// error so the caller keeps the generic label.
-func reverseGeoapify(lat, lng float64) reverseResult {
+// reverseGeoapify resolves a coordinate to a place name + address (+ county/
+// state) via Geoapify. Returns (result, error): a non-nil error signals a
+// TRANSIENT failure (no key short-circuit is NOT an error) so the caller can
+// avoid caching a false negative. A nil error with an empty result means a
+// stable "no match" that is safe to cache.
+func reverseGeoapify(lat, lng float64) (reverseResult, error) {
+	if geocoderKey == "" {
+		// No geocoder configured — stable empty (don't fire a doomed 401 request).
+		return reverseResult{}, nil
+	}
 	u := fmt.Sprintf("https://api.geoapify.com/v1/geocode/reverse?lat=%f&lon=%f&format=json&apiKey=%s",
 		lat, lng, url.QueryEscape(geocoderKey))
 	resp, err := reverseHTTP.Get(u)
 	if err != nil {
-		return reverseResult{}
+		return reverseResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return reverseResult{}
+		return reverseResult{}, fmt.Errorf("geoapify reverse %d", resp.StatusCode)
 	}
 	var parsed struct {
 		Results []struct {
 			Name      string `json:"name"`
 			Street    string `json:"street"`
 			Formatted string `json:"formatted"`
+			County    string `json:"county"`
+			State     string `json:"state"`
 		} `json:"results"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&parsed) != nil || len(parsed.Results) == 0 {
-		return reverseResult{}
+		return reverseResult{}, nil // stable no-match
 	}
 	r := parsed.Results[0]
 	name := r.Name
 	if name == "" {
 		name = r.Street
 	}
-	return reverseResult{Name: name, Address: r.Formatted}
+	return reverseResult{
+		Name:    name,
+		Address: r.Formatted,
+		County:  r.County,
+		State:   r.State,
+	}, nil
 }

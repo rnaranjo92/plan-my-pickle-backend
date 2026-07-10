@@ -35,6 +35,11 @@ type Event struct {
 	VenueWebsite    *string  `json:"venueWebsite,omitempty"`
 	VenueLat        *float64 `json:"venueLat,omitempty"`
 	VenueLng        *float64 `json:"venueLng,omitempty"`
+	// County + state resolved from the venue coords — used to filter the public
+	// Nearby feed to the requester's own county (matched together, since county
+	// names collide across states). Best-effort; "" when unresolved.
+	County          string   `json:"county,omitempty"`
+	State           string   `json:"state,omitempty"`
 	DuprSanctioned  bool     `json:"duprSanctioned"`
 	// DuprMinEntitlement, when set to "DUPR_PLUS", gates self-registration on a
 	// DUPR+ membership — the player must hold BOTH the PREMIUM_L1 and VERIFIED_L1

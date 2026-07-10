@@ -317,6 +317,14 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 			venueLat, venueLng = lat, lng
 		}
 	}
+	// Stamp county+state from the venue coords now, so a listed event can be
+	// county-filtered in Nearby WITHOUT any geocoding on the hot read path.
+	// Best-effort (empty when the geocoder is unset) — the Nearby fallback and
+	// the one-shot backfill cover the gaps.
+	var venueCounty, venueState string
+	if venueLat != nil && venueLng != nil {
+		venueCounty, venueState = s.reverseCounty(*venueLat, *venueLng)
+	}
 
 	// An event can be created under a club only by that club's owner.
 	if req.ClubID != "" && !s.OwnsClub(req.ClubID, ownerID) {
@@ -362,6 +370,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"venue_website":          orNull(req.VenueWebsite),
 		"venue_lat":              fOrNull(venueLat),
 		"venue_lng":              fOrNull(venueLng),
+		"county":                 orNull(venueCounty),
+		"state":                  orNull(venueState),
 		"status":                 "open",
 	}
 	// Only reference starts_at when the organizer set one. The column ships in
@@ -969,18 +979,35 @@ func (s *Service) DeleteAccount(userID string) error {
 // after those migrations.
 // NearbyEvents returns publicly-listed events that have a venue location,
 // sorted by distance from (lat,lng) ascending, paginated (0-based page).
+// reverseCounty wraps courts.ReverseCounty as a method so callers that shadow
+// the `courts` package identifier (e.g. CreateEvent's local num-courts var) can
+// still resolve a coordinate's county+state.
+func (s *Service) reverseCounty(lat, lng float64) (county, state string) {
+	return courts.ReverseCounty(lat, lng)
+}
+
 func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Event, error) {
 	rows, err := s.sb.Select("events",
 		"listed=eq.true&venue_lat=not.is.null&venue_lng=not.is.null&select=*")
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the requester's county+state ONCE (cached). Empty when the geocoder
+	// key is unset or there's no match — we then fall back to distance-only so the
+	// tab still works. No per-event geocoding on this hot read path: events carry
+	// their own county/state (stamped at create + a one-shot backfill).
+	uCounty, uState := courts.ReverseCounty(lat, lng)
+	uCounty = strings.ToLower(strings.TrimSpace(uCounty))
+	uState = strings.ToLower(strings.TrimSpace(uState))
+	countyFilter := uCounty != "" && uState != ""
+
 	type withDist struct {
 		e model.Event
 		d float64
 	}
 	now := time.Now()
-	list := make([]withDist, 0, len(rows))
+	all := make([]withDist, 0, len(rows))
+	anyCountied := false
 	for _, r := range rows {
 		e := mapEvent(r)
 		if e.VenueLat == nil || e.VenueLng == nil {
@@ -990,11 +1017,33 @@ func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Ev
 		if eventEnded(e, now) {
 			continue
 		}
+		if strings.TrimSpace(e.County) != "" {
+			anyCountied = true
+		}
 		d := haversineKm(lat, lng, *e.VenueLat, *e.VenueLng)
 		dd := d
 		e.DistanceKm = &dd
-		list = append(list, withDist{e, d})
+		all = append(all, withDist{e, d})
 	}
+
+	// County filter: match BOTH county AND state (names collide across states),
+	// and include same-county events regardless of distance (big rural counties
+	// span >160km). Only ENGAGE the filter once at least one event carries a
+	// county — before the backfill runs, everything is un-countied, so filtering
+	// would wrongly empty the tab; fall back to distance-only then. With no user
+	// county resolved (geocoder unset / no match) we also fall back to distance.
+	list := all
+	if countyFilter && anyCountied {
+		filtered := make([]withDist, 0, len(all))
+		for _, c := range all {
+			if strings.ToLower(strings.TrimSpace(c.e.County)) == uCounty &&
+				strings.ToLower(strings.TrimSpace(c.e.State)) == uState {
+				filtered = append(filtered, c)
+			}
+		}
+		list = filtered
+	}
+
 	sort.Slice(list, func(i, j int) bool { return list[i].d < list[j].d })
 	start := page * pageSize
 	if start < 0 || start >= len(list) {

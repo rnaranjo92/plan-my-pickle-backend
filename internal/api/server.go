@@ -376,6 +376,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// (and its map) has content. Owned by the caller — deletable afterward.
 	mux.HandleFunc("POST /dev/seed-nearby", requireAuth(s.seedNearbyDemo))
 	mux.HandleFunc("POST /dev/unseed-nearby", requireAuth(s.unseedNearbyDemo))
+	// One-shot: stamp county+state on listed events that have coords but no
+	// county (backfill for the Nearby county filter). QA-gated; safe to re-run.
+	mux.HandleFunc("POST /dev/backfill-county", requireAuth(s.backfillCounty))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
 	mux.HandleFunc("POST /dev/tidy-tests", requireAuth(s.tidyTestEvents))
 
@@ -1172,6 +1175,22 @@ func (s *Server) seedNearbyDemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]int{"seeded": n})
+}
+
+// backfillCounty stamps county+state on listed events that have coords but no
+// county — the one-shot backfill for the Nearby county filter. QA-gated.
+func (s *Server) backfillCounty(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.BackfillEventCounties(0)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"stamped": n})
 }
 
 func (s *Server) tidyTestEvents(w http.ResponseWriter, r *http.Request) {

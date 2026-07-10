@@ -370,8 +370,6 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"venue_website":          orNull(req.VenueWebsite),
 		"venue_lat":              fOrNull(venueLat),
 		"venue_lng":              fOrNull(venueLng),
-		"county":                 orNull(venueCounty),
-		"state":                  orNull(venueState),
 		"status":                 "open",
 	}
 	// Only reference starts_at when the organizer set one. The column ships in
@@ -412,6 +410,17 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		return "", errors.New("event insert returned no row")
 	}
 	id := asStr(ev[0], "id")
+
+	// Best-effort county/state stamp AFTER the insert (not in the payload) so a
+	// pre-0067 DB without these columns still creates the event — the update just
+	// no-ops. New events are then county-filterable in Nearby without any
+	// read-path geocoding; the backfill covers pre-existing ones.
+	if venueCounty != "" {
+		_, _ = s.sb.Update("events", "id=eq."+store.Q(id), map[string]any{
+			"county": venueCounty,
+			"state":  venueState,
+		})
+	}
 
 	divs := req.Brackets
 	if len(divs) == 0 {

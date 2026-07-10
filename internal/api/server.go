@@ -57,6 +57,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
 	mux.HandleFunc("POST /me/profile", requireAuth(s.saveProfileDetails))
+	mux.HandleFunc("POST /me/basic", requireAuth(s.saveBasicInfo))
 	mux.HandleFunc("GET /partners", requireAuth(s.partnerDirectory))
 	mux.HandleFunc("POST /me/photo", requireAuth(s.uploadPhoto))
 	mux.HandleFunc("DELETE /me/photo", requireAuth(s.clearPhoto))
@@ -449,6 +450,19 @@ func (s *Server) saveProfileDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetMyProfileDetails(userID(r), req.Gender, req.City, req.SeekingPartner); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// saveBasicInfo stores the caller's account-level name + phone (pmp_profiles).
+func (s *Server) saveBasicInfo(w http.ResponseWriter, r *http.Request) {
+	var req model.BasicInfoRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetMyBasicInfo(userID(r), req.FullName, req.Phone); err != nil {
 		status(w, err)
 		return
 	}

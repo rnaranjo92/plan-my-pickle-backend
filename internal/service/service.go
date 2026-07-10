@@ -7518,14 +7518,32 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 		p.City = asStr(pr, "city")
 		p.SeekingPartner = asBool(pr, "seeking_partner")
 	}
+	// Account-level basic info (name/phone) lives on pmp_profiles and wins over
+	// the per-registration players values when set — so editing your profile
+	// works even with no players row. SEPARATE best-effort read so a pre-0066 DB
+	// (no full_name/phone columns) still returns photo/gender/city above.
+	var acctName, acctPhone string
+	if pr, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+
+			"&select=full_name,phone"); err == nil && pr != nil {
+		acctName = strings.TrimSpace(asStr(pr, "full_name"))
+		acctPhone = strings.TrimSpace(asStr(pr, "phone"))
+	}
+	// Seed from the account-level values; a players row (below) fills any gaps.
+	p.FullName = acctName
+	p.Phone = acctPhone
 	row, err := s.sb.SelectOne("players",
 		"user_id=eq."+store.Q(userID)+
 			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level&limit=1")
 	if err != nil || row == nil {
 		return p
 	}
-	p.FullName = asStr(row, "full_name")
-	p.Phone = asStr(row, "phone")
+	if acctName == "" {
+		p.FullName = asStr(row, "full_name")
+	}
+	if acctPhone == "" {
+		p.Phone = asStr(row, "phone")
+	}
 	if e := asStr(row, "email"); e != "" {
 		p.Email = e
 	}
@@ -7534,6 +7552,29 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 	p.SkillLevel = asFloatPtr(row, "skill_level")
 	p.GamesPlayed = s.gamesPlayedForUser(userID)
 	return p
+}
+
+// SetMyBasicInfo saves the caller's account-level name + phone on pmp_profiles.
+// Upsert on user_id, so it works for organizers with no players row. The name
+// is trimmed/collapsed; phone is stored as entered (client validates format).
+func (s *Service) SetMyBasicInfo(userID, fullName, phone string) error {
+	if userID == "" {
+		return errors.New("not signed in")
+	}
+	fullName = strings.Join(strings.Fields(fullName), " ")
+	if r := []rune(fullName); len(r) > 120 {
+		fullName = string(r[:120])
+	}
+	phone = strings.TrimSpace(phone)
+	if r := []rune(phone); len(r) > 40 {
+		phone = string(r[:40])
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+		"user_id":   userID,
+		"full_name": fullName,
+		"phone":     phone,
+	})
+	return err
 }
 
 // gamesPlayedForUser counts completed, real (counts_for_diff) matches the user

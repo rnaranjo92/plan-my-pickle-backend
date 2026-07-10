@@ -1097,6 +1097,12 @@ type ProfileDetailsRequest struct {
 	SeekingPartner bool   `json:"seekingPartner"`
 }
 
+// BasicInfoRequest saves the caller's account-level name + phone.
+type BasicInfoRequest struct {
+	FullName string `json:"fullName"`
+	Phone    string `json:"phone"`
+}
+
 // PartnerResult is one find-a-partner directory row.
 type PartnerResult struct {
 	UserSearchResult

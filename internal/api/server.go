@@ -2059,12 +2059,13 @@ func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) emailSchedule(w http.ResponseWriter, r *http.Request) {
-	sent, err := s.svc.EmailScheduleToPlayers(r.PathValue("id"))
+	queued, err := s.svc.EmailScheduleToPlayers(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"sent": sent})
+	// Delivery runs off the request path; queued = players it's being sent to.
+	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
 }
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {

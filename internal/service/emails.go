@@ -128,12 +128,23 @@ func registrationEmailBody(fullName, eventName, when, where, division, eventURL 
 	return htmlBody, tb.String()
 }
 
-// EmailScheduleToPlayers blasts each registered player their own game schedule
-// (their matches: court, round, partner + opponents) with a link to the live
-// public schedule page. Owner-triggered from the app. Returns the number of
-// emails actually sent. Best-effort per recipient — one bad address never
-// aborts the run. Team (MLP) events have no registrations, so they send 0 for
-// now (team-roster schedule email is a later pass).
+// scheduleRecipient is one player queued for a schedule email.
+type scheduleRecipient struct {
+	email string
+	name  string
+	lines []string
+}
+
+// EmailScheduleToPlayers queues a personal game-schedule email (their matches:
+// court, round, partner + opponents, plus a link to the live public schedule)
+// for every registered player. Owner-triggered from the app.
+//
+// The recipient list is assembled synchronously (fast — DB reads only), but the
+// actual Resend sends run OFF the request path in a throttled goroutine: a bulk
+// blast must never block or time out the HTTP handler, and a timeout-driven
+// retry must never double-send. Returns the number of players the blast was
+// QUEUED for (delivery is async/best-effort). Team (MLP) events have no
+// registrations, so they queue 0 (team-roster schedule email is a later pass).
 func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	if s.Email == nil || !s.Email.Live() {
 		return 0, fmt.Errorf("email is not configured")
@@ -146,7 +157,76 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// playerID -> ordered schedule lines (matches already sorted round→court).
+	lines := scheduleLinesByPlayer(matches)
+
+	rows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&select=player_id,player:players!player_id(full_name,email)")
+	if err != nil {
+		return 0, err
+	}
+
+	// Dedup by player_id, NOT by email: a player entered in two divisions has
+	// two rows but should get ONE email (lines[pid] already aggregates both
+	// divisions); conversely two distinct players who share a household inbox
+	// each get their own personalized schedule.
+	seen := map[string]bool{}
+	var recips []scheduleRecipient
+	for _, r := range rows {
+		pid := asStr(r, "player_id")
+		p := asMap(r, "player")
+		if pid == "" || p == nil || seen[pid] {
+			continue
+		}
+		email := strings.TrimSpace(asStr(p, "email"))
+		if email == "" {
+			continue
+		}
+		seen[pid] = true
+		recips = append(recips, scheduleRecipient{
+			email: email, name: asStr(p, "full_name"), lines: lines[pid],
+		})
+	}
+
+	when := "Date to be announced"
+	if ev.StartsAt != nil && *ev.StartsAt != "" {
+		if t, err := time.Parse(time.RFC3339, *ev.StartsAt); err == nil {
+			when = t.Format("Monday, January 2, 2006 · 3:04 PM")
+		}
+	}
+	where := ""
+	if ev.Location != nil {
+		where = *ev.Location
+	}
+	if ev.VenueName != nil && *ev.VenueName != "" {
+		where = strings.TrimSpace(strings.TrimSuffix(*ev.VenueName+" — "+where, " — "))
+	}
+	scheduleURL := "https://app.planmypickle.com/?schedule=" + ev.ID
+	eventName, premium := ev.Name, ev.OwnerPremium
+
+	go func() {
+		for _, rc := range recips {
+			htmlBody, textBody := scheduleEmailBody(
+				rc.name, eventName, when, where, rc.lines, scheduleURL, premium)
+			if err := s.Email.SendEmail(
+				rc.email, "Your schedule — "+eventName, htmlBody, textBody); err != nil {
+				log.Printf("email: schedule to %s failed: %v", rc.email, err)
+			}
+			// Stay well under Resend's default rate limit (~2 req/s); this runs
+			// in the background so the extra wall-clock is invisible to the user.
+			time.Sleep(400 * time.Millisecond)
+		}
+		log.Printf("email: schedule blast for %s dispatched to %d players",
+			eventID, len(recips))
+	}()
+
+	return len(recips), nil
+}
+
+// scheduleLinesByPlayer maps each player_id to their own ordered schedule lines
+// ("Court 3 · Round 2 — with Jane vs Bob / Sue"). Matches arrive already sorted
+// round→court, so append order is the play order.
+func scheduleLinesByPlayer(matches []model.Match) map[string][]string {
 	lines := map[string][]string{}
 	for _, m := range matches {
 		court := "Court TBD"
@@ -171,7 +251,15 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 				if pid == "" {
 					continue
 				}
-				mate := namesExcept(side.Players, playerAt(side.Players, pi))
+				// Partner = same-side names EXCEPT this player, by INDEX (so two
+				// partners who happen to share a display name don't cancel out).
+				mates := make([]string, 0, len(side.Players))
+				for j, nm := range side.Players {
+					if j != pi && strings.TrimSpace(nm) != "" {
+						mates = append(mates, nm)
+					}
+				}
+				mate := strings.Join(mates, " / ")
 				vs := "vs " + opp
 				if opp == "" {
 					vs = "(bye)"
@@ -190,73 +278,7 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 			}
 		}
 	}
-
-	// Registrant identities (one email per player, dedup across divisions).
-	rows, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(eventID)+
-			"&select=player_id,player:players!player_id(full_name,email)")
-	if err != nil {
-		return 0, err
-	}
-	seen := map[string]bool{}
-	when := "Date to be announced"
-	if ev.StartsAt != nil && *ev.StartsAt != "" {
-		if t, err := time.Parse(time.RFC3339, *ev.StartsAt); err == nil {
-			when = t.Format("Monday, January 2, 2006 · 3:04 PM")
-		}
-	}
-	where := ""
-	if ev.Location != nil {
-		where = *ev.Location
-	}
-	if ev.VenueName != nil && *ev.VenueName != "" {
-		where = strings.TrimSpace(strings.TrimSuffix(*ev.VenueName+" — "+where, " — "))
-	}
-	scheduleURL := "https://app.planmypickle.com/?schedule=" + ev.ID
-
-	sent := 0
-	for _, r := range rows {
-		pid := asStr(r, "player_id")
-		p := asMap(r, "player")
-		if pid == "" || p == nil {
-			continue
-		}
-		email := strings.TrimSpace(asStr(p, "email"))
-		if email == "" || seen[email] {
-			continue
-		}
-		seen[email] = true
-		mine := lines[pid]
-		subject := "Your schedule — " + ev.Name
-		htmlBody, textBody := scheduleEmailBody(
-			asStr(p, "full_name"), ev.Name, when, where, mine, scheduleURL, ev.OwnerPremium)
-		if err := s.Email.SendEmail(email, subject, htmlBody, textBody); err != nil {
-			log.Printf("email: schedule to %s failed: %v", email, err)
-			continue
-		}
-		sent++
-	}
-	return sent, nil
-}
-
-// playerAt safely returns the name at index i (empty if out of range).
-func playerAt(names []string, i int) string {
-	if i >= 0 && i < len(names) {
-		return names[i]
-	}
-	return ""
-}
-
-// namesExcept joins the names except the one equal to `self` (used to render a
-// player's partner). Passing self="" returns all names joined.
-func namesExcept(names []string, self string) string {
-	out := make([]string, 0, len(names))
-	for _, n := range names {
-		if n != "" && n != self {
-			out = append(out, n)
-		}
-	}
-	return strings.Join(out, " / ")
+	return lines
 }
 
 // scheduleEmailBody renders a player's personal schedule email (HTML + text).

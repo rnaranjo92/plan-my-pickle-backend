@@ -143,8 +143,9 @@ type scheduleRecipient struct {
 // actual Resend sends run OFF the request path in a throttled goroutine: a bulk
 // blast must never block or time out the HTTP handler, and a timeout-driven
 // retry must never double-send. Returns the number of players the blast was
-// QUEUED for (delivery is async/best-effort). Team (MLP) events have no
-// registrations, so they queue 0 (team-roster schedule email is a later pass).
+// QUEUED for (delivery is async/best-effort). Works for both registration
+// events (players in `registrations`) and team/MLP events (players in
+// `event_team_members`).
 func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	if s.Email == nil || !s.Email.Live() {
 		return 0, fmt.Errorf("email is not configured")
@@ -159,9 +160,7 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	}
 	lines := scheduleLinesByPlayer(matches)
 
-	rows, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(eventID)+
-			"&select=player_id,player:players!player_id(full_name,email)")
+	idents, err := s.scheduleIdentities(ev)
 	if err != nil {
 		return 0, err
 	}
@@ -172,19 +171,13 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	// each get their own personalized schedule.
 	seen := map[string]bool{}
 	var recips []scheduleRecipient
-	for _, r := range rows {
-		pid := asStr(r, "player_id")
-		p := asMap(r, "player")
-		if pid == "" || p == nil || seen[pid] {
+	for _, id := range idents {
+		if id.pid == "" || id.email == "" || seen[id.pid] {
 			continue
 		}
-		email := strings.TrimSpace(asStr(p, "email"))
-		if email == "" {
-			continue
-		}
-		seen[pid] = true
+		seen[id.pid] = true
 		recips = append(recips, scheduleRecipient{
-			email: email, name: asStr(p, "full_name"), lines: lines[pid],
+			email: id.email, name: id.name, lines: lines[id.pid],
 		})
 	}
 
@@ -221,6 +214,73 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	}()
 
 	return len(recips), nil
+}
+
+// scheduleIdent is a player's id + display name + email, from whichever source
+// holds this event's players.
+type scheduleIdent struct {
+	pid, name, email string
+}
+
+// scheduleIdentities returns every player in the event with their email — from
+// `registrations` for normal events, or from `event_team_members` for team/MLP
+// events (which have no registrations). Emails live on the `players` row.
+func (s *Service) scheduleIdentities(ev model.Event) ([]scheduleIdent, error) {
+	if ev.TeamSize > 0 {
+		teams, err := s.ListTeams(ev.ID)
+		if err != nil {
+			return nil, err
+		}
+		name := map[string]string{}
+		var pids []string
+		for _, t := range teams {
+			for _, m := range t.Members {
+				if m.PlayerID == nil || *m.PlayerID == "" {
+					continue
+				}
+				if _, ok := name[*m.PlayerID]; ok {
+					continue
+				}
+				name[*m.PlayerID] = m.FullName
+				pids = append(pids, *m.PlayerID)
+			}
+		}
+		email := map[string]string{}
+		if len(pids) > 0 {
+			prows, err := s.sb.Select("players", "id="+store.In(pids)+"&select=id,email")
+			if err != nil {
+				return nil, err
+			}
+			for _, pr := range prows {
+				email[asStr(pr, "id")] = strings.TrimSpace(asStr(pr, "email"))
+			}
+		}
+		out := make([]scheduleIdent, 0, len(pids))
+		for _, pid := range pids {
+			out = append(out, scheduleIdent{pid: pid, name: name[pid], email: email[pid]})
+		}
+		return out, nil
+	}
+
+	rows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(ev.ID)+
+			"&select=player_id,player:players!player_id(full_name,email)")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]scheduleIdent, 0, len(rows))
+	for _, r := range rows {
+		p := asMap(r, "player")
+		if p == nil {
+			continue
+		}
+		out = append(out, scheduleIdent{
+			pid:   asStr(r, "player_id"),
+			name:  asStr(p, "full_name"),
+			email: strings.TrimSpace(asStr(p, "email")),
+		})
+	}
+	return out, nil
 }
 
 // scheduleLinesByPlayer maps each player_id to their own ordered schedule lines

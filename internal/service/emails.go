@@ -128,6 +128,218 @@ func registrationEmailBody(fullName, eventName, when, where, division, eventURL 
 	return htmlBody, tb.String()
 }
 
+// EmailScheduleToPlayers blasts each registered player their own game schedule
+// (their matches: court, round, partner + opponents) with a link to the live
+// public schedule page. Owner-triggered from the app. Returns the number of
+// emails actually sent. Best-effort per recipient — one bad address never
+// aborts the run. Team (MLP) events have no registrations, so they send 0 for
+// now (team-roster schedule email is a later pass).
+func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
+	if s.Email == nil || !s.Email.Live() {
+		return 0, fmt.Errorf("email is not configured")
+	}
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return 0, err
+	}
+	matches, err := s.EventScheduleMatches(eventID)
+	if err != nil {
+		return 0, err
+	}
+	// playerID -> ordered schedule lines (matches already sorted round→court).
+	lines := map[string][]string{}
+	for _, m := range matches {
+		court := "Court TBD"
+		if m.CourtNumber != nil {
+			court = fmt.Sprintf("Court %d", *m.CourtNumber)
+		}
+		when := ""
+		if m.RoundNumber != nil {
+			when = fmt.Sprintf("Round %d", *m.RoundNumber)
+		} else if m.Stage == "bracket" {
+			when = "Bracket"
+		}
+		for si, side := range m.Sides {
+			opp := ""
+			for oj, other := range m.Sides {
+				if oj != si {
+					opp = strings.Join(other.Players, " / ")
+					break
+				}
+			}
+			for pi, pid := range side.PlayerIDs {
+				if pid == "" {
+					continue
+				}
+				mate := namesExcept(side.Players, playerAt(side.Players, pi))
+				vs := "vs " + opp
+				if opp == "" {
+					vs = "(bye)"
+				}
+				parts := []string{court}
+				if when != "" {
+					parts = append(parts, when)
+				}
+				detail := strings.Join(parts, " · ")
+				if mate != "" {
+					detail += " — with " + mate + " " + vs
+				} else {
+					detail += " — " + vs
+				}
+				lines[pid] = append(lines[pid], detail)
+			}
+		}
+	}
+
+	// Registrant identities (one email per player, dedup across divisions).
+	rows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&select=player_id,player:players!player_id(full_name,email)")
+	if err != nil {
+		return 0, err
+	}
+	seen := map[string]bool{}
+	when := "Date to be announced"
+	if ev.StartsAt != nil && *ev.StartsAt != "" {
+		if t, err := time.Parse(time.RFC3339, *ev.StartsAt); err == nil {
+			when = t.Format("Monday, January 2, 2006 · 3:04 PM")
+		}
+	}
+	where := ""
+	if ev.Location != nil {
+		where = *ev.Location
+	}
+	if ev.VenueName != nil && *ev.VenueName != "" {
+		where = strings.TrimSpace(strings.TrimSuffix(*ev.VenueName+" — "+where, " — "))
+	}
+	scheduleURL := "https://app.planmypickle.com/?schedule=" + ev.ID
+
+	sent := 0
+	for _, r := range rows {
+		pid := asStr(r, "player_id")
+		p := asMap(r, "player")
+		if pid == "" || p == nil {
+			continue
+		}
+		email := strings.TrimSpace(asStr(p, "email"))
+		if email == "" || seen[email] {
+			continue
+		}
+		seen[email] = true
+		mine := lines[pid]
+		subject := "Your schedule — " + ev.Name
+		htmlBody, textBody := scheduleEmailBody(
+			asStr(p, "full_name"), ev.Name, when, where, mine, scheduleURL, ev.OwnerPremium)
+		if err := s.Email.SendEmail(email, subject, htmlBody, textBody); err != nil {
+			log.Printf("email: schedule to %s failed: %v", email, err)
+			continue
+		}
+		sent++
+	}
+	return sent, nil
+}
+
+// playerAt safely returns the name at index i (empty if out of range).
+func playerAt(names []string, i int) string {
+	if i >= 0 && i < len(names) {
+		return names[i]
+	}
+	return ""
+}
+
+// namesExcept joins the names except the one equal to `self` (used to render a
+// player's partner). Passing self="" returns all names joined.
+func namesExcept(names []string, self string) string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != "" && n != self {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, " / ")
+}
+
+// scheduleEmailBody renders a player's personal schedule email (HTML + text).
+// Free-tier events carry the "Powered by PlanMyPickle" footer; Premium is
+// unbranded — same rule as the confirmation email and the TV board.
+func scheduleEmailBody(fullName, eventName, when, where string, lines []string,
+	scheduleURL string, ownerPremium bool) (string, string) {
+	esc := html.EscapeString
+	firstName := fullName
+	if i := strings.IndexByte(fullName, ' '); i > 0 {
+		firstName = fullName[:i]
+	}
+
+	var items strings.Builder
+	if len(lines) == 0 {
+		items.WriteString(`<p style="margin:0;color:#5b6b80;font-size:14px">Your matches aren't posted yet — tap below to check the live schedule anytime.</p>`)
+	} else {
+		items.WriteString(`<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%">`)
+		for i, ln := range lines {
+			fmt.Fprintf(&items, `<tr>
+  <td style="padding:9px 12px 9px 0;color:#8dc63f;font-size:13px;font-weight:800;vertical-align:top">%d</td>
+  <td style="padding:9px 0;color:#16203a;font-size:14.5px;border-bottom:1px solid #eef2e6">%s</td>
+</tr>`, i+1, esc(ln))
+		}
+		items.WriteString(`</table>`)
+	}
+
+	meta := ""
+	if when != "" || where != "" {
+		w := esc(when)
+		if where != "" {
+			w += ` · ` + esc(where)
+		}
+		meta = fmt.Sprintf(`<p style="margin:0 0 16px;color:#5b6b80;font-size:13.5px">%s</p>`, w)
+	}
+
+	footer := ""
+	if !ownerPremium {
+		footer = `<p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">
+  Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a>
+  — tournaments, minus the chaos.</p>`
+	}
+
+	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    <div style="background:#16245c;padding:22px 26px">
+      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">YOUR GAME SCHEDULE</p>
+      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
+    </div>
+    <div style="padding:24px 26px">
+      <p style="margin:0 0 6px;color:#16203a;font-size:15px">Hi %s — here are your matches:</p>
+      %s
+      %s
+      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the live schedule</a>
+      <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">Times &amp; courts can shift on game day — the live schedule always has the latest.</p>
+    </div>
+  </div>%s
+</div>`,
+		esc(eventName), esc(firstName), meta, items.String(), scheduleURL, footer)
+
+	var tb strings.Builder
+	fmt.Fprintf(&tb, "Your schedule — %s\n\nHi %s, here are your matches:\n\n", eventName, firstName)
+	if when != "" {
+		fmt.Fprintf(&tb, "%s\n", when)
+	}
+	if where != "" {
+		fmt.Fprintf(&tb, "%s\n", where)
+	}
+	tb.WriteString("\n")
+	if len(lines) == 0 {
+		tb.WriteString("Your matches aren't posted yet — check the live schedule.\n")
+	}
+	for i, ln := range lines {
+		fmt.Fprintf(&tb, "%d. %s\n", i+1, ln)
+	}
+	fmt.Fprintf(&tb, "\nLive schedule: %s\n", scheduleURL)
+	fmt.Fprintf(&tb, "Times & courts can shift on game day — the live schedule has the latest.\n")
+	if !ownerPremium {
+		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
+	}
+	return htmlBody, tb.String()
+}
+
 // SendVendorApprovedEmail tells an applicant their booth was approved — with
 // the payment link when a booth fee is set. Best-effort, off the request path.
 func (s *Service) SendVendorApprovedEmail(v model.Vendor) {

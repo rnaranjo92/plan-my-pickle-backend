@@ -273,6 +273,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Take a court offline / swap its unplayed games onto another court.
 	mux.HandleFunc("POST /events/{id}/remap-court", s.ownerOnly("event", "id", s.remapCourt))
 	mux.HandleFunc("GET /events/{id}/sanction.csv", s.ownerOnly("event", "id", s.sanctionCSV))
+	// Email every registered player their personal game schedule.
+	mux.HandleFunc("POST /events/{id}/email-schedule", s.ownerOnly("event", "id", s.emailSchedule))
 
 	// Vendor Village: public list (spectators see APPROVED booths; the owner
 	// also sees pending applications); organizer-only create/update/delete +
@@ -2054,6 +2056,15 @@ func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, matches)
+}
+
+func (s *Server) emailSchedule(w http.ResponseWriter, r *http.Request) {
+	sent, err := s.svc.EmailScheduleToPlayers(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"sent": sent})
 }
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {

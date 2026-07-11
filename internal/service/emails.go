@@ -247,7 +247,9 @@ func (s *Service) scheduleIdentities(ev model.Event) ([]scheduleIdent, error) {
 		}
 		email := map[string]string{}
 		if len(pids) > 0 {
-			prows, err := s.sb.Select("players", "id="+store.In(pids)+"&select=id,email")
+			// SelectAll (not Select) — Select silently caps at PostgREST's
+			// max-rows, which would drop players past the cap on a big roster.
+			prows, err := s.sb.SelectAll("players", "id="+store.In(pids)+"&select=id,email")
 			if err != nil {
 				return nil, err
 			}

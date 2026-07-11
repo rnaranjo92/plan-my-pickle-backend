@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // CourtBlockICS builds a public iCalendar (RFC 5545) feed marking an event's
@@ -35,13 +36,15 @@ func (s *Service) CourtBlockICS(eventID string) (string, error) {
 			end = t.UTC()
 		}
 	}
-	// Fall back to a sensible single-day window when times are missing/invalid.
+	// Without a start date there's nothing to block, and a VCALENDAR with zero
+	// components is invalid per RFC 5545 (strict facility importers reject it).
+	// 404 so a subscription simply shows nothing until the event is scheduled.
+	if start.IsZero() {
+		return "", ErrNotFound
+	}
+	// Fall back to a sensible single-day window when the end time is missing.
 	if end.IsZero() || !end.After(start) {
-		if start.IsZero() {
-			end = time.Time{}
-		} else {
-			end = start.Add(8 * time.Hour)
-		}
+		end = start.Add(8 * time.Hour)
 	}
 
 	where := ""
@@ -63,30 +66,50 @@ func (s *Service) CourtBlockICS(eventID string) (string, error) {
 		courts, ev.ID)
 
 	var b strings.Builder
-	crlf := func(line string) { b.WriteString(line + "\r\n") }
+	// Every content line is folded to <=75 octets (RFC 5545 §3.1) so strict
+	// importers (CourtReserve/Skedda) don't truncate long names/descriptions.
+	crlf := func(line string) { b.WriteString(icsFold(line) + "\r\n") }
 	crlf("BEGIN:VCALENDAR")
 	crlf("VERSION:2.0")
 	crlf("PRODID:-//PlanMyPickle//Court Blocks//EN")
 	crlf("CALSCALE:GREGORIAN")
 	crlf("METHOD:PUBLISH")
 	crlf("X-WR-CALNAME:" + icsEscape(ev.Name+" — court blocks"))
-	// Only emit the busy block when we actually have a start time.
-	if !start.IsZero() {
-		crlf("BEGIN:VEVENT")
-		crlf("UID:courtblock-" + ev.ID + "@planmypickle.com")
-		crlf("DTSTAMP:" + icsStamp(start)) // stable stamp (no wall-clock at gen time)
-		crlf("DTSTART:" + icsStamp(start))
-		crlf("DTEND:" + icsStamp(end))
-		crlf("SUMMARY:" + icsEscape(summary))
-		if where != "" {
-			crlf("LOCATION:" + icsEscape(where))
-		}
-		crlf("DESCRIPTION:" + icsEscape(desc))
-		crlf("TRANSP:OPAQUE") // shows as BUSY on the subscriber's calendar
-		crlf("END:VEVENT")
+	crlf("BEGIN:VEVENT")
+	crlf("UID:courtblock-" + ev.ID + "@planmypickle.com")
+	crlf("DTSTAMP:" + icsStamp(start)) // stable stamp (no wall-clock at gen time)
+	crlf("DTSTART:" + icsStamp(start))
+	crlf("DTEND:" + icsStamp(end))
+	crlf("SUMMARY:" + icsEscape(summary))
+	if where != "" {
+		crlf("LOCATION:" + icsEscape(where))
 	}
+	crlf("DESCRIPTION:" + icsEscape(desc))
+	crlf("TRANSP:OPAQUE") // shows as BUSY on the subscriber's calendar
+	crlf("END:VEVENT")
 	crlf("END:VCALENDAR")
 	return b.String(), nil
+}
+
+// icsFold wraps a content line to <=75 octets per RFC 5545 §3.1, inserting a
+// CRLF + leading space at each fold point and never splitting a multibyte rune.
+func icsFold(line string) string {
+	const max = 75
+	if len(line) <= max {
+		return line
+	}
+	var b strings.Builder
+	seg := 0
+	for _, r := range line {
+		rl := utf8.RuneLen(r)
+		if seg+rl > max {
+			b.WriteString("\r\n ") // folded lines start with a single space
+			seg = 1                // that leading space counts as one octet
+		}
+		b.WriteRune(r)
+		seg += rl
+	}
+	return b.String()
 }
 
 // icsStamp formats a UTC time as an iCal date-time (e.g. 20260711T150000Z).
@@ -96,6 +119,10 @@ func icsStamp(t time.Time) string {
 
 // icsEscape escapes the characters iCal reserves in TEXT values (RFC 5545 §3.3.11).
 func icsEscape(s string) string {
+	// Normalize any CR/CRLF to a single \n first so no bare CR survives into the
+	// output (a stray CR corrupts line structure for strict parsers).
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, ";", `\;`)
 	s = strings.ReplaceAll(s, ",", `\,`)

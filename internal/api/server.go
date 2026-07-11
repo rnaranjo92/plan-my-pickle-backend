@@ -91,6 +91,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
+	// Public iCal court-block feed a facility subscribes to (CourtReserve/Skedda/
+	// Google Calendar) so tournament courts show as reserved. No auth — calendar
+	// clients can't send a JWT.
+	mux.HandleFunc("GET /events/{id}/courts.ics", s.courtsICS)
 	// The signed-in player's next match in this event (for the "your next" banner).
 	mux.HandleFunc("GET /events/{id}/my-next-match", requireAuth(s.myNextMatch))
 	mux.HandleFunc("GET /events/nearby", s.nearbyEvents)
@@ -1320,6 +1324,20 @@ func (s *Server) financeEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 // resultsCSV streams the event's results export as a CSV download (owner-only).
+// courtsICS serves the public court-block calendar feed (text/calendar). No
+// auth — a facility's calendar subscription can't present a token.
+func (s *Server) courtsICS(w http.ResponseWriter, r *http.Request) {
+	ics, err := s.svc.CourtBlockICS(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", `inline; filename="courts.ics"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(ics))
+}
+
 func (s *Server) resultsCSV(w http.ResponseWriter, r *http.Request) {
 	data, err := s.svc.ResultsCSV(r.PathValue("id"))
 	if err != nil {

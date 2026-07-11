@@ -3890,7 +3890,9 @@ func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string) (int
 			return 0, ErrDrawExists
 		}
 	}
-	rows, err := s.sb.Select("registrations",
+	// SelectAll, not Select: Select silently caps at PostgREST's max-rows, which
+	// would strand registrations past the cap in the "emptied" source division.
+	rows, err := s.sb.SelectAll("registrations",
 		"event_id=eq."+store.Q(eventID)+
 			"&bracket_id=eq."+store.Q(fromBracketID)+"&select=id")
 	if err != nil {
@@ -6562,9 +6564,13 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 			ptw = g
 		}
 	}
-	// A retirement keeps the actual partial score (and counts toward point
-	// differential). Forfeits/walkovers fabricate a conventional points_to_win-0
-	// win that is excluded from differential.
+	// A retirement keeps the actual partial score AS PLAYED (Rule 12.F — the
+	// score stands) and counts toward point differential. We deliberately do NOT
+	// fabricate a winning margin for the awarded team: inventing points the team
+	// never earned would corrupt round-robin differential tiebreaks. The winning
+	// team advances via winning_team regardless of the on-court score.
+	// Forfeits/walkovers fabricate a conventional points_to_win-0 win that is
+	// excluded from differential.
 	t1, t2 := ptw, 0
 	if winningTeam == 2 {
 		t1, t2 = 0, ptw
@@ -10460,6 +10466,13 @@ func seedSides(sides [][]string, skill map[string]float64) [][]string {
 		}
 		return sum / float64(len(s))
 	}
+	// Seed strongest→weakest. Unrated sides (rating 0 — no DUPR/skill on file)
+	// naturally sort to the bottom seed lines. That is the correct place for them
+	// here: GenerateBracket pads the draw to a power of two with byes at the
+	// HIGHEST seed numbers, and seedOrder pairs those against the TOP seeds, so a
+	// bye only ever benefits a top (rated) seed — an unrated side at the bottom
+	// never receives one. Keeping the plain descending sort also preserves seed
+	// separation (the two strongest land in opposite halves).
 	out := make([][]string, len(sides))
 	copy(out, sides)
 	sort.SliceStable(out, func(i, j int) bool {

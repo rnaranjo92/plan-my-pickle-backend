@@ -281,6 +281,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/sanction.csv", s.ownerOnly("event", "id", s.sanctionCSV))
 	// Email every registered player their personal game schedule.
 	mux.HandleFunc("POST /events/{id}/email-schedule", s.ownerOnly("event", "id", s.emailSchedule))
+	mux.HandleFunc("POST /events/{id}/instructions", s.ownerOnly("event", "id", s.emailInstructions))
 
 	// Vendor Village: public list (spectators see APPROVED booths; the owner
 	// also sees pending applications); organizer-only create/update/delete +
@@ -2124,6 +2125,29 @@ func (s *Server) emailSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Delivery runs off the request path; queued = players it's being sent to.
+	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+}
+
+// emailInstructions sends the organizer's pre-tournament briefing to every
+// registered player with an email on file (owner-only). Delivery is off the
+// request path; the response reports how many recipients were queued.
+func (s *Server) emailInstructions(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	// An empty message is a client error, not a server fault — 400, not 500.
+	if strings.TrimSpace(req.Message) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("message is required"))
+		return
+	}
+	queued, err := s.svc.EmailInstructionsToPlayers(r.PathValue("id"), req.Message)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
 }
 

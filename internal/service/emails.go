@@ -216,6 +216,102 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	return len(recips), nil
 }
 
+// EmailInstructionsToPlayers sends the organizer's pre-tournament briefing to
+// every player in the event with an email on file — the "player instructions in
+// writing" a Tournament Director provides under USA Pickleball 13.B (check-in
+// window, court-call/forfeit timing, warm-up, parking, contact, etc.). The
+// message is free text the organizer composes. Best-effort, throttled, and off
+// the request path (a mail hiccup must never fail the call). Returns how many
+// recipients were queued.
+func (s *Service) EmailInstructionsToPlayers(eventID, message string) (int, error) {
+	if s.Email == nil || !s.Email.Live() {
+		return 0, fmt.Errorf("email is not configured")
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return 0, fmt.Errorf("message is empty")
+	}
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return 0, err
+	}
+	idents, err := s.scheduleIdentities(ev)
+	if err != nil {
+		return 0, err
+	}
+	// Dedup by player_id (a player in two divisions gets ONE email); two players
+	// sharing a household inbox each still get their own.
+	seen := map[string]bool{}
+	type recip struct{ email, name string }
+	var recips []recip
+	for _, id := range idents {
+		if id.pid == "" || id.email == "" || seen[id.pid] {
+			continue
+		}
+		seen[id.pid] = true
+		recips = append(recips, recip{email: id.email, name: id.name})
+	}
+	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
+	eventName, premium := ev.Name, ev.OwnerPremium
+	go func() {
+		for _, rc := range recips {
+			htmlBody, textBody := instructionsEmailBody(
+				rc.name, eventName, message, eventURL, premium)
+			if err := s.Email.SendEmail(
+				rc.email, "Tournament info — "+eventName, htmlBody, textBody); err != nil {
+				log.Printf("email: instructions to %s failed: %v", rc.email, err)
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+		log.Printf("email: instructions blast for %s dispatched to %d players",
+			eventID, len(recips))
+	}()
+	return len(recips), nil
+}
+
+// instructionsEmailBody renders the organizer's pre-tournament briefing (HTML +
+// text). The organizer's message is plain text — escaped, with newlines kept as
+// line breaks. Free-tier events carry the PlanMyPickle footer; Premium is clean.
+func instructionsEmailBody(fullName, eventName, message, eventURL string,
+	ownerPremium bool) (string, string) {
+	esc := html.EscapeString
+	firstName := fullName
+	if i := strings.IndexByte(fullName, ' '); i > 0 {
+		firstName = fullName[:i]
+	}
+	bodyHTML := strings.ReplaceAll(esc(message), "\n", "<br>")
+
+	footer := ""
+	if !ownerPremium {
+		footer = `<p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">
+  Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a>
+  — tournaments, minus the chaos.</p>`
+	}
+
+	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    <div style="background:#16245c;padding:22px 26px">
+      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">PLAYER INSTRUCTIONS</p>
+      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
+    </div>
+    <div style="padding:24px 26px">
+      <p style="margin:0 0 12px;color:#16203a;font-size:15px">Hi %s —</p>
+      <div style="color:#16203a;font-size:14.5px;line-height:1.6">%s</div>
+      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the event</a>
+    </div>
+  </div>%s
+</div>`,
+		esc(eventName), esc(firstName), bodyHTML, eventURL, footer)
+
+	var tb strings.Builder
+	fmt.Fprintf(&tb, "Player instructions — %s\n\nHi %s,\n\n%s\n\nEvent page: %s\n",
+		eventName, firstName, message, eventURL)
+	if !ownerPremium {
+		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
+	}
+	return htmlBody, tb.String()
+}
+
 // scheduleIdent is a player's id + display name + email, from whichever source
 // holds this event's players.
 type scheduleIdent struct {

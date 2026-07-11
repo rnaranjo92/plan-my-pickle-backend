@@ -521,16 +521,21 @@ var publicFeedTestName = regexp.MustCompile(`(?i)\b(test|demo|dbg|debug|authchec
 // planmypickle.com marketing feed. No owner scoping, no PII — anyone may read it.
 // Registered counts are attached with the same batched select-then-tally as
 // ListEvents (no N+1); a count failure is best-effort and leaves counts at 0.
-func (s *Service) PublicEvents(limit int) ([]model.PublicEvent, error) {
+func (s *Service) PublicEvents(limit int, county string) ([]model.PublicEvent, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	// Optional county filter powers metro/programmatic-SEO directory pages.
+	countyFilter := ""
+	if c := strings.TrimSpace(county); c != "" {
+		countyFilter = "&county=eq." + store.Q(c)
 	}
 	// starts_at NULLs sort last so dated tournaments lead the feed. Order by
 	// start ascending (soonest first), then created_at desc as a stable tiebreak
 	// for events that have no scheduled start yet. Over-fetch 3× because the
 	// test-name filter below drops rows after the query.
 	rows, err := s.sb.Select("events",
-		"listed=eq.true&select=*&order=starts_at.asc.nullslast,created_at.desc&limit="+strconv.Itoa(limit*3))
+		"listed=eq.true"+countyFilter+"&select=*&order=starts_at.asc.nullslast,created_at.desc&limit="+strconv.Itoa(limit*3))
 	if err != nil {
 		return nil, err
 	}
@@ -583,6 +588,8 @@ func (s *Service) PublicEvents(limit int) ([]model.PublicEvent, error) {
 			PosterURL:        e.PosterURL,
 			DuprSanctioned:   e.DuprSanctioned,
 			RegisteredCount:  e.RegisteredCount,
+			County:           e.County,
+			State:            e.State,
 		})
 	}
 	return out, nil

@@ -27,7 +27,7 @@ func TestServiceReads(t *testing.T) {
 
 	// Smoke: exercise the rest; tolerate business errors.
 	_, _ = s.MyEvents("u1", "a@b.com")
-	_, _ = s.PublicEvents(10)
+	_, _ = s.PublicEvents(10, "")
 	_, _ = s.GetBrackets("e1")
 	_, _ = s.Rounds("e1")
 	_, _ = s.MatchesForRound("rd1")

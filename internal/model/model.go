@@ -143,6 +143,10 @@ type PublicEvent struct {
 	PosterURL        *string `json:"posterUrl,omitempty"`
 	DuprSanctioned   bool    `json:"duprSanctioned"`
 	RegisteredCount  int     `json:"registeredCount"`
+	// County + State power metro/programmatic-SEO directory pages (filterable
+	// via ?county= on the public feed).
+	County string `json:"county,omitempty"`
+	State  string `json:"state,omitempty"`
 }
 
 // League groups multiple EXISTING events (each event = a session) for recurring

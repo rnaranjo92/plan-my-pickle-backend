@@ -3114,7 +3114,14 @@ func (s *Server) shortLink(w http.ResponseWriter, r *http.Request) {
 // upcoming publicly-listed events in a safe, PII-free projection. No auth — it's
 // read cross-origin from the apex marketing site.
 func (s *Server) publicEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.svc.PublicEvents(20)
+	// ?county= filters to a metro (for the programmatic-SEO directory pages);
+	// a higher limit is allowed there so a metro page shows its full slate.
+	county := r.URL.Query().Get("county")
+	limit := 20
+	if county != "" {
+		limit = 100
+	}
+	events, err := s.svc.PublicEvents(limit, county)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

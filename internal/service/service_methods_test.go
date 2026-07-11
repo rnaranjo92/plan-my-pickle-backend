@@ -58,7 +58,7 @@ func TestServiceReads(t *testing.T) {
 	_, _ = s.MyFeed("u1")
 	_, _ = s.ListFeed("e1", "u1")
 	_, _ = s.ListComments("fi1", "u1")
-	_, _ = s.PlayerProfile("p1")
+	_, _ = s.PlayerProfile("p1", "")
 	_, _ = s.BusyCourts("e1")
 	_, _ = s.DuprConnection("u1")
 	_, _ = s.DuprSubmissionStatuses("e1")

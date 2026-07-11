@@ -21,6 +21,6 @@ func TestServiceFeedAndHelpers(t *testing.T) {
 	_, _ = s.bracketRegs("e1", "b1")
 	_, _ = s.bracketStarted("b1")
 	_, _ = s.clubOwner("cl1")
-	_, _ = s.PlayerProfile("p1")
+	_, _ = s.PlayerProfile("p1", "")
 	_, _ = s.PlayoffSeedTeams("b1", "points")
 }

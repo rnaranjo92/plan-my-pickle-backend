@@ -107,7 +107,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
 	// Public, PII-free player profile (rating + across-events box score).
-	mux.HandleFunc("GET /players/{id}/profile", s.playerProfile)
+	mux.HandleFunc("GET /players/{id}/profile", optionalAuth(s.playerProfile))
 	mux.HandleFunc("GET /feed/{id}/comments", optionalAuth(s.commentList))
 	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
@@ -179,6 +179,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /users/{id}/follow", requireAuth(s.unfollowUser))
 	mux.HandleFunc("GET /me/following", requireAuth(s.myFollowing))
 	mux.HandleFunc("GET /me/followers", requireAuth(s.myFollowers))
+	mux.HandleFunc("GET /kudos/labels", s.kudosLabels)
+	mux.HandleFunc("POST /players/{id}/kudos", requireAuth(s.giveKudos))
 
 	// --- Leagues (season / recurring play): owner-scoped WRITES, but READS are
 	// open to participants too. Creating a league stamps the caller as its owner;
@@ -1908,6 +1910,26 @@ func (s *Server) followUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "following"})
 }
 
+// kudosLabels returns the allowed positive kudos labels for the client picker.
+func (s *Server) kudosLabels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string][]string{"labels": service.KudosLabels()})
+}
+
+// giveKudos records the caller's positive recognition of the path player.
+func (s *Server) giveKudos(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label string `json:"label"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.GiveKudos(userID(r), r.PathValue("id"), req.Label); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "given"})
+}
+
 // unfollowUser removes the caller's follow of the path user.
 func (s *Server) unfollowUser(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.Unfollow(userID(r), r.PathValue("id")); err != nil {
@@ -3243,7 +3265,7 @@ func (s *Server) roster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) playerProfile(w http.ResponseWriter, r *http.Request) {
-	prof, err := s.svc.PlayerProfile(r.PathValue("id"))
+	prof, err := s.svc.PlayerProfile(r.PathValue("id"), userID(r))
 	if err != nil {
 		status(w, err)
 		return

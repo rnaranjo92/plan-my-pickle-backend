@@ -868,8 +868,12 @@ func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 // PlayerProfile builds the PUBLIC profile for a player: their DUPR id/ratings
 // (when connected) plus an across-events box score aggregated from every
 // completed match they've played. Returns ErrNotFound for an unknown player.
-func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
-	prof := model.PlayerProfile{PlayerID: playerID, RecentEvents: []string{}}
+func (s *Service) PlayerProfile(playerID, callerID string) (model.PlayerProfile, error) {
+	prof := model.PlayerProfile{
+		PlayerID:     playerID,
+		RecentEvents: []string{},
+		Kudos:        []model.KudosTally{},
+	}
 	prow, err := s.sb.SelectOne("players",
 		"id=eq."+store.Q(playerID)+"&select=id,full_name,dupr_id,user_id")
 	if err != nil {
@@ -893,6 +897,10 @@ func (s *Service) PlayerProfile(playerID string) (model.PlayerProfile, error) {
 			prof.DoublesRating = asFloatPtr(c, "doubles_rating")
 			prof.SinglesRating = asFloatPtr(c, "singles_rating")
 		}
+		// Only a linked player can be recognized; tally the kudos they've received.
+		prof.CanReceiveKudos = true
+		prof.IsSelf = callerID != "" && callerID == uid
+		prof.Kudos, prof.KudosGivers = s.kudosForUser(uid)
 	}
 
 	// Box score: every completed match this player took part in, attributed to
@@ -1009,6 +1017,14 @@ func (s *Service) DeleteAccount(userID string) error {
 		"user_id":   nil,
 	}); err != nil {
 		log.Printf("DeleteAccount: anonymize players for %s failed (continuing): %v", userID, err)
+	}
+	// 2b. Remove their kudos (given + received) so a deleted account leaves no
+	//     orphaned recognition inflating anyone's tally. Best-effort.
+	if err := s.sb.Delete("kudos", "giver_user_id=eq."+store.Q(userID)); err != nil {
+		log.Printf("DeleteAccount: delete given kudos for %s failed (continuing): %v", userID, err)
+	}
+	if err := s.sb.Delete("kudos", "receiver_user_id=eq."+store.Q(userID)); err != nil {
+		log.Printf("DeleteAccount: delete received kudos for %s failed (continuing): %v", userID, err)
 	}
 	// 3. Erase the login last.
 	return s.sb.DeleteAuthUser(userID)

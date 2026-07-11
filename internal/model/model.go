@@ -1104,6 +1104,24 @@ type PlayerProfile struct {
 	PointsFor     int      `json:"pointsFor"`
 	PointsAgainst int      `json:"pointsAgainst"`
 	RecentEvents  []string `json:"recentEvents"`
+	// Kudos — always-positive peer recognition this player has received, tallied
+	// by label. KudosGivers is the distinct-giver count (the anti-spam Street
+	// Cred signal); CanReceiveKudos is true when this player is linked to an
+	// account (only linked players can be recognized).
+	Kudos           []KudosTally `json:"kudos"`
+	KudosGivers     int          `json:"kudosGivers"`
+	CanReceiveKudos bool         `json:"canReceiveKudos"`
+	// IsSelf is true when the (optionally-authenticated) caller IS this player's
+	// account — the client uses it to hide "Give kudos" on your own profile. We
+	// return a boolean rather than the raw account id so the PUBLIC profile
+	// endpoint never leaks an enumerable account UUID to anonymous callers.
+	IsSelf bool `json:"isSelf"`
+}
+
+// KudosTally is a count of one kind of peer recognition a player has received.
+type KudosTally struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
 }
 
 // Profile is the signed-in user's saved player details, used to pre-fill the

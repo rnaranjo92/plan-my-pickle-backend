@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,47 @@ const onesignalAppID = "75638436-5d06-4c8b-b84f-5e065421b668"
 // pushHTTP is a short-timeout client for OneSignal. Push is best-effort, so we
 // never want a slow/hung request to block the caller (e.g. "Start round").
 var pushHTTP = &http.Client{Timeout: 10 * time.Second}
+
+// SendTestPush fires a single diagnostic push to one user (their external_id)
+// and returns how many device subscriptions OneSignal actually targeted. A
+// return of 0 means the user has NO reachable subscription (device didn't
+// register, notifications denied, or — on Android — FCM isn't configured in
+// OneSignal). Unlike sendPush this surfaces errors so a QA button can report them.
+func (s *Service) SendTestPush(externalID string) (int, error) {
+	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
+	if restKey == "" {
+		return 0, fmt.Errorf("push is not configured (no OneSignal key)")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"app_id":          onesignalAppID,
+		"target_channel":  "push",
+		"include_aliases": map[string]any{"external_id": []string{externalID}},
+		"headings":        map[string]string{"en": "PlanMyPickle test 🥒"},
+		"contents":        map[string]string{"en": "If you can see this, push notifications are working!"},
+		"url":             "https://app.planmypickle.com",
+	})
+	req, err := http.NewRequest(http.MethodPost,
+		"https://api.onesignal.com/notifications?c=push", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Key "+restKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := pushHTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("OneSignal HTTP %d: %s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Recipients int `json:"recipients"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out.Recipients, nil
+}
 
 // sendPush sends one bulk web/native push to the given OneSignal external_ids
 // (each user's Supabase auth user id). It is intentionally best-effort: it logs

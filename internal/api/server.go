@@ -389,6 +389,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// One-shot: stamp county+state on listed events that have coords but no
 	// county (backfill for the Nearby county filter). QA-gated; safe to re-run.
 	mux.HandleFunc("POST /dev/backfill-county", requireAuth(s.backfillCounty))
+	// QA: fire a diagnostic push to the caller's own device(s).
+	mux.HandleFunc("POST /dev/test-push", requireAuth(s.testPush))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
 	mux.HandleFunc("POST /dev/tidy-tests", requireAuth(s.tidyTestEvents))
 
@@ -1201,6 +1203,24 @@ func (s *Server) backfillCounty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"stamped": n})
+}
+
+// testPush fires a diagnostic push to the CALLER's own device(s). QA-gated.
+// Returns recipients = how many subscriptions OneSignal targeted (0 = the
+// device isn't reachable — not registered, notifications denied, or FCM/APNs
+// not configured in OneSignal).
+func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.SendTestPush(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"recipients": n})
 }
 
 func (s *Server) tidyTestEvents(w http.ResponseWriter, r *http.Request) {

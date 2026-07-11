@@ -1215,12 +1215,11 @@ func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
 		return
 	}
-	n, err := s.svc.SendTestPush(userID(r))
-	if err != nil {
+	if err := s.svc.SendTestPush(userID(r)); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"recipients": n})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) tidyTestEvents(w http.ResponseWriter, r *http.Request) {

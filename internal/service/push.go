@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,15 +21,16 @@ const onesignalAppID = "75638436-5d06-4c8b-b84f-5e065421b668"
 // never want a slow/hung request to block the caller (e.g. "Start round").
 var pushHTTP = &http.Client{Timeout: 10 * time.Second}
 
-// SendTestPush fires a single diagnostic push to one user (their external_id)
-// and returns how many device subscriptions OneSignal actually targeted. A
-// return of 0 means the user has NO reachable subscription (device didn't
-// register, notifications denied, or — on Android — FCM isn't configured in
-// OneSignal). Unlike sendPush this surfaces errors so a QA button can report them.
-func (s *Service) SendTestPush(externalID string) (int, error) {
+// SendTestPush fires a single diagnostic push to one user (their external_id).
+// It returns an error ONLY when the notification couldn't be created or OneSignal
+// reports no reachable subscription. NOTE: OneSignal's `recipients` count in the
+// create response is unreliable for external_id/alias sends (aliases resolve to
+// subscriptions asynchronously), so we do NOT gate on it — the reliable signal is
+// whether OneSignal accepted the notification (an id, no `errors`).
+func (s *Service) SendTestPush(externalID string) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" {
-		return 0, fmt.Errorf("push is not configured (no OneSignal key)")
+		return fmt.Errorf("push is not configured (no OneSignal key)")
 	}
 	body, _ := json.Marshal(map[string]any{
 		"app_id":          onesignalAppID,
@@ -41,24 +43,30 @@ func (s *Service) SendTestPush(externalID string) (int, error) {
 	req, err := http.NewRequest(http.MethodPost,
 		"https://api.onesignal.com/notifications?c=push", bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return err
 	}
 	req.Header.Set("Authorization", "Key "+restKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := pushHTTP.Do(req)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("OneSignal HTTP %d: %s", resp.StatusCode, raw)
+		return fmt.Errorf("OneSignal HTTP %d: %s", resp.StatusCode, raw)
 	}
 	var out struct {
-		Recipients int `json:"recipients"`
+		ID     string          `json:"id"`
+		Errors json.RawMessage `json:"errors"`
 	}
 	_ = json.Unmarshal(raw, &out)
-	return out.Recipients, nil
+	// A populated `errors` (e.g. "All included players are not subscribed") is
+	// the genuine "no reachable device" signal.
+	if e := strings.TrimSpace(string(out.Errors)); e != "" && e != "null" && e != "[]" && e != "{}" {
+		return fmt.Errorf("no reachable subscription: %s", e)
+	}
+	return nil
 }
 
 // sendPush sends one bulk web/native push to the given OneSignal external_ids

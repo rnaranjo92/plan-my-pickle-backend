@@ -475,3 +475,113 @@ func (s *Service) SendVendorApprovedEmail(v model.Vendor) {
 		log.Printf("email: vendor approval to %s failed: %v", email, err)
 	}
 }
+
+// EmailVendorRecap queues a post-event "booth recap" email to each approved
+// vendor with a contact email — a thank-you with their booth's exposure (link
+// tap-throughs, court sponsorship) plus a soft "run it back" CTA to re-apply at
+// the organizer's next event. Owner-triggered from the Vendor Village manager.
+// Sends run OFF the request path in a throttled goroutine (same rules as the
+// schedule blast). Returns how many vendors it was queued for.
+func (s *Service) EmailVendorRecap(eventID string) (int, error) {
+	if s.Email == nil || !s.Email.Live() {
+		return 0, fmt.Errorf("email is not configured")
+	}
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return 0, err
+	}
+	vendors, err := s.ListVendors(eventID, true)
+	if err != nil {
+		return 0, err
+	}
+	type recip struct {
+		email, name          string
+		clicks, sponsorCourt int
+	}
+	var recips []recip
+	for _, v := range vendors {
+		if v.Status != "approved" {
+			continue
+		}
+		email := strings.TrimSpace(v.ContactEmail)
+		if email == "" {
+			continue
+		}
+		recips = append(recips, recip{email, v.Name, v.Clicks, v.SponsorCourt})
+	}
+
+	eventName := ev.Name
+	// The public "Become a vendor" form for the organizer's next event = the
+	// retention CTA. (Points at this event's form; organizers reuse the link.)
+	applyURL := "https://app.planmypickle.com/?vendor=" + ev.ID
+
+	go func() {
+		for _, rc := range recips {
+			htmlBody, textBody := vendorRecapEmailBody(
+				rc.name, eventName, rc.clicks, rc.sponsorCourt, applyURL)
+			if err := s.Email.SendEmail(
+				rc.email, "Your booth recap — "+eventName, htmlBody, textBody); err != nil {
+				log.Printf("email: vendor recap to %s failed: %v", rc.email, err)
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+		log.Printf("email: vendor recap for %s dispatched to %d vendors",
+			eventID, len(recips))
+	}()
+	return len(recips), nil
+}
+
+// vendorRecapEmailBody renders the post-event vendor thank-you/recap (always
+// branded — this is PlanMyPickle reaching the vendor, B2B).
+func vendorRecapEmailBody(vendorName, eventName string, clicks, sponsorCourt int,
+	applyURL string) (string, string) {
+	esc := html.EscapeString
+
+	// Exposure line — graceful when there were no tracked taps yet.
+	var exposure string
+	if clicks > 0 {
+		unit := "tap-throughs"
+		if clicks == 1 {
+			unit = "tap-through"
+		}
+		exposure = fmt.Sprintf("Your booth link earned <b>%d %s</b> from players and spectators.", clicks, unit)
+	} else {
+		exposure = "Your booth was live on the event page and the live TV scoreboard all day."
+	}
+	court := ""
+	if sponsorCourt > 0 {
+		court = fmt.Sprintf(` You also presented <b>Court %d</b> — your name rode every call and scoreboard for that court.`, sponsorCourt)
+	}
+
+	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    <div style="background:#16245c;padding:22px 26px">
+      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">BOOTH RECAP</p>
+      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
+    </div>
+    <div style="padding:24px 26px">
+      <p style="margin:0 0 12px;color:#16203a;font-size:15px">Thanks for being part of <b>%s</b>, %s! Here's how your booth did:</p>
+      <p style="margin:0 0 16px;color:#16203a;font-size:15px;line-height:1.6">%s%s</p>
+      <a href="%s" style="display:block;margin:20px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Run it back — claim a booth at the next event</a>
+      <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">See you on the courts.</p>
+    </div>
+  </div>
+  <p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a></p>
+</div>`,
+		esc(eventName), esc(eventName), esc(vendorName),
+		exposure, court, applyURL)
+
+	var tb strings.Builder
+	fmt.Fprintf(&tb, "Booth recap — %s\n\nThanks for being part of %s, %s!\n\n", eventName, eventName, vendorName)
+	if clicks > 0 {
+		fmt.Fprintf(&tb, "Your booth link earned %d tap-throughs from players and spectators.\n", clicks)
+	} else {
+		tb.WriteString("Your booth was live on the event page and the live TV scoreboard all day.\n")
+	}
+	if sponsorCourt > 0 {
+		fmt.Fprintf(&tb, "You also presented Court %d.\n", sponsorCourt)
+	}
+	fmt.Fprintf(&tb, "\nRun it back — claim a booth at the next event: %s\n", applyURL)
+	tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
+	return htmlBody, tb.String()
+}

@@ -287,6 +287,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// approve/reject is owner-only.
 	mux.HandleFunc("GET /events/{id}/vendors", optionalAuth(s.listVendors))
 	mux.HandleFunc("POST /events/{id}/vendors", s.ownerOnly("event", "id", s.createVendor))
+	// Email every approved vendor a post-event booth recap (exposure + re-apply CTA).
+	mux.HandleFunc("POST /events/{id}/vendor-recap", s.ownerOnly("event", "id", s.vendorRecap))
 	mux.HandleFunc("POST /events/{id}/vendor-apply", s.applyVendor)
 	mux.HandleFunc("POST /vendors/{id}", s.ownerOnly("vendor", "id", s.updateVendor))
 	mux.HandleFunc("DELETE /vendors/{id}", s.ownerOnly("vendor", "id", s.deleteVendor))
@@ -2083,6 +2085,15 @@ func (s *Server) emailSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Delivery runs off the request path; queued = players it's being sent to.
+	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+}
+
+func (s *Server) vendorRecap(w http.ResponseWriter, r *http.Request) {
+	queued, err := s.svc.EmailVendorRecap(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
 }
 

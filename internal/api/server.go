@@ -168,6 +168,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /clubs/{id}/logo", requireAuth(s.uploadClubLogo))
 	mux.HandleFunc("GET /clubs/{id}/members", s.clubMembers)
 	mux.HandleFunc("GET /clubs/{id}/events", s.clubEvents)
+	// Public all-time club leaderboard aggregated across every club event.
+	mux.HandleFunc("GET /clubs/{id}/leaderboard", s.clubLeaderboard)
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
 
@@ -1826,6 +1828,16 @@ func (s *Server) clubEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, e)
+}
+
+// clubLeaderboard returns the all-time cross-event club standings (public).
+func (s *Server) clubLeaderboard(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.svc.ClubLeaderboard(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 // joinClub adds the caller as a member.

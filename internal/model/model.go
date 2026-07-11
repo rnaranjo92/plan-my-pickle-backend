@@ -826,6 +826,19 @@ type CreateClubRequest struct {
 	DuprClubID  string `json:"duprClubId"`
 }
 
+// ClubStanding is one player's cumulative record ACROSS all of a club's events
+// — the club's durable system-of-record leaderboard (all-time, by wins).
+type ClubStanding struct {
+	Name          string `json:"name"`
+	Wins          int    `json:"wins"`
+	Losses        int    `json:"losses"`
+	GamesPlayed   int    `json:"gamesPlayed"`
+	PointsFor     int    `json:"pointsFor"`
+	PointsAgainst int    `json:"pointsAgainst"`
+	PointDiff     int    `json:"pointDiff"`
+	EventsPlayed  int    `json:"eventsPlayed"`
+}
+
 // ClubMember is one member of a club, with their display name + photo.
 type ClubMember struct {
 	UserID   string `json:"userId"`

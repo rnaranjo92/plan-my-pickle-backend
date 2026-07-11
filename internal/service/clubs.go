@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"sort"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -199,6 +200,97 @@ func (s *Service) ClubEvents(clubID string) ([]model.Event, error) {
 		out = append(out, mapEvent(r))
 	}
 	return out, nil
+}
+
+// ClubLeaderboard aggregates every player's record across ALL of the club's
+// (non-team) events into one all-time, by-wins leaderboard — the durable
+// "system of record" a rating service can't reconstruct. Players are merged by
+// normalized display name (a club is a small community; name collisions are
+// rare and good-enough for v1). Public.
+func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
+	events, err := s.ClubEvents(clubID)
+	if err != nil {
+		return nil, err
+	}
+	type agg struct {
+		name   string
+		wins   int
+		losses int
+		pf, pa int
+		events map[string]bool
+	}
+	byName := map[string]*agg{}
+	for _, ev := range events {
+		if ev.TeamSize > 0 {
+			continue // team events rank teams, not players — skip here
+		}
+		brackets, err := s.GetBrackets(ev.ID)
+		if err != nil {
+			continue
+		}
+		for _, b := range brackets {
+			st, err := s.Standings(ev.ID, b.ID, true)
+			if err != nil {
+				continue
+			}
+			for _, row := range st {
+				key := strings.ToLower(strings.TrimSpace(row.FullName))
+				if key == "" {
+					continue
+				}
+				a := byName[key]
+				if a == nil {
+					a = &agg{name: row.FullName, events: map[string]bool{}}
+					byName[key] = a
+				}
+				a.wins += row.Wins
+				a.losses += row.Losses
+				a.pf += row.PointsFor
+				a.pa += row.PointsAgainst
+				a.events[ev.ID] = true
+			}
+		}
+	}
+
+	out := make([]model.ClubStanding, 0, len(byName))
+	for _, a := range byName {
+		out = append(out, model.ClubStanding{
+			Name:          a.name,
+			Wins:          a.wins,
+			Losses:        a.losses,
+			GamesPlayed:   a.wins + a.losses,
+			PointsFor:     a.pf,
+			PointsAgainst: a.pa,
+			PointDiff:     a.pf - a.pa,
+			EventsPlayed:  len(a.events),
+		})
+	}
+	// All-time by wins → win% → games played → point diff → name (stable).
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Wins != out[j].Wins {
+			return out[i].Wins > out[j].Wins
+		}
+		wpi := winPct(out[i].Wins, out[i].GamesPlayed)
+		wpj := winPct(out[j].Wins, out[j].GamesPlayed)
+		if wpi != wpj {
+			return wpi > wpj
+		}
+		if out[i].GamesPlayed != out[j].GamesPlayed {
+			return out[i].GamesPlayed > out[j].GamesPlayed
+		}
+		if out[i].PointDiff != out[j].PointDiff {
+			return out[i].PointDiff > out[j].PointDiff
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+func winPct(wins, games int) float64 {
+	if games == 0 {
+		return 0
+	}
+	return float64(wins) / float64(games)
 }
 
 // SetClubLogo uploads a club logo to the public avatars bucket and stamps

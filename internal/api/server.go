@@ -428,7 +428,13 @@ func (s *Server) myNextMatch(w http.ResponseWriter, r *http.Request) {
 // myProfile returns the signed-in user's saved player details to pre-fill the
 // registration form.
 func (s *Server) myProfile(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.svc.MyProfile(userID(r), userEmail(r), userName(r)))
+	uid, email := userID(r), userEmail(r)
+	// Best-effort, off the response path: tie any guest registrations (matched by
+	// email, or phone+name) to this account so push, "your events", and DUPR sync
+	// work for someone who registered by phone and later signed in. No-op once
+	// linked.
+	go s.svc.LinkRegistrationsToAccount(uid, email)
+	writeJSON(w, http.StatusOK, s.svc.MyProfile(uid, email, userName(r)))
 }
 
 // uploadPhoto stores the caller's avatar image (raw JPEG/PNG body) and returns

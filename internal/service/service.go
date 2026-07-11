@@ -7629,6 +7629,46 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 	return p
 }
 
+// LinkRegistrationsToAccount stamps user_id onto GUEST player rows (user_id is
+// null) whose email matches the account's, or whose phone AND name both match —
+// tying a registration made by phone (no login) to the person's account once
+// they sign in. This is what enables push notifications, "your events", and
+// DUPR sync for someone who registered anonymously and later got the app.
+//
+// Matching is conservative: email is treated as a unique personal identifier,
+// but a phone match ALSO requires the name to match (case-insensitive) so we
+// never merge family members who share a household number. Best-effort — errors
+// are swallowed. Returns how many guest rows were linked.
+func (s *Service) LinkRegistrationsToAccount(userID, email string) int {
+	if userID == "" {
+		return 0
+	}
+	var phone, name string
+	if pr, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=full_name,phone"); err == nil && pr != nil {
+		name = strings.TrimSpace(asStr(pr, "full_name"))
+		phone = strings.TrimSpace(asStr(pr, "phone"))
+	}
+	linked := 0
+	stamp := func(filter string) {
+		rows, err := s.sb.Update("players",
+			filter+"&user_id=is.null", map[string]any{"user_id": userID})
+		if err == nil {
+			linked += len(rows)
+		}
+	}
+	if e := strings.TrimSpace(email); e != "" {
+		stamp("email=ilike." + store.Q(e))
+	}
+	if phone != "" && name != "" {
+		stamp("phone=eq." + store.Q(phone) + "&full_name=ilike." + store.Q(name))
+	}
+	if linked > 0 {
+		log.Printf("link: tied %d guest registration(s) to account %s", linked, userID)
+	}
+	return linked
+}
+
 // SetMyBasicInfo saves the caller's account-level name + phone on pmp_profiles.
 // Upsert on user_id, so it works for organizers with no players row. The name
 // is trimmed/collapsed; phone is stored as entered (client validates format).

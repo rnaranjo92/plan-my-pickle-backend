@@ -127,6 +127,9 @@ func asMap(m map[string]any, k string) map[string]any {
 
 func mapEvent(m map[string]any) model.Event {
 	return model.Event{
+		RecurIntervalDays:        asInt(m, "recur_interval_days"),
+		RecurUntil:               asStrPtr(m, "recur_until"),
+		SeriesID:                 asStrPtr(m, "series_id"),
 		ID:                       asStr(m, "id"),
 		Name:                     asStr(m, "name"),
 		Format:                   asStr(m, "format"),

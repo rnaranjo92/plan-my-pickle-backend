@@ -95,6 +95,12 @@ type Event struct {
 	ScoreConfirmMinutes int  `json:"scoreConfirmMinutes"`
 	// PosterURL is the uploaded event poster (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
+	// Recurring social: RecurIntervalDays>0 marks a series head that auto-spawns
+	// occurrences every N days; RecurUntil caps the run. SeriesID links every
+	// occurrence (and the head) of one recurring social.
+	RecurIntervalDays int     `json:"recurIntervalDays,omitempty"`
+	RecurUntil        *string `json:"recurUntil,omitempty"`
+	SeriesID          *string `json:"seriesId,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
 	DistanceKm *float64 `json:"distanceKm,omitempty"`
 	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the
@@ -754,6 +760,12 @@ type CreateEventRequest struct {
 	PlayerScoring       bool           `json:"playerScoring"`
 	ScoreConfirmMinutes int            `json:"scoreConfirmMinutes"`
 	PosterURL           string         `json:"posterUrl"`
+	// Recurring "socials": RecurIntervalDays>0 makes this event the head of a
+	// series that auto-spawns the next occurrence every N days (7=weekly,
+	// 14=biweekly, custom otherwise). RecurUntil (RFC3339, "" = open-ended) caps
+	// how far out the series generates.
+	RecurIntervalDays int    `json:"recurIntervalDays,omitempty"`
+	RecurUntil        string `json:"recurUntil,omitempty"`
 }
 
 type RegisterRequest struct {

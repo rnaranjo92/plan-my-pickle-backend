@@ -266,6 +266,18 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
 	}
+	// A recurring social needs a start date to anchor its cadence — without one
+	// the materializer has nothing to schedule from (it would sit inert forever).
+	if req.RecurIntervalDays > 0 {
+		if strings.TrimSpace(req.StartsAt) == "" {
+			return "", errors.New("a repeating event needs a start date")
+		}
+		if u := strings.TrimSpace(req.RecurUntil); u != "" {
+			if _, err := time.Parse(time.RFC3339, u); err != nil {
+				return "", errors.New("repeat end date must be a valid RFC3339 timestamp")
+			}
+		}
+	}
 	// A premium/verified DUPR tier implies a sanctioned event (BASIC_L1 baseline
 	// plus the gated tier), so normalize it up front.
 	minEnt := normalizeDuprEntitlement(req.DuprMinEntitlement)
@@ -402,6 +414,14 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.MaxPoolRounds > 0 {
 		payload["max_pool_rounds"] = req.MaxPoolRounds
 	}
+	// Recurring-social columns ship in add_recurring_events.sql — only reference
+	// when set, so a normal one-off create still works before the migration runs.
+	if req.RecurIntervalDays > 0 {
+		payload["recur_interval_days"] = req.RecurIntervalDays
+		if req.RecurUntil != "" {
+			payload["recur_until"] = req.RecurUntil
+		}
+	}
 	ev, err := s.sb.Insert("events", payload)
 	if err != nil {
 		return "", err
@@ -410,6 +430,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		return "", errors.New("event insert returned no row")
 	}
 	id := asStr(ev[0], "id")
+
+	// A recurring social is its own series head: stamp series_id = self so every
+	// future occurrence the materializer spawns shares this id.
+	if req.RecurIntervalDays > 0 {
+		_, _ = s.sb.Update("events", "id=eq."+store.Q(id),
+			map[string]any{"series_id": id})
+	}
 
 	// Best-effort county/state stamp AFTER the insert (not in the payload) so a
 	// pre-0067 DB without these columns still creates the event — the update just
@@ -8379,6 +8406,10 @@ func (s *Service) StartMatch(matchID string) (int, error) {
 	// Best-effort: the match is already live; a failed text/notification must not
 	// report the start as failed (the organizer would re-tap, double-notifying).
 	n, _ := s.notifyMatchStart(matchID, eventID, court, rn)
+	// This court's next match is now on deck — nudge its app users to warm up.
+	// Off the request path (push-only, best-effort) so it never adds start
+	// latency or fails the start.
+	go s.notifyOnDeck(matchID, eventID)
 	return n, nil
 }
 
@@ -8504,6 +8535,106 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 		}
 	}
 	return sent, nil
+}
+
+// notifyOnDeck sends a PUSH-ONLY "you're on deck" heads-up to the players of the
+// NEXT scheduled match on a court, fired when the current match on that court
+// goes live. Push-only by design (linked-account players only): it keeps courts
+// full and warm-ups timely without doubling SMS volume/cost or fatiguing
+// players with a second text per match. Deduped via an on_deck notifications row
+// so a match is announced at most once. Best-effort — never blocks a start.
+func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(startedMatchID)+
+			"&select=court_id,scheduled_day,court:courts!court_id(label)")
+	if err != nil || m == nil {
+		return
+	}
+	courtID := asStr(m, "court_id")
+	if courtID == "" {
+		return // no assigned court → no queue to look ahead in
+	}
+	startedDay := asIntPtr(m, "scheduled_day")
+	court := "your court"
+	if c := asMap(m, "court"); c != nil {
+		if l := asStr(c, "label"); l != "" {
+			court = l
+		}
+	}
+	// On deck = the QUEUE-FRONT decided match on this court: scan the court's
+	// scheduled matches in queue order (play_order, then created_at to break
+	// null/tied keys deterministically) and pick the first on the SAME tournament
+	// day with both sides decided (never warn a TBD side). We deliberately do NOT
+	// replicate autoStartNextOnCourt's cross-court "player busy elsewhere" filter:
+	// that set is only valid at the instant a court FREES, but this runs at match
+	// START, so a snapshot here goes stale and would mis-predict — announcing the
+	// wrong pair and poisoning the dedup. autoStart still enforces busy-safety at
+	// the real start time; for a warm-up heads-up, queue position is the right,
+	// stable key. A player momentarily on another court is still "on deck" here.
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
+			"&status=eq.scheduled&order=play_order.asc.nullslast,created_at.asc"+
+			"&select=id,scheduled_day,match_participants(team,player:players!player_id(user_id))")
+	if err != nil {
+		return
+	}
+	var nextID string
+	var userIDs []string
+	for _, r := range rows {
+		if !sameSchedDay(startedDay, asIntPtr(r, "scheduled_day")) {
+			continue // tomorrow's game is not "on deck" now
+		}
+		// This is the QUEUE FRONT (first same-day scheduled match). We consider
+		// only it — never scan past it — because if it is still TBD (a bracket
+		// feeder pending), the true next match is genuinely uncertain: that feeder
+		// may resolve and this very match jump the queue before the court frees.
+		// Announcing a later decided match here would warn the wrong pair AND
+		// consume its dedup so it never gets its real on-deck push. So warn only
+		// when the front is decided; otherwise defer (the pair still gets its
+		// actual "you're up" push at start time).
+		teams := map[int]bool{}
+		var uids []string
+		seen := map[string]bool{}
+		if ps, ok := r["match_participants"].([]any); ok {
+			for _, p := range ps {
+				pm, ok := p.(map[string]any)
+				if !ok {
+					continue
+				}
+				teams[asInt(pm, "team")] = true
+				if pl := asMap(pm, "player"); pl != nil {
+					if uid := asStr(pl, "user_id"); uid != "" && !seen[uid] {
+						seen[uid] = true
+						uids = append(uids, uid)
+					}
+				}
+			}
+		}
+		if teams[1] && teams[2] {
+			nextID, userIDs = asStr(r, "id"), uids
+		}
+		break
+	}
+	if nextID == "" || len(userIDs) == 0 {
+		return
+	}
+	// Fast-path dedup (skip the wasted insert when already announced); the INSERT
+	// below is the real atomic claim — with the notifications_on_deck_once partial
+	// unique index a concurrent racer 409s here and skips the push.
+	if existing, err := s.sb.SelectOne("notifications",
+		"match_id=eq."+store.Q(nextID)+"&type=eq.on_deck&select=id"); err != nil ||
+		existing != nil {
+		return
+	}
+	if _, err := s.sb.Insert("notifications", map[string]any{
+		"event_id": eventID, "match_id": nextID, "type": "on_deck",
+		"to_address": "(push)", "body": "On deck: " + court,
+		"status": "sent", "sent_at": now(),
+	}); err != nil {
+		return // lost the race (unique violation) or a transient error — no push
+	}
+	_ = s.sendPush(userIDs, "You're on deck",
+		fmt.Sprintf("Warm up — you're next on %s", court), "")
 }
 
 func (s *Service) queueDuprSubmission(matchID, eventID string) error {

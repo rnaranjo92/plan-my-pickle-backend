@@ -132,6 +132,19 @@ func main() {
 		}
 	}()
 
+	// Recurring socials: spawn the next occurrence of each active series ~a week
+	// ahead and push the club to RSVP. Hourly is plenty (occurrences are days
+	// apart); the pass is idempotent so a missed tick self-heals next hour.
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.MaterializeRecurringEvents(); err != nil {
+				log.Printf("recurring: materialize pass failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

@@ -373,6 +373,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
 	mux.HandleFunc("POST /registrations/{id}/move", s.ownerOnly("registration", "id", s.moveRegistrationDivision))
 	mux.HandleFunc("POST /events/{id}/merge-division", s.ownerOnly("event", "id", s.mergeDivision))
+	mux.HandleFunc("POST /events/{id}/recurrence", s.ownerOnly("event", "id", s.setEventRecurrence))
 	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
 	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
@@ -2851,6 +2852,23 @@ func (s *Server) mergeDivision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"moved": moved})
+}
+
+// setEventRecurrence turns a recurring social on/off or changes its cadence
+// (owner-only). intervalDays 0 stops the series.
+func (s *Server) setEventRecurrence(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IntervalDays int    `json:"intervalDays"`
+		Until        string `json:"until"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetEventRecurrence(r.PathValue("id"), req.IntervalDays, req.Until); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // setPartner pairs a doubles registration with a partner (a registered player

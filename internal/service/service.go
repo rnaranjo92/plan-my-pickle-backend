@@ -3089,6 +3089,12 @@ func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
 // registered" message instead of a generic error.
 var ErrAlreadyRegistered = errors.New("already registered for this event")
 
+// ErrDrawExists is returned when a division-reassignment (move/merge) is
+// attempted after the draw has been generated. Reassigning entrants once the
+// bracket/pool matches exist would orphan those matches, so the caller must
+// clear the draw first. The HTTP layer maps it to 409 Conflict.
+var ErrDrawExists = errors.New("the draw is already generated — clear it before moving players between divisions")
+
 // registrationExistsByContact reports whether this event already has a
 // registration whose player shares the given phone or email. Used to block
 // silent duplicates from the organizer-add and anonymous self-register flows,
@@ -3780,6 +3786,132 @@ func (s *Service) UpdateRegistrationDetails(regID, fullName string, duprRating *
 		"dupr_rating": fOrNull(duprRating),
 	})
 	return err
+}
+
+// bracketDrawExists reports whether a division already has a generated draw —
+// any pool or bracket match. Moving/merging entrants after the draw is built
+// would orphan those matches, so the move/merge callers block on it.
+func (s *Service) bracketDrawExists(bracketID string) (bool, error) {
+	if bracketID == "" {
+		return false, nil
+	}
+	row, err := s.sb.SelectOne("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&select=id")
+	if err != nil {
+		return false, err
+	}
+	return row != nil, nil
+}
+
+// MoveRegistrationDivision reassigns one registration — and its paired partner,
+// if any — to a different division in the same event, so a pair never straddles
+// two divisions. Blocked once either the source or target division has a
+// generated draw (ErrDrawExists). This is the per-player half of a Tournament
+// Director's Rule-12 discretion to place an entrant in another division before
+// play begins.
+func (s *Service) MoveRegistrationDivision(regID, targetBracketID string) error {
+	targetBracketID = strings.TrimSpace(targetBracketID)
+	if targetBracketID == "" {
+		return errors.New("a target division is required")
+	}
+	reg, err := s.loadPartnerRegRow(regID)
+	if err != nil {
+		return ErrNotFound
+	}
+	if reg.bracketID == targetBracketID {
+		return nil // already in the target division — no-op
+	}
+	// Target must be a division of the SAME event.
+	tgt, err := s.sb.SelectOne("brackets",
+		"id=eq."+store.Q(targetBracketID)+"&select=event_id")
+	if err != nil {
+		return err
+	}
+	if tgt == nil || asStr(tgt, "event_id") != reg.eventID {
+		return ErrNotFound
+	}
+	// Block if either side already has a draw — reassigning would orphan matches.
+	for _, b := range []string{reg.bracketID, targetBracketID} {
+		drawn, err := s.bracketDrawExists(b)
+		if err != nil {
+			return err
+		}
+		if drawn {
+			return ErrDrawExists
+		}
+	}
+	ids := []string{reg.id}
+	if reg.partnerID != "" {
+		partnerReg, err := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(reg.eventID)+
+				"&player_id=eq."+store.Q(reg.partnerID)+"&select=id")
+		if err != nil {
+			return err
+		}
+		if partnerReg != nil {
+			ids = append(ids, asStr(partnerReg, "id"))
+		}
+	}
+	_, err = s.sb.Update("registrations", "id="+store.In(ids), map[string]any{
+		"bracket_id": targetBracketID,
+	})
+	return err
+}
+
+// MergeDivision moves EVERY registration from one division into another within
+// the same event — the bulk move a TD makes to combine an under-subscribed
+// division into a compatible one. The emptied source division is left in place
+// (organizers can delete it from Edit tournament). Blocked once either division
+// has a generated draw (ErrDrawExists). Returns how many registrations moved.
+func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string) (int, error) {
+	fromBracketID = strings.TrimSpace(fromBracketID)
+	toBracketID = strings.TrimSpace(toBracketID)
+	if fromBracketID == "" || toBracketID == "" {
+		return 0, errors.New("both a source and target division are required")
+	}
+	if fromBracketID == toBracketID {
+		return 0, errors.New("choose two different divisions")
+	}
+	// Both must belong to this event.
+	for _, b := range []string{fromBracketID, toBracketID} {
+		row, err := s.sb.SelectOne("brackets",
+			"id=eq."+store.Q(b)+"&select=event_id")
+		if err != nil {
+			return 0, err
+		}
+		if row == nil || asStr(row, "event_id") != eventID {
+			return 0, ErrNotFound
+		}
+		drawn, err := s.bracketDrawExists(b)
+		if err != nil {
+			return 0, err
+		}
+		if drawn {
+			return 0, ErrDrawExists
+		}
+	}
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&bracket_id=eq."+store.Q(fromBracketID)+"&select=id")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if id := asStr(r, "id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	_, err = s.sb.Update("registrations", "id="+store.In(ids), map[string]any{
+		"bracket_id": toBracketID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(ids), nil
 }
 
 // DeleteRegistration removes a player's registration from an event (organizer

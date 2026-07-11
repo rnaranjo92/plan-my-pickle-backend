@@ -370,6 +370,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /registrations/{id}/uncheckin", s.ownerOnly("registration", "id", s.uncheckin))
 	mux.HandleFunc("POST /registrations/{id}/mark-paid", s.ownerOnly("registration", "id", s.markPaid))
 	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
+	mux.HandleFunc("POST /registrations/{id}/move", s.ownerOnly("registration", "id", s.moveRegistrationDivision))
+	mux.HandleFunc("POST /events/{id}/merge-division", s.ownerOnly("event", "id", s.mergeDivision))
 	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
 	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
@@ -2793,6 +2795,40 @@ func (s *Server) updateRegistrationDetails(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
+// moveRegistrationDivision reassigns one registration (and its partner) to a
+// different division in the same event (owner-only). 409 if the draw is built.
+func (s *Server) moveRegistrationDivision(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetBracketID string `json:"targetBracketId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.MoveRegistrationDivision(r.PathValue("id"), req.TargetBracketID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "moved"})
+}
+
+// mergeDivision moves every registration from one division into another within
+// the event (owner-only). Returns how many moved. 409 if either draw is built.
+func (s *Server) mergeDivision(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FromBracketID string `json:"fromBracketId"`
+		ToBracketID   string `json:"toBracketId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	moved, err := s.svc.MergeDivision(r.PathValue("id"), req.FromBracketID, req.ToBracketID)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"moved": moved})
+}
+
 // setPartner pairs a doubles registration with a partner (a registered player
 // via partnerRegistrationId, or a free-text partnerName), or clears it when both
 // are empty. Returns scheduleStale=true when a schedule already exists and a
@@ -3611,6 +3647,10 @@ func status(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, service.ErrPremiumRequired) {
 		writeErr(w, http.StatusPaymentRequired, err)
+		return
+	}
+	if errors.Is(err, service.ErrDrawExists) {
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err)

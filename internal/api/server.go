@@ -285,6 +285,12 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/email-schedule", s.ownerOnly("event", "id", s.emailSchedule))
 	mux.HandleFunc("POST /events/{id}/instructions", s.ownerOnly("event", "id", s.emailInstructions))
 
+	// Behind-schedule flag: owner-only status read-out, acknowledge, and a
+	// notify that messages ONLY the players still waiting on an unfinished match.
+	mux.HandleFunc("GET /events/{id}/schedule-status", s.ownerOnly("event", "id", s.scheduleStatus))
+	mux.HandleFunc("POST /events/{id}/schedule-status/ack", s.ownerOnly("event", "id", s.acknowledgeSchedule))
+	mux.HandleFunc("POST /events/{id}/schedule-status/notify", s.ownerOnly("event", "id", s.notifyScheduleDelay))
+
 	// Vendor Village: public list (spectators see APPROVED booths; the owner
 	// also sees pending applications); organizer-only create/update/delete +
 	// the "push this deal to players" send. The public "Become a vendor" form
@@ -2181,6 +2187,47 @@ func (s *Server) vendorRecap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+}
+
+// scheduleStatus returns the organizer's "are we on time?" read-out for an
+// in-flight event (owner-only) — powers the behind-schedule flag on the admin
+// screens. Cheap enough to poll.
+func (s *Server) scheduleStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.ScheduleStatus(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// acknowledgeSchedule records the current delay as acknowledged, silencing the
+// flag until the delay grows materially worse (owner-only).
+func (s *Server) acknowledgeSchedule(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.AcknowledgeSchedule(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// notifyScheduleDelay pushes (and optionally texts) the players still waiting on
+// an unfinished match that the event is running late (owner-only). Only the
+// affected players are messaged.
+func (s *Server) notifyScheduleDelay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Sms     bool   `json:"sms"`
+		Message string `json:"message"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	push, sms, err := s.svc.NotifyScheduleDelay(r.PathValue("id"), req.Sms, req.Message)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int{"push": push, "sms": sms})
 }
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {

@@ -638,6 +638,28 @@ type RoundView struct {
 	Status      string  `json:"status"`
 }
 
+// ScheduleStatus is the organizer's "are we on time?" read-out for an in-flight
+// event. Behind-ness is projected from remaining matches ÷ courts × slot length
+// vs the planned finish (start + total matches ÷ courts × slot). Only meaningful
+// while the event is in_progress AND has a start time; otherwise ShowFlag=false.
+type ScheduleStatus struct {
+	InProgress    bool   `json:"inProgress"`
+	Behind        bool   `json:"behind"`
+	BehindMinutes int    `json:"behindMinutes"`
+	Total         int    `json:"total"`
+	Completed     int    `json:"completed"`
+	Remaining     int    `json:"remaining"`
+	NumCourts     int    `json:"numCourts"`
+	PlannedEnd    string `json:"plannedEnd,omitempty"`   // RFC3339 UTC
+	ProjectedEnd  string `json:"projectedEnd,omitempty"` // RFC3339 UTC
+	Affected      int    `json:"affected"`               // distinct players in unfinished matches
+	AckMinutes    int    `json:"ackMinutes"`             // last acknowledged delay (0 = never)
+	// ShowFlag: behind past the threshold AND grown ≥ threshold beyond the last
+	// acknowledgement — the signal the banner keys off so an ack silences it
+	// until the delay meaningfully worsens.
+	ShowFlag bool `json:"showFlag"`
+}
+
 type Standing struct {
 	PlayerID      string `json:"playerId"`
 	FullName      string `json:"fullName"`

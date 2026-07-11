@@ -7567,7 +7567,11 @@ func (s *Service) resolveDisplayName(userID, email string) string {
 // player row, if any) so the registration form can pre-fill. Email always comes
 // from the verified token; missing a player row just yields an email-only
 // profile. Best-effort — a lookup error still returns the email.
-func (s *Service) MyProfile(userID, email string) model.Profile {
+// MyProfile builds the caller's account profile. metaName is the signup display
+// name from the token's user_metadata — used as a last-resort fallback for the
+// name so a fresh email/password signup (whose name lives in auth metadata, not
+// pmp_profiles yet) still shows a name everywhere.
+func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 	p := model.Profile{Email: email}
 	if userID == "" {
 		return p
@@ -7601,10 +7605,16 @@ func (s *Service) MyProfile(userID, email string) model.Profile {
 		"user_id=eq."+store.Q(userID)+
 			"&select=full_name,phone,email,dupr_id,dupr_rating,skill_level&limit=1")
 	if err != nil || row == nil {
+		if strings.TrimSpace(p.FullName) == "" {
+			p.FullName = metaName // no players row — fall back to the signup name
+		}
 		return p
 	}
 	if acctName == "" {
 		p.FullName = asStr(row, "full_name")
+	}
+	if strings.TrimSpace(p.FullName) == "" {
+		p.FullName = metaName // still nothing — use the signup name
 	}
 	if acctPhone == "" {
 		p.Phone = asStr(row, "phone")

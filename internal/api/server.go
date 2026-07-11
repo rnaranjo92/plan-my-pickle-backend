@@ -428,7 +428,7 @@ func (s *Server) myNextMatch(w http.ResponseWriter, r *http.Request) {
 // myProfile returns the signed-in user's saved player details to pre-fill the
 // registration form.
 func (s *Server) myProfile(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.svc.MyProfile(userID(r), userEmail(r)))
+	writeJSON(w, http.StatusOK, s.svc.MyProfile(userID(r), userEmail(r), userName(r)))
 }
 
 // uploadPhoto stores the caller's avatar image (raw JPEG/PNG body) and returns

@@ -68,7 +68,7 @@ func TestServiceReads(t *testing.T) {
 	_, _ = s.PlayoffSeedTeams("b1", "wins")
 
 	// Non-error returns.
-	_ = s.MyProfile("u1", "a@b.com")
+	_ = s.MyProfile("u1", "a@b.com", "")
 	_ = s.AccountExists("a@b.com")
 	_ = s.IsPremium("u1")
 	_ = s.GetPremiumStatus("u1")

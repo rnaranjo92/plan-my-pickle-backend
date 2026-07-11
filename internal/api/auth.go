@@ -28,6 +28,7 @@ type ctxKey int
 const (
 	userIDKey ctxKey = iota
 	userEmailKey
+	userNameKey
 )
 
 var (
@@ -44,11 +45,23 @@ var errInvalidToken = errors.New("invalid token")
 // tokenClaims is the subset of the Supabase JWT we use. Aud is decoded raw
 // because the JWT spec allows it to be either a string or an array of strings.
 type tokenClaims struct {
-	Sub   string          `json:"sub"` // the auth user's uuid
-	Email string          `json:"email"`
-	Exp   int64           `json:"exp"`
-	Iss   string          `json:"iss"`
-	Aud   json.RawMessage `json:"aud"`
+	Sub          string          `json:"sub"` // the auth user's uuid
+	Email        string          `json:"email"`
+	Exp          int64           `json:"exp"`
+	Iss          string          `json:"iss"`
+	Aud          json.RawMessage `json:"aud"`
+	UserMetadata map[string]any  `json:"user_metadata"` // Supabase profile metadata (e.g. full_name from signup)
+}
+
+// claimName pulls the signup display name out of user_metadata.full_name.
+func claimName(c tokenClaims) string {
+	if c.UserMetadata == nil {
+		return ""
+	}
+	if n, ok := c.UserMetadata["full_name"].(string); ok {
+		return strings.TrimSpace(n)
+	}
+	return ""
 }
 
 // expectedIssuer is the issuer Supabase stamps on its access tokens (the
@@ -249,6 +262,13 @@ func userEmail(r *http.Request) string {
 	return e
 }
 
+// userName returns the signup display name from the token's user_metadata, or
+// "" — a fallback for the profile when pmp_profiles/players have no name yet.
+func userName(r *http.Request) string {
+	n, _ := r.Context().Value(userNameKey).(string)
+	return n
+}
+
 // requireAuth rejects requests without a valid Supabase token (401) and stashes
 // the user id in context for the handler.
 func requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -260,6 +280,7 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := context.WithValue(r.Context(), userIDKey, c.Sub)
 		ctx = context.WithValue(ctx, userEmailKey, c.Email)
+		ctx = context.WithValue(ctx, userNameKey, claimName(c))
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -271,6 +292,7 @@ func optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 		if c, err := verifyToken(bearer(r)); err == nil {
 			ctx := context.WithValue(r.Context(), userIDKey, c.Sub)
 			ctx = context.WithValue(ctx, userEmailKey, c.Email)
+			ctx = context.WithValue(ctx, userNameKey, claimName(c))
 			r = r.WithContext(ctx)
 		}
 		next(w, r)

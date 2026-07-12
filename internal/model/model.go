@@ -660,6 +660,33 @@ type ScheduleStatus struct {
 	ShowFlag bool `json:"showFlag"`
 }
 
+// MusicTrack is one entry in an event's Spotify jukebox queue. status is one of
+// pending (awaiting organizer approval) | queued (ready) | playing | played |
+// skipped. Tokens/URIs to control playback live server-side, never here.
+type MusicTrack struct {
+	ID          string `json:"id"`
+	TrackURI    string `json:"trackUri"`
+	TrackName   string `json:"trackName"`
+	Artist      string `json:"artist,omitempty"`
+	AlbumArt    string `json:"albumArt,omitempty"`
+	DurationMs  int    `json:"durationMs,omitempty"`
+	AddedByName string `json:"addedByName,omitempty"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	// IsMine: this track was added by the calling player (lets them remove their
+	// own request). Set per-request; never stored.
+	IsMine bool `json:"isMine,omitempty"`
+}
+
+// AddTrackRequest is a player adding a searched Spotify track to the queue.
+type AddTrackRequest struct {
+	TrackURI   string `json:"trackUri"`
+	TrackName  string `json:"trackName"`
+	Artist     string `json:"artist"`
+	AlbumArt   string `json:"albumArt"`
+	DurationMs int    `json:"durationMs"`
+}
+
 type Standing struct {
 	PlayerID      string `json:"playerId"`
 	FullName      string `json:"fullName"`

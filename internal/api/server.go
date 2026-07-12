@@ -291,6 +291,18 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/schedule-status/ack", s.ownerOnly("event", "id", s.acknowledgeSchedule))
 	mux.HandleFunc("POST /events/{id}/schedule-status/notify", s.ownerOnly("event", "id", s.notifyScheduleDelay))
 
+	// Spotify jukebox: public queue read; authed player add; owner moderation +
+	// playback state. Track-scoped routes authorize inside the handler (owner OR
+	// the player who added it) except approve/playing/played which are owner-only.
+	mux.HandleFunc("GET /events/{id}/music/queue", optionalAuth(s.musicQueue))
+	mux.HandleFunc("POST /events/{id}/music/queue", requireAuth(s.addToQueue))
+	mux.HandleFunc("POST /events/{id}/music/settings", s.ownerOnly("event", "id", s.setMusicSettings))
+	mux.HandleFunc("POST /events/{id}/music/clear", s.ownerOnly("event", "id", s.clearQueue))
+	mux.HandleFunc("DELETE /music/{trackId}", requireAuth(s.removeTrack))
+	mux.HandleFunc("POST /music/{trackId}/approve", s.ownerOnly("music_track", "trackId", s.approveTrack))
+	mux.HandleFunc("POST /music/{trackId}/playing", s.ownerOnly("music_track", "trackId", s.markPlaying))
+	mux.HandleFunc("POST /music/{trackId}/played", s.ownerOnly("music_track", "trackId", s.markPlayed))
+
 	// Vendor Village: public list (spectators see APPROVED booths; the owner
 	// also sees pending applications); organizer-only create/update/delete +
 	// the "push this deal to players" send. The public "Become a vendor" form
@@ -2205,6 +2217,128 @@ func (s *Server) scheduleStatus(w http.ResponseWriter, r *http.Request) {
 // flag until the delay grows materially worse (owner-only).
 func (s *Server) acknowledgeSchedule(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.AcknowledgeSchedule(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---- Spotify jukebox: the per-event music queue + moderation ----
+
+// musicQueue returns an event's live queue (public read; flags the caller's own
+// adds so a player can remove their request).
+func (s *Server) musicQueue(w http.ResponseWriter, r *http.Request) {
+	tracks, err := s.svc.MusicQueue(r.PathValue("id"), userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tracks)
+}
+
+// addToQueue lets an authenticated player add a searched Spotify track.
+func (s *Server) addToQueue(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		model.AddTrackRequest
+		AddedByName string `json:"addedByName"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	t, err := s.svc.AddToQueue(
+		r.PathValue("id"), userID(r), req.AddedByName, req.AddTrackRequest)
+	if errors.Is(err, service.ErrInvalidTrack) || errors.Is(err, service.ErrMusicDisabled) {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, t)
+}
+
+// setMusicSettings toggles the jukebox on/off + approval requirement (owner).
+func (s *Server) setMusicSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled         bool `json:"enabled"`
+		RequireApproval bool `json:"requireApproval"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetMusicSettings(r.PathValue("id"), req.Enabled, req.RequireApproval); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// clearQueue skips every not-yet-played track for an event (owner).
+func (s *Server) clearQueue(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearQueue(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// approveTrack clears a pending track for play (owner, via ownerOnly music_track).
+func (s *Server) approveTrack(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ApproveTrack(r.PathValue("trackId")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// markPlaying / markPlayed drive playback state from the organizer's TV device.
+func (s *Server) markPlaying(w http.ResponseWriter, r *http.Request) {
+	trackID := r.PathValue("trackId")
+	eventID, _, err := s.svc.TrackEventID(trackID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.svc.MarkPlaying(eventID, trackID); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) markPlayed(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.MarkPlayed(r.PathValue("trackId")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// removeTrack skips a track. Allowed for the event OWNER or the player who added
+// it — so a player can pull their own request without being able to touch others'.
+func (s *Server) removeTrack(w http.ResponseWriter, r *http.Request) {
+	trackID := r.PathValue("trackId")
+	eventID, addedBy, err := s.svc.TrackEventID(trackID)
+	if errors.Is(err, service.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	caller := userID(r)
+	owner, err := s.svc.OwnerOf("event", eventID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if caller == "" || (caller != owner && caller != addedBy) {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return
+	}
+	if err := s.svc.SkipTrack(trackID); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}

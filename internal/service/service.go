@@ -4519,10 +4519,39 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 		return a.slot < b.slot
 	})
 
+	// Cross-division player-conflict avoidance (USAP 12.K): a player entered in
+	// two divisions must not be placed in the same slot. Later-round bracket
+	// matches are TBD (no participants yet) so they carry no constraint.
+	matchPlayers := map[string][]string{}
+	if len(list) > 0 {
+		mids := make([]string, len(list))
+		for i, m := range list {
+			mids[i] = m.id
+		}
+		const pchunk = 100
+		for start := 0; start < len(mids); start += pchunk {
+			end := start + pchunk
+			if end > len(mids) {
+				end = len(mids)
+			}
+			parts, e := s.sb.Select("match_participants",
+				"match_id="+store.In(mids[start:end])+"&select=match_id,player_id")
+			if e != nil {
+				return e
+			}
+			for _, p := range parts {
+				mid := asStr(p, "match_id")
+				matchPlayers[mid] = append(matchPlayers[mid], asStr(p, "player_id"))
+			}
+		}
+	}
+
 	// Division-aware placement: each bracket's matches land only on ITS courts
 	// (STRICT); a per-slot court map prevents two matches sharing a court+slot,
-	// and each bracket_round (a time block) starts strictly after the previous.
-	used := map[int]map[int]bool{} // slot -> court number -> taken
+	// a per-slot player map prevents double-booking a cross-division player, and
+	// each bracket_round (a time block) starts strictly after the previous.
+	used := map[int]map[int]bool{}         // slot -> court number -> taken
+	occupiedP := map[int]map[string]bool{} // slot -> player id -> busy
 	byCourt := map[string][]string{}
 	bySlot := map[int][]string{}
 	prevRound, baseSlot, maxSlot := -1, 0, -1
@@ -4537,8 +4566,20 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 		if len(courts) == 0 {
 			courts = courtNums
 		}
-		// Earliest slot >= baseSlot with a free court in this bracket's set.
+		// Earliest slot >= baseSlot with a free court AND no player already busy.
 		for slot := baseSlot; ; slot++ {
+			if occ := occupiedP[slot]; occ != nil {
+				busy := false
+				for _, pid := range matchPlayers[m.id] {
+					if occ[pid] {
+						busy = true
+						break
+					}
+				}
+				if busy {
+					continue // this match's player is already on another court this slot
+				}
+			}
 			var chosen int
 			ok := false
 			for _, c := range courts {
@@ -4554,6 +4595,14 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 				used[slot] = map[int]bool{}
 			}
 			used[slot][chosen] = true
+			if len(matchPlayers[m.id]) > 0 {
+				if occupiedP[slot] == nil {
+					occupiedP[slot] = map[string]bool{}
+				}
+				for _, pid := range matchPlayers[m.id] {
+					occupiedP[slot][pid] = true
+				}
+			}
 			byCourt[courtByNum[chosen]] = append(byCourt[courtByNum[chosen]], m.id)
 			bySlot[slot] = append(bySlot[slot], m.id)
 			if slot > maxSlot {

@@ -3348,6 +3348,16 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		}
 		if existing != nil {
 			playerID = asStr(existing, "id")
+			// This account already registered for this event → block. The contact
+			// check above misses it when a signed-in user leaves phone/email blank,
+			// so without this the same account could sign up twice (a duplicate on
+			// the roster). Matches the event-wide "one registration per person".
+			if dup, derr := s.sb.SelectOne("registrations",
+				"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+"&select=id"); derr != nil {
+				return model.Registration{}, derr
+			} else if dup != nil {
+				return model.Registration{}, ErrAlreadyRegistered
+			}
 			// Update the linked profile, but only with values actually provided so
 			// a registration with blank optional fields can't wipe a phone/rating
 			// saved from a prior event (one player row is shared across events).

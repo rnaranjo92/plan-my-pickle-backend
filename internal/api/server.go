@@ -355,6 +355,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
 	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
 	mux.HandleFunc("POST /events/{id}/fill-demo-players", s.ownerOnly("event", "id", s.fillRandomPlayers))
+	mux.HandleFunc("POST /events/{id}/clear-demo-players", s.ownerOnly("event", "id", s.clearDemoPlayers))
 	// Demo helper: enroll the fixed DUPR UAT test accounts into a sanctioned event.
 	mux.HandleFunc("POST /events/{id}/register-dupr-testers", s.ownerOnly("event", "id", s.registerDuprTesters))
 	// Reverse an event's submitted results on DUPR (the delete leg of the round-trip).
@@ -3547,6 +3548,17 @@ func (s *Server) fillRandomPlayers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"added": n})
+}
+
+// clearDemoPlayers removes the placeholder players (and the preview schedule
+// built from them) so the organizer can regenerate with real registrations.
+func (s *Server) clearDemoPlayers(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.ClearDemoPlayers(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"removed": n})
 }
 
 // registerDuprTesters enrolls the fixed DUPR UAT test accounts into the event

@@ -250,6 +250,10 @@ type Bracket struct {
 	// Courts pins this division to a specific set of court numbers when the
 	// scheduler arranges games; empty/nil = the division may use any court.
 	Courts []int `json:"courts,omitempty"`
+	// PlayerCount is the expected number of players in this division — used to
+	// fill it with that many placeholder players for a pre-registration schedule
+	// preview. nil = no target.
+	PlayerCount *int `json:"playerCount,omitempty"`
 }
 
 // LeagueBracket is a division within a league, mirroring Bracket but keyed on a
@@ -717,6 +721,8 @@ type BracketInput struct {
 	DuprMax      *float64 `json:"duprMax,omitempty"`
 	// Courts pins this division to specific court numbers (empty = any court).
 	Courts []int `json:"courts,omitempty"`
+	// PlayerCount: expected players, for placeholder-player schedule previews.
+	PlayerCount *int `json:"playerCount,omitempty"`
 }
 
 // PlayoffSeed is one team in playoff seed order — its players (ids + names) and

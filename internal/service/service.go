@@ -470,6 +470,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 			"dupr_min":      fOrNull(d.DuprMin),
 			"dupr_max":      fOrNull(d.DuprMax),
 			"courts":        iaOrNull(d.Courts),
+			"player_count":  iOrNull(d.PlayerCount),
 			"sort_order":    i,
 		})
 	}
@@ -2399,8 +2400,14 @@ func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 		}
 	} else {
 		for _, b := range bks {
-			for i := 0; i < perDiv; i++ {
-				note(regOne(b.ID, ratingInBand(b.MinRating, b.MaxRating, i, perDiv)))
+			// Use the division's expected player count when set (the organizer's
+			// "players per division"), else the default day's worth.
+			n := perDiv
+			if b.PlayerCount != nil && *b.PlayerCount > 0 {
+				n = *b.PlayerCount
+			}
+			for i := 0; i < n; i++ {
+				note(regOne(b.ID, ratingInBand(b.MinRating, b.MaxRating, i, n)))
 			}
 		}
 	}
@@ -2408,6 +2415,42 @@ func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 		return 0, firstErr
 	}
 	return added, nil
+}
+
+// ClearDemoPlayers removes the placeholder players added by FillRandomPlayers
+// (demo phone range +15553…) and wipes the schedule, so the organizer can
+// regenerate cleanly once real registrations are in. Returns how many were
+// removed. Real registrations (any other phone) are untouched.
+func (s *Service) ClearDemoPlayers(eventID string) (int, error) {
+	// The preview schedule was built from placeholders — clear it first so no
+	// match references a registration we're about to delete.
+	if err := s.wipeAllMatches(eventID); err != nil {
+		return 0, err
+	}
+	regs, err := s.Registrations(eventID)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for _, r := range regs {
+		if strings.HasPrefix(r.Phone, "+15553") {
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	const chunk = 80
+	for i := 0; i < len(ids); i += chunk {
+		end := i + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := s.sb.Delete("registrations", "id="+store.In(ids[i:end])); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
 }
 
 // ratingInBand returns a rating strictly inside [min,max] (defaults 2.5–5.0 when
@@ -3027,6 +3070,7 @@ func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]st
 			"dupr_min":      fOrNull(d.DuprMin),
 			"dupr_max":      fOrNull(d.DuprMax),
 			"courts":        iaOrNull(d.Courts),
+			"player_count":  iOrNull(d.PlayerCount),
 			"sort_order":    i,
 		}
 		if d.ID != "" {

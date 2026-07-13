@@ -1,6 +1,36 @@
 package service
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+// TestDivisionCourtMapFrom locks in filtering (drop nonexistent courts),
+// de-duplication, and the empty/all-invalid -> all-courts default.
+func TestDivisionCourtMapFrom(t *testing.T) {
+	courtByNum := map[int]string{1: "c1", 2: "c2", 3: "c3", 4: "c4"}
+	courtNums := []int{1, 2, 3, 4}
+	brackets := []map[string]any{
+		{"id": "keep", "courts": []any{3.0, 4.0}},          // valid subset
+		{"id": "dup", "courts": []any{1.0, 1.0, 2.0}},      // duplicates -> deduped
+		{"id": "bad", "courts": []any{5.0, 6.0}},           // all invalid -> default all
+		{"id": "mixed", "courts": []any{2.0, 9.0}},         // drop 9 -> [2]
+		{"id": "empty"},                                    // none -> default all
+	}
+	got := divisionCourtMapFrom(brackets, courtByNum, courtNums)
+	want := map[string][]int{
+		"keep":  {3, 4},
+		"dup":   {1, 2},
+		"bad":   {1, 2, 3, 4},
+		"mixed": {2},
+		"empty": {1, 2, 3, 4},
+	}
+	for k, w := range want {
+		if !reflect.DeepEqual(got[k], w) {
+			t.Errorf("bracket %q: got %v want %v", k, got[k], w)
+		}
+	}
+}
 
 // TestArrangePlacementsStrictCourts locks in per-division court assignment: a
 // division only plays on its assigned courts, disjoint divisions run in
@@ -78,6 +108,25 @@ func TestArrangePlacementsStrictCourts(t *testing.T) {
 		if pl["a1"].slot == pl["b1"].slot {
 			t.Errorf("player double-booked: a1 and b1 both at slot %d", pl["a1"].slot)
 		}
+	})
+
+	t.Run("unknown/missing division courts fall back to all courts (no skip/panic)", func(t *testing.T) {
+		// divCourts has no entry for div "A" (simulates an orphan bracket_id).
+		pl, n := arrangePlacements([]string{"A"},
+			map[string][][]string{"A": {{"a1", "a2"}}},
+			map[string][]int{}, []int{1, 2, 3}, mp("a1", "a2"), 2, 0, true)
+		if n != 2 {
+			t.Fatalf("scheduled=%d want 2 (must not skip on missing court set)", n)
+		}
+		// sequential path too (would index a nil slice without the guard)
+		pl2, n2 := arrangePlacements([]string{"A"},
+			map[string][][]string{"A": {{"a1", "a2"}}},
+			map[string][]int{}, []int{1, 2, 3}, mp("a1", "a2"), 2, 0, false)
+		if n2 != 2 {
+			t.Fatalf("sequential scheduled=%d want 2", n2)
+		}
+		_ = pl
+		_ = pl2
 	})
 
 	t.Run("sequential mode honors division courts", func(t *testing.T) {

@@ -4472,25 +4472,35 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 	}
 	sort.Ints(courtNums)
 
+	// Per-division court sets (STRICT): elimination brackets honor the same
+	// per-division court assignment the pool arranger does.
+	brks, err := s.sb.Select("brackets",
+		"event_id=eq."+store.Q(eventID)+"&select=id,courts")
+	if err != nil {
+		return err
+	}
+	divCourts := divisionCourtMapFrom(brks, courtByNum, courtNums)
+
 	// Only the still-to-be-played matches; byes/decided games are status!=scheduled.
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&stage=eq.bracket&status=eq.scheduled"+
-			"&select=id,bracket_round,bracket_slot,bracket_tier,bracket_group")
+			"&select=id,bracket_id,bracket_round,bracket_slot,bracket_tier,bracket_group")
 	if err != nil {
 		return err
 	}
 	type mr struct {
-		id, tier, group string
-		round, slot     int
+		id, bracket, tier, group string
+		round, slot              int
 	}
 	list := make([]mr, 0, len(rows))
 	for _, r := range rows {
 		list = append(list, mr{
-			id:    asStr(r, "id"),
-			tier:  asStr(r, "bracket_tier"),
-			group: asStr(r, "bracket_group"),
-			round: asInt(r, "bracket_round"),
-			slot:  asInt(r, "bracket_slot"),
+			id:      asStr(r, "id"),
+			bracket: asStr(r, "bracket_id"),
+			tier:    asStr(r, "bracket_tier"),
+			group:   asStr(r, "bracket_group"),
+			round:   asInt(r, "bracket_round"),
+			slot:    asInt(r, "bracket_slot"),
 		})
 	}
 	// Round is the time block; tier/group/slot keep a stable layout. Single-elim
@@ -4509,23 +4519,48 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 		return a.slot < b.slot
 	})
 
-	nc := len(courtNums)
+	// Division-aware placement: each bracket's matches land only on ITS courts
+	// (STRICT); a per-slot court map prevents two matches sharing a court+slot,
+	// and each bracket_round (a time block) starts strictly after the previous.
+	used := map[int]map[int]bool{} // slot -> court number -> taken
 	byCourt := map[string][]string{}
 	bySlot := map[int][]string{}
-	prevRound, idxInRound, baseSlot := -1, 0, 0
+	prevRound, baseSlot, maxSlot := -1, 0, -1
 	for _, m := range list {
 		if m.round != prevRound {
 			if prevRound != -1 {
-				baseSlot += (idxInRound + nc - 1) / nc
+				baseSlot = maxSlot + 1 // next round after everything placed so far
 			}
 			prevRound = m.round
-			idxInRound = 0
 		}
-		cid := courtByNum[courtNums[idxInRound%nc]]
-		slot := baseSlot + idxInRound/nc
-		idxInRound++
-		byCourt[cid] = append(byCourt[cid], m.id)
-		bySlot[slot] = append(bySlot[slot], m.id)
+		courts := divCourts[m.bracket]
+		if len(courts) == 0 {
+			courts = courtNums
+		}
+		// Earliest slot >= baseSlot with a free court in this bracket's set.
+		for slot := baseSlot; ; slot++ {
+			var chosen int
+			ok := false
+			for _, c := range courts {
+				if used[slot] == nil || !used[slot][c] {
+					chosen, ok = c, true
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+			if used[slot] == nil {
+				used[slot] = map[int]bool{}
+			}
+			used[slot][chosen] = true
+			byCourt[courtByNum[chosen]] = append(byCourt[courtByNum[chosen]], m.id)
+			bySlot[slot] = append(bySlot[slot], m.id)
+			if slot > maxSlot {
+				maxSlot = slot
+			}
+			break
+		}
 	}
 	const chunk = 80
 	apply := func(ids []string, patch map[string]any) error {
@@ -4942,21 +4977,7 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 
 	// Per-division court restriction (STRICT): a division only plays on the
 	// courts it was assigned; an empty/absent set means it may use any court.
-	// Court numbers that aren't part of this event are ignored.
-	divCourts := make(map[string][]int, len(brackets))
-	for _, b := range brackets {
-		var valid []int
-		for _, c := range asIntSlice(b, "courts") {
-			if _, ok := courtByNum[c]; ok {
-				valid = append(valid, c)
-			}
-		}
-		sort.Ints(valid)
-		if len(valid) == 0 {
-			valid = courtNums
-		}
-		divCourts[asStr(b, "id")] = valid
-	}
+	divCourts := divisionCourtMapFrom(brackets, courtByNum, courtNums)
 
 	// Pool matches with their round number. SelectAll so a big field's pool games
 	// aren't truncated at PostgREST's row cap (which would silently skip placing
@@ -5092,6 +5113,30 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	return scheduled, nil
 }
 
+// divisionCourtMapFrom maps each bracket id to its STRICT court set: the
+// bracket's `courts` filtered to real event courts and de-duplicated, defaulting
+// to ALL courts when a division pins none (or pins only nonexistent courts).
+// Shared by the pool arranger and the elimination-bracket arranger.
+func divisionCourtMapFrom(brackets []map[string]any, courtByNum map[int]string, courtNums []int) map[string][]int {
+	out := make(map[string][]int, len(brackets))
+	for _, b := range brackets {
+		seen := map[int]bool{}
+		var valid []int
+		for _, c := range asIntSlice(b, "courts") {
+			if _, ok := courtByNum[c]; ok && !seen[c] {
+				seen[c] = true
+				valid = append(valid, c)
+			}
+		}
+		sort.Ints(valid)
+		if len(valid) == 0 {
+			valid = courtNums
+		}
+		out[asStr(b, "id")] = valid
+	}
+	return out
+}
+
 type courtPlacement struct{ court, slot int }
 
 // arrangePlacements assigns each pool match a (court, slot), STRICTLY honoring
@@ -5164,8 +5209,12 @@ func arrangePlacements(
 					continue // division done
 				}
 				round := rounds[ri]
+				courts := divCourts[div]
+				if len(courts) == 0 {
+					courts = courtNums // defensive: never leave matches unplaceable
+				}
 				// Fill only THIS division's assigned courts that are free this slot.
-				for _, court := range divCourts[div] {
+				for _, court := range courts {
 					if pos[div] >= len(round) {
 						break
 					}
@@ -5193,6 +5242,9 @@ func arrangePlacements(
 		slot := 0
 		for _, div := range divOrder {
 			courts := divCourts[div] // STRICT: this division's own courts
+			if len(courts) == 0 {
+				courts = courtNums // defensive: never leave matches unplaceable
+			}
 			for _, round := range divRounds[div] {
 				courtIdx := 0
 				for _, mid := range round {

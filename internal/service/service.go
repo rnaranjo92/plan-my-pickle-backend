@@ -3336,6 +3336,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		"dupr_id":          orNull(req.DuprID),
 		"dupr_rating":      fOrNull(req.DuprRating),
 		"dupr_reliability": fOrNull(req.DuprReliability),
+		"sms_consent":      req.SmsConsent, // opt-in gate for automated texts
 	}
 	var playerID string
 	if linkUserID != "" {
@@ -3361,7 +3362,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			// Update the linked profile, but only with values actually provided so
 			// a registration with blank optional fields can't wipe a phone/rating
 			// saved from a prior event (one player row is shared across events).
-			upd := map[string]any{"full_name": req.FullName}
+			upd := map[string]any{"full_name": req.FullName, "sms_consent": req.SmsConsent}
 			if req.Phone != "" {
 				upd["phone"] = req.Phone
 			}
@@ -8598,7 +8599,7 @@ func (s *Service) UnstartMatch(matchID string) error {
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
 	prows, err := s.sb.Select("match_participants",
-		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(id,phone,user_id)")
+		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(id,phone,user_id,sms_consent)")
 	if err != nil {
 		return 0, err
 	}
@@ -8608,7 +8609,9 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	seenUser := map[string]bool{}
 	for _, r := range prows {
 		if p := asMap(r, "player"); p != nil {
-			if ph := asStr(p, "phone"); ph != "" {
+			// Court-call texts go only to players who opted in (sms_consent);
+			// the phone itself is stored regardless so organizers can reach them.
+			if ph := asStr(p, "phone"); ph != "" && asBool(p, "sms_consent") {
 				phones = append(phones, recipient{phone: ph, playerID: asStr(p, "id")})
 			}
 			// Players with a linked account get a push too; skip those without

@@ -832,6 +832,10 @@ type RegisterRequest struct {
 	DuprReliability *float64 `json:"duprReliability,omitempty"`
 	PartnerID       string   `json:"partnerId"`
 	BracketID       string   `json:"bracketId"`
+	// SmsConsent is the player's explicit opt-in to automated texts (court calls,
+	// schedule alerts, score confirmations). Distinct from Phone: the phone is
+	// stored regardless (organizers need it) but is only texted when this is true.
+	SmsConsent bool `json:"smsConsent"`
 	// Self is true only when a LOGGED-IN user is registering THEMSELVES (the
 	// self-registration flow). It links the player to their account
 	// (players.user_id); an organizer adding other players leaves it false.

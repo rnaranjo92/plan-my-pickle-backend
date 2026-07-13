@@ -133,7 +133,7 @@ func (s *Service) AcknowledgeSchedule(eventID string) error {
 func (s *Service) scheduleAffected(eventID string) (userIDs, phones []string, count int, err error) {
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&status=neq.completed"+
-			"&select=match_participants(player:players!player_id(id,phone,user_id))")
+			"&select=match_participants(player:players!player_id(id,phone,user_id,sms_consent))")
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -158,7 +158,9 @@ func (s *Service) scheduleAffected(eventID string) (userIDs, phones []string, co
 				continue
 			}
 			seenPlayer[pid] = true
-			if ph := asStr(pl, "phone"); ph != "" {
+			// Only text players who opted in (sms_consent); the phone is stored
+			// regardless so organizers can reach them.
+			if ph := asStr(pl, "phone"); ph != "" && asBool(pl, "sms_consent") {
 				phones = append(phones, ph)
 			}
 			if uid := asStr(pl, "user_id"); uid != "" && !seenUser[uid] {

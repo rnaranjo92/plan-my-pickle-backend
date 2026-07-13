@@ -243,7 +243,7 @@ func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (
 func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minutes int) {
 	parts, err := s.sb.Select("match_participants",
 		"match_id=eq."+store.Q(matchID)+"&team=eq."+fmt.Sprint(team)+
-			"&select=player:players!player_id(id,phone,user_id)")
+			"&select=player:players!player_id(id,phone,user_id,sms_consent)")
 	if err != nil {
 		log.Printf("score-confirm notify: participants: %v", err)
 		return
@@ -258,8 +258,8 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 		}
 		pid := asStr(pl, "id")
 		playerIDs = append(playerIDs, pid)
-		if ph := asStr(pl, "phone"); ph != "" {
-			phoneByPlayer[pid] = ph
+		if ph := asStr(pl, "phone"); ph != "" && asBool(pl, "sms_consent") {
+			phoneByPlayer[pid] = ph // text only opted-in players
 		}
 		if uid := asStr(pl, "user_id"); uid != "" {
 			userIDs = append(userIDs, uid)

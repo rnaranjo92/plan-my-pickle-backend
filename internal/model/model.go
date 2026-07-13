@@ -247,6 +247,9 @@ type Bracket struct {
 	// self-rated skill band in MinRating/MaxRating).
 	DuprMin *float64 `json:"duprMin,omitempty"`
 	DuprMax *float64 `json:"duprMax,omitempty"`
+	// Courts pins this division to a specific set of court numbers when the
+	// scheduler arranges games; empty/nil = the division may use any court.
+	Courts []int `json:"courts,omitempty"`
 }
 
 // LeagueBracket is a division within a league, mirroring Bracket but keyed on a
@@ -712,6 +715,8 @@ type BracketInput struct {
 	DivisionType string   `json:"divisionType"` // default "open" (see Bracket)
 	DuprMin      *float64 `json:"duprMin,omitempty"`
 	DuprMax      *float64 `json:"duprMax,omitempty"`
+	// Courts pins this division to specific court numbers (empty = any court).
+	Courts []int `json:"courts,omitempty"`
 }
 
 // PlayoffSeed is one team in playoff seed order — its players (ids + names) and

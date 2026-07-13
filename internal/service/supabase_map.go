@@ -90,6 +90,36 @@ func iOrNull(i *int) any {
 	return *i
 }
 
+// iaOrNull maps an empty/nil []int to JSON null (Postgres NULL = "no court
+// restriction"), else the slice (stored in an int[] column).
+func iaOrNull(a []int) any {
+	if len(a) == 0 {
+		return nil
+	}
+	return a
+}
+
+// asIntSlice parses a PostgREST int[] column (a JSON array of numbers) into
+// []int; returns nil when absent or not an array.
+func asIntSlice(m map[string]any, k string) []int {
+	arr, ok := m[k].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(arr))
+	for _, v := range arr {
+		switch n := v.(type) {
+		case float64:
+			out = append(out, int(n))
+		case string:
+			if i, err := strconv.Atoi(n); err == nil {
+				out = append(out, i)
+			}
+		}
+	}
+	return out
+}
+
 // intOr dereferences a *int, returning def when nil — used as a sort key so a
 // missing value (e.g. unassigned court) sorts last.
 func intOr(p *int, def int) int {
@@ -258,6 +288,7 @@ func mapBracket(m map[string]any) model.Bracket {
 		DivisionType: asStr(m, "division_type"),
 		DuprMin:      asFloatPtr(m, "dupr_min"),
 		DuprMax:      asFloatPtr(m, "dupr_max"),
+		Courts:       asIntSlice(m, "courts"),
 	}
 }
 

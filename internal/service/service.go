@@ -469,6 +469,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 			"division_type": dt,
 			"dupr_min":      fOrNull(d.DuprMin),
 			"dupr_max":      fOrNull(d.DuprMax),
+			"courts":        iaOrNull(d.Courts),
 			"sort_order":    i,
 		})
 	}
@@ -3025,6 +3026,7 @@ func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]st
 			"division_type": dt,
 			"dupr_min":      fOrNull(d.DuprMin),
 			"dupr_max":      fOrNull(d.DuprMax),
+			"courts":        iaOrNull(d.Courts),
 			"sort_order":    i,
 		}
 		if d.ID != "" {
@@ -4906,7 +4908,7 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	// ties — rated bands ascending by min_rating, unrated ("Open") last — which
 	// is also the default order divisions are created in.
 	brackets, err := s.sb.Select("brackets",
-		"event_id=eq."+store.Q(eventID)+"&select=id,min_rating,sort_order")
+		"event_id=eq."+store.Q(eventID)+"&select=id,min_rating,sort_order,courts")
 	if err != nil {
 		return 0, err
 	}
@@ -4936,6 +4938,24 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	rank := make(map[string]int, len(blist))
 	for i, b := range blist {
 		rank[b.id] = i
+	}
+
+	// Per-division court restriction (STRICT): a division only plays on the
+	// courts it was assigned; an empty/absent set means it may use any court.
+	// Court numbers that aren't part of this event are ignored.
+	divCourts := make(map[string][]int, len(brackets))
+	for _, b := range brackets {
+		var valid []int
+		for _, c := range asIntSlice(b, "courts") {
+			if _, ok := courtByNum[c]; ok {
+				valid = append(valid, c)
+			}
+		}
+		sort.Ints(valid)
+		if len(valid) == 0 {
+			valid = courtNums
+		}
+		divCourts[asStr(b, "id")] = valid
 	}
 
 	// Pool matches with their round number. SelectAll so a big field's pool games
@@ -5033,115 +5053,9 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 			}
 		}
 	}
-	occupied := map[int]map[string]bool{} // slot -> player ids playing that slot
-	lastSlot := map[string]int{}          // player id -> their latest placed slot
-	// conflictAt reports whether placing matchID at slot would double-book a
-	// player (hard) or violate the min-rest gap (soft — only when minRestSlots>0).
-	conflictAt := func(slot int, matchID string) bool {
-		occ := occupied[slot]
-		for _, pid := range matchPlayers[matchID] {
-			if occ != nil && occ[pid] {
-				return true
-			}
-			if minRestSlots > 0 {
-				if prev, ok := lastSlot[pid]; ok && slot-prev <= minRestSlots {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	markSlot := func(slot int, matchID string) {
-		if occupied[slot] == nil {
-			occupied[slot] = map[string]bool{}
-		}
-		for _, pid := range matchPlayers[matchID] {
-			occupied[slot][pid] = true
-			lastSlot[pid] = slot
-		}
-	}
+	placements, scheduled := arrangePlacements(divOrder, divRounds, divCourts,
+		courtNums, matchPlayers, len(list), minRestSlots, interleave)
 
-	scheduled := 0
-	var perr error
-	// Record placements in memory; flush them in batched UPDATEs after the loops
-	// (grouped by court + slot) instead of one UPDATE per match — a big field
-	// (768 games) otherwise fires 768 round-trips and the request times out (502).
-	type placement struct{ court, slot int }
-	placements := map[string]placement{}
-	place := func(matchID string, courtNumber, slot int) {
-		placements[matchID] = placement{courtNumber, slot}
-		scheduled++
-	}
-
-	if interleave {
-		// Slot-filling: at each slot, fill courts division-by-division (lowest
-		// first) from each division's CURRENT round only — so a division never
-		// has two rounds in one slot (no double-booking), while idle courts get
-		// used by higher divisions, shortening the day.
-		roundIdx := make(map[string]int)
-		pos := make(map[string]int)
-		remaining := len(list)
-		slot := 0
-		// Conflicts (and the min-rest gap) ALWAYS self-resolve as `slot` grows: a
-		// fresh slot has no occupied players, and the rest gap widens with time. So
-		// the loop terminates and the hard double-booking check is never bypassed.
-		// maxSlots is only a defensive bound; if it were somehow hit (it can't for
-		// valid round-robin data), the few unplaced matches just stay un-arranged
-		// (play_order null) — never an infinite loop and never a double-booked slot.
-		maxSlots := len(list)*(minRestSlots+1) + len(courtNums) + 10
-		for remaining > 0 && perr == nil && slot <= maxSlots {
-			courtCursor := 0
-			for _, div := range divOrder {
-				if courtCursor >= len(courtNums) {
-					break
-				}
-				rounds := divRounds[div]
-				ri := roundIdx[div]
-				if ri >= len(rounds) {
-					continue // division done
-				}
-				round := rounds[ri]
-				for pos[div] < len(round) && courtCursor < len(courtNums) {
-					mid := round[pos[div]]
-					// Defer this division if its next match would double-book a
-					// player at this slot (hard) or break the min-rest gap (soft);
-					// it retries at a later slot. Never bypassed — a player is never
-					// placed on two courts at once.
-					if conflictAt(slot, mid) {
-						break
-					}
-					place(mid, courtNums[courtCursor], slot)
-					markSlot(slot, mid)
-					courtCursor++
-					pos[div]++
-					remaining--
-				}
-				if pos[div] >= len(round) {
-					roundIdx[div]++ // next round goes to a later slot
-					pos[div] = 0
-				}
-			}
-			slot++
-		}
-	} else {
-		// Sequential: each division fully before the next; each round gets its
-		// own slot(s) and spills to the next slot when it overflows the courts.
-		slot := 0
-		for _, div := range divOrder {
-			for _, round := range divRounds[div] {
-				courtIdx := 0
-				for _, mid := range round {
-					if courtIdx == len(courtNums) {
-						slot++
-						courtIdx = 0
-					}
-					place(mid, courtNums[courtIdx], slot)
-					courtIdx++
-				}
-				slot++
-			}
-		}
-	}
 	// Flush placements in batched UPDATEs: one per court (court_id) + one per slot
 	// (play_order), chunked to bound the id=in.(...) URL — replaces one UPDATE per
 	// match so a big field doesn't fire hundreds of round-trips and time out.
@@ -5175,10 +5089,125 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 			return scheduled, err
 		}
 	}
-	if perr != nil {
-		return scheduled, perr
-	}
 	return scheduled, nil
+}
+
+type courtPlacement struct{ court, slot int }
+
+// arrangePlacements assigns each pool match a (court, slot), STRICTLY honoring
+// each division's assigned courts (divCourts[div]; already defaulted to all
+// courts when a division has no restriction). Pure + deterministic so it's
+// unit-testable.
+//
+// interleave packs divisions into shared slots — divisions on DISJOINT courts
+// run in parallel, divisions sharing a court take turns (earlier divOrder wins),
+// and idle courts shorten the day. Otherwise divisions play fully sequentially.
+// A player is never double-booked within a slot (USAP 12.K); minRestSlots keeps
+// a player's consecutive matches at least that many slots apart.
+func arrangePlacements(
+	divOrder []string,
+	divRounds map[string][][]string,
+	divCourts map[string][]int,
+	courtNums []int,
+	matchPlayers map[string][]string,
+	totalMatches, minRestSlots int,
+	interleave bool,
+) (map[string]courtPlacement, int) {
+	occupied := map[int]map[string]bool{} // slot -> player ids playing that slot
+	lastSlot := map[string]int{}          // player id -> their latest placed slot
+	conflictAt := func(slot int, matchID string) bool {
+		occ := occupied[slot]
+		for _, pid := range matchPlayers[matchID] {
+			if occ != nil && occ[pid] {
+				return true
+			}
+			if minRestSlots > 0 {
+				if prev, ok := lastSlot[pid]; ok && slot-prev <= minRestSlots {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	markSlot := func(slot int, matchID string) {
+		if occupied[slot] == nil {
+			occupied[slot] = map[string]bool{}
+		}
+		for _, pid := range matchPlayers[matchID] {
+			occupied[slot][pid] = true
+			lastSlot[pid] = slot
+		}
+	}
+
+	placements := map[string]courtPlacement{}
+	scheduled := 0
+	place := func(matchID string, court, slot int) {
+		placements[matchID] = courtPlacement{court, slot}
+		scheduled++
+	}
+
+	if interleave {
+		roundIdx := make(map[string]int)
+		pos := make(map[string]int)
+		remaining := totalMatches
+		slot := 0
+		// Conflicts and court contention always self-resolve as `slot` grows, so
+		// the loop terminates; maxSlots is a defensive bound (any leftover matches
+		// just stay un-arranged rather than looping forever).
+		maxSlots := totalMatches*(minRestSlots+1) + len(courtNums) + 10
+		for remaining > 0 && slot <= maxSlots {
+			usedCourt := map[int]bool{} // courts already taken this slot
+			for _, div := range divOrder {
+				rounds := divRounds[div]
+				ri := roundIdx[div]
+				if ri >= len(rounds) {
+					continue // division done
+				}
+				round := rounds[ri]
+				// Fill only THIS division's assigned courts that are free this slot.
+				for _, court := range divCourts[div] {
+					if pos[div] >= len(round) {
+						break
+					}
+					if usedCourt[court] {
+						continue
+					}
+					mid := round[pos[div]]
+					if conflictAt(slot, mid) {
+						break // defer this division to a later slot
+					}
+					place(mid, court, slot)
+					markSlot(slot, mid)
+					usedCourt[court] = true
+					pos[div]++
+					remaining--
+				}
+				if pos[div] >= len(round) {
+					roundIdx[div]++ // next round goes to a later slot
+					pos[div] = 0
+				}
+			}
+			slot++
+		}
+	} else {
+		slot := 0
+		for _, div := range divOrder {
+			courts := divCourts[div] // STRICT: this division's own courts
+			for _, round := range divRounds[div] {
+				courtIdx := 0
+				for _, mid := range round {
+					if courtIdx == len(courts) {
+						slot++
+						courtIdx = 0
+					}
+					place(mid, courts[courtIdx], slot)
+					courtIdx++
+				}
+				slot++
+			}
+		}
+	}
+	return placements, scheduled
 }
 
 // poolGroupName labels pool i (0-based) as pool_a, pool_b, … (wraps past z into

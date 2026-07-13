@@ -407,6 +407,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
+	mux.HandleFunc("POST /dev/seed-mlp", requireAuth(s.seedMlpDemo))
 	// Seed a set of PUBLIC tournaments near San Diego so the Play/Nearby tab
 	// (and its map) has content. Owned by the caller — deletable afterward.
 	mux.HandleFunc("POST /dev/seed-nearby", requireAuth(s.seedNearbyDemo))
@@ -1201,6 +1202,22 @@ func (s *Server) seedTestTournament(w http.ResponseWriter, r *http.Request) {
 	id, err := s.svc.SeedTestTournament(userID(r), r.URL.Query().Get("kind"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
+}
+
+// seedMlpDemo creates the MLP demo tournament (8 courts, 4 rating waves, 8 teams
+// x 4 players, game to 11 win by 1) owned by the caller. QA-gated.
+func (s *Server) seedMlpDemo(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	id, err := s.svc.SeedMlpDemo(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})

@@ -254,6 +254,14 @@ type Bracket struct {
 	// fill it with that many placeholder players for a pre-registration schedule
 	// preview. nil = no target.
 	PlayerCount *int `json:"playerCount,omitempty"`
+	// StartMinutes is this division's wave start time as minute-of-day (e.g. 480
+	// = 8:00am). Lets rating waves stagger (2.5 @ 8am, 3.0 @ 11am, …). nil = starts
+	// with the event.
+	StartMinutes *int `json:"startMinutes,omitempty"`
+	// TeamCount / PlayersPerTeam configure team (MLP) divisions: how many teams to
+	// build and how many players each carries. nil = format default.
+	TeamCount      *int `json:"teamCount,omitempty"`
+	PlayersPerTeam *int `json:"playersPerTeam,omitempty"`
 }
 
 // LeagueBracket is a division within a league, mirroring Bracket but keyed on a
@@ -723,6 +731,11 @@ type BracketInput struct {
 	Courts []int `json:"courts,omitempty"`
 	// PlayerCount: expected players, for placeholder-player schedule previews.
 	PlayerCount *int `json:"playerCount,omitempty"`
+	// StartMinutes: wave start as minute-of-day (480 = 8am). nil = event start.
+	StartMinutes *int `json:"startMinutes,omitempty"`
+	// TeamCount / PlayersPerTeam: team (MLP) division config.
+	TeamCount      *int `json:"teamCount,omitempty"`
+	PlayersPerTeam *int `json:"playersPerTeam,omitempty"`
 }
 
 // PlayoffSeed is one team in playoff seed order — its players (ids + names) and

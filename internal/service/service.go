@@ -469,9 +469,12 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 			"division_type": dt,
 			"dupr_min":      fOrNull(d.DuprMin),
 			"dupr_max":      fOrNull(d.DuprMax),
-			"courts":        iaOrNull(d.Courts),
-			"player_count":  iOrNull(d.PlayerCount),
-			"sort_order":    i,
+			"courts":           iaOrNull(d.Courts),
+			"player_count":     iOrNull(d.PlayerCount),
+			"start_minutes":    iOrNull(d.StartMinutes),
+			"team_count":       iOrNull(d.TeamCount),
+			"players_per_team": iOrNull(d.PlayersPerTeam),
+			"sort_order":       i,
 		})
 	}
 	if _, err := s.sb.Insert("brackets", brackets); err != nil {
@@ -3069,9 +3072,12 @@ func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]st
 			"division_type": dt,
 			"dupr_min":      fOrNull(d.DuprMin),
 			"dupr_max":      fOrNull(d.DuprMax),
-			"courts":        iaOrNull(d.Courts),
-			"player_count":  iOrNull(d.PlayerCount),
-			"sort_order":    i,
+			"courts":           iaOrNull(d.Courts),
+			"player_count":     iOrNull(d.PlayerCount),
+			"start_minutes":    iOrNull(d.StartMinutes),
+			"team_count":       iOrNull(d.TeamCount),
+			"players_per_team": iOrNull(d.PlayersPerTeam),
+			"sort_order":       i,
 		}
 		if d.ID != "" {
 			if _, ok := existingName[d.ID]; !ok {

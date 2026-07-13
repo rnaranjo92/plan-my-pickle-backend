@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"sort"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
@@ -273,12 +274,40 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 		}
 	}
 
-	// Put the lines in the event's division so the division-filtered Game tab
-	// shows them (the create/edit form always makes at least an "Open" division;
-	// a team event uses a single one). Bracket-less otherwise.
-	bracketID := ""
-	if bks, berr := s.GetBrackets(eventID); berr == nil && len(bks) > 0 {
-		bracketID = bks[0].ID
+	// Divisions in play order: each rating division runs its own round-robin as a
+	// wave, and waves are staggered onto later play-order slots so they never
+	// share a court/time. Order by start time (nil last) so 8am precedes 11am,
+	// falling back to the create form's sort order. Team events always have at
+	// least one "Open" division; a bracket-less team lands in the first one.
+	bks, _ := s.GetBrackets(eventID)
+	fallbackBracket := ""
+	if len(bks) > 0 {
+		fallbackBracket = bks[0].ID
+	}
+	order := make([]model.Bracket, len(bks))
+	copy(order, bks)
+	sort.SliceStable(order, func(i, j int) bool {
+		si, sj := order[i].StartMinutes, order[j].StartMinutes
+		if si == nil && sj == nil {
+			return false // keep GetBrackets (sort_order) order
+		}
+		if si == nil {
+			return false
+		}
+		if sj == nil {
+			return true
+		}
+		return *si < *sj
+	})
+
+	// Group teams by their division (bracket-less → the fallback division).
+	byBracket := map[string][]model.EventTeam{}
+	for _, t := range teams {
+		bid := fallbackBracket
+		if t.BracketID != nil && *t.BracketID != "" {
+			bid = *t.BracketID
+		}
+		byBracket[bid] = append(byBracket[bid], t)
 	}
 
 	// Courts for conflict-free line placement (assigned directly at creation —
@@ -293,15 +322,42 @@ func (s *Service) GenerateTeamTies(eventID string) (int, error) {
 	}
 	sort.Ints(courtNums)
 
-	// A single round-robin over all teams: each round pairs every team once, so a
-	// team never plays two ties at the same time.
-	count := 0
-	for r, round := range roundRobinRounds(len(teams)) {
-		for ti, pair := range round {
-			if err := s.createTie(eventID, bracketID, teams[pair[0]], teams[pair[1]], r, ti, courtNums, courtByNum); err != nil {
-				return count, err
+	// Each division's round-robin: every round pairs every team once, so a team
+	// never plays two ties at the same time. slotBase advances past each division
+	// so the next wave starts after it.
+	count, slotBase := 0, 0
+	seen := map[string]bool{}
+	emit := func(bracketID string, dteams []model.EventTeam) error {
+		if len(dteams) < 2 {
+			return nil
+		}
+		rounds := roundRobinRounds(len(dteams))
+		for r, round := range rounds {
+			for ti, pair := range round {
+				if err := s.createTie(eventID, bracketID, dteams[pair[0]], dteams[pair[1]], r, ti, slotBase, courtNums, courtByNum); err != nil {
+					return err
+				}
+				count++
 			}
-			count++
+		}
+		// A round occupies 2 slots (wd/md, then mx1/mx2); reserve that span so the
+		// next division's wave lands on fresh slots.
+		slotBase += len(rounds) * 2
+		return nil
+	}
+	for _, b := range order {
+		seen[b.ID] = true
+		if err := emit(b.ID, byBracket[b.ID]); err != nil {
+			return count, err
+		}
+	}
+	// Any teams under a bracket not in the list (shouldn't happen) still schedule.
+	for bid, dteams := range byBracket {
+		if seen[bid] {
+			continue
+		}
+		if err := emit(bid, dteams); err != nil {
+			return count, err
 		}
 	}
 	return count, nil
@@ -344,7 +400,7 @@ func roundRobinRounds(n int) [][][2]int {
 // placed CONFLICT-FREE at creation: wd+md run together (disjoint players), then
 // mx1+mx2. Round r occupies time-slots r*2 (wd,md) and r*2+1 (mx1,mx2); tie ti in
 // the round uses courts [ti*2] and [ti*2+1].
-func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, ti int, courtNums []int, courtByNum map[int]string) error {
+func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, ti, slotBase int, courtNums []int, courtByNum map[int]string) error {
 	aMen, aWomen, err := teamLineup(a.Members)
 	if err != nil {
 		return fmt.Errorf("%s: %w", a.Name, err)
@@ -358,7 +414,9 @@ func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, 
 		courtA = courtByNum[courtNums[(ti*2)%nc]]
 		courtB = courtByNum[courtNums[(ti*2+1)%nc]]
 	}
-	slotA, slotB := r*2, r*2+1
+	// slotBase staggers whole divisions onto later play-order slots so rating
+	// waves never share a court/time with another division.
+	slotA, slotB := slotBase+r*2, slotBase+r*2+1
 
 	tieRow := map[string]any{
 		"event_id":   eventID,
@@ -389,9 +447,11 @@ func (s *Service) createTie(eventID, bracketID string, a, b model.EventTeam, r, 
 	}
 	awd, amd, amx1, amx2 := lineupSet(aMen, aWomen)
 	bwd, bmd, bmx1, bmx2 := lineupSet(bMen, bWomen)
+	// Court A hosts men's doubles then mixed 1; court B hosts women's doubles then
+	// mixed 2 (md+wd share slotA, disjoint players; mx1+mx2 share slotB).
 	for _, sp := range []lineSpec{
-		{"wd", awd, bwd, courtA, slotA},
-		{"md", amd, bmd, courtB, slotA},
+		{"md", amd, bmd, courtA, slotA},
+		{"wd", awd, bwd, courtB, slotA},
 		{"mx1", amx1, bmx1, courtA, slotB},
 		{"mx2", amx2, bmx2, courtB, slotB},
 	} {
@@ -422,9 +482,11 @@ func (s *Service) createTieLinesFor(eventID, bracketID, tieID string, a, b model
 	}
 	awd, amd, amx1, amx2 := lineupSet(aMen, aWomen)
 	bwd, bmd, bmx1, bmx2 := lineupSet(bMen, bWomen)
+	// Court A hosts men's doubles then mixed 1; court B hosts women's doubles then
+	// mixed 2 (md+wd share slotA, disjoint players; mx1+mx2 share slotB).
 	for _, sp := range []lineSpec{
-		{"wd", awd, bwd, courtA, slotA},
-		{"md", amd, bmd, courtB, slotA},
+		{"md", amd, bmd, courtA, slotA},
+		{"wd", awd, bwd, courtB, slotA},
 		{"mx1", amx1, bmx1, courtA, slotB},
 		{"mx2", amx2, bmx2, courtB, slotB},
 	} {
@@ -1195,4 +1257,131 @@ func (s *Service) SetTeamBanner(teamID, contentType string, data []byte) (string
 		return "", err
 	}
 	return url, nil
+}
+
+// ----------------------------------------------------------------------------
+// QA seed: a full MLP demo tournament (owner-gated at the route to the QA
+// accounts). Builds the "8 courts, 4 rating waves, 8 teams x 4 players, game to
+// 11 win by 1" format so we can eyeball the staggered-wave schedule end to end.
+
+// mlpDemoWave is one rating division of the demo: its label, rating band, and
+// wave start (minute-of-day).
+type mlpDemoWave struct {
+	name       string
+	minR, maxR float64
+	startMin   int
+}
+
+// SeedMlpDemo creates the demo MLP event owned by ownerID, fills every division
+// with placeholder teams, and generates the staggered tie schedule. Returns the
+// new event id.
+func (s *Service) SeedMlpDemo(ownerID string) (string, error) {
+	const (
+		teamsPerDiv    = 8
+		playersPerTeam = 4 // 2 men + 2 women — the minimum an MLP tie can field
+		numCourts      = 8
+	)
+	waves := []mlpDemoWave{
+		{"2.5", 2.0, 2.99, 8 * 60},  // 8:00 AM
+		{"3.0", 3.0, 3.49, 11 * 60}, // 11:00 AM
+		{"3.5", 3.5, 3.99, 13 * 60}, // 1:00 PM
+		{"4.0", 4.0, 4.99, 16 * 60}, // 4:00 PM
+	}
+
+	// Event day at midnight UTC (≈ 8am for the PH test account); each wave's real
+	// clock time comes from its start_minutes, so the base only needs to sit at or
+	// before the earliest wave.
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	brackets := make([]model.BracketInput, 0, len(waves))
+	for _, w := range waves {
+		minR, maxR := w.minR, w.maxR
+		start, teams, ppt := w.startMin, teamsPerDiv, playersPerTeam
+		brackets = append(brackets, model.BracketInput{
+			Name:           w.name,
+			DivisionType:   "open",
+			MinRating:      &minR,
+			MaxRating:      &maxR,
+			StartMinutes:   &start,
+			TeamCount:      &teams,
+			PlayersPerTeam: &ppt,
+		})
+	}
+
+	eventID, err := s.CreateEvent(model.CreateEventRequest{
+		Name:                "MLP Demo — 4 Rating Waves",
+		Format:              "doubles",
+		TournamentFormat:    "round_robin",
+		NumCourts:           numCourts,
+		PointsToWin:         11,
+		WinBy:               1,
+		GameDurationMinutes: 25,
+		TeamSize:            playersPerTeam,
+		StartsAt:            dayStart.Format(time.RFC3339),
+		Description:         "Seeded demo: 8 teams per rating wave, 2 courts per tie (Men's + Mixed 1 | Women's + Mixed 2), game to 11 win by 1.",
+		Brackets:            brackets,
+		Listed:              false,
+	}, ownerID)
+	if err != nil {
+		return "", fmt.Errorf("create demo event: %w", err)
+	}
+
+	bks, err := s.GetBrackets(eventID)
+	if err != nil {
+		return eventID, fmt.Errorf("load demo divisions: %w", err)
+	}
+
+	men := []string{"Noah", "Liam", "Ethan", "Mason", "Owen", "Cole", "Finn", "Jude", "Reed", "Beau", "Tate", "Rhys", "Knox", "Dane", "Cruz", "Wade"}
+	women := []string{"Ava", "Mia", "Zoe", "Lucy", "Ella", "Nina", "Ruby", "Tess", "Wren", "Sage", "Lena", "Cleo", "Maya", "Iris", "Vera", "Faye"}
+	last := []string{"Hill", "Ford", "Vance", "Pope", "Lane", "Cross", "Wells", "Dean", "Boyd", "Reyes", "Page", "Frye", "Sosa", "Hale", "Nash", "Banks"}
+	seq := 0 // running index for unique demo names + phones (+1555 range)
+
+	addMember := func(teamID, first, gender string) error {
+		_, err := s.AddTeamMember(teamID, model.AddTeamMemberRequest{
+			FullName: fmt.Sprintf("%s %s %d", first, last[seq%len(last)], seq+1),
+			Gender:   gender,
+			Phone:    fmt.Sprintf("+1555%07d", 3000000+seq),
+		})
+		seq++
+		return err
+	}
+
+	for _, b := range bks {
+		bid := b.ID
+		nTeams := teamsPerDiv
+		if b.TeamCount != nil && *b.TeamCount > 1 {
+			nTeams = *b.TeamCount
+		}
+		ppt := playersPerTeam
+		if b.PlayersPerTeam != nil && *b.PlayersPerTeam >= 4 {
+			ppt = *b.PlayersPerTeam
+		}
+		nMen := ppt / 2
+		nWomen := ppt - nMen
+		for t := 0; t < nTeams; t++ {
+			team, err := s.CreateTeam(eventID, model.CreateTeamRequest{
+				Name:      fmt.Sprintf("%s • Team %d", b.Name, t+1),
+				BracketID: &bid,
+			})
+			if err != nil {
+				return eventID, fmt.Errorf("create team: %w", err)
+			}
+			for i := 0; i < nMen; i++ {
+				if err := addMember(team.ID, men[seq%len(men)], "M"); err != nil {
+					return eventID, fmt.Errorf("add member: %w", err)
+				}
+			}
+			for i := 0; i < nWomen; i++ {
+				if err := addMember(team.ID, women[seq%len(women)], "F"); err != nil {
+					return eventID, fmt.Errorf("add member: %w", err)
+				}
+			}
+		}
+	}
+
+	if _, err := s.GenerateTeamTies(eventID); err != nil {
+		return eventID, fmt.Errorf("generate ties: %w", err)
+	}
+	return eventID, nil
 }

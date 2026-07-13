@@ -288,8 +288,11 @@ func mapBracket(m map[string]any) model.Bracket {
 		DivisionType: asStr(m, "division_type"),
 		DuprMin:      asFloatPtr(m, "dupr_min"),
 		DuprMax:      asFloatPtr(m, "dupr_max"),
-		Courts:       asIntSlice(m, "courts"),
-		PlayerCount:  asIntPtr(m, "player_count"),
+		Courts:         asIntSlice(m, "courts"),
+		PlayerCount:    asIntPtr(m, "player_count"),
+		StartMinutes:   asIntPtr(m, "start_minutes"),
+		TeamCount:      asIntPtr(m, "team_count"),
+		PlayersPerTeam: asIntPtr(m, "players_per_team"),
 	}
 }
 

@@ -1277,9 +1277,9 @@ type mlpDemoWave struct {
 // new event id.
 func (s *Service) SeedMlpDemo(ownerID string) (string, error) {
 	const (
-		teamsPerDiv    = 8
+		teamsPerDiv    = 4 // 4 teams x 4 players = 16 players/wave (8 men, 8 women)
 		playersPerTeam = 4 // 2 men + 2 women — the minimum an MLP tie can field
-		numCourts      = 8
+		numCourts      = 8 // venue has 8 courts; a 4-team wave uses 4 (2 ties at once)
 	)
 	waves := []mlpDemoWave{
 		{"2.5", 2.0, 2.99, 8 * 60},  // 8:00 AM

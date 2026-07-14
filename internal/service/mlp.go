@@ -1288,11 +1288,12 @@ func (s *Service) SeedMlpDemo(ownerID string) (string, error) {
 		{"4.0", 4.0, 4.99, 16 * 60}, // 4:00 PM
 	}
 
-	// Event day at midnight UTC (≈ 8am for the PH test account); each wave's real
-	// clock time comes from its start_minutes, so the base only needs to sit at or
-	// before the earliest wave.
+	// Event day set two weeks out at midnight UTC (≈ 8am for the PH test account),
+	// so the demo lands in the organizer's "Upcoming" list rather than "Past".
+	// Each wave's real clock time comes from its start_minutes, so the base only
+	// needs to sit at or before the earliest wave.
 	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayStart := time.Date(now.Year(), now.Month(), now.Day()+14, 0, 0, 0, 0, time.UTC)
 
 	brackets := make([]model.BracketInput, 0, len(waves))
 	for _, w := range waves {

@@ -8099,7 +8099,7 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 // but a phone match ALSO requires the name to match (case-insensitive) so we
 // never merge family members who share a household number. Best-effort — errors
 // are swallowed. Returns how many guest rows were linked.
-func (s *Service) LinkRegistrationsToAccount(userID, email string) int {
+func (s *Service) LinkRegistrationsToAccount(userID, email, tokenPhone, tokenName string) int {
 	if userID == "" {
 		return 0
 	}
@@ -8108,6 +8108,21 @@ func (s *Service) LinkRegistrationsToAccount(userID, email string) int {
 		"user_id=eq."+store.Q(userID)+"&select=full_name,phone"); err == nil && pr != nil {
 		name = strings.TrimSpace(asStr(pr, "full_name"))
 		phone = strings.TrimSpace(asStr(pr, "phone"))
+	}
+	// A freshly signed-up user has their phone/name only in the auth token
+	// (user_metadata), not yet in pmp_profiles — so a guest registration made by
+	// phone (e.g. a partner sign-up) wouldn't match. Fall back to the token values
+	// and persist the phone so later links + SMS have it.
+	if name == "" {
+		name = strings.TrimSpace(tokenName)
+	}
+	if phone == "" && strings.TrimSpace(tokenPhone) != "" {
+		phone = strings.TrimSpace(tokenPhone)
+		prof := map[string]any{"user_id": userID, "phone": phone}
+		if name != "" {
+			prof["full_name"] = name
+		}
+		_, _ = s.sb.Upsert("pmp_profiles", "user_id", prof)
 	}
 	linked := 0
 	stamp := func(filter string) {

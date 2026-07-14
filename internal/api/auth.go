@@ -29,6 +29,7 @@ const (
 	userIDKey ctxKey = iota
 	userEmailKey
 	userNameKey
+	userPhoneKey
 )
 
 var (
@@ -60,6 +61,19 @@ func claimName(c tokenClaims) string {
 	}
 	if n, ok := c.UserMetadata["full_name"].(string); ok {
 		return strings.TrimSpace(n)
+	}
+	return ""
+}
+
+// claimPhone pulls the signup phone out of user_metadata.phone. Used to link
+// guest registrations (registered by phone) to the account even before the user
+// has saved a profile — pmp_profiles may not carry the phone yet.
+func claimPhone(c tokenClaims) string {
+	if c.UserMetadata == nil {
+		return ""
+	}
+	if p, ok := c.UserMetadata["phone"].(string); ok {
+		return strings.TrimSpace(p)
 	}
 	return ""
 }
@@ -269,6 +283,12 @@ func userName(r *http.Request) string {
 	return n
 }
 
+// userPhone returns the signup phone from the token's user_metadata, or "".
+func userPhone(r *http.Request) string {
+	p, _ := r.Context().Value(userPhoneKey).(string)
+	return p
+}
+
 // requireAuth rejects requests without a valid Supabase token (401) and stashes
 // the user id in context for the handler.
 func requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -281,6 +301,7 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		ctx := context.WithValue(r.Context(), userIDKey, c.Sub)
 		ctx = context.WithValue(ctx, userEmailKey, c.Email)
 		ctx = context.WithValue(ctx, userNameKey, claimName(c))
+		ctx = context.WithValue(ctx, userPhoneKey, claimPhone(c))
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -293,6 +314,7 @@ func optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 			ctx := context.WithValue(r.Context(), userIDKey, c.Sub)
 			ctx = context.WithValue(ctx, userEmailKey, c.Email)
 			ctx = context.WithValue(ctx, userNameKey, claimName(c))
+			ctx = context.WithValue(ctx, userPhoneKey, claimPhone(c))
 			r = r.WithContext(ctx)
 		}
 		next(w, r)

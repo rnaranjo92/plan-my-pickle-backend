@@ -435,6 +435,11 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 
 // myEvents returns the events the signed-in user is registered to play in.
 func (s *Server) myEvents(w http.ResponseWriter, r *http.Request) {
+	// Tie any guest registrations (by email, or phone+name) to this account FIRST
+	// — synchronously — so an event someone was registered into by phone (a
+	// partner sign-up, an organizer add) shows the instant they open "Registered",
+	// not only after a profile fetch. Idempotent (no-op once linked).
+	s.svc.LinkRegistrationsToAccount(userID(r), userEmail(r), userPhone(r), userName(r))
 	events, err := s.svc.MyEvents(userID(r), userEmail(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -460,7 +465,7 @@ func (s *Server) myProfile(w http.ResponseWriter, r *http.Request) {
 	// email, or phone+name) to this account so push, "your events", and DUPR sync
 	// work for someone who registered by phone and later signed in. No-op once
 	// linked.
-	go s.svc.LinkRegistrationsToAccount(uid, email)
+	go s.svc.LinkRegistrationsToAccount(uid, email, userPhone(r), userName(r))
 	writeJSON(w, http.StatusOK, s.svc.MyProfile(uid, email, userName(r)))
 }
 

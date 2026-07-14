@@ -178,6 +178,7 @@ func mapEvent(m map[string]any) model.Event {
 		Location:                 asStrPtr(m, "location"),
 		ContactPhone:             asStrPtr(m, "contact_phone"),
 		ZelleHandle:              asStrPtr(m, "zelle_handle"),
+		VenmoHandle:              asStrPtr(m, "venmo_handle"),
 		ClubID:                   asStrPtr(m, "club_id"),
 		VenueNotes:               asStrPtr(m, "venue_notes"),
 		WaiverURL:                asStrPtr(m, "waiver_url"),

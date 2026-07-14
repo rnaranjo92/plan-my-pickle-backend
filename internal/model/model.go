@@ -24,6 +24,7 @@ type Event struct {
 	AddonGripsCents int      `json:"addonGripsCents"`
 	Currency        string   `json:"currency"`
 	ZelleHandle     *string  `json:"zelleHandle,omitempty"`
+	VenmoHandle     *string  `json:"venmoHandle,omitempty"`
 	ClubID          *string  `json:"clubId,omitempty"`
 	Location        *string  `json:"location,omitempty"`
 	ContactPhone    *string  `json:"contactPhone,omitempty"`
@@ -802,6 +803,7 @@ type CreateEventRequest struct {
 	AddonTeeCents        int      `json:"addonTeeCents,omitempty"`
 	AddonGripsCents      int      `json:"addonGripsCents,omitempty"`
 	ZelleHandle          string   `json:"zelleHandle,omitempty"`
+	VenmoHandle          string   `json:"venmoHandle,omitempty"`
 	ClubID               string   `json:"clubId,omitempty"`
 	Location             string   `json:"location"`
 	ContactPhone         string   `json:"contactPhone"`

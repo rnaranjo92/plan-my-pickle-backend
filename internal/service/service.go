@@ -3234,6 +3234,84 @@ func (s *Service) registrationExistsByContact(eventID string, req model.Register
 	return check("email", req.Email)
 }
 
+// RegistrantByPhone finds a registrant in an event by phone number (the dedupe
+// key for the "register with a partner" flow). Returns the matched player's id +
+// full name when someone with that phone is already registered for the event.
+// Powers the partner-exists popup and the find-or-link on submit.
+func (s *Service) RegistrantByPhone(eventID, phone string) (playerID, fullName string, found bool, err error) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return "", "", false, nil
+	}
+	players, err := s.sb.Select("players",
+		"phone=eq."+store.Q(phone)+"&select=id,full_name")
+	if err != nil {
+		return "", "", false, err
+	}
+	for _, p := range players {
+		pid := asStr(p, "id")
+		if pid == "" {
+			continue
+		}
+		reg, e := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(pid)+"&select=id")
+		if e != nil {
+			return "", "", false, e
+		}
+		if reg != nil {
+			return pid, asStr(p, "full_name"), true, nil
+		}
+	}
+	return "", "", false, nil
+}
+
+// linkPartner pairs a just-created registration with a partner given by name +
+// phone. If someone with that phone is already registered, they're linked (no
+// duplicate); otherwise the partner is added to the roster in the same division.
+// Both registrations get each other's player_id in partner_id. Best-effort — a
+// partner failure never fails the registrant's own sign-up.
+func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partnerName, partnerPhone string) {
+	partnerName = strings.TrimSpace(partnerName)
+	partnerPhone = strings.TrimSpace(partnerPhone)
+	if partnerName == "" || partnerPhone == "" {
+		return
+	}
+	partnerPID, _, found, err := s.RegistrantByPhone(eventID, partnerPhone)
+	if err != nil {
+		return
+	}
+	var partnerRegID string
+	if found {
+		if r, e := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(partnerPID)+"&select=id"); e == nil && r != nil {
+			partnerRegID = asStr(r, "id")
+		}
+	} else {
+		// Add the partner as an organizer-style registration (Self=false skips the
+		// DUPR self-connect gate) in the SAME division as the registrant.
+		preg, e := s.RegisterPlayer(eventID, model.RegisterRequest{
+			FullName:  partnerName,
+			Phone:     partnerPhone,
+			BracketID: bracketID,
+			Self:      false,
+		}, "")
+		if e != nil {
+			return
+		}
+		partnerPID = preg.PlayerID
+		partnerRegID = preg.ID
+	}
+	if partnerPID == "" {
+		return
+	}
+	_, _ = s.sb.Update("registrations", "id=eq."+store.Q(mainRegID),
+		map[string]any{"partner_id": partnerPID})
+	if partnerRegID != "" {
+		_, _ = s.sb.Update("registrations", "id=eq."+store.Q(partnerRegID),
+			map[string]any{"partner_id": mainPlayerID})
+	}
+}
+
 // RegisterPlayer files a registration. When linkUserID is non-empty (a
 // logged-in user registering THEMSELVES), the player is tied to that account
 // (players.user_id) — reusing the account's existing player row if it has one
@@ -3520,8 +3598,12 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	if len(reg) == 0 {
 		return model.Registration{}, errors.New("registration insert returned no row")
 	}
+	regID := asStr(reg[0], "id")
+	// Register-with-a-partner: pair (or add + pair) the named partner. Best-effort,
+	// so it never blocks the registrant's own successful sign-up.
+	s.linkPartner(eventID, bracketID, regID, playerID, req.PartnerName, req.PartnerPhone)
 	return model.Registration{
-		ID: asStr(reg[0], "id"), EventID: eventID, PlayerID: playerID, FullName: req.FullName,
+		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,
 		OutsideRating: outside,
 	}, nil

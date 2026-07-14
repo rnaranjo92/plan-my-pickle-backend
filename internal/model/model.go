@@ -850,7 +850,12 @@ type RegisterRequest struct {
 	DuprRating      *float64 `json:"duprRating,omitempty"`
 	DuprReliability *float64 `json:"duprReliability,omitempty"`
 	PartnerID       string   `json:"partnerId"`
-	BracketID       string   `json:"bracketId"`
+	// PartnerName / PartnerPhone let a registrant sign up WITH a partner in one
+	// step. When PartnerPhone matches an existing registrant, they're paired (no
+	// duplicate); otherwise the partner is added to the roster and cross-linked.
+	PartnerName  string `json:"partnerName"`
+	PartnerPhone string `json:"partnerPhone"`
+	BracketID    string `json:"bracketId"`
 	// SmsConsent is the player's explicit opt-in to automated texts (court calls,
 	// schedule alerts, score confirmations). Distinct from Phone: the phone is
 	// stored regardless (organizers need it) but is only texted when this is true.

@@ -115,6 +115,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /geocode", s.geocode)
 	mux.HandleFunc("GET /city-autocomplete", requireAuth(s.cityAutocomplete))
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
+	mux.HandleFunc("GET /events/{id}/registrant-by-phone", s.registrantByPhone)
 	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
 	mux.HandleFunc("POST /events/{id}/import-dupr", s.ownerOnly("event", "id", s.importDupr))
 
@@ -1313,6 +1314,23 @@ func (s *Server) getBrackets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, b)
+}
+
+// registrantByPhone reports whether someone with a given phone is already
+// registered for the event — used by the "register with a partner" form to warn
+// (and offer to pair) before creating a duplicate. Returns {exists, name}.
+func (s *Server) registrantByPhone(w http.ResponseWriter, r *http.Request) {
+	phone := r.URL.Query().Get("phone")
+	_, name, found, err := s.svc.RegistrantByPhone(r.PathValue("id"), phone)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := map[string]any{"exists": found}
+	if found {
+		out["name"] = name
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {

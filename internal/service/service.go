@@ -811,6 +811,14 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	}
 	ev := mapEvent(row)
 	ev.OwnerPremium = s.eventPremiumUnlocked(row)
+	// Organizer display name for the tournament-info tab (best-effort — a lookup
+	// failure just leaves it blank). pmp_profiles is keyed by the auth user id.
+	if ownerID := asStr(row, "owner_id"); ownerID != "" {
+		if pr, perr := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(ownerID)+"&select=full_name"); perr == nil && pr != nil {
+			ev.OrganizerName = strings.TrimSpace(asStr(pr, "full_name"))
+		}
+	}
 	// Best-effort registered + checked-in counts (mirrors ListEvents) so the
 	// event-detail header shows the real numbers; a count failure must not fail
 	// the read — single reads otherwise leave the counts at 0.

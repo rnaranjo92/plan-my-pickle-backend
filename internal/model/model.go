@@ -128,6 +128,9 @@ type Event struct {
 	// OwnerPremium = the event owner has an active Premium plan. Set on single
 	// reads (GetEvent) so public views can hide the free-tier house-brand mark.
 	OwnerPremium bool `json:"ownerPremium"`
+	// OrganizerName is the event owner's display name (from pmp_profiles), set on
+	// single reads (GetEvent) for the tournament-info tab. Empty when unknown.
+	OrganizerName string `json:"organizerName,omitempty"`
 	// ScoreboardTheme is the per-event live-board look: { bg, text, accent, font }
 	// (hex color strings + a font-family key). Nil = the default house theme.
 	// Ships in add_scoreboard_theme.sql.

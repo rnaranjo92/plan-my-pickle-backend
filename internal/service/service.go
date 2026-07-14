@@ -1096,12 +1096,18 @@ func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Ev
 	// county — before the backfill runs, everything is un-countied, so filtering
 	// would wrongly empty the tab; fall back to distance-only then. With no user
 	// county resolved (geocoder unset / no match) we also fall back to distance.
+	// Keep same-county events (regardless of distance — big rural counties span
+	// >160km) AND anything within nearbyRadiusKm regardless of county, so an event
+	// physically close (across a county line, or with an un-stamped county) can't
+	// fall through the county gate.
+	const nearbyRadiusKm = 50
 	list := all
 	if countyFilter && anyCountied {
 		filtered := make([]withDist, 0, len(all))
 		for _, c := range all {
-			if strings.ToLower(strings.TrimSpace(c.e.County)) == uCounty &&
-				strings.ToLower(strings.TrimSpace(c.e.State)) == uState {
+			sameCounty := strings.ToLower(strings.TrimSpace(c.e.County)) == uCounty &&
+				strings.ToLower(strings.TrimSpace(c.e.State)) == uState
+			if sameCounty || c.d <= nearbyRadiusKm {
 				filtered = append(filtered, c)
 			}
 		}

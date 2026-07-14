@@ -1319,69 +1319,16 @@ func (s *Service) SeedMlpDemo(ownerID string) (string, error) {
 		GameDurationMinutes: 25,
 		TeamSize:            playersPerTeam,
 		StartsAt:            dayStart.Format(time.RFC3339),
-		Description:         "Seeded demo: 8 teams per rating wave, 2 courts per tie (Men's + Mixed 1 | Women's + Mixed 2), game to 11 win by 1.",
+		Description:         "MLP setup: 2.5/3.0/3.5/4.0 rating waves (8am/11am/1pm/4pm), 8 courts, 2 courts per tie (Men's + Mixed 1 | Women's + Mixed 2), game to 11 win by 1. Add teams + players on Manage Teams, then generate the schedule.",
 		Brackets:            brackets,
 		Listed:              false,
 	}, ownerID)
 	if err != nil {
 		return "", fmt.Errorf("create demo event: %w", err)
 	}
-
-	bks, err := s.GetBrackets(eventID)
-	if err != nil {
-		return eventID, fmt.Errorf("load demo divisions: %w", err)
-	}
-
-	men := []string{"Noah", "Liam", "Ethan", "Mason", "Owen", "Cole", "Finn", "Jude", "Reed", "Beau", "Tate", "Rhys", "Knox", "Dane", "Cruz", "Wade"}
-	women := []string{"Ava", "Mia", "Zoe", "Lucy", "Ella", "Nina", "Ruby", "Tess", "Wren", "Sage", "Lena", "Cleo", "Maya", "Iris", "Vera", "Faye"}
-	last := []string{"Hill", "Ford", "Vance", "Pope", "Lane", "Cross", "Wells", "Dean", "Boyd", "Reyes", "Page", "Frye", "Sosa", "Hale", "Nash", "Banks"}
-	seq := 0 // running index for unique demo names + phones (+1555 range)
-
-	addMember := func(teamID, first, gender string) error {
-		_, err := s.AddTeamMember(teamID, model.AddTeamMemberRequest{
-			FullName: fmt.Sprintf("%s %s %d", first, last[seq%len(last)], seq+1),
-			Gender:   gender,
-			Phone:    fmt.Sprintf("+1555%07d", 3000000+seq),
-		})
-		seq++
-		return err
-	}
-
-	for _, b := range bks {
-		bid := b.ID
-		nTeams := teamsPerDiv
-		if b.TeamCount != nil && *b.TeamCount > 1 {
-			nTeams = *b.TeamCount
-		}
-		ppt := playersPerTeam
-		if b.PlayersPerTeam != nil && *b.PlayersPerTeam >= 4 {
-			ppt = *b.PlayersPerTeam
-		}
-		nMen := ppt / 2
-		nWomen := ppt - nMen
-		for t := 0; t < nTeams; t++ {
-			team, err := s.CreateTeam(eventID, model.CreateTeamRequest{
-				Name:      fmt.Sprintf("%s • Team %d", b.Name, t+1),
-				BracketID: &bid,
-			})
-			if err != nil {
-				return eventID, fmt.Errorf("create team: %w", err)
-			}
-			for i := 0; i < nMen; i++ {
-				if err := addMember(team.ID, men[seq%len(men)], "M"); err != nil {
-					return eventID, fmt.Errorf("add member: %w", err)
-				}
-			}
-			for i := 0; i < nWomen; i++ {
-				if err := addMember(team.ID, women[seq%len(women)], "F"); err != nil {
-					return eventID, fmt.Errorf("add member: %w", err)
-				}
-			}
-		}
-	}
-
-	if _, err := s.GenerateTeamTies(eventID); err != nil {
-		return eventID, fmt.Errorf("generate ties: %w", err)
-	}
+	// Intentionally NO placeholder teams/players/schedule — this seeds only the
+	// tournament shell (event + 4 rating-wave divisions with their format config)
+	// so it's a clean event to test registration on. It also keeps the request
+	// fast (a full roster + tie generation was timing out the fetch).
 	return eventID, nil
 }

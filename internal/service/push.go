@@ -69,6 +69,22 @@ func (s *Service) SendTestPush(externalID string) error {
 	return nil
 }
 
+// pushSound names a custom notification sound to play on each platform. iOS
+// wants the bundled filename WITH extension (e.g. "court_call.caf"); Android
+// wants the res/raw resource name WITHOUT extension (e.g. "court_call"). Both are
+// harmless when the client build doesn't bundle the file — the OS falls back to
+// its default sound — so the backend can ship this ahead of the native builds.
+type pushSound struct {
+	iOS     string
+	android string
+}
+
+// courtCallSound is the custom tone for match-start "court call" pushes. It only
+// plays once the files are bundled natively (iOS: court_call.caf in the app;
+// Android: res/raw/court_call); until then clients use the default sound. Web
+// pushes ignore it entirely (browsers use the default).
+var courtCallSound = pushSound{iOS: "court_call.caf", android: "court_call"}
+
 // sendPush sends one bulk web/native push to the given OneSignal external_ids
 // (each user's Supabase auth user id). It is intentionally best-effort: it logs
 // and SWALLOWS all errors and never blocks the caller. It is a no-op when the
@@ -76,6 +92,12 @@ func (s *Service) SendTestPush(externalID string) error {
 //
 // url is optional — when non-empty it becomes the notification's launch URL.
 func (s *Service) sendPush(externalIDs []string, heading, content, url string) error {
+	return s.sendPushSound(externalIDs, heading, content, url, pushSound{})
+}
+
+// sendPushSound is sendPush with an optional custom notification sound (see
+// pushSound). sendPush delegates here with an empty sound (default tone).
+func (s *Service) sendPushSound(externalIDs []string, heading, content, url string, sound pushSound) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" || len(externalIDs) == 0 {
 		return nil // not configured, or nobody to notify — no-op
@@ -92,6 +114,14 @@ func (s *Service) sendPush(externalIDs []string, heading, content, url string) e
 	}
 	if url != "" {
 		body["url"] = url
+	}
+	// Custom per-platform sound (no-op on web; falls back to default until the
+	// native build bundles the file).
+	if sound.iOS != "" {
+		body["ios_sound"] = sound.iOS
+	}
+	if sound.android != "" {
+		body["android_sound"] = sound.android
 	}
 
 	payload, err := json.Marshal(body)

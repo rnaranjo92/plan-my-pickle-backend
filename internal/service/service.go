@@ -13,6 +13,7 @@ import (
 	"hash/crc32"
 	"log"
 	"math"
+	"math/rand"
 	"regexp"
 	"sort"
 	"strconv"

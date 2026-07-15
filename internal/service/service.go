@@ -3726,6 +3726,12 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	if req.SmsConsent {
 		go s.sendWelcomeSmsOnce(playerID, eventID)
 	}
+	// Tell the organizer someone signed up — only for genuine SELF-registrations
+	// (not organizer-adds, imports, or partner links, which pass Self=false), and
+	// never about the organizer registering themselves. Off the request path.
+	if req.Self {
+		go s.notifyOrganizerNewRegistration(eventID, req.FullName, linkUserID)
+	}
 	return model.Registration{
 		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,
@@ -8476,6 +8482,33 @@ func (s *Service) notifyEventPlayers(eventID, text string) {
 		content = string(r[:157]) + "…"
 	}
 	_ = s.sendPush(uids, heading, content,
+		"https://app.planmypickle.com/?event="+eventID)
+}
+
+// notifyOrganizerNewRegistration pushes the event owner a heads-up that a player
+// signed up (OneSignal external_id = the owner's auth user id, same as any push).
+// Best-effort, off the request path. Skips when there's no owner or the registrant
+// IS the owner (an organizer registering themselves shouldn't ping themselves).
+func (s *Service) notifyOrganizerNewRegistration(eventID, playerName, registrantUserID string) {
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=name,owner_id")
+	if err != nil || ev == nil {
+		return
+	}
+	owner := strings.TrimSpace(asStr(ev, "owner_id"))
+	if owner == "" || owner == strings.TrimSpace(registrantUserID) {
+		return
+	}
+	name := strings.TrimSpace(asStr(ev, "name"))
+	if name == "" {
+		name = "your tournament"
+	}
+	who := strings.TrimSpace(playerName)
+	if who == "" {
+		who = "A player"
+	}
+	_ = s.sendPush([]string{owner}, "New registration",
+		who+" registered for "+name,
 		"https://app.planmypickle.com/?event="+eventID)
 }
 

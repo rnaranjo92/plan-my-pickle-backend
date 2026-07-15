@@ -1100,6 +1100,9 @@ type FeedItem struct {
 // FeedPostRequest is an organizer announcement posted to the feed.
 type FeedPostRequest struct {
 	Text string `json:"text"`
+	// Notify: also push this announcement to the event's registered players
+	// (linked accounts). Off = the post only appears in the Feed tab.
+	Notify bool `json:"notify"`
 }
 
 // ReactionRequest toggles a reaction of Type on a feed item.

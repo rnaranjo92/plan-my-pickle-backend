@@ -3582,7 +3582,7 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	item, err := s.svc.PostAnnouncement(r.PathValue("id"), req.Text, "Organizer")
+	item, err := s.svc.PostAnnouncement(r.PathValue("id"), req.Text, "Organizer", req.Notify)
 	if err != nil {
 		status(w, err)
 		return

@@ -106,7 +106,7 @@ func TestServiceWrites(t *testing.T) {
 	_, _ = s.AddTeam("lb1", model.AddTeamRequest{Name: "Smashers"})
 	_, _ = s.AddFlexTeam("lb1", model.AddTeamRequest{Name: "Dinkers"})
 	_, _ = s.AddLadderEntrant("lb1", model.AddLadderEntrantRequest{DisplayName: "New"})
-	_, _ = s.PostAnnouncement("e1", "Heads up", "Organizer")
+	_, _ = s.PostAnnouncement("e1", "Heads up", "Organizer", false)
 	s.AddFeedItem("e1", "match_result", "text", "ref")
 
 	// Records.

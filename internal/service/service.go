@@ -8328,14 +8328,16 @@ func (s *Service) AccountExists(email string) bool {
 	return strings.TrimSpace(string(body)) == "true"
 }
 
-// PostAnnouncement adds an organizer announcement to the feed.
-func (s *Service) PostAnnouncement(eventID, text, actorName string) (model.FeedItem, error) {
+// PostAnnouncement adds an organizer announcement to the feed. When notify is
+// true, it also pushes the announcement to the event's registered players (off
+// the request path).
+func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return model.FeedItem{}, errors.New("post text is required")
 	}
-	if len(text) > 1000 {
-		text = text[:1000]
+	if r := []rune(text); len(r) > 1000 {
+		text = string(r[:1000])
 	}
 	rows, err := s.sb.Insert("feed_items", map[string]any{
 		"event_id":   eventID,
@@ -8349,7 +8351,45 @@ func (s *Service) PostAnnouncement(eventID, text, actorName string) (model.FeedI
 	if len(rows) == 0 {
 		return model.FeedItem{}, errors.New("feed insert returned no row")
 	}
+	if notify {
+		go s.notifyEventPlayers(eventID, text)
+	}
 	return mapFeedItem(rows[0]), nil
+}
+
+// notifyEventPlayers pushes an announcement to every registered player who has a
+// linked account (OneSignal external_id = their auth user id). Best-effort, off
+// the request path. Players without an account simply aren't reachable by push.
+func (s *Service) notifyEventPlayers(eventID, text string) {
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&select=player:players!player_id(user_id)")
+	if err != nil {
+		return
+	}
+	seen := map[string]bool{}
+	uids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if p := asMap(r, "player"); p != nil {
+			if uid := strings.TrimSpace(asStr(p, "user_id")); uid != "" && !seen[uid] {
+				seen[uid] = true
+				uids = append(uids, uid)
+			}
+		}
+	}
+	if len(uids) == 0 {
+		return
+	}
+	heading := "Tournament update"
+	if ev, err := s.GetEvent(eventID); err == nil && strings.TrimSpace(ev.Name) != "" {
+		heading = ev.Name
+	}
+	content := text
+	if r := []rune(content); len(r) > 160 {
+		content = string(r[:157]) + "…"
+	}
+	_ = s.sendPush(uids, heading, content,
+		"https://app.planmypickle.com/?event="+eventID)
 }
 
 func (s *Service) DeleteFeedItem(id string) error {

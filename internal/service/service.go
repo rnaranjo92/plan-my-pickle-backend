@@ -3214,7 +3214,7 @@ var ErrDrawExists = errors.New("the draw is already generated — clear it befor
 // collision to rely on). Registrations has two FKs to players (player_id +
 // partner_id), which makes a PostgREST embed ambiguous — so we resolve the
 // matching player ids first, then look for a registration that uses one.
-func (s *Service) registrationExistsByContact(eventID string, req model.RegisterRequest) (bool, error) {
+func (s *Service) registrationExistsByContact(eventID, bracketID string, req model.RegisterRequest) (bool, error) {
 	check := func(col, val string) (bool, error) {
 		val = strings.TrimSpace(val)
 		name := strings.TrimSpace(req.FullName)
@@ -3238,8 +3238,11 @@ func (s *Service) registrationExistsByContact(eventID string, req model.Register
 		if len(ids) == 0 {
 			return false, nil
 		}
+		// Scope the duplicate to the SAME DIVISION — a player may enter multiple
+		// divisions of one event, but not the same division twice.
 		dup, err := s.sb.SelectOne("registrations",
-			"event_id=eq."+store.Q(eventID)+"&player_id="+store.In(ids)+"&select=id")
+			"event_id=eq."+store.Q(eventID)+"&player_id="+store.In(ids)+
+				bracketFilter(bracketID)+"&select=id")
 		if err != nil {
 			return false, err
 		}
@@ -3249,6 +3252,16 @@ func (s *Service) registrationExistsByContact(eventID string, req model.Register
 		return ok, err
 	}
 	return check("email", req.Email)
+}
+
+// bracketFilter builds the PostgREST predicate that scopes a duplicate-check to a
+// single division: an exact bracket match when one is set, or "no division" (the
+// single-/no-division events that leave bracket_id null) otherwise.
+func bracketFilter(bracketID string) string {
+	if strings.TrimSpace(bracketID) == "" {
+		return "&bracket_id=is.null"
+	}
+	return "&bracket_id=eq." + store.Q(bracketID)
 }
 
 // RegistrantByPhone finds a registrant in an event by phone number (the dedupe
@@ -3486,10 +3499,37 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
 	}
+	// Resolve the division FIRST so every duplicate check below is scoped to it —
+	// a player may enter MULTIPLE divisions of one event, just not the same one
+	// twice. An explicitly-chosen bracket must actually belong to this event
+	// (otherwise a crafted request could file under another event's division); an
+	// empty choice is auto-assigned by rating.
+	bks, err := s.GetBrackets(eventID)
+	if err != nil {
+		return model.Registration{}, err
+	}
+	bracketID := req.BracketID
+	if bracketID == "" {
+		b, err := s.autoAssignBracket(eventID, req.SkillLevel)
+		if err != nil {
+			return model.Registration{}, err
+		}
+		bracketID = b
+	}
+	var chosen *model.Bracket
+	for i := range bks {
+		if bks[i].ID == bracketID {
+			chosen = &bks[i]
+			break
+		}
+	}
+	if bracketID != "" && chosen == nil {
+		return model.Registration{}, errors.New("selected division is not part of this event")
+	}
 	// Block a duplicate up front (before creating a player row): someone already
-	// registered for this event with the same phone/email. The linked-account
-	// path is also guarded below via the unique (event_id, player_id).
-	if dup, err := s.registrationExistsByContact(eventID, req); err != nil {
+	// registered for THIS DIVISION with the same phone/email. The linked-account
+	// path is also guarded below.
+	if dup, err := s.registrationExistsByContact(eventID, bracketID, req); err != nil {
 		return model.Registration{}, err
 	} else if dup {
 		return model.Registration{}, ErrAlreadyRegistered
@@ -3562,12 +3602,13 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		}
 		if existing != nil {
 			playerID = asStr(existing, "id")
-			// This account already registered for this event → block. The contact
-			// check above misses it when a signed-in user leaves phone/email blank,
-			// so without this the same account could sign up twice (a duplicate on
-			// the roster). Matches the event-wide "one registration per person".
+			// This account already registered for THIS DIVISION → block. The
+			// contact check above misses it when a signed-in user leaves phone/email
+			// blank, so without this the same account could sign up twice in one
+			// division. Scoped to the bracket so multi-division entry is allowed.
 			if dup, derr := s.sb.SelectOne("registrations",
-				"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+"&select=id"); derr != nil {
+				"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+					bracketFilter(bracketID)+"&select=id"); derr != nil {
 				return model.Registration{}, derr
 			} else if dup != nil {
 				return model.Registration{}, ErrAlreadyRegistered
@@ -3619,31 +3660,6 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		playerID = asStr(pl[0], "id")
 	}
 
-	// Resolve the division. An explicitly-chosen bracket must actually belong to
-	// this event (otherwise a crafted request could file a registration under
-	// another event's division); an empty choice is auto-assigned by rating.
-	bks, err := s.GetBrackets(eventID)
-	if err != nil {
-		return model.Registration{}, err
-	}
-	bracketID := req.BracketID
-	if bracketID == "" {
-		b, err := s.autoAssignBracket(eventID, req.SkillLevel)
-		if err != nil {
-			return model.Registration{}, err
-		}
-		bracketID = b
-	}
-	var chosen *model.Bracket
-	for i := range bks {
-		if bks[i].ID == bracketID {
-			chosen = &bks[i]
-			break
-		}
-	}
-	if bracketID != "" && chosen == nil {
-		return model.Registration{}, errors.New("selected division is not part of this event")
-	}
 	// Soft eligibility flag: surface (don't block) when the player's rating falls
 	// outside the division's band. Prefer DUPR; fall back to self-reported skill.
 	playerRating := req.DuprRating
@@ -3657,11 +3673,13 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			outside = true
 		}
 	}
-	// A linked account already registered for this event would collide on the
-	// unique (event_id, player_id) — surface a friendly message, not a raw 409.
+	// A linked account already registered for THIS DIVISION would collide on the
+	// unique (event_id, player_id, bracket_id) — surface a friendly message, not a
+	// raw 409. Bracket-scoped so the same account can enter other divisions.
 	if linkUserID != "" {
 		dup, err := s.sb.SelectOne("registrations",
-			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+"&select=id")
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+				bracketFilter(bracketID)+"&select=id")
 		if err != nil {
 			return model.Registration{}, err
 		}
@@ -8904,9 +8922,11 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	}
 
 	// One bulk push per match for players with a linked account — best-effort,
-	// alongside the SMS below. sendPush logs and swallows its own errors.
-	_ = s.sendPush(userIDs, "Match starting",
-		fmt.Sprintf("You're up on %s", court), "")
+	// alongside the SMS below. Carries the custom court-call tone (courtCallSound)
+	// so it stands out even with the app closed; plays once the native build
+	// bundles the sound file, default tone until then. sendPushSound swallows errors.
+	_ = s.sendPushSound(userIDs, "Match starting",
+		fmt.Sprintf("You're up on %s", court), "", courtCallSound)
 
 	// Player Score Confirm on (Premium): each player's start text also carries
 	// THEIR personal report link, so the winners can submit right off the court.

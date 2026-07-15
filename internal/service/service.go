@@ -3312,6 +3312,44 @@ func (s *Service) SendTestSms(userID string) (string, error) {
 	return phone, nil
 }
 
+// sendWelcomeSmsOnce texts a player a single confirmation the first time they opt
+// into SMS. It re-reads the player row so the consent/phone/dedupe check reflects
+// the values just written, and only fires when consent is set, a phone is on file,
+// and sms_welcomed is still false. On success it flips sms_welcomed so a later
+// registration for another event never re-texts. Best-effort: every failure logs
+// and returns without disturbing the registration that triggered it.
+func (s *Service) sendWelcomeSmsOnce(playerID, eventID string) {
+	if playerID == "" {
+		return
+	}
+	pl, err := s.sb.SelectOne("players",
+		"id=eq."+store.Q(playerID)+"&select=phone,sms_consent,sms_welcomed")
+	if err != nil || pl == nil {
+		return
+	}
+	if !asBool(pl, "sms_consent") || asBool(pl, "sms_welcomed") {
+		return
+	}
+	phone := strings.TrimSpace(asStr(pl, "phone"))
+	if phone == "" {
+		return
+	}
+	name := "your tournament"
+	if ev, err := s.GetEvent(eventID); err == nil && strings.TrimSpace(ev.Name) != "" {
+		name = ev.Name
+	}
+	body := "You're set for " + name + " on PlanMyPickle 🥒 — we'll text match times " +
+		"and updates here. Reply STOP to opt out, HELP for help."
+	if _, err := s.Sms.Send(phone, body); err != nil {
+		log.Printf("welcome sms to player %s failed: %v", playerID, err)
+		return
+	}
+	if _, err := s.sb.Update("players", "id=eq."+store.Q(playerID),
+		map[string]any{"sms_welcomed": true}); err != nil {
+		log.Printf("welcome sms: marking sms_welcomed for player %s failed: %v", playerID, err)
+	}
+}
+
 // linkPartner pairs a just-created registration with a partner given by name +
 // phone. If someone with that phone is already registered, they're linked (no
 // duplicate); otherwise the partner is added to the roster in the same division.
@@ -3649,6 +3687,11 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	// Register-with-a-partner: pair (or add + pair) the named partner. Best-effort,
 	// so it never blocks the registrant's own successful sign-up.
 	s.linkPartner(eventID, bracketID, regID, playerID, req.PartnerName, req.PartnerPhone)
+	// Welcome-on-opt-in: the first time this player opts into texts, send a one-time
+	// confirmation. Deduped by players.sms_welcomed, off the request path.
+	if req.SmsConsent {
+		go s.sendWelcomeSmsOnce(playerID, eventID)
+	}
 	return model.Registration{
 		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,

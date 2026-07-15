@@ -1168,6 +1168,9 @@ type RosterEntry struct {
 	PlayerID  string `json:"playerId,omitempty"`
 	FullName  string `json:"fullName"`
 	Division  string `json:"division,omitempty"`
+	// PartnerID is the doubles partner's player id (empty for singles / unpaired),
+	// so the player list can group a pair (their "team") together.
+	PartnerID string `json:"partnerId,omitempty"`
 	CheckedIn bool   `json:"checkedIn"`
 	// PhotoURL is the linked account's profile photo (pmp_profiles); empty for
 	// name-only players — the UI falls back to initials.

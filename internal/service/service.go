@@ -840,7 +840,7 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+"&order=created_at.asc"+
-			"&select=checked_in,player:players!player_id(id,full_name,user_id),bracket:brackets!bracket_id(name)")
+			"&select=checked_in,partner_id,player:players!player_id(id,full_name,user_id),bracket:brackets!bracket_id(name)")
 	if err != nil {
 		return nil, err
 	}
@@ -864,6 +864,7 @@ func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
 			PlayerID:  pid,
 			FullName:  name,
 			Division:  div,
+			PartnerID: asStr(r, "partner_id"),
 			CheckedIn: asBool(r, "checked_in"),
 		})
 		uids = append(uids, uid)

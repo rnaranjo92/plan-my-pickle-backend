@@ -425,6 +425,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// QA: fire a diagnostic push to the caller's own device(s).
 	mux.HandleFunc("POST /dev/test-push", requireAuth(s.testPush))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
+	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
 	mux.HandleFunc("POST /dev/tidy-tests", requireAuth(s.tidyTestEvents))
 
@@ -1302,6 +1303,18 @@ func (s *Server) testSms(w http.ResponseWriter, r *http.Request) {
 		masked = "•••" + to[n-4:]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "to": masked})
+}
+
+// testSmsNumbers texts the fixed QA test handsets a diagnostic SMS and reports
+// per-number delivery — a live Twilio verification to real phones. QA-only.
+func (s *Server) testSmsNumbers(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	results := s.svc.SendTestSmsToNumbers()
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (s *Server) tidyTestEvents(w http.ResponseWriter, r *http.Request) {

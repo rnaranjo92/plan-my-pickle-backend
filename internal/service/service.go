@@ -3325,6 +3325,36 @@ func (s *Service) SendTestSms(userID string) (string, error) {
 	return phone, nil
 }
 
+// qaTestSmsNumbers are the QA handsets the "text the test numbers" button pings
+// to verify LIVE Twilio delivery to real phones (not just the caller's own).
+var qaTestSmsNumbers = []string{"+16508085145", "+16504573848"}
+
+// SmsTestResult reports one number's outcome from SendTestSmsToNumbers.
+type SmsTestResult struct {
+	To  string `json:"to"`
+	OK  bool   `json:"ok"`
+	Err string `json:"err,omitempty"`
+}
+
+// SendTestSmsToNumbers texts each QA test number a diagnostic SMS and reports
+// per-number success, so an organizer can verify live A2P/Twilio delivery to real
+// handsets. Best-effort per number — one failure doesn't stop the others.
+func (s *Service) SendTestSmsToNumbers() []SmsTestResult {
+	body := "PlanMyPickle test 🥒 — live Twilio delivery check. " +
+		"Reply STOP to opt out, HELP for help."
+	out := make([]SmsTestResult, 0, len(qaTestSmsNumbers))
+	for _, to := range qaTestSmsNumbers {
+		res := SmsTestResult{To: to}
+		if _, err := s.Sms.Send(to, body); err != nil {
+			res.Err = err.Error()
+		} else {
+			res.OK = true
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
 // sendWelcomeSmsOnce texts a player a single confirmation the first time they opt
 // into SMS. It re-reads the player row so the consent/phone/dedupe check reflects
 // the values just written, and only fires when consent is set, a phone is on file,

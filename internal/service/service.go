@@ -3318,7 +3318,7 @@ func (s *Service) SendTestSms(userID string) (string, error) {
 		return "", errors.New("no phone on file — add one in your profile first")
 	}
 	body := "PlanMyPickle test 🥒 — if you got this, SMS is working. " +
-		"Reply STOP to opt out, HELP for help."
+		dadJoke() + " Reply STOP to opt out, HELP for help."
 	if _, err := s.Sms.Send(phone, body); err != nil {
 		return phone, err
 	}
@@ -3328,6 +3328,22 @@ func (s *Service) SendTestSms(userID string) (string, error) {
 // qaTestSmsNumbers are the QA handsets the "text the test numbers" button pings
 // to verify LIVE Twilio delivery to real phones (not just the caller's own).
 var qaTestSmsNumbers = []string{"+16508085145", "+16504573848"}
+
+// pickleballDadJokes garnish the test SMS so a delivery check also raises a groan.
+var pickleballDadJokes = []string{
+	"Why did the pickle blush? It saw the salad dressing! 🥒",
+	"I'm kind of a big dill on the court. 🥒",
+	"Why are pickleball players so relaxed? They never lose their dill.",
+	"I told my paddle a joke — it couldn't stop volleying with laughter. 🏓",
+	"What do you call a pickle that plays every day? A dill-igent athlete.",
+	"My serve is like my coffee — best when it's got a little kick and lands in.",
+	"Why'd the pickleball go to therapy? Too many unresolved dinks.",
+}
+
+// dadJoke returns one pickleball dad joke at random (global rand is auto-seeded).
+func dadJoke() string {
+	return pickleballDadJokes[rand.Intn(len(pickleballDadJokes))]
+}
 
 // SmsTestResult reports one number's outcome from SendTestSmsToNumbers.
 type SmsTestResult struct {
@@ -3341,7 +3357,7 @@ type SmsTestResult struct {
 // handsets. Best-effort per number — one failure doesn't stop the others.
 func (s *Service) SendTestSmsToNumbers() []SmsTestResult {
 	body := "PlanMyPickle test 🥒 — live Twilio delivery check. " +
-		"Reply STOP to opt out, HELP for help."
+		dadJoke() + " Reply STOP to opt out, HELP for help."
 	out := make([]SmsTestResult, 0, len(qaTestSmsNumbers))
 	for _, to := range qaTestSmsNumbers {
 		res := SmsTestResult{To: to}

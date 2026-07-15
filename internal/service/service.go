@@ -3282,6 +3282,36 @@ func (s *Service) RegistrantByPhone(eventID, phone string) (playerID, fullName s
 	return "", "", false, nil
 }
 
+// SendTestSms texts the signed-in user's own phone a diagnostic message — the SMS
+// analog of SendTestPush, so an organizer can verify A2P/Twilio delivery end to
+// end. Returns the recipient number (masking is the caller's job). Errors if no
+// phone is on file or the gateway rejects it.
+func (s *Service) SendTestSms(userID string) (string, error) {
+	if userID == "" {
+		return "", errors.New("not signed in")
+	}
+	phone := ""
+	if pr, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone"); err == nil && pr != nil {
+		phone = strings.TrimSpace(asStr(pr, "phone"))
+	}
+	if phone == "" {
+		if pl, err := s.sb.SelectOne("players",
+			"user_id=eq."+store.Q(userID)+"&select=phone"); err == nil && pl != nil {
+			phone = strings.TrimSpace(asStr(pl, "phone"))
+		}
+	}
+	if phone == "" {
+		return "", errors.New("no phone on file — add one in your profile first")
+	}
+	body := "PlanMyPickle test 🥒 — if you got this, SMS is working. " +
+		"Reply STOP to opt out, HELP for help."
+	if _, err := s.Sms.Send(phone, body); err != nil {
+		return phone, err
+	}
+	return phone, nil
+}
+
 // linkPartner pairs a just-created registration with a partner given by name +
 // phone. If someone with that phone is already registered, they're linked (no
 // duplicate); otherwise the partner is added to the roster in the same division.

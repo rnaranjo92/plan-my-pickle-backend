@@ -418,6 +418,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /dev/backfill-county", requireAuth(s.backfillCounty))
 	// QA: fire a diagnostic push to the caller's own device(s).
 	mux.HandleFunc("POST /dev/test-push", requireAuth(s.testPush))
+	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
 	mux.HandleFunc("POST /dev/tidy-tests", requireAuth(s.tidyTestEvents))
 
@@ -1274,6 +1275,27 @@ func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// testSms texts the CALLER's own phone a diagnostic SMS (A2P/Twilio delivery
+// check). QA-gated. Returns the masked recipient so the UI can confirm where it
+// went without echoing the full number.
+func (s *Server) testSms(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	to, err := s.svc.SendTestSms(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	masked := to
+	if n := len(to); n > 4 {
+		masked = "•••" + to[n-4:]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "to": masked})
 }
 
 func (s *Server) tidyTestEvents(w http.ResponseWriter, r *http.Request) {

@@ -43,7 +43,13 @@ func NewServer(svc *service.Service) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		// Echo the deployed commit (Railway injects RAILWAY_GIT_COMMIT_SHA) so a
+		// deploy can be VERIFIED — a 200 alone doesn't prove the new build is live
+		// (a failed build keeps serving the old one). Empty off-Railway.
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "ok",
+			"commit": os.Getenv("RAILWAY_GIT_COMMIT_SHA"),
+		})
 	})
 	// --- Public: spectator/shareable reads + the on-site self-service flows
 	// reached from QR codes (register, pay, shirt order, self check-in). These

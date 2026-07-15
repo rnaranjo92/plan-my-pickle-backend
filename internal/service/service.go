@@ -3374,18 +3374,34 @@ func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partn
 	if partnerName == "" || partnerPhone == "" {
 		return
 	}
-	partnerPID, _, found, err := s.RegistrantByPhone(eventID, partnerPhone)
+	partnerPID, _, foundInEvent, err := s.RegistrantByPhone(eventID, partnerPhone)
 	if err != nil {
 		return
 	}
 	var partnerRegID string
-	if found {
+	if foundInEvent {
+		// The partner is already a player in this event. Reuse their registration
+		// in THIS division if they have one; otherwise (they're only in another
+		// division) add a registration for them into this division — reusing their
+		// existing player row, not creating a duplicate. Bracket-scoped so we never
+		// grab / clobber their registration in a DIFFERENT division.
 		if r, e := s.sb.SelectOne("registrations",
-			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(partnerPID)+"&select=id"); e == nil && r != nil {
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(partnerPID)+
+				bracketFilter(bracketID)+"&select=id"); e == nil && r != nil {
 			partnerRegID = asStr(r, "id")
+		} else {
+			token := newID()
+			if reg, e := s.sb.Insert("registrations", map[string]any{
+				"event_id":       eventID,
+				"player_id":      partnerPID,
+				"bracket_id":     orNull(bracketID),
+				"check_in_token": token,
+			}); e == nil && len(reg) > 0 {
+				partnerRegID = asStr(reg[0], "id")
+			}
 		}
 	} else {
-		// Add the partner as an organizer-style registration (Self=false skips the
+		// New person → create them as a player + registration (Self=false skips the
 		// DUPR self-connect gate) in the SAME division as the registrant.
 		preg, e := s.RegisterPlayer(eventID, model.RegisterRequest{
 			FullName:  partnerName,
@@ -3923,14 +3939,17 @@ func (s *Service) loadPartnerRegRow(regID string) (partnerRegRow, error) {
 }
 
 // unlinkPartnerOf clears partner_id/partner_name on whichever registration in
-// the event currently points BACK at playerID — i.e. the other side of a mutual
-// link — so re-pairing or clearing never leaves a dangling one-way link.
-func (s *Service) unlinkPartnerOf(eventID, playerID string) error {
+// the given DIVISION currently points BACK at playerID — i.e. the other side of a
+// mutual link — so re-pairing or clearing never leaves a dangling one-way link.
+// Scoped to bracketID so a player paired in multiple divisions only has the link
+// in THIS division cleared, not their pairings in other divisions.
+func (s *Service) unlinkPartnerOf(eventID, bracketID, playerID string) error {
 	if playerID == "" {
 		return nil
 	}
 	_, err := s.sb.Update("registrations",
-		"event_id=eq."+store.Q(eventID)+"&partner_id=eq."+store.Q(playerID),
+		"event_id=eq."+store.Q(eventID)+"&partner_id=eq."+store.Q(playerID)+
+			bracketFilter(bracketID),
 		map[string]any{"partner_id": nil, "partner_name": nil})
 	return err
 }
@@ -3984,12 +4003,12 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 			reg.partnerID != other.playerID || other.partnerID != reg.playerID
 		// Break any prior mutual links on either side before re-pairing.
 		if reg.partnerID != "" && reg.partnerID != other.playerID {
-			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
+			if err := s.unlinkPartnerOf(reg.eventID, reg.bracketID, reg.playerID); err != nil {
 				return false, err
 			}
 		}
 		if other.partnerID != "" && other.partnerID != reg.playerID {
-			if err := s.unlinkPartnerOf(reg.eventID, other.playerID); err != nil {
+			if err := s.unlinkPartnerOf(reg.eventID, other.bracketID, other.playerID); err != nil {
 				return false, err
 			}
 		}
@@ -4011,7 +4030,7 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 
 	case partnerName != "":
 		if reg.partnerID != "" {
-			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
+			if err := s.unlinkPartnerOf(reg.eventID, reg.bracketID, reg.playerID); err != nil {
 				return false, err
 			}
 		}
@@ -4026,7 +4045,7 @@ func (s *Service) SetPartner(regID, partnerRegID, partnerName string) (bool, err
 
 	default:
 		if reg.partnerID != "" {
-			if err := s.unlinkPartnerOf(reg.eventID, reg.playerID); err != nil {
+			if err := s.unlinkPartnerOf(reg.eventID, reg.bracketID, reg.playerID); err != nil {
 				return false, err
 			}
 		}
@@ -4138,9 +4157,13 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string) error 
 	}
 	ids := []string{reg.id}
 	if reg.partnerID != "" {
+		// Move the partner's registration in the SOURCE division (the one paired
+		// with this reg) — bracket-scoped so a partner entered in multiple
+		// divisions doesn't get their wrong-division registration moved.
 		partnerReg, err := s.sb.SelectOne("registrations",
 			"event_id=eq."+store.Q(reg.eventID)+
-				"&player_id=eq."+store.Q(reg.partnerID)+"&select=id")
+				"&player_id=eq."+store.Q(reg.partnerID)+
+				bracketFilter(reg.bracketID)+"&select=id")
 		if err != nil {
 			return err
 		}
@@ -8723,8 +8746,12 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 	if err != nil {
 		return "", "", err
 	}
-	var matchID, matchName string
-	found := false
+	// Collect EVERY registration for the phone-matched player — a player entered
+	// in multiple divisions has one registration row per division, and a single
+	// phone check-in should flip them ALL (each has its own check_in flag/token),
+	// not just the first one found.
+	var matchIDs []string
+	var matchName string
 	for _, r := range rows {
 		p := asMap(r, "player")
 		if p == nil {
@@ -8735,23 +8762,30 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 			continue
 		}
 		if have == want {
-			matchID, matchName = asStr(r, "id"), asStr(p, "full_name")
-			found = true
-			break
+			matchIDs = append(matchIDs, asStr(r, "id"))
+			if matchName == "" {
+				matchName = asStr(p, "full_name")
+			}
 		}
 	}
-	if !found {
+	if len(matchIDs) == 0 {
 		return "", "", ErrNotFound
 	}
 	// "code" is the allowed check_in_method that fits a player self-identifying
 	// by entering their phone number (see the registrations CHECK constraint).
-	changed, err := s.CheckIn(matchID, "code")
-	if err == nil && changed {
-		if eid, txt := s.CheckinFeedText(matchID); txt != "" {
-			s.AddFeedItem(eid, "checked_in", txt, matchID)
+	for _, id := range matchIDs {
+		changed, cerr := s.CheckIn(id, "code")
+		if cerr != nil {
+			return "", "", cerr
+		}
+		if changed {
+			if eid, txt := s.CheckinFeedText(id); txt != "" {
+				s.AddFeedItem(eid, "checked_in", txt, id)
+			}
 		}
 	}
-	return matchID, matchName, err
+	// Return the first registration id (the caller only surfaces the name).
+	return matchIDs[0], matchName, nil
 }
 
 // StartRound activates a round and texts each player their court. (#5)

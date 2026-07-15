@@ -18,7 +18,7 @@ func TestServiceInternalHelpers(t *testing.T) {
 	safe(func() { _, _ = s.bracketHasRows("matches", "b1") })
 	safe(func() { _, _ = s.autoAssignBracket("e1", ratingPtr(3.2)) })
 	safe(func() { _, _ = s.autoAssignBracket("e1", nil) })
-	safe(func() { _ = s.unlinkPartnerOf("e1", "p1") })
+	safe(func() { _ = s.unlinkPartnerOf("e1", "b1", "p1") })
 	safe(func() { _, _ = s.playerNamesByID("e1", []string{"p1", "p2"}) })
 	safe(func() { _ = s.spreadCourts("e1") })
 	safe(func() { _ = s.maybeSeedPlayoff("b1") })

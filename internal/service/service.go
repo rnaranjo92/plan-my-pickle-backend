@@ -8404,7 +8404,10 @@ func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool)
 // linked account (OneSignal external_id = their auth user id). Best-effort, off
 // the request path. Players without an account simply aren't reachable by push.
 func (s *Service) notifyEventPlayers(eventID, text string) {
-	rows, err := s.sb.Select("registrations",
+	// SelectAll (Range-paginated) so a large event (>PostgREST's ~1000-row cap)
+	// doesn't silently miss players past the first page — same reason the
+	// schedule email uses it.
+	rows, err := s.sb.SelectAll("registrations",
 		"event_id=eq."+store.Q(eventID)+
 			"&select=player:players!player_id(user_id)")
 	if err != nil {

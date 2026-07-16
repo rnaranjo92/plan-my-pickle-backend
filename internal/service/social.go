@@ -212,6 +212,41 @@ func (s *Service) NearbyUsers(callerID string) ([]model.UserSearchResult, error)
 	return named, nil
 }
 
+// SuggestedUsers is the general fallback discovery source: recently-active
+// players who have accounts + names, so the Find Players screen is never empty
+// even when the caller hasn't set a city and has no co-players yet. Excludes the
+// caller; the frontend dedups anyone already shown under Near you / Played with /
+// Following (those richer sources render first).
+func (s *Service) SuggestedUsers(callerID string) ([]model.UserSearchResult, error) {
+	if callerID == "" {
+		return []model.UserSearchResult{}, nil
+	}
+	// Player rows tied to real accounts, newest first (favors active users). One
+	// account can have many player rows; distinctCap collapses to unique users.
+	rows, err := s.sb.Select("players",
+		"user_id=not.is.null&select=user_id,full_name&order=created_at.desc&limit=300")
+	if err != nil {
+		return nil, err
+	}
+	uids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		// Skip nameless/guest-like rows up front so the cap isn't spent on blanks.
+		if strings.TrimSpace(asStr(r, "full_name")) == "" {
+			continue
+		}
+		uids = append(uids, asStr(r, "user_id"))
+	}
+	uids = distinctCap(uids, map[string]bool{callerID: true}, 30)
+	out := s.decorateUsers(callerID, uids, nil, nil, false)
+	named := out[:0]
+	for _, u := range out {
+		if strings.TrimSpace(u.FullName) != "" {
+			named = append(named, u)
+		}
+	}
+	return named, nil
+}
+
 // Followers lists the accounts that follow callerID (newest first), each tagged
 // with whether the caller follows them back.
 func (s *Service) Followers(callerID string) ([]model.UserSearchResult, error) {

@@ -202,6 +202,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
 	mux.HandleFunc("GET /me/discover/played-with", requireAuth(s.discoverPlayedWith))
 	mux.HandleFunc("GET /me/discover/nearby", requireAuth(s.discoverNearby))
+	mux.HandleFunc("GET /me/discover/suggested", requireAuth(s.discoverSuggested))
 	mux.HandleFunc("POST /users/{id}/follow", requireAuth(s.followUser))
 	mux.HandleFunc("DELETE /users/{id}/follow", requireAuth(s.unfollowUser))
 	mux.HandleFunc("GET /me/following", requireAuth(s.myFollowing))
@@ -2074,6 +2075,22 @@ func (s *Server) discoverNearby(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.svc.NearbyUsers(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// discoverSuggested is the general fallback source: recently-active players with
+// accounts, so the Find Players screen is never empty when the caller has no city
+// or co-players yet.
+func (s *Server) discoverSuggested(w http.ResponseWriter, r *http.Request) {
+	if !s.socialLimiter.allow("discover:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("slow down"))
+		return
+	}
+	res, err := s.svc.SuggestedUsers(userID(r))
 	if err != nil {
 		status(w, err)
 		return

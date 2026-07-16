@@ -58,7 +58,10 @@ func (s *Service) CreateCommunityPost(userID, email, text string) (model.FeedIte
 	fi := mapFeedItem(rows[0])
 	fi.ReactionCounts = map[string]int{}
 	fi.MyReactions = []string{}
-	return fi, nil
+	// Attach the author's photo so the just-posted item shows their face right away.
+	items := []model.FeedItem{fi}
+	s.attachActorPhotos(items)
+	return items[0], nil
 }
 
 // ensureEventPosts makes sure each given event has its single `event`-type

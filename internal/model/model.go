@@ -1087,8 +1087,13 @@ type FeedItem struct {
 	Type      string  `json:"type"`
 	Text      string  `json:"text"`
 	ActorName *string `json:"actorName,omitempty"`
-	RefID     *string `json:"refId,omitempty"`
-	CreatedAt string  `json:"createdAt"`
+	// ActorPhoto is the author's profile photo URL (community/user posts), attached
+	// when listing the feed so a real post shows the poster's face. AuthorID is the
+	// author's account id, used only server-side to look the photo up (not serialized).
+	ActorPhoto *string `json:"actorPhoto,omitempty"`
+	AuthorID   string  `json:"-"`
+	RefID      *string `json:"refId,omitempty"`
+	CreatedAt  string  `json:"createdAt"`
 	// PosterURL + StartsAt are set only on `event`-type posts (an event that
 	// announced itself to the NewsFeed) — sourced from the item's meta JSON so
 	// the card can show the poster + date without a second fetch.

@@ -443,6 +443,7 @@ func mapFeedItem(m map[string]any) model.FeedItem {
 		Type:      asStr(m, "type"),
 		Text:      asStr(m, "text"),
 		ActorName: asStrPtr(m, "actor_name"),
+		AuthorID:  asStr(m, "author_id"),
 		RefID:     asStrPtr(m, "ref_id"),
 		CreatedAt: asStr(m, "created_at"),
 	}

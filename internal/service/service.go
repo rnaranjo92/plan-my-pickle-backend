@@ -7868,6 +7868,7 @@ func (s *Service) ListFeed(eventID, callerID string) ([]model.FeedItem, error) {
 	if len(ids) > 0 {
 		s.attachSocial(out, ids, callerID)
 	}
+	s.attachActorPhotos(out)
 	return out, nil
 }
 
@@ -8034,6 +8035,7 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	if len(finalIDs) > 0 {
 		s.attachSocial(out, finalIDs, userID)
 	}
+	s.attachActorPhotos(out)
 	return out, nil
 }
 
@@ -8065,6 +8067,30 @@ func (s *Service) attachSocial(items []model.FeedItem, ids []string, callerID st
 			if i, ok := idx[asStr(r, "feed_item_id")]; ok {
 				items[i].CommentCount++
 			}
+		}
+	}
+}
+
+// attachActorPhotos fills ActorPhoto for feed items whose author has a profile
+// photo, in one batched lookup (reuses photosByUser). Lets a user's post show
+// their face in the feed instead of a generic icon. Best-effort.
+func (s *Service) attachActorPhotos(items []model.FeedItem) {
+	ids := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for i := range items {
+		if id := items[i].AuthorID; id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	photos := s.photosByUser(ids)
+	for i := range items {
+		if url := photos[items[i].AuthorID]; url != "" {
+			u := url
+			items[i].ActorPhoto = &u
 		}
 	}
 }

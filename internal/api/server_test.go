@@ -465,6 +465,7 @@ func TestProtectedRoutesRejectAnon(t *testing.T) {
 }
 
 func TestCreateEventMalformedBody(t *testing.T) {
+	t.Setenv("ORGANIZER_ALLOWLIST", "*") // organizing is allowlisted; open it here
 	m := newMockSupabase(t)
 	h := newTestServer(t, m)
 	rec := httptest.NewRecorder()
@@ -485,6 +486,7 @@ func TestCreateEventSanctionedNonPremiumIs402(t *testing.T) {
 	// The premium gate only applies when the paid plan is ON; while subscriptions
 	// are off everyone is premium (all features free), so enable it for this test.
 	t.Setenv("SUBSCRIPTIONS_ENABLED", "true")
+	t.Setenv("ORGANIZER_ALLOWLIST", "*") // organizing is allowlisted; open it here
 	m := newMockSupabase(t)
 	// IsPremium queries Supabase; with empty/default rows the user is not premium.
 	h := newTestServer(t, m)

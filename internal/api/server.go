@@ -615,7 +615,37 @@ func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// organizerAllowed reports whether the caller may create events/leagues. During
+// early access organizing is restricted to an allowlist (this enforces server-side
+// what the client-side Organize gate hides — a hidden tab is not enforcement).
+// Configurable via ORGANIZER_ALLOWLIST (comma-separated emails); defaults to the
+// two QA accounts. Set ORGANIZER_ALLOWLIST="*" to open organizing to everyone.
+func organizerAllowed(email string) bool {
+	list := strings.TrimSpace(os.Getenv("ORGANIZER_ALLOWLIST"))
+	if list == "" {
+		list = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
+	}
+	if list == "*" { // wildcard: organizing open to everyone
+		return true
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return false
+	}
+	for _, e := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(e), email) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
+	if !organizerAllowed(userEmail(r)) {
+		writeErr(w, http.StatusForbidden,
+			errors.New("organizing is limited during early access"))
+		return
+	}
 	var req model.CreateEventRequest
 	if !decode(w, r, &req) {
 		return
@@ -638,6 +668,11 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 
 // createLeague creates a league owned by the authenticated caller.
 func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
+	if !organizerAllowed(userEmail(r)) {
+		writeErr(w, http.StatusForbidden,
+			errors.New("organizing is limited during early access"))
+		return
+	}
 	var req model.CreateLeagueRequest
 	if !decode(w, r, &req) {
 		return

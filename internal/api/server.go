@@ -191,6 +191,8 @@ func NewServer(svc *service.Service) http.Handler {
 
 	// Social graph: search players & follow them.
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
+	mux.HandleFunc("GET /me/discover/played-with", requireAuth(s.discoverPlayedWith))
+	mux.HandleFunc("GET /me/discover/nearby", requireAuth(s.discoverNearby))
 	mux.HandleFunc("POST /users/{id}/follow", requireAuth(s.followUser))
 	mux.HandleFunc("DELETE /users/{id}/follow", requireAuth(s.unfollowUser))
 	mux.HandleFunc("GET /me/following", requireAuth(s.myFollowing))
@@ -2033,6 +2035,36 @@ func (s *Server) leaveClub(w http.ResponseWriter, r *http.Request) {
 // searchUsers finds followable accounts by display name (?q=, >= 2 chars).
 func (s *Server) searchUsers(w http.ResponseWriter, r *http.Request) {
 	res, err := s.svc.SearchUsers(userID(r), r.URL.Query().Get("q"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// discoverPlayedWith suggests people the caller has shared an event with.
+func (s *Server) discoverPlayedWith(w http.ResponseWriter, r *http.Request) {
+	if !s.socialLimiter.allow("discover:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("slow down"))
+		return
+	}
+	res, err := s.svc.PlayedWithUsers(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// discoverNearby suggests players in the caller's city. Rate-limited per user so
+// it can't be scripted (rotating the caller's own profile city) into a
+// who-lives-where PII harvester.
+func (s *Server) discoverNearby(w http.ResponseWriter, r *http.Request) {
+	if !s.socialLimiter.allow("discover:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("slow down"))
+		return
+	}
+	res, err := s.svc.NearbyUsers(userID(r))
 	if err != nil {
 		status(w, err)
 		return

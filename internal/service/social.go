@@ -88,6 +88,130 @@ func (s *Service) Following(callerID string) ([]model.UserSearchResult, error) {
 	return s.decorateUsers(callerID, ids, nil, nil, true), nil
 }
 
+// distinctCap collects up to `cap` distinct non-empty strings, preserving order.
+func distinctCap(vals []string, skip map[string]bool, cap int) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, cap)
+	for _, v := range vals {
+		if v == "" || seen[v] || (skip != nil && skip[v]) {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+		if len(out) >= cap {
+			break
+		}
+	}
+	return out
+}
+
+// PlayedWithUsers suggests people the caller has shared an event with (co-
+// registrants across the events they organize or play in), each tagged with the
+// caller's follow state. Discovery source for the Find Players screen.
+func (s *Service) PlayedWithUsers(callerID string) ([]model.UserSearchResult, error) {
+	if callerID == "" {
+		return []model.UserSearchResult{}, nil
+	}
+	// The caller's own player rows (to find their registrations + to exclude them).
+	myPlayers, err := s.sb.Select("players",
+		"user_id=eq."+store.Q(callerID)+"&select=id")
+	if err != nil {
+		return nil, err
+	}
+	myPids := map[string]bool{}
+	pidList := make([]string, 0, len(myPlayers))
+	for _, p := range myPlayers {
+		if id := asStr(p, "id"); id != "" {
+			myPids[id] = true
+			pidList = append(pidList, id)
+		}
+	}
+	if len(pidList) == 0 {
+		return []model.UserSearchResult{}, nil
+	}
+	// Events the caller is registered in (most recent first).
+	myRegs, err := s.sb.Select("registrations",
+		"player_id="+store.In(pidList)+"&select=event_id&order=created_at.desc&limit=50")
+	if err != nil {
+		return nil, err
+	}
+	eventIDs := make([]string, 0, len(myRegs))
+	for _, r := range myRegs {
+		eventIDs = append(eventIDs, asStr(r, "event_id"))
+	}
+	eventIDs = distinctCap(eventIDs, nil, 25)
+	if len(eventIDs) == 0 {
+		return []model.UserSearchResult{}, nil
+	}
+	// Everyone else registered in those events (newest registrations first so the
+	// 400-row window is deterministic + favors recent co-players).
+	coRegs, err := s.sb.Select("registrations",
+		"event_id="+store.In(eventIDs)+
+			"&select=player_id&order=created_at.desc&limit=400")
+	if err != nil {
+		return nil, err
+	}
+	coPlayerIDs := make([]string, 0, len(coRegs))
+	for _, r := range coRegs {
+		coPlayerIDs = append(coPlayerIDs, asStr(r, "player_id"))
+	}
+	coPlayerIDs = distinctCap(coPlayerIDs, myPids, 120)
+	if len(coPlayerIDs) == 0 {
+		return []model.UserSearchResult{}, nil
+	}
+	// Resolve those players to accounts (user_id), skipping guests + the caller.
+	prows, err := s.sb.Select("players",
+		"id="+store.In(coPlayerIDs)+"&user_id=not.is.null&select=user_id")
+	if err != nil {
+		return nil, err
+	}
+	uids := make([]string, 0, len(prows))
+	for _, p := range prows {
+		uids = append(uids, asStr(p, "user_id"))
+	}
+	uids = distinctCap(uids, map[string]bool{callerID: true}, 30)
+	return s.decorateUsers(callerID, uids, nil, nil, false), nil
+}
+
+// NearbyUsers suggests players in the caller's city (from their account profile),
+// each tagged with the caller's follow state. Empty when the caller hasn't set a
+// city. Discovery source for the Find Players screen.
+func (s *Service) NearbyUsers(callerID string) ([]model.UserSearchResult, error) {
+	if callerID == "" {
+		return []model.UserSearchResult{}, nil
+	}
+	me, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(callerID)+"&select=city")
+	if err != nil {
+		return nil, err
+	}
+	city := strings.TrimSpace(asStr(me, "city"))
+	if city == "" {
+		return []model.UserSearchResult{}, nil
+	}
+	rows, err := s.sb.Select("pmp_profiles",
+		"city=ilike."+store.Q(likeEscape(city))+"&user_id=not.is.null"+
+			"&select=user_id&limit=60")
+	if err != nil {
+		return nil, err
+	}
+	uids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		uids = append(uids, asStr(r, "user_id"))
+	}
+	uids = distinctCap(uids, map[string]bool{callerID: true}, 30)
+	// Drop accounts with no player row (e.g. organizers) — decorateUsers resolves
+	// names from `players`, so they'd otherwise show as blank, nameless cards.
+	out := s.decorateUsers(callerID, uids, nil, nil, false)
+	named := out[:0]
+	for _, u := range out {
+		if strings.TrimSpace(u.FullName) != "" {
+			named = append(named, u)
+		}
+	}
+	return named, nil
+}
+
 // Followers lists the accounts that follow callerID (newest first), each tagged
 // with whether the caller follows them back.
 func (s *Service) Followers(callerID string) ([]model.UserSearchResult, error) {

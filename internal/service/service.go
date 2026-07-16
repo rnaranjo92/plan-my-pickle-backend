@@ -33,6 +33,10 @@ import (
 type Service struct {
 	sb     *store.Client // Supabase REST (the sole data store)
 	Pay    gateway.PaymentGateway
+	// PayPal is the optional PayPal/Venmo processor (marketplace split payouts).
+	// nil unless PAYPAL_CLIENT_ID/SECRET are configured — the whole PayPal path
+	// is dormant until then, so it ships env-gated and inactive.
+	PayPal *gateway.PayPalGateway
 	Sms    gateway.SmsGateway
 	Dupr   gateway.DuprGateway
 	Email  gateway.EmailGateway

@@ -54,6 +54,26 @@ func main() {
 	} else {
 		log.Printf("Payments: mock — set STRIPE_SECRET_KEY (+ STRIPE_WEBHOOK_SECRET) to take real payments")
 	}
+	// PayPal / Venmo (marketplace split payouts) — env-gated + DORMANT until
+	// PAYPAL_CLIENT_ID/SECRET are set, so the whole PayPal path ships inactive and
+	// activates automatically once creds + partner approval land. Base URL
+	// defaults to sandbox (PAYPAL_BASE_URL overrides for live); the webhook id and
+	// partner attribution (BN) enable the marketplace split when present.
+	if pcid, psec := os.Getenv("PAYPAL_CLIENT_ID"), os.Getenv("PAYPAL_CLIENT_SECRET"); pcid != "" && psec != "" {
+		pg := gateway.NewPayPalGateway(pcid, psec,
+			os.Getenv("PAYPAL_BASE_URL"), os.Getenv("PAYPAL_WEBHOOK_ID"))
+		if pid := os.Getenv("PAYPAL_PARTNER_MERCHANT_ID"); pid != "" {
+			pg.SetMarketplace(pid, os.Getenv("PAYPAL_BN_CODE"))
+		}
+		svc.PayPal = pg
+		live := os.Getenv("PAYPAL_BASE_URL") != "" &&
+			!strings.Contains(os.Getenv("PAYPAL_BASE_URL"), "sandbox")
+		mode := "sandbox"
+		if live {
+			mode = "LIVE"
+		}
+		log.Printf("Payments: PayPal/Venmo configured (%s)", mode)
+	}
 	// Real transactional email (registration confirmations) only when Resend is
 	// configured; otherwise the mock records sends without delivering. The from
 	// address must be on a domain verified in the Resend dashboard.

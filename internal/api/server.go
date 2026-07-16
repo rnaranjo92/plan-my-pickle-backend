@@ -164,6 +164,12 @@ func NewServer(svc *service.Service) http.Handler {
 	// JWT (optionalAuth). The id is harvestable from the public roster/feed, so a
 	// proof is required before opening a hosted payment page in their name.
 	mux.HandleFunc("POST /registrations/{id}/checkout", optionalAuth(s.checkout))
+	// PayPal / Venmo: same IDOR guard as /checkout. checkout creates the order
+	// (returns the approval URL); capture settles it when PayPal returns the payer.
+	mux.HandleFunc("POST /registrations/{id}/paypal-checkout", optionalAuth(s.paypalCheckout))
+	mux.HandleFunc("POST /registrations/{id}/paypal-capture", optionalAuth(s.paypalCapture))
+	// Which online payment methods are configured (client shows only these).
+	mux.HandleFunc("GET /payments/config", s.paymentsConfig)
 	mux.HandleFunc("POST /events/{id}/checkin", s.checkinByToken)
 	mux.HandleFunc("POST /events/{id}/checkin-by-phone", s.checkinByPhone)
 	mux.HandleFunc("POST /events/{id}/verify-admin", s.verifyAdmin)
@@ -172,6 +178,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// The handler reads the RAW request body (signature is computed over the exact
 	// bytes), so it must not pass through decode().
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
+	// PayPal webhook (server-to-server): NO auth wrapper — verified inside via the
+	// PayPal signature + PAYPAL_WEBHOOK_ID against the raw body.
+	mux.HandleFunc("POST /webhooks/paypal", s.paypalWebhook)
 
 	// --- Authenticated: creating an event stamps the caller as its owner.
 	mux.HandleFunc("POST /events", requireAuth(s.createEvent))
@@ -3021,6 +3030,13 @@ func (s *Server) stripeConnect(w http.ResponseWriter, r *http.Request) {
 
 // subscribePremium opens a Stripe subscription Checkout for the Premium plan.
 func (s *Server) subscribePremium(w http.ResponseWriter, r *http.Request) {
+	// Paid Premium is OFF for now — refuse to start a subscription so nobody can
+	// accidentally subscribe (belt-and-suspenders; the UI also hides the flow).
+	if !service.SubscriptionsEnabled() {
+		writeErr(w, http.StatusServiceUnavailable,
+			errors.New("subscriptions are not available yet"))
+		return
+	}
 	var req struct {
 		SuccessURL string `json:"successUrl"`
 		CancelURL  string `json:"cancelUrl"`
@@ -3050,6 +3066,12 @@ func (s *Server) subscribePremium(w http.ResponseWriter, r *http.Request) {
 // Premium pass. The route's ownerOnly wrapper has already verified the caller
 // owns {id}; the webhook flips events.premium_pass on success.
 func (s *Server) startEventPassCheckout(w http.ResponseWriter, r *http.Request) {
+	// Premium is free-for-all while subscriptions are off — no per-event pass to buy.
+	if !service.SubscriptionsEnabled() {
+		writeErr(w, http.StatusServiceUnavailable,
+			errors.New("premium passes are not available yet"))
+		return
+	}
 	var req struct {
 		SuccessURL string `json:"successUrl"`
 		CancelURL  string `json:"cancelUrl"`
@@ -3144,6 +3166,86 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// paypalCheckout starts a PayPal/Venmo order for a registration's entry fee and
+// returns the approval URL to redirect the payer to. Token/owner gated like pay.
+func (s *Server) paypalCheckout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token         string `json:"token"`
+		FundingSource string `json:"fundingSource"`
+		ReturnURL     string `json:"returnUrl"`
+		CancelURL     string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.authorizeRegistration(w, r, req.Token) {
+		return
+	}
+	if strings.TrimSpace(req.ReturnURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("returnUrl and cancelUrl are required"))
+		return
+	}
+	url, err := s.svc.CreatePayPalCheckout(
+		r.PathValue("id"), req.FundingSource, req.ReturnURL, req.CancelURL)
+	if errors.Is(err, service.ErrPayPalNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// paypalCapture captures an approved PayPal order (payer returned to the app) and
+// settles the registration paid. Token/owner gated.
+func (s *Server) paypalCapture(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token   string `json:"token"`
+		OrderID string `json:"orderId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.authorizeRegistration(w, r, req.Token) {
+		return
+	}
+	if strings.TrimSpace(req.OrderID) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("orderId is required"))
+		return
+	}
+	if _, err := s.svc.CapturePayPalOrder(req.OrderID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"paid": true})
+}
+
+// paypalWebhook settles a registration on a completed PayPal capture (backup to
+// the return-path capture).
+func (s *Server) paypalWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.HandlePayPalWebhook(r.Header, body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// paymentsConfig tells the client which online payment methods are live, so the
+// pay UI only offers what's actually configured.
+func (s *Server) paymentsConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"stripe": s.svc.StripeConfigured(),
+		"paypal": s.svc.PayPalConfigured(),
+	})
 }
 
 // stripeWebhook handles Stripe's server-to-server callbacks. NO auth wrapper —

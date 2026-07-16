@@ -482,6 +482,9 @@ func TestCreateEventMalformedBody(t *testing.T) {
 // mock. (Previously this test asserted that *all* event creation was Premium,
 // which no longer matches the model: the tournament engine is free.)
 func TestCreateEventSanctionedNonPremiumIs402(t *testing.T) {
+	// The premium gate only applies when the paid plan is ON; while subscriptions
+	// are off everyone is premium (all features free), so enable it for this test.
+	t.Setenv("SUBSCRIPTIONS_ENABLED", "true")
 	m := newMockSupabase(t)
 	// IsPremium queries Supabase; with empty/default rows the user is not premium.
 	h := newTestServer(t, m)

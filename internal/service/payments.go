@@ -310,8 +310,20 @@ func (s *Service) applySubscriptionEvent(ev gateway.SubscriptionEvent) error {
 	return nil
 }
 
+// SubscriptionsEnabled gates the paid Premium plan. Default OFF: while off, the
+// whole subscription flow is disabled (so no one can accidentally subscribe) and
+// EVERYONE is treated as Premium (all features free). Flip SUBSCRIPTIONS_ENABLED
+// =true in the env to turn the paid plan on — no code deploy needed.
+func SubscriptionsEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("SUBSCRIPTIONS_ENABLED")), "true")
+}
+
 // IsPremium reports whether the account currently has an active Premium plan.
+// While subscriptions are OFF, everyone is Premium (all features free).
 func (s *Service) IsPremium(userID string) bool {
+	if !SubscriptionsEnabled() {
+		return true
+	}
 	if userID == "" {
 		return false
 	}

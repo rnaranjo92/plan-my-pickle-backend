@@ -8303,6 +8303,22 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 	p.DuprID = asStr(row, "dupr_id")
 	p.DuprRating = asFloatPtr(row, "dupr_rating")
 	p.SkillLevel = asFloatPtr(row, "skill_level")
+	// DUPR can live on ANY of the user's player rows (one row per registration),
+	// but the bare limit=1 above grabs an arbitrary one — often a guest-created row
+	// with no rating, which made the Home "DUPR" tile show "—" for connected users.
+	// If this row had no rating/id, pick the row that actually has one.
+	if p.DuprRating == nil || strings.TrimSpace(p.DuprID) == "" {
+		if dr, err := s.sb.SelectOne("players",
+			"user_id=eq."+store.Q(userID)+"&dupr_rating=not.is.null"+
+				"&select=dupr_id,dupr_rating&order=updated_at.desc&limit=1"); err == nil && dr != nil {
+			if p.DuprRating == nil {
+				p.DuprRating = asFloatPtr(dr, "dupr_rating")
+			}
+			if strings.TrimSpace(p.DuprID) == "" {
+				p.DuprID = asStr(dr, "dupr_id")
+			}
+		}
+	}
 	p.GamesPlayed = s.gamesPlayedForUser(userID)
 	return p
 }

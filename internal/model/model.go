@@ -19,6 +19,12 @@ type Event struct {
 	MinPoolRounds        int `json:"minPoolRounds"`
 	MaxPoolRounds        int `json:"maxPoolRounds"`
 	RegistrationFeeCents int `json:"registrationFeeCents"`
+	// Multi-division pricing: how the entry fee applies to a player's ADDITIONAL
+	// divisions (their first division always pays the full fee). "discount"
+	// (default) charges AdditionalDivisionFeeCents; "free" charges 0; "full"
+	// charges the full fee again.
+	ExtraDivisionFeeMode       string `json:"extraDivisionFeeMode"`
+	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`
 	// Paid add-ons a registrant can buy with their entry (0 = not offered).
 	AddonTeeCents   int      `json:"addonTeeCents"`
 	AddonGripsCents int      `json:"addonGripsCents"`
@@ -803,8 +809,11 @@ type CreateEventRequest struct {
 	MinPoolRounds        int      `json:"minPoolRounds"`
 	MaxPoolRounds        int      `json:"maxPoolRounds"`
 	RegistrationFeeCents int      `json:"registrationFeeCents"`
-	AddonTeeCents        int      `json:"addonTeeCents,omitempty"`
-	AddonGripsCents      int      `json:"addonGripsCents,omitempty"`
+	// Multi-division pricing (see CreateEventRequest).
+	ExtraDivisionFeeMode       string `json:"extraDivisionFeeMode"`
+	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`
+	AddonTeeCents              int    `json:"addonTeeCents,omitempty"`
+	AddonGripsCents            int    `json:"addonGripsCents,omitempty"`
 	ZelleHandle          string   `json:"zelleHandle,omitempty"`
 	VenmoHandle          string   `json:"venmoHandle,omitempty"`
 	ClubID               string   `json:"clubId,omitempty"`

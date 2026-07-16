@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
@@ -47,11 +48,24 @@ func (s *Service) SetRegistrationAddons(registrationID string, tee, grips bool) 
 	return err
 }
 
+// normExtraDivMode validates/defaults the multi-division fee mode.
+func normExtraDivMode(s string) string {
+	switch strings.TrimSpace(strings.ToLower(s)) {
+	case "free":
+		return "free"
+	case "full":
+		return "full"
+	default:
+		return "discount"
+	}
+}
+
 // registrationChargeCents returns what this registration owes — entry fee plus
 // any opted-in add-ons — with the event's currency and id.
 func (s *Service) registrationChargeCents(registrationID string) (total int, currency, eventID string, err error) {
 	reg, err := s.sb.SelectOne("registrations",
-		"id=eq."+store.Q(registrationID)+"&select=event_id,addon_tee,addon_grips")
+		"id=eq."+store.Q(registrationID)+
+			"&select=event_id,player_id,created_at,addon_tee,addon_grips")
 	if err != nil {
 		return 0, "", "", err
 	}
@@ -60,14 +74,34 @@ func (s *Service) registrationChargeCents(registrationID string) (total int, cur
 	}
 	eventID = asStr(reg, "event_id")
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+
-		"&select=registration_fee_cents,addon_tee_cents,addon_grips_cents,currency")
+		"&select=registration_fee_cents,addon_tee_cents,addon_grips_cents,currency,"+
+		"extra_division_fee_mode,additional_division_fee_cents")
 	if err != nil {
 		return 0, "", "", err
 	}
 	if ev == nil {
 		return 0, "", "", ErrNotFound
 	}
-	total = asInt(ev, "registration_fee_cents")
+	fee := asInt(ev, "registration_fee_cents")
+	// Multi-division pricing: only the player's FIRST (earliest) registration in
+	// this event pays the full entry fee. Additional divisions follow the event's
+	// mode — 'full' charges full again, 'free' is $0, 'discount' charges the set
+	// additional-division fee. Default is discount (per-event field).
+	if fee > 0 {
+		mode := asStr(ev, "extra_division_fee_mode")
+		if mode == "" {
+			mode = "discount"
+		}
+		if mode != "full" && s.isAdditionalDivision(
+			eventID, asStr(reg, "player_id"), registrationID, asStr(reg, "created_at")) {
+			if mode == "free" {
+				fee = 0
+			} else {
+				fee = asInt(ev, "additional_division_fee_cents")
+			}
+		}
+	}
+	total = fee
 	if asBool(reg, "addon_tee") {
 		total += asInt(ev, "addon_tee_cents")
 	}
@@ -79,4 +113,31 @@ func (s *Service) registrationChargeCents(registrationID string) (total int, cur
 		currency = "usd"
 	}
 	return total, currency, eventID, nil
+}
+
+// isAdditionalDivision reports whether this registration is NOT the player's
+// primary one in the event — i.e. another of their registrations sorts before it
+// (earlier created_at, or equal created_at with a smaller id as a stable
+// tiebreak). The earliest registration is the "primary" that pays full fee.
+func (s *Service) isAdditionalDivision(eventID, playerID, thisRegID, thisCreatedAt string) bool {
+	if playerID == "" {
+		return false
+	}
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+			"&select=id,created_at")
+	if err != nil {
+		return false
+	}
+	for _, r := range rows {
+		id := asStr(r, "id")
+		if id == thisRegID {
+			continue
+		}
+		ca := asStr(r, "created_at")
+		if ca < thisCreatedAt || (ca == thisCreatedAt && id < thisRegID) {
+			return true
+		}
+	}
+	return false
 }

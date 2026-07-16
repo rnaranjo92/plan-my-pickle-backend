@@ -175,7 +175,8 @@ func parseFirst(candidates ...*string) (time.Time, bool) {
 var eventCloneCols = []string{
 	"name", "format", "partner_mode", "tournament_format", "scoring_mode",
 	"num_courts", "points_to_win", "win_by", "best_of", "game_duration_minutes",
-	"registration_fee_cents", "addon_tee_cents", "addon_grips_cents", "currency",
+	"registration_fee_cents", "extra_division_fee_mode",
+	"additional_division_fee_cents", "addon_tee_cents", "addon_grips_cents", "currency",
 	"location", "contact_phone", "zelle_handle", "club_id", "dupr_sanctioned",
 	"dupr_min_entitlement", "cash_prize", "cash_prize_amount", "consolation",
 	"auto_adjust", "auto_start_next", "court_calls", "team_size", "admin_passcode",

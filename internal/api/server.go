@@ -72,6 +72,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
 	mux.HandleFunc("POST /me/profile", requireAuth(s.saveProfileDetails))
 	mux.HandleFunc("POST /me/basic", requireAuth(s.saveBasicInfo))
+	mux.HandleFunc("POST /me/onboarded", requireAuth(s.markOnboarded))
 	mux.HandleFunc("GET /partners", requireAuth(s.partnerDirectory))
 	mux.HandleFunc("POST /me/photo", requireAuth(s.uploadPhoto))
 	mux.HandleFunc("DELETE /me/photo", requireAuth(s.clearPhoto))
@@ -532,6 +533,16 @@ func (s *Server) saveBasicInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetMyBasicInfo(userID(r), req.FullName, req.Phone); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// markOnboarded records (server-side) that the caller saw the first-run flow, so
+// it isn't re-shown after a cache clear or on a new device.
+func (s *Server) markOnboarded(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.MarkOnboarded(userID(r)); err != nil {
 		status(w, err)
 		return
 	}

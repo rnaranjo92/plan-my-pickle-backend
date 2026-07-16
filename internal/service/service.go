@@ -8225,6 +8225,12 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 		p.City = asStr(pr, "city")
 		p.SeekingPartner = asBool(pr, "seeking_partner")
 	}
+	// Onboarded flag in its OWN best-effort read so a pre-migration DB (no
+	// `onboarded` column) still returns the fields above instead of erroring.
+	if pr, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=onboarded"); err == nil && pr != nil {
+		p.Onboarded = asBool(pr, "onboarded")
+	}
 	// Account-level basic info (name/phone) lives on pmp_profiles and wins over
 	// the per-registration players values when set — so editing your profile
 	// works even with no players row. SEPARATE best-effort read so a pre-0066 DB
@@ -8341,6 +8347,20 @@ func (s *Service) SetMyBasicInfo(userID, fullName, phone string) error {
 		"user_id":   userID,
 		"full_name": fullName,
 		"phone":     phone,
+	})
+	return err
+}
+
+// MarkOnboarded records that the caller has seen the first-run questionnaire, so
+// it is never shown again — even after a cache clear or on a new device (unlike
+// the device-local SharedPreferences flag). Best-effort/idempotent.
+func (s *Service) MarkOnboarded(userID string) error {
+	if userID == "" {
+		return errors.New("not signed in")
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+		"user_id":   userID,
+		"onboarded": true,
 	})
 	return err
 }

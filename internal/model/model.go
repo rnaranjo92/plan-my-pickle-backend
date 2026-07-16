@@ -1233,6 +1233,10 @@ type Profile struct {
 	Gender         string `json:"gender,omitempty"`
 	City           string `json:"city,omitempty"`
 	SeekingPartner bool   `json:"seekingPartner"`
+	// Onboarded: the one-time first-run questionnaire has been shown to this
+	// account. Stored server-side (pmp_profiles) so it survives a cache clear / a
+	// new device, instead of only a device-local flag.
+	Onboarded bool `json:"onboarded"`
 }
 
 // ProfileDetailsRequest saves the caller's partner-finder fields.

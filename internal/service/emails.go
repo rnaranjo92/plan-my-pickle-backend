@@ -55,9 +55,18 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 	}
 	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
 
+	// Organizer overrides (optional): a custom subject and a personal note added
+	// to the top of the confirmation. Empty/unset → the branded defaults.
 	subject := "You're in! " + ev.Name
+	if ev.ConfirmEmailSubject != nil && strings.TrimSpace(*ev.ConfirmEmailSubject) != "" {
+		subject = strings.TrimSpace(*ev.ConfirmEmailSubject)
+	}
+	customMsg := ""
+	if ev.ConfirmEmailMessage != nil {
+		customMsg = strings.TrimSpace(*ev.ConfirmEmailMessage)
+	}
 	htmlBody, textBody := registrationEmailBody(
-		fullName, ev.Name, when, where, division, eventURL, ev.OwnerPremium)
+		fullName, ev.Name, when, where, division, eventURL, ev.OwnerPremium, customMsg)
 	if err := s.Email.SendEmail(email, subject, htmlBody, textBody); err != nil {
 		log.Printf("email: registration confirm to %s failed: %v", email, err)
 	}
@@ -67,11 +76,20 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 // Free-tier events carry the "Powered by PlanMyPickle" footer; Premium
 // organizers' emails are unbranded (same rule as the app views / TV board).
 func registrationEmailBody(fullName, eventName, when, where, division, eventURL string,
-	ownerPremium bool) (string, string) {
+	ownerPremium bool, customMessage string) (string, string) {
 	esc := html.EscapeString
 	firstName := fullName
 	if i := strings.IndexByte(fullName, ' '); i > 0 {
 		firstName = fullName[:i]
+	}
+
+	// Optional organizer note, shown above the event details. Escaped, with
+	// newlines preserved as <br> in HTML.
+	noteHTML, noteText := "", ""
+	if m := strings.TrimSpace(customMessage); m != "" {
+		noteHTML = fmt.Sprintf(`<div style="margin:0 0 16px;padding:12px 14px;background:#f2f8ea;border-left:4px solid #4f8b3b;border-radius:8px;color:#16203a;font-size:14px;line-height:1.5">%s</div>`,
+			strings.ReplaceAll(esc(m), "\n", "<br>"))
+		noteText = m + "\n\n"
 	}
 
 	row := func(label, value string) string {
@@ -99,18 +117,19 @@ func registrationEmailBody(fullName, eventName, when, where, division, eventURL 
     </div>
     <div style="padding:24px 26px">
       <p style="margin:0 0 14px;color:#16203a;font-size:15px">Hi %s — you're locked in. Here's your event at a glance:</p>
-      <table cellpadding="0" cellspacing="0" style="border-collapse:collapse">%s%s%s</table>
+      %s<table cellpadding="0" cellspacing="0" style="border-collapse:collapse">%s%s%s</table>
       <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the event — schedule &amp; live scores</a>
       <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">On game day you'll check in with a QR code — no clipboard, no line.</p>
     </div>
   </div>%s
 </div>`,
-		esc(eventName), esc(firstName),
+		esc(eventName), esc(firstName), noteHTML,
 		row("When", when), row("Where", where), row("Division", division),
 		eventURL, footer)
 
 	var tb strings.Builder
 	fmt.Fprintf(&tb, "You're registered — %s\n\nHi %s, you're locked in.\n\n", eventName, firstName)
+	tb.WriteString(noteText)
 	if when != "" {
 		fmt.Fprintf(&tb, "When: %s\n", when)
 	}

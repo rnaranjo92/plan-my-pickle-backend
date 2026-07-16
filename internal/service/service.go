@@ -415,6 +415,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.WaiverURL != "" {
 		payload["waiver_url"] = req.WaiverURL
 	}
+	// confirm_email_* ship in add_confirm_email.sql — migration-safe (only set here).
+	if req.ConfirmEmailSubject != "" {
+		payload["confirm_email_subject"] = req.ConfirmEmailSubject
+	}
+	if req.ConfirmEmailMessage != "" {
+		payload["confirm_email_message"] = req.ConfirmEmailMessage
+	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
 	if req.MinPoolRounds > 0 {
 		payload["min_pool_rounds"] = req.MinPoolRounds
@@ -1284,6 +1291,16 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	}
 	if req.WaiverURL != "" {
 		upd["waiver_url"] = req.WaiverURL
+	}
+	// confirm_email_* ship in add_confirm_email.sql — reference only when set so an
+	// edit never breaks before the migration is applied. (Same trade-off as above:
+	// blanking the custom copy back to default won't persist until the column is
+	// live; acceptable — an organizer can overwrite the text meanwhile.)
+	if req.ConfirmEmailSubject != "" {
+		upd["confirm_email_subject"] = req.ConfirmEmailSubject
+	}
+	if req.ConfirmEmailMessage != "" {
+		upd["confirm_email_message"] = req.ConfirmEmailMessage
 	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
 	// an edit never breaks before the migration is applied. (Trade-off: clearing

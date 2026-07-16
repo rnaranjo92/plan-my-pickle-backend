@@ -36,6 +36,11 @@ type Event struct {
 	ContactPhone    *string  `json:"contactPhone,omitempty"`
 	VenueNotes      *string  `json:"venueNotes,omitempty"`
 	WaiverURL       *string  `json:"waiverUrl,omitempty"`
+	// Optional organizer-customized registration-confirmation email. Subject
+	// overrides the default "You're in! …"; Message is a personal note added to
+	// the top of the email. Both empty/unset → the branded default.
+	ConfirmEmailSubject *string `json:"confirmEmailSubject,omitempty"`
+	ConfirmEmailMessage *string `json:"confirmEmailMessage,omitempty"`
 	VenueName       *string  `json:"venueName,omitempty"`
 	VenueAddress    *string  `json:"venueAddress,omitempty"`
 	VenuePhone      *string  `json:"venuePhone,omitempty"`
@@ -821,6 +826,8 @@ type CreateEventRequest struct {
 	ContactPhone         string   `json:"contactPhone"`
 	VenueNotes           string   `json:"venueNotes"`
 	WaiverURL            string   `json:"waiverUrl"`
+	ConfirmEmailSubject  string   `json:"confirmEmailSubject"`
+	ConfirmEmailMessage  string   `json:"confirmEmailMessage"`
 	VenueName            string   `json:"venueName"`
 	VenueAddress         string   `json:"venueAddress"`
 	VenuePhone           string   `json:"venuePhone"`

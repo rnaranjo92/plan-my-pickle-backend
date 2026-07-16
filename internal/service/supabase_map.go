@@ -184,6 +184,8 @@ func mapEvent(m map[string]any) model.Event {
 		ClubID:                   asStrPtr(m, "club_id"),
 		VenueNotes:               asStrPtr(m, "venue_notes"),
 		WaiverURL:                asStrPtr(m, "waiver_url"),
+		ConfirmEmailSubject:      asStrPtr(m, "confirm_email_subject"),
+		ConfirmEmailMessage:      asStrPtr(m, "confirm_email_message"),
 		VenueName:                asStrPtr(m, "venue_name"),
 		VenueAddress:             asStrPtr(m, "venue_address"),
 		VenuePhone:               asStrPtr(m, "venue_phone"),

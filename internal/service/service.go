@@ -8319,6 +8319,16 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 			}
 		}
 	}
+	// AUTHORITATIVE source: the account's DUPR link (dupr_connections.doubles_rating),
+	// set + refreshed when the user connects DUPR. The players-row rating above is only
+	// a per-registration snapshot, so prefer the live connection rating for the Home
+	// DUPR tile — this is why a connected user could still see "—".
+	if c, _ := s.sb.SelectOne("dupr_connections",
+		"user_id=eq."+store.Q(userID)+"&select=doubles_rating"); c != nil {
+		if dr := asFloatPtr(c, "doubles_rating"); dr != nil {
+			p.DuprRating = dr
+		}
+	}
 	p.GamesPlayed = s.gamesPlayedForUser(userID)
 	return p
 }

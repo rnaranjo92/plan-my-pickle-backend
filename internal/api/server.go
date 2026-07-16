@@ -3150,6 +3150,13 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRegistration(w, r, req.Token) {
 		return
 	}
+	// Throttle order creation per registration (shared budget across Stripe +
+	// PayPal via the "checkout:" key) so a valid token can't hammer the payment
+	// providers' order-create APIs. Generous enough for real retries.
+	if !s.regLimiter.allow("checkout:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many payment attempts, try again shortly"))
+		return
+	}
 	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("successUrl and cancelUrl are required"))
 		return
@@ -3181,6 +3188,12 @@ func (s *Server) paypalCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.authorizeRegistration(w, r, req.Token) {
+		return
+	}
+	// Same shared "checkout:" throttle as the Stripe path — a valid token can't
+	// spam PayPal's order-create API.
+	if !s.regLimiter.allow("checkout:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many payment attempts, try again shortly"))
 		return
 	}
 	if strings.TrimSpace(req.ReturnURL) == "" || strings.TrimSpace(req.CancelURL) == "" {

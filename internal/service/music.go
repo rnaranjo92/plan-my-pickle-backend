@@ -54,6 +54,15 @@ func (s *Service) musicSettings(eventID string) (enabled, requireApproval bool, 
 // AddToQueue adds a searched Spotify track to an event's queue. A player's add
 // lands as 'pending' when the organizer requires approval (else 'queued', ready
 // to play). The organizer's own adds skip approval. Returns the stored row.
+// capRunes truncates s to at most n runes (multibyte-safe), for display strings
+// that must not carry oversized/abusive text.
+func capRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
 func (s *Service) AddToQueue(eventID, userID, addedByName string, req model.AddTrackRequest) (model.MusicTrack, error) {
 	var out model.MusicTrack
 	uri := strings.TrimSpace(req.TrackURI)
@@ -84,7 +93,9 @@ func (s *Service) AddToQueue(eventID, userID, addedByName string, req model.AddT
 	if userID != "" {
 		row["added_by_user_id"] = userID
 	}
-	if n := strings.TrimSpace(addedByName); n != "" {
+	// Cap the caller-supplied display name (shown on the public queue + TV) so it
+	// can't carry oversized/abusive text.
+	if n := capRunes(strings.TrimSpace(addedByName), 40); n != "" {
 		row["added_by_name"] = n
 	}
 	ins, err := s.sb.Insert("music_queue", row)

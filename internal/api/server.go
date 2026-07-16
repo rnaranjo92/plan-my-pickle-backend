@@ -28,6 +28,12 @@ type Server struct {
 	// regLimiter throttles the public self-registration endpoint per event so a
 	// bot can't flood an event with fake players.
 	regLimiter *rateLimiter
+	// passcodeLimiter throttles admin-passcode verification/scoring PER EVENT so
+	// the organizer passcode can't be brute-forced against the verify-admin oracle.
+	passcodeLimiter *rateLimiter
+	// socialLimiter throttles authenticated social writes (comments, reactions,
+	// music-queue adds) PER USER so one account can't flood every event's feed/queue.
+	socialLimiter *rateLimiter
 	// captcha verifies a Turnstile token on PUBLIC (anonymous) self-registration.
 	// Active only when TURNSTILE_SECRET is set; otherwise it skips (fail-open).
 	captcha *gateway.Captcha
@@ -36,10 +42,12 @@ type Server struct {
 // NewServer wires the routes and returns the HTTP handler.
 func NewServer(svc *service.Service) http.Handler {
 	s := &Server{
-		svc:          svc,
-		phoneCheckin: newRateLimiter(60, 60),
-		regLimiter:   newRateLimiter(40, 60), // 40 self-registrations/min per event
-		captcha:      gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
+		svc:             svc,
+		phoneCheckin:    newRateLimiter(60, 60),
+		regLimiter:      newRateLimiter(40, 60), // 40 self-registrations/min per event
+		passcodeLimiter: newRateLimiter(10, 60), // 10 passcode attempts/min per event
+		socialLimiter:   newRateLimiter(30, 60), // 30 social writes/min per user
+		captcha:         gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -1197,6 +1205,13 @@ func (s *Server) deleteMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) seedDemo(w http.ResponseWriter, r *http.Request) {
+	// QA-only (like every other /dev/seed-* handler): each call creates a full
+	// event + brackets + players, so an open account could mass-create to bloat DB.
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
 	id, err := s.svc.SeedDemo(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -1345,6 +1360,12 @@ func (s *Server) unseedNearbyDemo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) seedPlayoffDemo(w http.ResponseWriter, r *http.Request) {
+	// QA-only (like every other /dev/seed-* handler) — see seedDemo.
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
 	id, err := s.svc.SeedPlayoffDemo(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -1366,8 +1387,15 @@ func (s *Server) getBrackets(w http.ResponseWriter, r *http.Request) {
 // registered for the event — used by the "register with a partner" form to warn
 // (and offer to pair) before creating a duplicate. Returns {exists, name}.
 func (s *Server) registrantByPhone(w http.ResponseWriter, r *http.Request) {
+	eventID := r.PathValue("id")
+	// Throttle per event (like check-in-by-phone) so this phone->name lookup can't
+	// be scripted to harvest which numbers are registered + each registrant's name.
+	if !s.phoneCheckin.allow("regphone:" + eventID) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many lookups, try again shortly"))
+		return
+	}
 	phone := r.URL.Query().Get("phone")
-	_, name, found, err := s.svc.RegistrantByPhone(r.PathValue("id"), phone)
+	_, name, found, err := s.svc.RegistrantByPhone(eventID, phone)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -2325,6 +2353,11 @@ func (s *Server) addToQueue(w http.ResponseWriter, r *http.Request) {
 		AddedByName string `json:"addedByName"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	// Per-user throttle so a spectator can't flood/bury the event's music queue.
+	if !s.socialLimiter.allow("music:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("you're adding tracks too fast, slow down"))
 		return
 	}
 	t, err := s.svc.AddToQueue(
@@ -3553,6 +3586,12 @@ func (s *Server) feedReact(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// Per-user throttle: each toggle runs a recount read, so rapid on/off spamming
+	// is a DB churn/read-amplification lever without this.
+	if !s.socialLimiter.allow("react:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("slow down"))
+		return
+	}
 	res, err := s.svc.ToggleReaction(r.PathValue("id"), userID(r), req.Type)
 	if err != nil {
 		status(w, err)
@@ -3576,6 +3615,11 @@ func (s *Server) commentList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) commentAdd(w http.ResponseWriter, r *http.Request) {
 	var req model.CommentRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	// Per-user throttle so one account can't flood every event's feed with comments.
+	if !s.socialLimiter.allow("comment:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("you're commenting too fast, slow down"))
 		return
 	}
 	c, err := s.svc.AddComment(r.PathValue("id"), userID(r), userEmail(r), req.Text)
@@ -3696,7 +3740,14 @@ func (s *Server) verifyAdmin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	ok, err := s.svc.VerifyAdminPasscode(r.PathValue("id"), req.Code)
+	eventID := r.PathValue("id")
+	// Throttle per event so this boolean oracle can't be used to brute-force the
+	// organizer passcode (which also unlocks match-score writes).
+	if !s.passcodeLimiter.allow("passcode:" + eventID) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many attempts, try again shortly"))
+		return
+	}
+	ok, err := s.svc.VerifyAdminPasscode(eventID, req.Code)
 	if err != nil {
 		status(w, err)
 		return
@@ -3936,6 +3987,12 @@ func (s *Server) ownerOrPasscode(kind, idParam string, next http.HandlerFunc) ht
 		}
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		// Throttle passcode checks per event so this write path can't be used to
+		// brute-force the organizer passcode (shared limiter with verify-admin).
+		if !s.passcodeLimiter.allow("passcode:" + eventID) {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many attempts, try again shortly"))
 			return
 		}
 		ok, err := s.svc.VerifyAdminPasscode(eventID, code)

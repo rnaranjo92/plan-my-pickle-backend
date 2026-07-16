@@ -1094,6 +1094,12 @@ func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Ev
 		if e.VenueLat == nil || e.VenueLng == nil {
 			continue
 		}
+		// Public discovery must hide QA/test runs the same way the marketing feed
+		// does — a listed event named "MLP Demo"/"Test" shouldn't surface to nearby
+		// strangers. Word-boundary match so real names ("SoCal Contest") stay.
+		if publicFeedTestName.MatchString(e.Name) {
+			continue
+		}
 		// Discovery shows today + upcoming only — drop events already over.
 		if eventEnded(e, now) {
 			continue
@@ -7954,6 +7960,12 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 			"author_id="+store.In(followees)+"&select=*&order=created_at.desc&limit=10"); err == nil {
 			for _, r := range crows {
 				fi := mapFeedItem(r)
+				// Don't spread QA/test EVENT posts through the follow graph — a
+				// followed organizer's "MLP Demo"/"Test" event shouldn't land in
+				// their followers' feeds. (Their community posts still show.)
+				if fi.Type == "event" && publicFeedTestName.MatchString(fi.Text) {
+					continue
+				}
 				fi.ReactionCounts = map[string]int{}
 				fi.MyReactions = []string{}
 				out = append(out, fi)

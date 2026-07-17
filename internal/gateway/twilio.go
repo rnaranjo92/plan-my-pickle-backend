@@ -44,6 +44,12 @@ func (t *TwilioSms) Send(to, body string) (SmsResult, error) {
 		log.Printf("twilio: skipping send to unparseable number %q", to)
 		return SmsResult{OK: false}, nil
 	}
+	// Never spend a carrier processing fee on a fictional/unroutable number (demo
+	// +1555… seeds, reserved 555-01XX). It would only fail — skip before Twilio.
+	if IsFictionalNANP(dest) {
+		log.Printf("twilio: skipping fictional/unroutable number %q", dest)
+		return SmsResult{OK: false}, nil
+	}
 
 	form := url.Values{}
 	form.Set("To", dest)
@@ -119,6 +125,30 @@ func IsNANP(raw string) bool {
 	}
 	d := digitsOnly(raw)
 	return len(d) == 10 || (len(d) == 11 && d[0] == '1')
+}
+
+// IsFictionalNANP reports whether a NANP number is reserved/fictional or
+// structurally invalid — so carriers can't route it. Catches the +1555… demo/
+// seed placeholders (area code 555 is unassigned) and the 555-0100…0199
+// directory range. Used to skip sends that would only fail + get billed.
+func IsFictionalNANP(raw string) bool {
+	d := digitsOnly(raw)
+	if len(d) == 11 && d[0] == '1' {
+		d = d[1:]
+	}
+	if len(d) != 10 {
+		return false // not a 10-digit NANP number — leave reachability to IsNANP
+	}
+	npa, nxx, line := d[0:3], d[3:6], d[6:10]
+	// Area code must be [2-9]XX and never the unassigned 555 (the demo's NPA).
+	if npa[0] < '2' || npa == "555" {
+		return true
+	}
+	// Reserved fictional exchange 555-0100..555-0199.
+	if nxx == "555" && line >= "0100" && line <= "0199" {
+		return true
+	}
+	return false
 }
 
 func digitsOnly(s string) string {

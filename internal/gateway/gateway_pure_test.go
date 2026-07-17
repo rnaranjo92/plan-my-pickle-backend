@@ -24,6 +24,26 @@ func TestIsNANP(t *testing.T) {
 	}
 }
 
+// TestIsFictionalNANP verifies the guard that skips unroutable demo/reserved
+// numbers before they hit Twilio (and get billed a failed-processing fee).
+func TestIsFictionalNANP(t *testing.T) {
+	cases := map[string]bool{
+		"+15550000025":  true,  // demo seed — area code 555
+		"5550000025":    true,  // same, no +1
+		"+12125550150":  true,  // reserved 555-0100..0199
+		"+10125551234":  true,  // invalid area code (starts with 0/1)
+		"+15125551234":  false, // real: 512-555-1234 (outside reserved range)
+		"+14155551234":  false, // real
+		"+447911123456": false, // non-NANP — not this guard's job
+		"":              false,
+	}
+	for in, want := range cases {
+		if got := IsFictionalNANP(in); got != want {
+			t.Errorf("IsFictionalNANP(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 // TestGatewayConstructorsAndPureHelpers covers the Stripe/PayPal/Twilio
 // constructors + their pure Live()/SetMarketplace()/Paid()/snippet helpers
 // without invoking any SDK network call.

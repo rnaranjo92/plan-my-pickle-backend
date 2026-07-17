@@ -9184,7 +9184,12 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	// Player Score Confirm on (Premium): each player's start text also carries
 	// THEIR personal report link, so the winners can submit right off the court.
 	reportLink := map[string]string{} // playerID -> personal link
-	if ev, err := s.scoreReportEvent(eventID); err == nil && s.playerScoringEnabled(ev) && len(phones) > 0 {
+	// Only advertise the report/confirm link when player scoring can actually
+	// complete: ReportScore rejects best-of-N (the organizer enters series
+	// scores), so on those events the link would be a dead end — fall back to the
+	// plain "You're up!" text instead.
+	if ev, err := s.scoreReportEvent(eventID); err == nil && s.playerScoringEnabled(ev) &&
+		asInt(ev, "best_of") <= 1 && len(phones) > 0 {
 		ids := make([]string, 0, len(phones))
 		for _, rc := range phones {
 			ids = append(ids, rc.playerID)

@@ -231,14 +231,16 @@ func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (
 		}
 		return ScoreReportState{}, err
 	}
-	// Notify the LOSING side to confirm/dispute — each player gets their own
-	// token link. Best-effort; the auto-confirm timer covers a missed message.
+	// Nudge the LOSING side to confirm/dispute via push. They already hold their
+	// personal report/confirm link from the game-start text, so no confirm SMS is
+	// sent. Best-effort; the auto-confirm timer covers a missed nudge.
 	go s.notifyScoreConfirm(eventID, matchID, 3-team, t1, t2, minutes)
 	return s.GetScoreReportState(matchID, token, callerUserID)
 }
 
-// notifyScoreConfirm texts + pushes the given team's players their personal
-// confirm links. Best-effort by design (logs, never fails the report).
+// notifyScoreConfirm pushes the given team's players a "confirm your score"
+// nudge (push-only; the confirm link rode the game-start SMS). Best-effort by
+// design (logs, never fails the report).
 func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minutes int) {
 	parts, err := s.sb.Select("match_participants",
 		"match_id=eq."+store.Q(matchID)+"&team=eq."+fmt.Sprint(team)+

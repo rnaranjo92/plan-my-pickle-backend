@@ -16,16 +16,41 @@ import (
 // "row" they just wrote. Unseeded tables return an empty array, which exercises
 // each read method's empty-result path without erroring.
 type fakeSupabase struct {
-	mu    sync.Mutex
-	get   map[string]string                  // table -> JSON array of rows (GET)
-	rpc   map[string]string                  // function -> JSON body
-	rpcFn map[string]func(body []byte) string // function -> payload-aware responder
-	reqs  []string                            // "METHOD /path" captured for assertions
+	mu     sync.Mutex
+	get    map[string]string                  // table -> JSON array of rows (GET)
+	rpc    map[string]string                  // function -> JSON body
+	rpcFn  map[string]func(body []byte) string // function -> payload-aware responder
+	reqs   []string                            // "METHOD /path" captured for assertions
+	writes map[string][]map[string]any         // table -> captured insert/update rows
 }
 
 func newFake() *fakeSupabase {
 	return &fakeSupabase{get: map[string]string{}, rpc: map[string]string{},
-		rpcFn: map[string]func([]byte) string{}}
+		rpcFn: map[string]func([]byte) string{}, writes: map[string][]map[string]any{}}
+}
+
+// written returns every row body POSTed/PATCHed to a table (for E2E assertions).
+func (f *fakeSupabase) written(table string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.writes[table]
+}
+
+// capture records an insert/update body (array or single object) under a table.
+func (f *fakeSupabase) capture(table string, b []byte) {
+	var arr []map[string]any
+	if json.Unmarshal(b, &arr) != nil {
+		var obj map[string]any
+		if json.Unmarshal(b, &obj) == nil {
+			arr = []map[string]any{obj}
+		}
+	}
+	if len(arr) == 0 {
+		return
+	}
+	f.mu.Lock()
+	f.writes[table] = append(f.writes[table], arr...)
+	f.mu.Unlock()
 }
 
 func (f *fakeSupabase) seed(table, json string) *fakeSupabase { f.get[table] = json; return f }
@@ -67,6 +92,7 @@ func (f *fakeSupabase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte("[]"))
 		case http.MethodPost, http.MethodPatch:
 			b, _ := io.ReadAll(r.Body)
+			f.capture(table, b)
 			_, _ = w.Write(wrapRows(b))
 		case http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)

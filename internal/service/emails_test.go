@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+func TestSanitizeEmailField(t *testing.T) {
+	// Subject: single-line — CRLF collapsed to a space, trimmed.
+	if got := sanitizeEmailField("  Hi\r\nthere  ", 120, true); got != "Hi there" {
+		t.Fatalf("subject sanitize = %q, want %q", got, "Hi there")
+	}
+	// Whitespace-only collapses to empty (so it isn't stored as junk).
+	if got := sanitizeEmailField("   \n  ", 1000, false); got != "" {
+		t.Fatalf("whitespace-only should be empty, got %q", got)
+	}
+	// Message: multiline preserved with \r\n normalized to \n.
+	if got := sanitizeEmailField("a\r\nb", 1000, false); got != "a\nb" {
+		t.Fatalf("multiline normalize = %q, want %q", got, "a\nb")
+	}
+	// Clamp measures runes, not bytes (unicode-safe).
+	if got := sanitizeEmailField(strings.Repeat("é", 1500), 1000, false); len([]rune(got)) != 1000 {
+		t.Fatalf("clamp = %d runes, want 1000", len([]rune(got)))
+	}
+}
+
 func TestRegistrationEmailBody(t *testing.T) {
 	html, text := registrationEmailBody(
 		"Kim Naranjo", "GREENS vs RETRO", "Saturday, July 4, 2026 · 8:35 AM",

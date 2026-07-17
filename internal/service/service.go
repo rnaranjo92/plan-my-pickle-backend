@@ -265,6 +265,28 @@ func duprEntitlementLabel(code string) string {
 }
 
 // ------------------------------------------------------------------ events
+
+// sanitizeEmailField cleans a user-supplied confirmation-email subject/message
+// before it is stored + rendered: normalizes line endings, strips CR/LF from a
+// single-line subject (defends against header injection regardless of gateway),
+// trims, and clamps to maxRunes so a direct API caller can't bypass the client
+// caps (oversized subject would otherwise break the send; oversized message bloats
+// every registrant's email). Whitespace-only input collapses to "".
+func sanitizeEmailField(s string, maxRunes int, singleLine bool) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	if singleLine {
+		s = strings.ReplaceAll(s, "\n", " ")
+	}
+	s = strings.TrimSpace(s)
+	if maxRunes > 0 {
+		if r := []rune(s); len(r) > maxRunes {
+			s = strings.TrimSpace(string(r[:maxRunes]))
+		}
+	}
+	return s
+}
+
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
 func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
@@ -416,11 +438,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		payload["waiver_url"] = req.WaiverURL
 	}
 	// confirm_email_* ship in add_confirm_email.sql — migration-safe (only set here).
-	if req.ConfirmEmailSubject != "" {
-		payload["confirm_email_subject"] = req.ConfirmEmailSubject
+	// Sanitized (trim + clamp + strip CRLF) so a direct API caller can't bypass the
+	// client-side length caps or inject a header via the subject.
+	if sub := sanitizeEmailField(req.ConfirmEmailSubject, 120, true); sub != "" {
+		payload["confirm_email_subject"] = sub
 	}
-	if req.ConfirmEmailMessage != "" {
-		payload["confirm_email_message"] = req.ConfirmEmailMessage
+	if msg := sanitizeEmailField(req.ConfirmEmailMessage, 1000, false); msg != "" {
+		payload["confirm_email_message"] = msg
 	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
 	if req.MinPoolRounds > 0 {
@@ -1292,16 +1316,11 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	if req.WaiverURL != "" {
 		upd["waiver_url"] = req.WaiverURL
 	}
-	// confirm_email_* ship in add_confirm_email.sql — reference only when set so an
-	// edit never breaks before the migration is applied. (Same trade-off as above:
-	// blanking the custom copy back to default won't persist until the column is
-	// live; acceptable — an organizer can overwrite the text meanwhile.)
-	if req.ConfirmEmailSubject != "" {
-		upd["confirm_email_subject"] = req.ConfirmEmailSubject
-	}
-	if req.ConfirmEmailMessage != "" {
-		upd["confirm_email_message"] = req.ConfirmEmailMessage
-	}
+	// confirm_email_* (add_confirm_email.sql, applied): written UNCONDITIONALLY via
+	// orNull so an organizer can clear a custom subject/message back to the branded
+	// default (the frontend always sends both fields on edit). Sanitized as in create.
+	upd["confirm_email_subject"] = orNull(sanitizeEmailField(req.ConfirmEmailSubject, 120, true))
+	upd["confirm_email_message"] = orNull(sanitizeEmailField(req.ConfirmEmailMessage, 1000, false))
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
 	// an edit never breaks before the migration is applied. (Trade-off: clearing
 	// a bound back to 0 won't persist until the column is live; acceptable.)

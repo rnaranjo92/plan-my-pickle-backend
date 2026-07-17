@@ -56,14 +56,18 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
 
 	// Organizer overrides (optional): a custom subject and a personal note added
-	// to the top of the confirmation. Empty/unset → the branded defaults.
+	// to the top of the confirmation. Empty/unset → the branded defaults. Sanitized
+	// again at send time (clamp + strip CRLF) so a stale/direct-DB value can never
+	// break the send or inject a header.
 	subject := "You're in! " + ev.Name
-	if ev.ConfirmEmailSubject != nil && strings.TrimSpace(*ev.ConfirmEmailSubject) != "" {
-		subject = strings.TrimSpace(*ev.ConfirmEmailSubject)
+	if ev.ConfirmEmailSubject != nil {
+		if s := sanitizeEmailField(*ev.ConfirmEmailSubject, 120, true); s != "" {
+			subject = s
+		}
 	}
 	customMsg := ""
 	if ev.ConfirmEmailMessage != nil {
-		customMsg = strings.TrimSpace(*ev.ConfirmEmailMessage)
+		customMsg = sanitizeEmailField(*ev.ConfirmEmailMessage, 1000, false)
 	}
 	htmlBody, textBody := registrationEmailBody(
 		fullName, ev.Name, when, where, division, eventURL, ev.OwnerPremium, customMsg)
@@ -87,6 +91,9 @@ func registrationEmailBody(fullName, eventName, when, where, division, eventURL 
 	// newlines preserved as <br> in HTML.
 	noteHTML, noteText := "", ""
 	if m := strings.TrimSpace(customMessage); m != "" {
+		// Normalize line endings first so \r\n / \r don't leave a stray CR before
+		// each <br> (or in the plain-text note).
+		m = strings.ReplaceAll(strings.ReplaceAll(m, "\r\n", "\n"), "\r", "\n")
 		noteHTML = fmt.Sprintf(`<div style="margin:0 0 16px;padding:12px 14px;background:#f2f8ea;border-left:4px solid #4f8b3b;border-radius:8px;color:#16203a;font-size:14px;line-height:1.5">%s</div>`,
 			strings.ReplaceAll(esc(m), "\n", "<br>"))
 		noteText = m + "\n\n"

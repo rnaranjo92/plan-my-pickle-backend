@@ -1321,12 +1321,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	if req.WaiverURL != "" {
 		upd["waiver_url"] = req.WaiverURL
 	}
-	// sms_notifications ships in add_sms_notifications.sql — reference only when
-	// true so an edit never breaks before the migration is applied. (Trade-off:
-	// blanking it back to push-only won't persist until the column is live.)
-	if req.SmsNotifications {
-		upd["sms_notifications"] = true
-	}
+	// sms_notifications (add_sms_notifications.sql, applied): written unconditionally
+	// so the premium toggle round-trips both ways. The premium gate already forced
+	// this false for a non-premium caller at the handler.
+	upd["sms_notifications"] = req.SmsNotifications
 	// confirm_email_* (add_confirm_email.sql, applied): written UNCONDITIONALLY via
 	// orNull so an organizer can clear a custom subject/message back to the branded
 	// default (the frontend always sends both fields on edit). Sanitized as in create.

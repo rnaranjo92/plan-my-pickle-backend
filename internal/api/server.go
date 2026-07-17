@@ -624,12 +624,14 @@ func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
 // what the client-side Organize gate hides — a hidden tab is not enforcement).
 // Configurable via ORGANIZER_ALLOWLIST (comma-separated emails); defaults to the
 // two QA accounts. Set ORGANIZER_ALLOWLIST="*" to open organizing to everyone.
-func organizerAllowed(email string) bool {
-	list := strings.TrimSpace(os.Getenv("ORGANIZER_ALLOWLIST"))
+// emailInAllowlist reports whether email is in a comma-separated allowlist
+// ("*" = everyone). An empty list falls back to dflt.
+func emailInAllowlist(email, list, dflt string) bool {
+	list = strings.TrimSpace(list)
 	if list == "" {
-		list = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
+		list = dflt
 	}
-	if list == "*" { // wildcard: organizing open to everyone
+	if list == "*" {
 		return true
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -644,6 +646,19 @@ func organizerAllowed(email string) bool {
 	return false
 }
 
+const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
+
+func organizerAllowed(email string) bool {
+	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), qaAllowlist)
+}
+
+// premiumAllowed reports whether the caller may use premium-gated features — e.g.
+// the SMS "both channels" notification add-on. During early access it's the same
+// allowlist; PREMIUM_ALLOWLIST overrides ("*" opens it to everyone).
+func premiumAllowed(email string) bool {
+	return emailInAllowlist(email, os.Getenv("PREMIUM_ALLOWLIST"), qaAllowlist)
+}
+
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !organizerAllowed(userEmail(r)) {
 		writeErr(w, http.StatusForbidden,
@@ -653,6 +668,11 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateEventRequest
 	if !decode(w, r, &req) {
 		return
+	}
+	// SMS "both channels" is a premium add-on — non-premium organizers can't turn
+	// it on (they stay push-first). Enforced here where the caller's email is known.
+	if req.SmsNotifications && !premiumAllowed(userEmail(r)) {
+		req.SmsNotifications = false
 	}
 	// Organizing is FREE — anyone can create + run a tournament (the engine is
 	// never paywalled). Premium gates only specific features: CreateEvent itself
@@ -975,6 +995,10 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateEventRequest
 	if !decode(w, r, &req) {
 		return
+	}
+	// SMS "both channels" is premium — non-premium callers can't enable it on edit.
+	if req.SmsNotifications && !premiumAllowed(userEmail(r)) {
+		req.SmsNotifications = false
 	}
 	if err := s.svc.UpdateEvent(r.PathValue("id"), req); err != nil {
 		status(w, err)

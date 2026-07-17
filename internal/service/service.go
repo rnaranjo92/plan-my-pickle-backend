@@ -446,6 +446,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if msg := sanitizeEmailField(req.ConfirmEmailMessage, 1000, false); msg != "" {
 		payload["confirm_email_message"] = msg
 	}
+	// sms_notifications ships in add_sms_notifications.sql — migration-safe (only
+	// referenced when true; premium gate enforced at the handler).
+	if req.SmsNotifications {
+		payload["sms_notifications"] = true
+	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
 	if req.MinPoolRounds > 0 {
 		payload["min_pool_rounds"] = req.MinPoolRounds
@@ -1315,6 +1320,12 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	}
 	if req.WaiverURL != "" {
 		upd["waiver_url"] = req.WaiverURL
+	}
+	// sms_notifications ships in add_sms_notifications.sql — reference only when
+	// true so an edit never breaks before the migration is applied. (Trade-off:
+	// blanking it back to push-only won't persist until the column is live.)
+	if req.SmsNotifications {
+		upd["sms_notifications"] = true
 	}
 	// confirm_email_* (add_confirm_email.sql, applied): written UNCONDITIONALLY via
 	// orNull so an organizer can clear a custom subject/message back to the branded
@@ -9228,6 +9239,18 @@ func (s *Service) UnstartMatch(matchID string) error {
 	}
 }
 
+// eventSmsEnabled reports whether an event opted into the premium SMS "both
+// channels" add-on (sms_notifications). Best-effort: a missing column (before
+// add_sms_notifications.sql runs) or any error reads as OFF (push-first default).
+func (s *Service) eventSmsEnabled(eventID string) bool {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=sms_notifications")
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "sms_notifications")
+}
+
 // notifyMatchStart texts every player in a match that they're up, recording each
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
@@ -9262,6 +9285,13 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	// bundles the sound file, default tone until then. sendPushSound swallows errors.
 	_ = s.sendPushSound(userIDs, "Match starting",
 		fmt.Sprintf("You're up on %s", court), "", courtCallSound)
+
+	// SMS is the premium "both channels" add-on — default is push-first (above),
+	// so only text court calls when the event opted in. Best-effort: a missing
+	// column (pre-migration) reads as off.
+	if !s.eventSmsEnabled(eventID) {
+		return 0, nil
+	}
 
 	// Player Score Confirm on (Premium): each player's start text also carries
 	// THEIR personal report link, so the winners can submit right off the court.

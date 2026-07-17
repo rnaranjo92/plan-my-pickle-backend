@@ -105,6 +105,10 @@ type Event struct {
 	// ScoreConfirmMinutes. Organizer scoring always overrides.
 	PlayerScoring       bool `json:"playerScoring"`
 	ScoreConfirmMinutes int  `json:"scoreConfirmMinutes"`
+	// SmsNotifications = premium "both channels": when true (and the owner is
+	// premium), automated alerts (court calls, delay updates) ALSO go by SMS on
+	// top of push. Default false = push-first (free). Gated at the API.
+	SmsNotifications bool `json:"smsNotifications"`
 	// PosterURL is the uploaded event poster (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
 	// Recurring social: RecurIntervalDays>0 marks a series head that auto-spawns
@@ -853,6 +857,7 @@ type CreateEventRequest struct {
 	Listed              bool           `json:"listed"`
 	PlayerScoring       bool           `json:"playerScoring"`
 	ScoreConfirmMinutes int            `json:"scoreConfirmMinutes"`
+	SmsNotifications    bool           `json:"smsNotifications"`
 	PosterURL           string         `json:"posterUrl"`
 	// Recurring "socials": RecurIntervalDays>0 makes this event the head of a
 	// series that auto-spawns the next occurrence every N days (7=weekly,

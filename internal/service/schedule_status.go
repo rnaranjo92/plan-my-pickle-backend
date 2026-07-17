@@ -209,7 +209,9 @@ func (s *Service) NotifyScheduleDelay(eventID string, sms bool, customMsg string
 		}
 	}
 
-	if sms {
+	// SMS is the premium "both channels" add-on — only text the delay update when
+	// the organizer asked (sms) AND the event opted into SMS (push always went out).
+	if sms && s.eventSmsEnabled(eventID) {
 		body := customMsg
 		if body == "" {
 			if st.BehindMinutes > 0 {

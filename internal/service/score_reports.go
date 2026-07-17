@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
@@ -250,17 +249,12 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 	}
 	var playerIDs []string
 	var userIDs []string
-	phoneByPlayer := map[string]string{}
 	for _, p := range parts {
 		pl := asMap(p, "player")
 		if pl == nil {
 			continue
 		}
-		pid := asStr(pl, "id")
-		playerIDs = append(playerIDs, pid)
-		if ph := asStr(pl, "phone"); ph != "" && asBool(pl, "sms_consent") {
-			phoneByPlayer[pid] = ph // text only opted-in players
-		}
+		playerIDs = append(playerIDs, asStr(pl, "id"))
 		if uid := asStr(pl, "user_id"); uid != "" {
 			userIDs = append(userIDs, uid)
 		}
@@ -268,54 +262,15 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 	if len(playerIDs) == 0 {
 		return
 	}
-	// Each player's personal token link.
-	regs, err := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(eventID)+"&player_id="+store.In(playerIDs)+
-			"&select=player_id,check_in_token")
-	if err != nil {
-		log.Printf("score-confirm notify: registrations: %v", err)
-		return
-	}
-	tokenByPlayer := map[string]string{}
-	for _, r := range regs {
-		tokenByPlayer[asStr(r, "player_id")] = asStr(r, "check_in_token")
-	}
+	// Confirm nudge is PUSH-ONLY now (free). The opponents already hold their
+	// personal report/confirm link from the game-start ("You're up!") text, so we
+	// don't spend a second SMS re-sending it. Silence still auto-confirms after the
+	// window; an app user taps this push to confirm — or to flag a wrong score,
+	// which freezes the match for the organizer to finalize.
 	scoreTxt := fmt.Sprintf("%d-%d", t1, t2)
 	_ = s.sendPush(userIDs, "Confirm your score",
 		fmt.Sprintf("Your opponents reported %s. Confirm or dispute within %d min.", scoreTxt, minutes),
 		"https://app.planmypickle.com/?event="+eventID)
-	for pid, phone := range phoneByPlayer {
-		tok := tokenByPlayer[pid]
-		if tok == "" {
-			continue
-		}
-		// A2P 10DLC reaches US/Canada only — international players got the push
-		// above; skip a non-deliverable SMS instead of recording a failure.
-		if !gateway.IsNANP(phone) {
-			continue
-		}
-		// Short link + terse copy = one SMS segment.
-		link := s.ShortLink(fmt.Sprintf(
-			"https://app.planmypickle.com/?report=%s&t=%s", matchID, tok))
-		body := fmt.Sprintf("PlanMyPickle: opponents reported %s. Confirm or dispute (%dm auto-confirm): %s Reply STOP to opt out.",
-			scoreTxt, minutes, link)
-		ins, err := s.sb.Insert("notifications", map[string]any{
-			"event_id": eventID, "match_id": matchID, "type": "score_confirm",
-			"to_address": phone, "body": body,
-		})
-		if err != nil || len(ins) == 0 {
-			continue
-		}
-		notifID := asStr(ins[0], "id")
-		r, err := s.Sms.Send(phone, body)
-		st, ref := "failed", any(nil)
-		var sentAt any
-		if err == nil && r.OK {
-			st, ref, sentAt = "sent", r.ProviderRef, now()
-		}
-		_, _ = s.sb.Update("notifications", "id=eq."+store.Q(notifID),
-			map[string]any{"status": st, "provider_ref": ref, "sent_at": sentAt})
-	}
 }
 
 // ConfirmScore finalizes a pending report (opposite-side participant only) via

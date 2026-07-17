@@ -9215,8 +9215,10 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 		// for compliance (the Messaging Service also auto-handles STOP/HELP).
 		body := fmt.Sprintf("PlanMyPickle: You're up! Head to %s for round %d. Reply STOP to opt out.", court, roundNumber)
 		if link := reportLink[rc.playerID]; link != "" {
-			// Terse + short link = one SMS segment (the long form was two).
-			body = fmt.Sprintf("PlanMyPickle: You're up! %s, round %d. Report score: %s Reply STOP to opt out.",
+			// Terse + short link = one SMS segment (the long form was two). This is
+			// the ONLY score text now — the same link reports the score and (for the
+			// other side) confirms it, so no separate confirm SMS is sent.
+			body = fmt.Sprintf("PlanMyPickle: You're up! %s, round %d. Report/confirm score: %s Reply STOP to opt out.",
 				court, roundNumber, link)
 		}
 		ins, err := s.sb.Insert("notifications", map[string]any{

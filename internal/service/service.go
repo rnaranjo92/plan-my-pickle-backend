@@ -3778,14 +3778,39 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			playerID = asStr(pl[0], "id")
 		}
 	} else {
-		pl, err := s.sb.Insert("players", fields)
-		if err != nil {
-			return model.Registration{}, err
+		// Organizer manually adding a player: if the typed contact confidently
+		// matches an existing account, tie the registration to it so their photo,
+		// push, and DUPR work right away — otherwise it stays an unlinked guest
+		// (initials avatar) until that player next signs in.
+		if uid := s.accountForContact(req.Email, req.Phone, req.FullName); uid != "" {
+			if existing, _ := s.sb.SelectOne("players",
+				"user_id=eq."+store.Q(uid)+"&select=id"); existing != nil {
+				// Reuse the account's own player row — don't overwrite their
+				// profile with the organizer's typed values.
+				playerID = asStr(existing, "id")
+				if dup, derr := s.sb.SelectOne("registrations",
+					"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+						bracketFilter(bracketID)+"&select=id"); derr != nil {
+					return model.Registration{}, derr
+				} else if dup != nil {
+					return model.Registration{}, ErrAlreadyRegistered
+				}
+			} else {
+				// Account exists (profile only, never registered) → create their
+				// first player row already tied to the account.
+				fields["user_id"] = uid
+			}
 		}
-		if len(pl) == 0 {
-			return model.Registration{}, errors.New("player insert returned no row")
+		if playerID == "" {
+			pl, err := s.sb.Insert("players", fields)
+			if err != nil {
+				return model.Registration{}, err
+			}
+			if len(pl) == 0 {
+				return model.Registration{}, errors.New("player insert returned no row")
+			}
+			playerID = asStr(pl[0], "id")
 		}
-		playerID = asStr(pl[0], "id")
 	}
 
 	// Soft eligibility flag: surface (don't block) when the player's rating falls
@@ -8536,6 +8561,49 @@ func (s *Service) LinkRegistrationsToAccount(userID, email, tokenPhone, tokenNam
 		log.Printf("link: tied %d guest registration(s) to account %s", linked, userID)
 	}
 	return linked
+}
+
+// accountForContact resolves the account (user_id) that a manually-registered
+// player belongs to, so their photo/push/DUPR attach immediately instead of
+// waiting for that player to sign in (which is when LinkRegistrationsToAccount
+// would otherwise tie them together). It mirrors that linker's conservative
+// matching: email is treated as a unique key; a phone match also requires the
+// name. Returns "" when there's no confident match — the player then stays an
+// unlinked guest (initials avatar) until they sign in.
+func (s *Service) accountForContact(email, phone, name string) string {
+	email = strings.TrimSpace(email)
+	phone = strings.TrimSpace(phone)
+	name = strings.TrimSpace(name)
+	// 1) A known account identified by email. pmp_profiles holds no email, but a
+	// player row already tied to an account carries the email it registered with.
+	if email != "" {
+		if r, _ := s.sb.SelectOne("players",
+			"user_id=not.is.null&email=ilike."+store.Q(email)+"&select=user_id"); r != nil {
+			if uid := asStr(r, "user_id"); uid != "" {
+				return uid
+			}
+		}
+	}
+	if phone != "" && name != "" {
+		// 2) An account matched by phone + name on pmp_profiles — covers a player
+		// who has an account (and photo) but has never registered for an event.
+		if r, _ := s.sb.SelectOne("pmp_profiles",
+			"phone=eq."+store.Q(phone)+"&full_name=ilike."+store.Q(name)+
+				"&select=user_id"); r != nil {
+			if uid := asStr(r, "user_id"); uid != "" {
+				return uid
+			}
+		}
+		// 3) Or a player row already linked to an account with the same phone+name.
+		if r, _ := s.sb.SelectOne("players",
+			"user_id=not.is.null&phone=eq."+store.Q(phone)+
+				"&full_name=ilike."+store.Q(name)+"&select=user_id"); r != nil {
+			if uid := asStr(r, "user_id"); uid != "" {
+				return uid
+			}
+		}
+	}
+	return ""
 }
 
 // SetMyBasicInfo saves the caller's account-level name + phone on pmp_profiles.

@@ -119,6 +119,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// Short-link redirect (SMS links): /r/<code> -> 302 to the full token URL.
 	mux.HandleFunc("GET /r/{code}", s.shortLink)
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
+	// Court QR scoring: owner mints the per-court token; the public court page
+	// records a live game's score with that token (no admin passcode).
+	mux.HandleFunc("GET /events/{id}/court-token", s.ownerOnly("event", "id", s.courtToken))
+	mux.HandleFunc("POST /events/{id}/court/{n}/score", s.courtScore)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
 	// Public, PII-free player profile (rating + across-events box score).
@@ -2360,6 +2364,47 @@ func (s *Server) busyCourts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nums)
+}
+
+// courtToken returns (creating on first use) the event's court-scoring QR token.
+// Owner-gated route — only the organizer mints it to build the court QRs.
+func (s *Server) courtToken(w http.ResponseWriter, r *http.Request) {
+	tok, err := s.svc.EnsureCourtToken(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"courtToken": tok})
+}
+
+// courtScore records the final score for the live game on a court, authed by the
+// per-court QR token in the body (no login / admin passcode). Public route.
+func (s *Server) courtScore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token      string `json:"courtToken"`
+		Team1Score int    `json:"team1Score"`
+		Team2Score int    `json:"team2Score"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	court, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || court < 1 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid court number"))
+		return
+	}
+	// Throttle per event so a leaked/guessed token can't be hammered.
+	if !s.regLimiter.allow("courtscore:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("too many score submissions, slow down"))
+		return
+	}
+	if err := s.svc.RecordCourtScore(
+		r.PathValue("id"), court, req.Token, req.Team1Score, req.Team2Score); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) eventMatches(w http.ResponseWriter, r *http.Request) {

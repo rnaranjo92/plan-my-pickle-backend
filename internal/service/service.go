@@ -4819,6 +4819,82 @@ func (s *Service) DeleteMatch(matchID string) error {
 	return s.sb.Delete("matches", "id=eq."+store.Q(matchID))
 }
 
+// EnsureCourtToken returns the event's court-scoring token, generating + storing
+// one on first use. Owner-gated at the handler. The token rides the court QR so a
+// player can score that court's live game without the admin passcode.
+func (s *Service) EnsureCourtToken(eventID string) (string, error) {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=court_token")
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", ErrNotFound
+	}
+	if tok := strings.TrimSpace(asStr(row, "court_token")); tok != "" {
+		return tok, nil
+	}
+	tok := strings.ReplaceAll(newID(), "-", "")[:16]
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"court_token": tok}); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
+
+// VerifyCourtToken reports whether tok matches the event's court token. A blank
+// stored token never matches (the court QR hasn't been enabled for this event).
+func (s *Service) VerifyCourtToken(eventID, tok string) bool {
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=court_token")
+	if err != nil || row == nil {
+		return false
+	}
+	stored := strings.TrimSpace(asStr(row, "court_token"))
+	return stored != "" && stored == tok
+}
+
+// liveMatchOnCourt returns the id of the in-progress match on court n, or "".
+func (s *Service) liveMatchOnCourt(eventID string, court int) (string, error) {
+	byNum, err := s.courtIDsByNumber(eventID)
+	if err != nil {
+		return "", err
+	}
+	cid := byNum[court]
+	if cid == "" {
+		return "", nil
+	}
+	row, err := s.sb.SelectOne("matches",
+		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(cid)+
+			"&status=eq.in_progress&select=id&limit=1")
+	if err != nil || row == nil {
+		return "", err
+	}
+	return asStr(row, "id"), nil
+}
+
+// RecordCourtScore records the final score for the live game on a court, authed
+// by the per-court QR token (not the admin passcode). Single game (best-of-1);
+// best-of-N still goes through the console. Completes via the same RecordScore
+// path (standings/bracket/DUPR), so the organizer can still override.
+func (s *Service) RecordCourtScore(eventID string, court int, tok string, t1, t2 int) error {
+	if !s.VerifyCourtToken(eventID, tok) {
+		return ErrForbidden
+	}
+	matchID, err := s.liveMatchOnCourt(eventID, court)
+	if err != nil {
+		return err
+	}
+	if matchID == "" {
+		return fmt.Errorf("no game in progress on court %d", court)
+	}
+	return s.RecordScore(matchID, t1, t2)
+}
+
 // playerNamesByID resolves player IDs to display names for the given event.
 // Returns nil for an empty input (the common case — no lookup performed).
 func (s *Service) playerNamesByID(eventID string, ids []string) ([]string, error) {

@@ -1830,6 +1830,9 @@ func (s *Service) SeedTestTournament(ownerID, kind string) (string, error) {
 			"dupr_rating":      rating,
 			"dupr_reliability": 85,
 			"phone":            fmt.Sprintf("+1555%07d", n),
+			// Explicitly opt seed players OUT of texts — never SMS fake numbers,
+			// even if a future consent-backfill migration flips the default.
+			"sms_consent": false,
 		}
 	}
 	plRows, err := s.sb.Insert("players", playerRows)
@@ -1965,6 +1968,7 @@ func (s *Service) seedDivPairs(eventID, bracketID, prefix string, startN, pairs 
 			"dupr_rating":      rating,
 			"dupr_reliability": 85,
 			"phone":            fmt.Sprintf("+1555%07d", n),
+			"sms_consent":      false, // seed players never get texts
 		}
 	}
 	plRows, err := s.sb.Insert("players", playerRows)
@@ -2597,6 +2601,7 @@ func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 				"phone":       fmt.Sprintf("+1555%03d%04d", t, g*2),
 				"dupr_id":     fmt.Sprintf("TST-%s-%dm%d", eventID[:8], t, g),
 				"dupr_rating": rating,
+				"sms_consent": false, // seed players never get texts
 			})
 			names = append(names, mn)
 			genders = append(genders, "M")
@@ -2605,6 +2610,7 @@ func (s *Service) seedMlp(ownerID string, premier bool) (string, error) {
 				"phone":       fmt.Sprintf("+1555%03d%04d", t, g*2+1),
 				"dupr_id":     fmt.Sprintf("TST-%s-%df%d", eventID[:8], t, g),
 				"dupr_rating": rating,
+				"sms_consent": false, // seed players never get texts
 			})
 			names = append(names, fn)
 			genders = append(genders, "F")

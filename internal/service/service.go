@@ -4788,15 +4788,26 @@ func (s *Service) ClearArrangement(eventID string) error {
 // advancement; those go through a wipe/regenerate path instead.
 func (s *Service) DeleteMatch(matchID string) error {
 	m, err := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=status,stage")
+		"id=eq."+store.Q(matchID)+"&select=status,stage,event_id")
 	if err != nil {
 		return err
 	}
 	if m == nil {
 		return ErrNotFound
 	}
-	if asStr(m, "status") == "completed" || asStr(m, "stage") == "bracket" {
-		return fmt.Errorf("%w: completed or bracket matches can't be deleted here", ErrScheduleHasResults)
+	// Bracket matches are never deletable here — removing one breaks elimination
+	// advancement (its winner feeds the next round).
+	if asStr(m, "stage") == "bracket" {
+		return fmt.Errorf("%w: bracket matches can't be deleted (it would break advancement)", ErrScheduleHasResults)
+	}
+	// A COMPLETED pool game CAN be deleted — pool standings recompute from the
+	// remaining results — EXCEPT on a DUPR-sanctioned event, where the result was
+	// submitted to DUPR and deleting it here would orphan that submission.
+	if asStr(m, "status") == "completed" {
+		if ev, _ := s.sb.SelectOne("events",
+			"id=eq."+store.Q(asStr(m, "event_id"))+"&select=dupr_sanctioned"); ev != nil && asBool(ev, "dupr_sanctioned") {
+			return fmt.Errorf("%w: this result was submitted to DUPR — reverse it in DUPR before removing the game", ErrScheduleHasResults)
+		}
 	}
 	// match_participants cascade via the FK on delete — just remove the match row.
 	return s.sb.Delete("matches", "id=eq."+store.Q(matchID))

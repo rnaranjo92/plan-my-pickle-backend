@@ -3341,6 +3341,99 @@ func (s *Service) registrationClosed(eventID string) bool {
 	return time.Now().After(t)
 }
 
+func mapWaitlist(m map[string]any) model.WaitlistEntry {
+	e := model.WaitlistEntry{
+		ID:        asStr(m, "id"),
+		EventID:   asStr(m, "event_id"),
+		BracketID: asStr(m, "bracket_id"),
+		FullName:  asStr(m, "full_name"),
+		Phone:     asStr(m, "phone"),
+		Email:     asStr(m, "email"),
+		CreatedAt: asStr(m, "created_at"),
+	}
+	if b := asMap(m, "bracket"); b != nil {
+		e.Division = asStr(b, "name")
+	}
+	return e
+}
+
+// JoinWaitlist adds a person to an event's waitlist (used when the event is full).
+// linkUserID ties it to the caller's account when they're signed in, so a later
+// promotion links cleanly. No cap/scheduling side effects.
+func (s *Service) JoinWaitlist(eventID string, req model.WaitlistJoinRequest, linkUserID string) (model.WaitlistEntry, error) {
+	if strings.TrimSpace(req.FullName) == "" {
+		return model.WaitlistEntry{}, errors.New("fullName is required")
+	}
+	ins, err := s.sb.Insert("event_waitlist", map[string]any{
+		"id":          newID(),
+		"event_id":    eventID,
+		"bracket_id":  orNull(req.BracketID),
+		"full_name":   strings.TrimSpace(req.FullName),
+		"phone":       orNull(strings.TrimSpace(req.Phone)),
+		"email":       orNull(strings.TrimSpace(req.Email)),
+		"user_id":     orNull(linkUserID),
+		"skill_level": fOrNull(req.SkillLevel),
+		"sms_consent": req.SmsConsent,
+	})
+	if err != nil {
+		return model.WaitlistEntry{}, err
+	}
+	if len(ins) == 0 {
+		return model.WaitlistEntry{}, errors.New("waitlist insert returned no row")
+	}
+	return mapWaitlist(ins[0]), nil
+}
+
+// Waitlist returns an event's waitlist in join order (owner-facing), with each
+// entry's division name resolved.
+func (s *Service) Waitlist(eventID string) ([]model.WaitlistEntry, error) {
+	rows, err := s.sb.Select("event_waitlist",
+		"event_id=eq."+store.Q(eventID)+"&order=created_at.asc"+
+			"&select=*,bracket:brackets!bracket_id(name)")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.WaitlistEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapWaitlist(r))
+	}
+	return out, nil
+}
+
+// RemoveWaitlist deletes one waitlist entry (owner-facing, or self-cancel).
+func (s *Service) RemoveWaitlist(eventID, wid string) error {
+	return s.sb.Delete("event_waitlist",
+		"id=eq."+store.Q(wid)+"&event_id=eq."+store.Q(eventID))
+}
+
+// PromoteWaitlist converts a waitlist entry into a real registration (as an
+// organizer-add, so it bypasses the cap) and removes the waitlist row.
+func (s *Service) PromoteWaitlist(eventID, wid string) (model.Registration, error) {
+	row, err := s.sb.SelectOne("event_waitlist",
+		"id=eq."+store.Q(wid)+"&event_id=eq."+store.Q(eventID))
+	if err != nil {
+		return model.Registration{}, err
+	}
+	if row == nil {
+		return model.Registration{}, errors.New("waitlist entry not found")
+	}
+	req := model.RegisterRequest{
+		FullName:   asStr(row, "full_name"),
+		Phone:      asStr(row, "phone"),
+		Email:      asStr(row, "email"),
+		BracketID:  asStr(row, "bracket_id"),
+		SkillLevel: asFloatPtr(row, "skill_level"),
+		SmsConsent: asBool(row, "sms_consent"),
+		Self:       false, // organizer promotion — bypasses the cap
+	}
+	reg, err := s.RegisterPlayer(eventID, req, asStr(row, "user_id"))
+	if err != nil {
+		return model.Registration{}, err
+	}
+	_ = s.sb.Delete("event_waitlist", "id=eq."+store.Q(wid))
+	return reg, nil
+}
+
 // eventMaxPlayers reads the event's player cap; nil = unlimited. Best-effort so a
 // pre-migration DB (no max_players column) simply reports no cap.
 func (s *Service) eventMaxPlayers(eventID string) *int {

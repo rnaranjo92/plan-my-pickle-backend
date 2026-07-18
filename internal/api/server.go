@@ -134,6 +134,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /geocode", s.geocode)
 	mux.HandleFunc("GET /city-autocomplete", requireAuth(s.cityAutocomplete))
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
+	mux.HandleFunc("POST /events/{id}/waitlist", optionalAuth(s.waitlistJoin))
+	mux.HandleFunc("GET /events/{id}/waitlist", s.ownerOnly("event", "id", s.waitlistList))
+	mux.HandleFunc("POST /events/{id}/waitlist/{wid}/promote", s.ownerOnly("event", "id", s.waitlistPromote))
+	mux.HandleFunc("DELETE /events/{id}/waitlist/{wid}", s.ownerOnly("event", "id", s.waitlistRemove))
 	mux.HandleFunc("GET /events/{id}/registrant-by-phone", s.registrantByPhone)
 	mux.HandleFunc("POST /events/{id}/import-roster", s.ownerOnly("event", "id", s.importRoster))
 	mux.HandleFunc("POST /events/{id}/import-dupr", s.ownerOnly("event", "id", s.importDupr))
@@ -1571,6 +1575,60 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, reg)
+}
+
+// waitlistJoin — public "join the waitlist" when an event is full (same throttle
+// + Turnstile guard as self-registration).
+func (s *Server) waitlistJoin(w http.ResponseWriter, r *http.Request) {
+	var req model.WaitlistJoinRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	id := r.PathValue("id")
+	if !s.regLimiter.allow("waitlist:" + id) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many requests right now, try again shortly"))
+		return
+	}
+	if userID(r) == "" && !s.captcha.Verify(req.CaptchaToken, "") {
+		writeErr(w, http.StatusForbidden, errors.New("please complete the human check and try again"))
+		return
+	}
+	entry, err := s.svc.JoinWaitlist(id, req, userID(r))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, entry)
+}
+
+func (s *Server) waitlistList(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.svc.Waitlist(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) waitlistPromote(w http.ResponseWriter, r *http.Request) {
+	reg, err := s.svc.PromoteWaitlist(r.PathValue("id"), r.PathValue("wid"))
+	if err != nil {
+		if errors.Is(err, service.ErrAlreadyRegistered) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reg)
+}
+
+func (s *Server) waitlistRemove(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveWaitlist(r.PathValue("id"), r.PathValue("wid")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) financeEntries(w http.ResponseWriter, r *http.Request) {

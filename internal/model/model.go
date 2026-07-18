@@ -907,6 +907,31 @@ type RegisterRequest struct {
 	CaptchaToken string `json:"captchaToken,omitempty"`
 }
 
+// WaitlistEntry is one person on an event's waitlist (used when the event is at
+// its MaxPlayers cap). Kept separate from registrations so it never touches
+// standings/scheduling/counts until an organizer promotes it.
+type WaitlistEntry struct {
+	ID        string `json:"id"`
+	EventID   string `json:"eventId"`
+	BracketID string `json:"bracketId,omitempty"`
+	Division  string `json:"division,omitempty"`
+	FullName  string `json:"fullName"`
+	Phone     string `json:"phone,omitempty"`
+	Email     string `json:"email,omitempty"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// WaitlistJoinRequest is the public "join the waitlist" payload.
+type WaitlistJoinRequest struct {
+	FullName     string   `json:"fullName"`
+	Phone        string   `json:"phone"`
+	Email        string   `json:"email"`
+	BracketID    string   `json:"bracketId"`
+	SkillLevel   *float64 `json:"skillLevel,omitempty"`
+	SmsConsent   bool     `json:"smsConsent"`
+	CaptchaToken string   `json:"captchaToken,omitempty"`
+}
+
 // ImportRosterRequest bulk-registers many players into an event from a roster
 // import (owner-only). All players go into the chosen BracketID (division).
 type ImportRosterRequest struct {

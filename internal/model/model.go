@@ -172,6 +172,8 @@ type PublicEvent struct {
 	PosterURL        *string `json:"posterUrl,omitempty"`
 	DuprSanctioned   bool    `json:"duprSanctioned"`
 	RegisteredCount  int     `json:"registeredCount"`
+	// CreatedAt lets the "newly added" home rail sort/label by recency.
+	CreatedAt string `json:"createdAt,omitempty"`
 	// County + State power metro/programmatic-SEO directory pages (filterable
 	// via ?county= on the public feed).
 	County string `json:"county,omitempty"`

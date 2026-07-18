@@ -3826,7 +3826,14 @@ func (s *Server) publicEvents(w http.ResponseWriter, r *http.Request) {
 	if county != "" {
 		limit = 100
 	}
-	events, err := s.svc.PublicEvents(limit, county)
+	// ?sort=new powers the home "newly added" rail (most-recently-created first).
+	var events []model.PublicEvent
+	var err error
+	if r.URL.Query().Get("sort") == "new" {
+		events, err = s.svc.PublicEventsNewest(limit)
+	} else {
+		events, err = s.svc.PublicEvents(limit, county)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

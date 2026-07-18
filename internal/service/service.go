@@ -603,6 +603,16 @@ var publicFeedTestName = regexp.MustCompile(`(?i)\b(test|demo|dbg|debug|authchec
 // Registered counts are attached with the same batched select-then-tally as
 // ListEvents (no N+1); a count failure is best-effort and leaves counts at 0.
 func (s *Service) PublicEvents(limit int, county string) ([]model.PublicEvent, error) {
+	return s.publicEventsSorted(limit, county, "")
+}
+
+// PublicEventsNewest returns the most-recently-CREATED publicly-listed events
+// (same safe projection + test-name filter), for the "newly added" home rail.
+func (s *Service) PublicEventsNewest(limit int) ([]model.PublicEvent, error) {
+	return s.publicEventsSorted(limit, "", "new")
+}
+
+func (s *Service) publicEventsSorted(limit int, county, sort string) ([]model.PublicEvent, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -611,16 +621,21 @@ func (s *Service) PublicEvents(limit int, county string) ([]model.PublicEvent, e
 	if c := strings.TrimSpace(county); c != "" {
 		countyFilter = "&county=eq." + store.Q(c)
 	}
-	// starts_at NULLs sort last so dated tournaments lead the feed. Order by
-	// start ascending (soonest first), then created_at desc as a stable tiebreak
-	// for events that have no scheduled start yet. Over-fetch 3× because the
-	// test-name filter below drops rows after the query.
+	// "new" rail: newest-created first. Default marketing feed: soonest start
+	// first (NULLs last), created_at desc as a stable tiebreak. Over-fetch 3×
+	// because the test-name filter below drops rows after the query.
+	order := "starts_at.asc.nullslast,created_at.desc"
+	if sort == "new" {
+		order = "created_at.desc"
+	}
 	rows, err := s.sb.Select("events",
-		"listed=eq.true"+countyFilter+"&select=*&order=starts_at.asc.nullslast,created_at.desc&limit="+strconv.Itoa(limit*3))
+		"listed=eq.true"+countyFilter+"&select=*&order="+order+"&limit="+strconv.Itoa(limit*3))
 	if err != nil {
 		return nil, err
 	}
 	events := make([]model.Event, 0, len(rows))
+	// created_at isn't on model.Event, so keep it by id for the projection below.
+	createdByID := make(map[string]string, len(rows))
 	for _, r := range rows {
 		e := mapEvent(r)
 		// The marketing feed skips events that are obviously QA/test runs —
@@ -630,6 +645,7 @@ func (s *Service) PublicEvents(limit int, county string) ([]model.PublicEvent, e
 		if publicFeedTestName.MatchString(e.Name) {
 			continue
 		}
+		createdByID[e.ID] = asStr(r, "created_at")
 		events = append(events, e)
 		if len(events) == limit {
 			break
@@ -669,6 +685,7 @@ func (s *Service) PublicEvents(limit int, county string) ([]model.PublicEvent, e
 			PosterURL:        e.PosterURL,
 			DuprSanctioned:   e.DuprSanctioned,
 			RegisteredCount:  e.RegisteredCount,
+			CreatedAt:        createdByID[e.ID],
 			County:           e.County,
 			State:            e.State,
 		})

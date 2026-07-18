@@ -109,6 +109,10 @@ type Event struct {
 	// premium), automated alerts (court calls, delay updates) ALSO go by SMS on
 	// top of push. Default false = push-first (free). Gated at the API.
 	SmsNotifications bool `json:"smsNotifications"`
+	// MaxPlayers caps how many distinct players may register for the event; nil or
+	// <=0 = unlimited. Enforced on self-registration (an organizer adding players
+	// can still exceed it).
+	MaxPlayers *int `json:"maxPlayers,omitempty"`
 	// PosterURL is the uploaded event poster (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
 	// Recurring social: RecurIntervalDays>0 marks a series head that auto-spawns
@@ -858,6 +862,7 @@ type CreateEventRequest struct {
 	PlayerScoring       bool           `json:"playerScoring"`
 	ScoreConfirmMinutes int            `json:"scoreConfirmMinutes"`
 	SmsNotifications    bool           `json:"smsNotifications"`
+	MaxPlayers          *int           `json:"maxPlayers,omitempty"`
 	PosterURL           string         `json:"posterUrl"`
 	// Recurring "socials": RecurIntervalDays>0 makes this event the head of a
 	// series that auto-spawns the next occurrence every N days (7=weekly,

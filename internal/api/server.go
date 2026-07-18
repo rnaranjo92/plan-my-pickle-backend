@@ -1525,6 +1525,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
+		// Event hit its player cap — 409 so the client can show "event full".
+		if errors.Is(err, service.ErrEventFull) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
 		// Sanctioned event requires a connected DUPR account to self-register.
 		if errors.Is(err, service.ErrDuprNotConnected) {
 			writeErr(w, http.StatusUnprocessableEntity, err)

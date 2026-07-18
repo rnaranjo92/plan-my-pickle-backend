@@ -451,6 +451,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.SmsNotifications {
 		payload["sms_notifications"] = true
 	}
+	// max_players ships in add_max_players.sql — reference only when a real cap is
+	// set so create keeps working before the migration is applied.
+	if req.MaxPlayers != nil && *req.MaxPlayers > 0 {
+		payload["max_players"] = *req.MaxPlayers
+	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
 	if req.MinPoolRounds > 0 {
 		payload["min_pool_rounds"] = req.MinPoolRounds
@@ -1325,6 +1330,16 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// so the premium toggle round-trips both ways. The premium gate already forced
 	// this false for a non-premium caller at the handler.
 	upd["sms_notifications"] = req.SmsNotifications
+	// max_players (add_max_players.sql): the frontend sends this only when a cap is
+	// set or being cleared, so a no-cap edit never references the column before the
+	// migration is applied. >0 sets the cap; <=0 clears it.
+	if req.MaxPlayers != nil {
+		if *req.MaxPlayers > 0 {
+			upd["max_players"] = *req.MaxPlayers
+		} else {
+			upd["max_players"] = nil
+		}
+	}
 	// confirm_email_* (add_confirm_email.sql, applied): written UNCONDITIONALLY via
 	// orNull so an organizer can clear a custom subject/message back to the branded
 	// default (the frontend always sends both fields on edit). Sanitized as in create.
@@ -3267,6 +3282,38 @@ func (s *Service) GetBrackets(eventID string) ([]model.Bracket, error) {
 // registered" message instead of a generic error.
 var ErrAlreadyRegistered = errors.New("already registered for this event")
 
+// ErrEventFull is returned when an event has hit its MaxPlayers cap and a NEW
+// player tries to self-register. The HTTP layer maps it to 409 Conflict.
+var ErrEventFull = errors.New("this event is full")
+
+// eventMaxPlayers reads the event's player cap; nil = unlimited. Best-effort so a
+// pre-migration DB (no max_players column) simply reports no cap.
+func (s *Service) eventMaxPlayers(eventID string) *int {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=max_players")
+	if err != nil || row == nil {
+		return nil
+	}
+	return asIntPtr(row, "max_players")
+}
+
+// distinctPlayerCount counts the unique players registered for an event (a player
+// entering multiple divisions still counts once).
+func (s *Service) distinctPlayerCount(eventID string) (int, error) {
+	rows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(eventID)+"&select=player_id")
+	if err != nil {
+		return 0, err
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if pid := asStr(r, "player_id"); pid != "" {
+			seen[pid] = true
+		}
+	}
+	return len(seen), nil
+}
+
 // ErrDrawExists is returned when a division-reassignment (move/merge) is
 // attempted after the draw has been generated. Reassigning entrants once the
 // bracket/pool matches exist would orphan those matches, so the caller must
@@ -3661,6 +3708,29 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		return model.Registration{}, err
 	} else if dup {
 		return model.Registration{}, ErrAlreadyRegistered
+	}
+	// Player cap: block a NEW player from self-registering once the event is full.
+	// An organizer adding players (req.Self == false) can still exceed the cap, and
+	// a player entering a SECOND division doesn't take another seat.
+	if req.Self {
+		if cap := s.eventMaxPlayers(eventID); cap != nil && *cap > 0 {
+			already := false
+			if linkUserID != "" {
+				if pr, _ := s.sb.SelectOne("players",
+					"user_id=eq."+store.Q(linkUserID)+"&select=id"); pr != nil {
+					if reg, _ := s.sb.SelectOne("registrations",
+						"event_id=eq."+store.Q(eventID)+"&player_id=eq."+
+							store.Q(asStr(pr, "id"))+"&select=id"); reg != nil {
+						already = true
+					}
+				}
+			}
+			if !already {
+				if n, cerr := s.distinctPlayerCount(eventID); cerr == nil && n >= *cap {
+					return model.Registration{}, ErrEventFull
+				}
+			}
+		}
 	}
 	// DUPR id/rating are never typed by hand (DUPR forbids it) — for a signed-in
 	// user, attach them from their SSO-connected DUPR account, the source of truth.

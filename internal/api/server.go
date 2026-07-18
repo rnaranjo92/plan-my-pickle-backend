@@ -1530,6 +1530,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
+		// Registration cutoff passed — 409 "registration closed".
+		if errors.Is(err, service.ErrRegistrationClosed) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
 		// Sanctioned event requires a connected DUPR account to self-register.
 		if errors.Is(err, service.ErrDuprNotConnected) {
 			writeErr(w, http.StatusUnprocessableEntity, err)

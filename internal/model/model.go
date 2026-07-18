@@ -113,6 +113,9 @@ type Event struct {
 	// <=0 = unlimited. Enforced on self-registration (an organizer adding players
 	// can still exceed it).
 	MaxPlayers *int `json:"maxPlayers,omitempty"`
+	// RegistrationCloseAt (RFC3339) is an explicit self-registration cutoff; nil =
+	// no cutoff (falls back to the event-day close). Enforced on self-registration.
+	RegistrationCloseAt *string `json:"registrationCloseAt,omitempty"`
 	// PosterURL is the uploaded event poster (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
 	// Recurring social: RecurIntervalDays>0 marks a series head that auto-spawns
@@ -865,6 +868,7 @@ type CreateEventRequest struct {
 	ScoreConfirmMinutes int            `json:"scoreConfirmMinutes"`
 	SmsNotifications    bool           `json:"smsNotifications"`
 	MaxPlayers          *int           `json:"maxPlayers,omitempty"`
+	RegistrationCloseAt *string        `json:"registrationCloseAt,omitempty"`
 	PosterURL           string         `json:"posterUrl"`
 	// Recurring "socials": RecurIntervalDays>0 makes this event the head of a
 	// series that auto-spawns the next occurrence every N days (7=weekly,

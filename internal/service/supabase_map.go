@@ -212,6 +212,7 @@ func mapEvent(m map[string]any) model.Event {
 		SmsNotifications:         asBool(m, "sms_notifications"),
 		ScoreConfirmMinutes:      asInt(m, "score_confirm_minutes"),
 		MaxPlayers:               asIntPtr(m, "max_players"),
+		RegistrationCloseAt:      asStrPtr(m, "registration_close_at"),
 		PosterURL:                asStrPtr(m, "poster_url"),
 		SponsorWatermarkURL:      asStr(m, "sponsor_watermark_url"),
 		SponsorWatermarkOpacity:  asFloatOr(m, "sponsor_watermark_opacity", 0.08),

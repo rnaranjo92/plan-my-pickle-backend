@@ -456,6 +456,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.MaxPlayers != nil && *req.MaxPlayers > 0 {
 		payload["max_players"] = *req.MaxPlayers
 	}
+	// registration_close_at ships in add_registration_close_at.sql — reference
+	// only when a cutoff is set so create works before the migration is applied.
+	if req.RegistrationCloseAt != nil && *req.RegistrationCloseAt != "" {
+		payload["registration_close_at"] = *req.RegistrationCloseAt
+	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
 	if req.MinPoolRounds > 0 {
 		payload["min_pool_rounds"] = req.MinPoolRounds
@@ -1355,6 +1360,16 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 			upd["max_players"] = *req.MaxPlayers
 		} else {
 			upd["max_players"] = nil
+		}
+	}
+	// registration_close_at: frontend sends it only when set or being cleared, so
+	// a no-cutoff edit never references the column before the migration. non-empty
+	// sets the cutoff; empty clears it.
+	if req.RegistrationCloseAt != nil {
+		if *req.RegistrationCloseAt != "" {
+			upd["registration_close_at"] = *req.RegistrationCloseAt
+		} else {
+			upd["registration_close_at"] = nil
 		}
 	}
 	// confirm_email_* (add_confirm_email.sql, applied): written UNCONDITIONALLY via
@@ -3303,6 +3318,29 @@ var ErrAlreadyRegistered = errors.New("already registered for this event")
 // player tries to self-register. The HTTP layer maps it to 409 Conflict.
 var ErrEventFull = errors.New("this event is full")
 
+// ErrRegistrationClosed is returned when self-registration is attempted after
+// the event's RegistrationCloseAt cutoff. Mapped to 409 Conflict.
+var ErrRegistrationClosed = errors.New("registration for this event has closed")
+
+// registrationClosed reports whether the event's explicit registration cutoff
+// has passed. Best-effort: a pre-migration DB (no column) or unset cutoff = open.
+func (s *Service) registrationClosed(eventID string) bool {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=registration_close_at")
+	if err != nil || row == nil {
+		return false
+	}
+	ts := strings.TrimSpace(asStr(row, "registration_close_at"))
+	if ts == "" {
+		return false
+	}
+	t, perr := time.Parse(time.RFC3339, ts)
+	if perr != nil {
+		return false
+	}
+	return time.Now().After(t)
+}
+
 // eventMaxPlayers reads the event's player cap; nil = unlimited. Best-effort so a
 // pre-migration DB (no max_players column) simply reports no cap.
 func (s *Service) eventMaxPlayers(eventID string) *int {
@@ -3725,6 +3763,11 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		return model.Registration{}, err
 	} else if dup {
 		return model.Registration{}, ErrAlreadyRegistered
+	}
+	// Self-registration cutoff: block once the explicit deadline has passed
+	// (organizer adds bypass it, like the cap below).
+	if req.Self && s.registrationClosed(eventID) {
+		return model.Registration{}, ErrRegistrationClosed
 	}
 	// Player cap: block a NEW player from self-registering once the event is full.
 	// An organizer adding players (req.Self == false) can still exceed the cap, and

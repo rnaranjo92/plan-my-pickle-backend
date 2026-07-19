@@ -162,6 +162,10 @@ type DuprGateway interface {
 	// RefreshUserToken exchanges a user's SSO refresh token for a fresh access
 	// token (GET /auth/{v}/refresh with x-refresh-token).
 	RefreshUserToken(refreshToken string) (string, error)
+	// VerifyDuprOwner reports which DUPR id an SSO user access token actually owns
+	// (getBasicInfo), so a connect can reject a caller claiming someone else's id.
+	// Returns "" (nil err) on any inconclusive outcome so callers fail open.
+	VerifyDuprOwner(userToken string) (string, error)
 }
 
 type MockDupr struct {
@@ -225,4 +229,10 @@ func (m *MockDupr) GetEntitlements(userToken string) ([]string, error) {
 
 func (m *MockDupr) RefreshUserToken(refreshToken string) (string, error) {
 	return "mock-user-token", nil
+}
+
+// VerifyDuprOwner returns "" (inconclusive) so the mock never blocks a connect —
+// ownership is only enforced against the real DUPR user API.
+func (m *MockDupr) VerifyDuprOwner(userToken string) (string, error) {
+	return "", nil
 }

@@ -1111,6 +1111,10 @@ func (s *Server) duprConnect(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
+		if errors.Is(err, service.ErrDuprOwnershipMismatch) {
+			writeErr(w, http.StatusForbidden, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

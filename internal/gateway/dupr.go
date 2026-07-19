@@ -367,6 +367,48 @@ func (d *RealDupr) GetEntitlements(userToken string) ([]string, error) {
 	return nil, nil // parsed but no subscriptions → no entitlements
 }
 
+// VerifyDuprOwner reports which DUPR account an SSO user access token actually
+// belongs to, so a connect can confirm the caller isn't claiming someone else's
+// DUPR id. Contract (confirmed against api.dupr.gg/v3/api-docs/public, getBasicInfo):
+// GET {userAPIBase}/public/user/info with the USER's SSO access token as the
+// bearer → 200 {status:"SUCCESS", results:[{duprId}]}.
+//
+// It returns the token holder's duprId ONLY on a clean 200; on every other
+// outcome (empty token, network error, 401/403/404/5xx, unparseable body) it
+// returns ("", nil) — deliberately inconclusive, so the caller fails OPEN and a
+// genuine connect is never blocked by a transient DUPR hiccup. The only rejection
+// signal is a 200 that names a DIFFERENT id, which the caller detects by compare.
+func (d *RealDupr) VerifyDuprOwner(userToken string) (string, error) {
+	userToken = strings.TrimSpace(userToken)
+	if userToken == "" {
+		return "", nil // nothing to check → inconclusive
+	}
+	req, err := http.NewRequest(http.MethodGet, d.userAPIBase+"/public/user/info", nil)
+	if err != nil {
+		return "", nil
+	}
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return "", nil // network error → inconclusive, never block onboarding
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil // 401/403/404/5xx → inconclusive
+	}
+	var env struct {
+		Results []struct {
+			DuprID string `json:"duprId"`
+		} `json:"results"`
+	}
+	if json.Unmarshal(raw, &env) != nil || len(env.Results) == 0 {
+		return "", nil // unparseable / empty → inconclusive
+	}
+	return strings.TrimSpace(env.Results[0].DuprID), nil
+}
+
 // RefreshUserToken exchanges a user's SSO refresh token for a fresh access
 // token: GET {userAPIBase}/auth/v1.0/refresh with the refresh token in the
 // x-refresh-token header (the refresh token IS the credential). v1.0 returns

@@ -88,6 +88,43 @@ func TestDuprGetPlayerRatingHTTPError(t *testing.T) {
 	}
 }
 
+func TestDuprVerifyOwner(t *testing.T) {
+	ok := `{"status":"SUCCESS","results":[{"duprId":"0Y7ZR4","fullName":"Al Pro"}],"errors":[]}`
+	cases := []struct {
+		name   string
+		code   int
+		body   string
+		token  string
+		want   string
+		noHTTP bool
+	}{
+		{"match", 200, ok, "tok", "0Y7ZR4", false},
+		{"mismatch", 200, `{"status":"SUCCESS","results":[{"duprId":"XXXXXX"}]}`, "tok", "XXXXXX", false},
+		{"no consent 403", 403, `{"status":"FAILURE","message":"no consent"}`, "tok", "", false},
+		{"server 500", 500, `boom`, "tok", "", false},
+		{"empty results", 200, `{"status":"SUCCESS","results":[]}`, "tok", "", false},
+		{"garbage 200", 200, `not json`, "tok", "", false},
+		{"blank token short-circuits", 0, ``, "  ", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := duprWithToken(func(*http.Request) (*http.Response, error) {
+				if c.noHTTP {
+					t.Fatal("HTTP should not be reached for a blank user token")
+				}
+				return resp(c.code, c.body), nil
+			})
+			got, err := d.VerifyDuprOwner(c.token)
+			if err != nil {
+				t.Fatalf("VerifyDuprOwner returned err %v (must always be nil)", err)
+			}
+			if got != c.want {
+				t.Errorf("owner = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 // Success paths for the match + webhook methods — exercised for coverage;
 // result specifics are tolerated since they depend on DUPR's exact envelope.
 func TestDuprMatchAndWebhookSuccess(t *testing.T) {

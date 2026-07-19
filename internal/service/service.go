@@ -169,6 +169,11 @@ var ErrScheduleHasResults = errors.New("schedule already has recorded results")
 // PlanMyPickle account (one DUPR id maps to one account).
 var ErrDuprIDTaken = errors.New("this DUPR account is already connected to another PlanMyPickle account")
 
+// ErrDuprOwnershipMismatch means the SSO user token presented at connect belongs
+// to a DIFFERENT DUPR account than the one being claimed — a rejected impersonation
+// attempt (crafted request pairing a stranger's duprId with the caller's token).
+var ErrDuprOwnershipMismatch = errors.New("this DUPR account could not be verified as yours — please reconnect through DUPR")
+
 // ErrDuprNotConnected means a player tried to SELF-register for a DUPR-sanctioned
 // event without a connected DUPR account (their results must be submittable).
 var ErrDuprNotConnected = errors.New("connect your DUPR account to register for this DUPR-sanctioned event")
@@ -5544,6 +5549,17 @@ func (s *Service) ConnectDupr(userID string, in model.DuprConnectInput) error {
 		"dupr_id=eq."+store.Q(duprID)+"&user_id=neq."+store.Q(userID)+
 			"&select=user_id&limit=1"); err == nil && taken != nil {
 		return ErrDuprIDTaken
+	}
+	// Confirm the SSO user token actually belongs to the DUPR id being claimed.
+	// The postMessage flow binds the two, but a crafted direct POST could pair a
+	// stranger's duprId with the caller's own token — hijacking that person's
+	// displayed rating and, worse, causing sanctioned results to submit under
+	// their real DUPR record. Reject ONLY on an unambiguous mismatch (DUPR names
+	// a different id); any inconclusive result (expired token, DUPR outage) falls
+	// through so a legitimate connect is never blocked. See gateway.VerifyDuprOwner.
+	if owner, err := s.Dupr.VerifyDuprOwner(in.UserToken); err == nil &&
+		owner != "" && !strings.EqualFold(owner, duprID) {
+		return ErrDuprOwnershipMismatch
 	}
 	doubles, singles := in.DoublesRating, in.SinglesRating
 	// Now that the user consented, prefer authoritative ratings from DUPR. Only

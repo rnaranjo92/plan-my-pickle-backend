@@ -4008,14 +4008,14 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			playerID = asStr(pl[0], "id")
 		}
 	} else {
-		// ORGANIZER manually adding a player (req.Self == false): if the typed
-		// contact confidently matches an existing account, tie the registration to
-		// it so their photo, push, and DUPR work right away. This is gated to the
-		// trusted organizer path — anonymous PUBLIC self-registration (req.Self ==
-		// true with no signed-in account also lands here with linkUserID=="") is
-		// untrusted, publicly-submitted input, so it must NEVER auto-link to a
-		// stranger's account; it stays an unlinked guest until that player signs in.
-		if !req.Self {
+		// AUTHENTICATED ORGANIZER manually adding a player: if the typed contact
+		// confidently matches an existing account, tie the registration to it so
+		// their photo, push, and DUPR work right away. Gated on req.TrustedAdd (set
+		// server-side ONLY for the event owner) — NOT on req.Self, which is
+		// client-controlled: an anonymous attacker could POST self:false and reach
+		// this path, force-linking a registration to a stranger's account. Untrusted
+		// callers leave the player an unlinked guest until they sign in themselves.
+		if req.TrustedAdd {
 			if uid := s.accountForContact(req.Email, req.Phone, req.FullName); uid != "" {
 				if existing, _ := s.sb.SelectOne("players",
 					"user_id=eq."+store.Q(uid)+"&select=id"); existing != nil {
@@ -8833,7 +8833,21 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	s = strings.ReplaceAll(s, `_`, `\_`)
+	// PostgREST also treats `*` as an ilike wildcard (it maps to SQL `%`), so a
+	// bare `*` would still pattern-match — escape it too for a literal match.
+	s = strings.ReplaceAll(s, `*`, `\*`)
 	return s
+}
+
+// UserOwnsEvent reports whether uid is the organizer (owner) of the event. Used
+// to authorize the trusted organizer-add path (contact→account auto-linking).
+func (s *Service) UserOwnsEvent(uid, eventID string) bool {
+	if uid == "" || eventID == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&owner_id=eq."+store.Q(uid)+"&select=id")
+	return err == nil && row != nil
 }
 
 func (s *Service) accountForContact(email, phone, name string) string {
@@ -9446,21 +9460,30 @@ func (s *Service) StartRound(roundID string) (int, error) {
 		map[string]any{"status": "active", "started_at": now()}); err != nil {
 		return 0, err
 	}
-	// Select the not-yet-started (scheduled) matches FIRST, then start + notify
-	// ONLY those. Otherwise re-tapping "Start round" (or a match that was already
-	// started individually) re-texts everyone and double-bills Twilio — the select
-	// must not include matches that are already in_progress.
-	matches, err := s.sb.Select("matches",
-		"round_id=eq."+store.Q(roundID)+"&status=eq.scheduled"+
-			"&select=id,event_id,court:courts!court_id(label)")
+	// Flip scheduled→in_progress and capture EXACTLY the rows THIS call transitioned
+	// (return=representation + the atomic per-row status=eq.scheduled predicate). We
+	// notify only those, so two concurrent "Start round" taps each get a DISJOINT
+	// set — no duplicate SMS / double Twilio billing. (Notifying a pre-SELECT
+	// snapshot would double-send under concurrency.)
+	flipped, err := s.sb.Update("matches",
+		"round_id=eq."+store.Q(roundID)+"&status=eq.scheduled",
+		map[string]any{"status": "in_progress"})
 	if err != nil {
 		return 0, err
 	}
-	// Mark them in progress, so starting a whole round behaves like starting each
-	// match individually.
-	if _, err := s.sb.Update("matches",
-		"round_id=eq."+store.Q(roundID)+"&status=eq.scheduled",
-		map[string]any{"status": "in_progress"}); err != nil {
+	if len(flipped) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(flipped))
+	for _, m := range flipped {
+		if id := asStr(m, "id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	// Re-select just those rows WITH the court label for the "you're up" text.
+	matches, err := s.sb.Select("matches",
+		"id="+store.In(ids)+"&select=id,event_id,court:courts!court_id(label)")
+	if err != nil {
 		return 0, err
 	}
 	sent := 0

@@ -912,6 +912,12 @@ type RegisterRequest struct {
 	// self-registration form (anonymous). The handler verifies it server-side;
 	// the service ignores it.
 	CaptchaToken string `json:"captchaToken,omitempty"`
+	// TrustedAdd is a SERVER-ONLY flag (json:"-" so a client can never inject it):
+	// the register handler sets it true only when an AUTHENTICATED event OWNER is
+	// adding a player. It gates the contact→account matcher (accountForContact) so
+	// an anonymous/self-service registrant can't force-link to a stranger's
+	// account. `Self` (client-controlled) must NOT be used for this.
+	TrustedAdd bool `json:"-"`
 }
 
 // WaitlistEntry is one person on an event's waitlist (used when the event is at

@@ -1522,6 +1522,13 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if req.Self {
 		linkUserID = userID(r)
 	}
+	// Auto-linking an ADDED player to an existing account by contact
+	// (accountForContact) is allowed ONLY for the authenticated event OWNER —
+	// never anonymous or a non-owner. req.Self is client-controlled, so it must
+	// not gate this; TrustedAdd is server-set here and json:"-" on the request.
+	if uid := userID(r); uid != "" {
+		req.TrustedAdd = s.svc.UserOwnsEvent(uid, r.PathValue("id"))
+	}
 	reg, err := s.svc.RegisterPlayer(r.PathValue("id"), req, linkUserID)
 	if err != nil {
 		// A duplicate registration is a 409 so the client can show a friendly

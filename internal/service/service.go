@@ -774,10 +774,10 @@ func (s *Service) playerIDsForUser(userID, email string) ([]string, error) {
 		}
 	}
 	if email != "" {
-		// PostgREST ilike uses * as its only wildcard, so a raw email is a safe
-		// case-insensitive exact match.
+		// escapeLike neutralizes % and _ so this is a LITERAL case-insensitive
+		// match, not a wildcard pattern (a raw email can contain _).
 		pls, err := s.sb.Select("players",
-			"email=ilike."+store.Q(email)+"&select=id")
+			"email=ilike."+store.Q(escapeLike(email))+"&select=id")
 		if err != nil {
 			return nil, err
 		}
@@ -893,13 +893,18 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	// event-detail header shows the real numbers; a count failure must not fail
 	// the read — single reads otherwise leave the counts at 0.
 	if regs, rerr := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(id)+"&select=checked_in"); rerr == nil {
+		"event_id=eq."+store.Q(id)+"&select=checked_in,player_id"); rerr == nil {
 		ev.RegisteredCount = len(regs)
+		seen := make(map[string]bool, len(regs))
 		for _, r := range regs {
 			if asBool(r, "checked_in") {
 				ev.CheckedInCount++
 			}
+			if pid := asStr(r, "player_id"); pid != "" {
+				seen[pid] = true
+			}
 		}
+		ev.DistinctPlayerCount = len(seen)
 	}
 	return ev, nil
 }
@@ -3486,7 +3491,7 @@ func (s *Service) registrationExistsByContact(eventID, bracketID string, req mod
 		// re-registering. Without the name match, family members who share a
 		// phone/email would be wrongly blocked. (ilike = case-insensitive.)
 		players, err := s.sb.Select("players",
-			col+"=eq."+store.Q(val)+"&full_name=ilike."+store.Q(name)+"&select=id")
+			col+"=eq."+store.Q(val)+"&full_name=ilike."+store.Q(escapeLike(name))+"&select=id")
 		if err != nil {
 			return false, err
 		}
@@ -3651,7 +3656,9 @@ func (s *Service) sendWelcomeSmsOnce(playerID, eventID string) {
 		return
 	}
 	phone := strings.TrimSpace(asStr(pl, "phone"))
-	if phone == "" {
+	// Only text US/Canada (NANP) numbers — the A2P 10DLC campaign is NANP-only, and
+	// this keeps the "every send path gates on IsNANP" invariant.
+	if phone == "" || !gateway.IsNANP(phone) {
 		return
 	}
 	name := "your tournament"
@@ -4001,38 +4008,54 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			playerID = asStr(pl[0], "id")
 		}
 	} else {
-		// Organizer manually adding a player: if the typed contact confidently
-		// matches an existing account, tie the registration to it so their photo,
-		// push, and DUPR work right away — otherwise it stays an unlinked guest
-		// (initials avatar) until that player next signs in.
-		if uid := s.accountForContact(req.Email, req.Phone, req.FullName); uid != "" {
-			if existing, _ := s.sb.SelectOne("players",
-				"user_id=eq."+store.Q(uid)+"&select=id"); existing != nil {
-				// Reuse the account's own player row — don't overwrite their
-				// profile with the organizer's typed values.
-				playerID = asStr(existing, "id")
-				if dup, derr := s.sb.SelectOne("registrations",
-					"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
-						bracketFilter(bracketID)+"&select=id"); derr != nil {
-					return model.Registration{}, derr
-				} else if dup != nil {
-					return model.Registration{}, ErrAlreadyRegistered
+		// ORGANIZER manually adding a player (req.Self == false): if the typed
+		// contact confidently matches an existing account, tie the registration to
+		// it so their photo, push, and DUPR work right away. This is gated to the
+		// trusted organizer path — anonymous PUBLIC self-registration (req.Self ==
+		// true with no signed-in account also lands here with linkUserID=="") is
+		// untrusted, publicly-submitted input, so it must NEVER auto-link to a
+		// stranger's account; it stays an unlinked guest until that player signs in.
+		if !req.Self {
+			if uid := s.accountForContact(req.Email, req.Phone, req.FullName); uid != "" {
+				if existing, _ := s.sb.SelectOne("players",
+					"user_id=eq."+store.Q(uid)+"&select=id"); existing != nil {
+					// Reuse the account's own player row — don't overwrite their
+					// profile with the organizer's typed values.
+					playerID = asStr(existing, "id")
+					if dup, derr := s.sb.SelectOne("registrations",
+						"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+							bracketFilter(bracketID)+"&select=id"); derr != nil {
+						return model.Registration{}, derr
+					} else if dup != nil {
+						return model.Registration{}, ErrAlreadyRegistered
+					}
+				} else {
+					// Account exists (profile only, never registered) → create their
+					// first player row already tied to the account.
+					fields["user_id"] = uid
 				}
-			} else {
-				// Account exists (profile only, never registered) → create their
-				// first player row already tied to the account.
-				fields["user_id"] = uid
 			}
 		}
 		if playerID == "" {
 			pl, err := s.sb.Insert("players", fields)
 			if err != nil {
-				return model.Registration{}, err
-			}
-			if len(pl) == 0 {
+				// A CONCURRENT organizer-add of the same never-registered account may
+				// have just created its player row (unique user_id) — reuse it rather
+				// than failing this registration on the constraint.
+				if uid, ok := fields["user_id"].(string); ok && uid != "" {
+					if ex, _ := s.sb.SelectOne("players",
+						"user_id=eq."+store.Q(uid)+"&select=id"); ex != nil {
+						playerID = asStr(ex, "id")
+					}
+				}
+				if playerID == "" {
+					return model.Registration{}, err
+				}
+			} else if len(pl) == 0 {
 				return model.Registration{}, errors.New("player insert returned no row")
+			} else {
+				playerID = asStr(pl[0], "id")
 			}
-			playerID = asStr(pl[0], "id")
 		}
 	}
 
@@ -5148,6 +5171,13 @@ func (s *Service) RecordCourtScore(eventID string, court int, tok string, t1, t2
 	}
 	if matchID == "" {
 		return fmt.Errorf("no game in progress on court %d", court)
+	}
+	// A DISPUTED reported score must be resolved by the ORGANIZER in the console —
+	// don't let a (potentially leaked/printed) court QR token silently override an
+	// active dispute by superseding it via RecordScore.
+	if disp, _ := s.sb.SelectOne("score_reports",
+		"match_id=eq."+store.Q(matchID)+"&status=eq.disputed&select=id"); disp != nil {
+		return errors.New("this game's score is disputed — the organizer resolves it in the app")
 	}
 	return s.RecordScore(matchID, t1, t2)
 }
@@ -8775,10 +8805,10 @@ func (s *Service) LinkRegistrationsToAccount(userID, email, tokenPhone, tokenNam
 		}
 	}
 	if e := strings.TrimSpace(email); e != "" {
-		stamp("email=ilike." + store.Q(e))
+		stamp("email=ilike." + store.Q(escapeLike(e)))
 	}
 	if phone != "" && name != "" {
-		stamp("phone=eq." + store.Q(phone) + "&full_name=ilike." + store.Q(name))
+		stamp("phone=eq." + store.Q(phone) + "&full_name=ilike." + store.Q(escapeLike(name)))
 	}
 	if linked > 0 {
 		log.Printf("link: tied %d guest registration(s) to account %s", linked, userID)
@@ -8793,6 +8823,19 @@ func (s *Service) LinkRegistrationsToAccount(userID, email, tokenPhone, tokenNam
 // matching: email is treated as a unique key; a phone match also requires the
 // name. Returns "" when there's no confident match — the player then stays an
 // unlinked guest (initials avatar) until they sign in.
+// escapeLike neutralizes SQL/PostgREST LIKE metacharacters (\ % _) so a user-
+// supplied value used in an `ilike.` filter matches LITERALLY (case-insensitive)
+// rather than as a wildcard pattern. Without it an email/name containing `_` or
+// `%` — or a crafted `%` — would ILIKE-match a DIFFERENT account. (url.QueryEscape
+// in store.Q then encodes the added backslashes; PostgREST decodes them back and
+// Postgres's default LIKE escape char is `\`, so `\%` matches a literal `%`.)
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 func (s *Service) accountForContact(email, phone, name string) string {
 	email = strings.TrimSpace(email)
 	phone = strings.TrimSpace(phone)
@@ -8801,7 +8844,7 @@ func (s *Service) accountForContact(email, phone, name string) string {
 	// player row already tied to an account carries the email it registered with.
 	if email != "" {
 		if r, _ := s.sb.SelectOne("players",
-			"user_id=not.is.null&email=ilike."+store.Q(email)+"&select=user_id"); r != nil {
+			"user_id=not.is.null&email=ilike."+store.Q(escapeLike(email))+"&select=user_id"); r != nil {
 			if uid := asStr(r, "user_id"); uid != "" {
 				return uid
 			}
@@ -8811,7 +8854,7 @@ func (s *Service) accountForContact(email, phone, name string) string {
 		// 2) An account matched by phone + name on pmp_profiles — covers a player
 		// who has an account (and photo) but has never registered for an event.
 		if r, _ := s.sb.SelectOne("pmp_profiles",
-			"phone=eq."+store.Q(phone)+"&full_name=ilike."+store.Q(name)+
+			"phone=eq."+store.Q(phone)+"&full_name=ilike."+store.Q(escapeLike(name))+
 				"&select=user_id"); r != nil {
 			if uid := asStr(r, "user_id"); uid != "" {
 				return uid
@@ -8820,7 +8863,7 @@ func (s *Service) accountForContact(email, phone, name string) string {
 		// 3) Or a player row already linked to an account with the same phone+name.
 		if r, _ := s.sb.SelectOne("players",
 			"user_id=not.is.null&phone=eq."+store.Q(phone)+
-				"&full_name=ilike."+store.Q(name)+"&select=user_id"); r != nil {
+				"&full_name=ilike."+store.Q(escapeLike(name))+"&select=user_id"); r != nil {
 			if uid := asStr(r, "user_id"); uid != "" {
 				return uid
 			}
@@ -9403,17 +9446,21 @@ func (s *Service) StartRound(roundID string) (int, error) {
 		map[string]any{"status": "active", "started_at": now()}); err != nil {
 		return 0, err
 	}
-	// Mark every not-yet-played match in the round as in progress, so starting a
-	// whole round behaves like starting each match individually.
+	// Select the not-yet-started (scheduled) matches FIRST, then start + notify
+	// ONLY those. Otherwise re-tapping "Start round" (or a match that was already
+	// started individually) re-texts everyone and double-bills Twilio — the select
+	// must not include matches that are already in_progress.
+	matches, err := s.sb.Select("matches",
+		"round_id=eq."+store.Q(roundID)+"&status=eq.scheduled"+
+			"&select=id,event_id,court:courts!court_id(label)")
+	if err != nil {
+		return 0, err
+	}
+	// Mark them in progress, so starting a whole round behaves like starting each
+	// match individually.
 	if _, err := s.sb.Update("matches",
 		"round_id=eq."+store.Q(roundID)+"&status=eq.scheduled",
 		map[string]any{"status": "in_progress"}); err != nil {
-		return 0, err
-	}
-
-	matches, err := s.sb.Select("matches",
-		"round_id=eq."+store.Q(roundID)+"&select=id,event_id,court:courts!court_id(label)")
-	if err != nil {
 		return 0, err
 	}
 	sent := 0
@@ -9609,8 +9656,13 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	}
 
 	sent := 0
+	seen := map[string]bool{} // de-dupe: partners sharing a phone get ONE text.
 	for _, rc := range phones {
 		phone := rc.phone
+		if phone == "" || seen[phone] {
+			continue
+		}
+		seen[phone] = true
 		// Our A2P 10DLC campaign only reaches US/Canada numbers. International
 		// players are covered by the push above (if they have a linked account);
 		// skip the SMS rather than log a guaranteed carrier failure.

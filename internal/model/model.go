@@ -83,9 +83,12 @@ type Event struct {
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
 	EndsAt      *string `json:"endsAt,omitempty"`
 	Description *string `json:"description,omitempty"`
-	// RegisteredCount is the number of players registered (filled on the
-	// dashboard list; 0 on single-event reads).
+	// RegisteredCount is the number of registration ENTRIES (a player in 2
+	// divisions counts twice); filled on the dashboard list + single reads.
 	RegisteredCount int `json:"registeredCount"`
+	// DistinctPlayerCount is unique players (dedup by player_id); filled on single
+	// event reads. Use this (not RegisteredCount) to compare against MaxPlayers.
+	DistinctPlayerCount int `json:"distinctPlayerCount"`
 	// CheckedInCount is how many of the registered players are checked in
 	// (filled on the event-detail read).
 	CheckedInCount int    `json:"checkedInCount"`

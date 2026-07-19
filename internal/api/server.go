@@ -3882,6 +3882,14 @@ func (s *Server) nearbyEvents(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	// /events/nearby is a PUBLIC discovery feed (no auth). Strip organizer PII —
+	// payment handles and contact phone are only needed on the event's own page
+	// (registration/payment), not while browsing nearby tournaments.
+	for i := range events {
+		events[i].ContactPhone = nil
+		events[i].ZelleHandle = nil
+		events[i].VenmoHandle = nil
+	}
 	writeJSON(w, http.StatusOK, events)
 }
 

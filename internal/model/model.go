@@ -26,33 +26,37 @@ type Event struct {
 	ExtraDivisionFeeMode       string `json:"extraDivisionFeeMode"`
 	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`
 	// Paid add-ons a registrant can buy with their entry (0 = not offered).
-	AddonTeeCents   int      `json:"addonTeeCents"`
-	AddonGripsCents int      `json:"addonGripsCents"`
-	Currency        string   `json:"currency"`
-	ZelleHandle     *string  `json:"zelleHandle,omitempty"`
-	VenmoHandle     *string  `json:"venmoHandle,omitempty"`
-	ClubID          *string  `json:"clubId,omitempty"`
-	Location        *string  `json:"location,omitempty"`
-	ContactPhone    *string  `json:"contactPhone,omitempty"`
-	VenueNotes      *string  `json:"venueNotes,omitempty"`
-	WaiverURL       *string  `json:"waiverUrl,omitempty"`
+	AddonTeeCents   int     `json:"addonTeeCents"`
+	AddonGripsCents int     `json:"addonGripsCents"`
+	Currency        string  `json:"currency"`
+	ZelleHandle     *string `json:"zelleHandle,omitempty"`
+	VenmoHandle     *string `json:"venmoHandle,omitempty"`
+	ClubID          *string `json:"clubId,omitempty"`
+	Location        *string `json:"location,omitempty"`
+	ContactPhone    *string `json:"contactPhone,omitempty"`
+	VenueNotes      *string `json:"venueNotes,omitempty"`
+	WaiverURL       *string `json:"waiverUrl,omitempty"`
 	// Optional organizer-customized registration-confirmation email. Subject
 	// overrides the default "You're in! …"; Message is a personal note added to
 	// the top of the email. Both empty/unset → the branded default.
 	ConfirmEmailSubject *string `json:"confirmEmailSubject,omitempty"`
 	ConfirmEmailMessage *string `json:"confirmEmailMessage,omitempty"`
-	VenueName       *string  `json:"venueName,omitempty"`
-	VenueAddress    *string  `json:"venueAddress,omitempty"`
-	VenuePhone      *string  `json:"venuePhone,omitempty"`
-	VenueWebsite    *string  `json:"venueWebsite,omitempty"`
-	VenueLat        *float64 `json:"venueLat,omitempty"`
-	VenueLng        *float64 `json:"venueLng,omitempty"`
+	// Organizer email branding (Premium) — see CreateEventRequest for semantics.
+	EmailBrandLogoURL string   `json:"emailBrandLogoUrl,omitempty"`
+	EmailBrandColor   string   `json:"emailBrandColor,omitempty"`
+	EmailSignature    string   `json:"emailSignature,omitempty"`
+	VenueName         *string  `json:"venueName,omitempty"`
+	VenueAddress      *string  `json:"venueAddress,omitempty"`
+	VenuePhone        *string  `json:"venuePhone,omitempty"`
+	VenueWebsite      *string  `json:"venueWebsite,omitempty"`
+	VenueLat          *float64 `json:"venueLat,omitempty"`
+	VenueLng          *float64 `json:"venueLng,omitempty"`
 	// County + state resolved from the venue coords — used to filter the public
 	// Nearby feed to the requester's own county (matched together, since county
 	// names collide across states). Best-effort; "" when unresolved.
-	County          string   `json:"county,omitempty"`
-	State           string   `json:"state,omitempty"`
-	DuprSanctioned  bool     `json:"duprSanctioned"`
+	County         string `json:"county,omitempty"`
+	State          string `json:"state,omitempty"`
+	DuprSanctioned bool   `json:"duprSanctioned"`
 	// DuprMinEntitlement, when set to "DUPR_PLUS", gates self-registration on a
 	// DUPR+ membership — the player must hold BOTH the PREMIUM_L1 and VERIFIED_L1
 	// entitlements (DUPR's one consumer-facing tier). Empty = a standard
@@ -821,40 +825,47 @@ type DuprConnection struct {
 }
 
 type CreateEventRequest struct {
-	Name                 string   `json:"name"`
-	Format               string   `json:"format"`           // singles|doubles (default doubles)
-	PartnerMode          string   `json:"partnerMode"`      // fixed|rotating (default rotating)
-	TournamentFormat     string   `json:"tournamentFormat"` // default round_robin
-	ScoringMode          string   `json:"scoringMode"`      // default wins
-	NumCourts            int      `json:"numCourts"`
-	PointsToWin          int      `json:"pointsToWin"`
-	WinBy                int      `json:"winBy"`
-	BestOf               int      `json:"bestOf"`
-	GameDurationMinutes  int      `json:"gameDurationMinutes"`
-	MinPoolRounds        int      `json:"minPoolRounds"`
-	MaxPoolRounds        int      `json:"maxPoolRounds"`
-	RegistrationFeeCents int      `json:"registrationFeeCents"`
+	Name                 string `json:"name"`
+	Format               string `json:"format"`           // singles|doubles (default doubles)
+	PartnerMode          string `json:"partnerMode"`      // fixed|rotating (default rotating)
+	TournamentFormat     string `json:"tournamentFormat"` // default round_robin
+	ScoringMode          string `json:"scoringMode"`      // default wins
+	NumCourts            int    `json:"numCourts"`
+	PointsToWin          int    `json:"pointsToWin"`
+	WinBy                int    `json:"winBy"`
+	BestOf               int    `json:"bestOf"`
+	GameDurationMinutes  int    `json:"gameDurationMinutes"`
+	MinPoolRounds        int    `json:"minPoolRounds"`
+	MaxPoolRounds        int    `json:"maxPoolRounds"`
+	RegistrationFeeCents int    `json:"registrationFeeCents"`
 	// Multi-division pricing (see CreateEventRequest).
 	ExtraDivisionFeeMode       string `json:"extraDivisionFeeMode"`
 	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`
 	AddonTeeCents              int    `json:"addonTeeCents,omitempty"`
 	AddonGripsCents            int    `json:"addonGripsCents,omitempty"`
-	ZelleHandle          string   `json:"zelleHandle,omitempty"`
-	VenmoHandle          string   `json:"venmoHandle,omitempty"`
-	ClubID               string   `json:"clubId,omitempty"`
-	Location             string   `json:"location"`
-	ContactPhone         string   `json:"contactPhone"`
-	VenueNotes           string   `json:"venueNotes"`
-	WaiverURL            string   `json:"waiverUrl"`
-	ConfirmEmailSubject  string   `json:"confirmEmailSubject"`
-	ConfirmEmailMessage  string   `json:"confirmEmailMessage"`
-	VenueName            string   `json:"venueName"`
-	VenueAddress         string   `json:"venueAddress"`
-	VenuePhone           string   `json:"venuePhone"`
-	VenueWebsite         string   `json:"venueWebsite"`
-	VenueLat             *float64 `json:"venueLat"`
-	VenueLng             *float64 `json:"venueLng"`
-	DuprSanctioned       bool     `json:"duprSanctioned"`
+	ZelleHandle                string `json:"zelleHandle,omitempty"`
+	VenmoHandle                string `json:"venmoHandle,omitempty"`
+	ClubID                     string `json:"clubId,omitempty"`
+	Location                   string `json:"location"`
+	ContactPhone               string `json:"contactPhone"`
+	VenueNotes                 string `json:"venueNotes"`
+	WaiverURL                  string `json:"waiverUrl"`
+	ConfirmEmailSubject        string `json:"confirmEmailSubject"`
+	ConfirmEmailMessage        string `json:"confirmEmailMessage"`
+	// Organizer email branding (Premium) — applied to every outgoing email for
+	// this event when the owner is Premium. All optional; empty = PlanMyPickle
+	// default look. EmailBrandColor is a #RRGGBB accent; EmailSignature is a
+	// plain-text sign-off shown above the footer.
+	EmailBrandLogoURL string   `json:"emailBrandLogoUrl,omitempty"`
+	EmailBrandColor   string   `json:"emailBrandColor,omitempty"`
+	EmailSignature    string   `json:"emailSignature,omitempty"`
+	VenueName         string   `json:"venueName"`
+	VenueAddress      string   `json:"venueAddress"`
+	VenuePhone        string   `json:"venuePhone"`
+	VenueWebsite      string   `json:"venueWebsite"`
+	VenueLat          *float64 `json:"venueLat"`
+	VenueLng          *float64 `json:"venueLng"`
+	DuprSanctioned    bool     `json:"duprSanctioned"`
 	// DuprMinEntitlement: "" | "DUPR_PLUS" — gates self-register on a DUPR+
 	// membership (Premium + Verified). Non-empty implies DuprSanctioned.
 	DuprMinEntitlement  string         `json:"duprMinEntitlement"`
@@ -864,9 +875,9 @@ type CreateEventRequest struct {
 	AutoAdjust          bool           `json:"autoAdjust"`
 	AutoStartNext       bool           `json:"autoStartNext"` // auto-start next game on a freed court
 	CourtCalls          bool           `json:"courtCalls"`    // TV scoreboard defaults voice court-calls on
-	TeamSize            int            `json:"teamSize"` // >0 = MLP team event (4 = 2M/2W)
-	StartsAt            string         `json:"startsAt"` // RFC3339 UTC, "" = none
-	EndsAt              string         `json:"endsAt"`   // RFC3339 UTC, "" = none
+	TeamSize            int            `json:"teamSize"`      // >0 = MLP team event (4 = 2M/2W)
+	StartsAt            string         `json:"startsAt"`      // RFC3339 UTC, "" = none
+	EndsAt              string         `json:"endsAt"`        // RFC3339 UTC, "" = none
 	Description         string         `json:"description"`
 	AdminPasscode       string         `json:"adminPasscode"`
 	Brackets            []BracketInput `json:"brackets"`
@@ -1243,9 +1254,9 @@ type CheckoutRequest struct {
 // check-in status only (NO phone/email/DUPR), safe to show players/spectators.
 // PlayerID links to the public player profile (it's an opaque id, not PII).
 type RosterEntry struct {
-	PlayerID  string `json:"playerId,omitempty"`
-	FullName  string `json:"fullName"`
-	Division  string `json:"division,omitempty"`
+	PlayerID string `json:"playerId,omitempty"`
+	FullName string `json:"fullName"`
+	Division string `json:"division,omitempty"`
 	// PartnerID is the doubles partner's player id (empty for singles / unpaired),
 	// so the player list can group a pair (their "team") together.
 	PartnerID string `json:"partnerId,omitempty"`

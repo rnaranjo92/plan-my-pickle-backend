@@ -14,6 +14,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -31,8 +32,8 @@ import (
 )
 
 type Service struct {
-	sb     *store.Client // Supabase REST (the sole data store)
-	Pay    gateway.PaymentGateway
+	sb  *store.Client // Supabase REST (the sole data store)
+	Pay gateway.PaymentGateway
 	// PayPal is the optional PayPal/Venmo processor (marketplace split payouts).
 	// nil unless PAYPAL_CLIENT_ID/SECRET are configured — the whole PayPal path
 	// is dormant until then, so it ships env-gated and inactive.
@@ -292,6 +293,43 @@ func sanitizeEmailField(s string, maxRunes int, singleLine bool) string {
 	return s
 }
 
+// sanitizeHexColor accepts a #RGB or #RRGGBB color (case-insensitive) and returns
+// it normalized to lowercase #rrggbb, or "" if it isn't a valid hex color. Guards
+// the email header/button accent against a junk or injected value.
+func sanitizeHexColor(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if !strings.HasPrefix(s, "#") {
+		return ""
+	}
+	h := s[1:]
+	if len(h) != 3 && len(h) != 6 {
+		return ""
+	}
+	for _, c := range h {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return ""
+		}
+	}
+	if len(h) == 3 { // expand #abc → #aabbcc
+		h = string([]byte{h[0], h[0], h[1], h[1], h[2], h[2]})
+	}
+	return "#" + h
+}
+
+// sanitizeHTTPURL returns s only if it's a well-formed http(s) URL within maxLen,
+// else "". Keeps a junk/non-web value (or a javascript: scheme) out of an <img src>.
+func sanitizeHTTPURL(s string, maxLen int) string {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > maxLen {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return s
+}
+
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
 func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
@@ -375,49 +413,49 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		return "", ErrForbidden
 	}
 	payload := map[string]any{
-		"name":                   req.Name,
-		"format":                 format,
-		"partner_mode":           partner,
-		"tournament_format":      tf,
-		"scoring_mode":           scoring,
-		"num_courts":             courts,
-		"points_to_win":          ptw,
-		"win_by":                 winBy,
-		"best_of":                bestOf,
-		"game_duration_minutes":  gameMin,
+		"name":                          req.Name,
+		"format":                        format,
+		"partner_mode":                  partner,
+		"tournament_format":             tf,
+		"scoring_mode":                  scoring,
+		"num_courts":                    courts,
+		"points_to_win":                 ptw,
+		"win_by":                        winBy,
+		"best_of":                       bestOf,
+		"game_duration_minutes":         gameMin,
 		"registration_fee_cents":        req.RegistrationFeeCents,
 		"extra_division_fee_mode":       normExtraDivMode(req.ExtraDivisionFeeMode),
 		"additional_division_fee_cents": max(req.AdditionalDivisionFeeCents, 0),
 		"addon_tee_cents":               req.AddonTeeCents,
 		"addon_grips_cents":             req.AddonGripsCents,
 		"currency":                      "USD",
-		"location":               orNull(req.Location),
-		"contact_phone":          orNull(req.ContactPhone),
-		"zelle_handle":           orNull(req.ZelleHandle),
-		"venmo_handle":           orNull(req.VenmoHandle),
-		"club_id":                orNull(req.ClubID),
-		"dupr_sanctioned":        sanctioned,
-		"dupr_min_entitlement":   orNull(minEnt),
-		"cash_prize":             req.CashPrize,
-		"cash_prize_amount":      fOrNull(req.CashPrizeAmount),
-		"consolation":            req.Consolation,
-		"auto_adjust":            req.AutoAdjust,
-		"auto_start_next":        req.AutoStartNext,
-		"court_calls":            req.CourtCalls,
-		"team_size":              req.TeamSize,
-		"admin_passcode":         orNull(req.AdminPasscode),
-		"owner_id":               orNull(ownerID),
-		"listed":                 req.Listed,
-		"player_scoring":         req.PlayerScoring,
-		"score_confirm_minutes":  clampConfirmMinutes(req.ScoreConfirmMinutes),
-		"poster_url":             orNull(req.PosterURL),
-		"venue_name":             orNull(req.VenueName),
-		"venue_address":          orNull(req.VenueAddress),
-		"venue_phone":            orNull(req.VenuePhone),
-		"venue_website":          orNull(req.VenueWebsite),
-		"venue_lat":              fOrNull(venueLat),
-		"venue_lng":              fOrNull(venueLng),
-		"status":                 "open",
+		"location":                      orNull(req.Location),
+		"contact_phone":                 orNull(req.ContactPhone),
+		"zelle_handle":                  orNull(req.ZelleHandle),
+		"venmo_handle":                  orNull(req.VenmoHandle),
+		"club_id":                       orNull(req.ClubID),
+		"dupr_sanctioned":               sanctioned,
+		"dupr_min_entitlement":          orNull(minEnt),
+		"cash_prize":                    req.CashPrize,
+		"cash_prize_amount":             fOrNull(req.CashPrizeAmount),
+		"consolation":                   req.Consolation,
+		"auto_adjust":                   req.AutoAdjust,
+		"auto_start_next":               req.AutoStartNext,
+		"court_calls":                   req.CourtCalls,
+		"team_size":                     req.TeamSize,
+		"admin_passcode":                orNull(req.AdminPasscode),
+		"owner_id":                      orNull(ownerID),
+		"listed":                        req.Listed,
+		"player_scoring":                req.PlayerScoring,
+		"score_confirm_minutes":         clampConfirmMinutes(req.ScoreConfirmMinutes),
+		"poster_url":                    orNull(req.PosterURL),
+		"venue_name":                    orNull(req.VenueName),
+		"venue_address":                 orNull(req.VenueAddress),
+		"venue_phone":                   orNull(req.VenuePhone),
+		"venue_website":                 orNull(req.VenueWebsite),
+		"venue_lat":                     fOrNull(venueLat),
+		"venue_lng":                     fOrNull(venueLng),
+		"status":                        "open",
 	}
 	// Only reference starts_at when the organizer set one. The column ships in
 	// migration 0012; a date-less create never touches it, so this works before
@@ -450,6 +488,16 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	}
 	if msg := sanitizeEmailField(req.ConfirmEmailMessage, 1000, false); msg != "" {
 		payload["confirm_email_message"] = msg
+	}
+	// email_brand_* ship in add_email_branding.sql — migration-safe (only set here).
+	if c := sanitizeHexColor(req.EmailBrandColor); c != "" {
+		payload["email_brand_color"] = c
+	}
+	if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
+		payload["email_brand_logo_url"] = u
+	}
+	if sig := sanitizeEmailField(req.EmailSignature, 200, false); sig != "" {
+		payload["email_signature"] = sig
 	}
 	// sms_notifications ships in add_sms_notifications.sql — migration-safe (only
 	// referenced when true; premium gate enforced at the handler).
@@ -519,15 +567,15 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 			dt = "open"
 		}
 		brackets = append(brackets, map[string]any{
-			"event_id":      id,
-			"name":          d.Name,
-			"min_rating":    fOrNull(d.MinRating),
-			"max_rating":    fOrNull(d.MaxRating),
-			"min_age":       iOrNull(d.MinAge),
-			"max_age":       iOrNull(d.MaxAge),
-			"division_type": dt,
-			"dupr_min":      fOrNull(d.DuprMin),
-			"dupr_max":      fOrNull(d.DuprMax),
+			"event_id":         id,
+			"name":             d.Name,
+			"min_rating":       fOrNull(d.MinRating),
+			"max_rating":       fOrNull(d.MaxRating),
+			"min_age":          iOrNull(d.MinAge),
+			"max_age":          iOrNull(d.MaxAge),
+			"division_type":    dt,
+			"dupr_min":         fOrNull(d.DuprMin),
+			"dupr_max":         fOrNull(d.DuprMax),
 			"courts":           iaOrNull(d.Courts),
 			"player_count":     iOrNull(d.PlayerCount),
 			"start_minutes":    iOrNull(d.StartMinutes),
@@ -1307,10 +1355,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// only via the dedicated POST /events/{id}/poster endpoint, so a metadata edit
 	// (which always sends posterUrl="") never erases an uploaded banner.
 	upd := map[string]any{
-		"name":                   req.Name,
-		"num_courts":             courts,
-		"points_to_win":          ptw,
-		"win_by":                 winBy,
+		"name":                          req.Name,
+		"num_courts":                    courts,
+		"points_to_win":                 ptw,
+		"win_by":                        winBy,
 		"best_of":                       normalizeBestOf(req.BestOf),
 		"game_duration_minutes":         clampGameDuration(req.GameDurationMinutes),
 		"registration_fee_cents":        req.RegistrationFeeCents,
@@ -1319,11 +1367,11 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"addon_tee_cents":               req.AddonTeeCents,
 		"addon_grips_cents":             req.AddonGripsCents,
 		"location":                      orNull(req.Location),
-		"dupr_sanctioned":        sanctioned,
-		"dupr_min_entitlement":   orNull(minEnt),
-		"auto_adjust":            req.AutoAdjust,
-		"auto_start_next":        req.AutoStartNext,
-		"court_calls":            req.CourtCalls,
+		"dupr_sanctioned":               sanctioned,
+		"dupr_min_entitlement":          orNull(minEnt),
+		"auto_adjust":                   req.AutoAdjust,
+		"auto_start_next":               req.AutoStartNext,
+		"court_calls":                   req.CourtCalls,
 		// On edit the form always sends these, so write them unconditionally —
 		// an empty value clears the field (orNull → SQL NULL).
 		"listed":                req.Listed,
@@ -1387,6 +1435,19 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// default (the frontend always sends both fields on edit). Sanitized as in create.
 	upd["confirm_email_subject"] = orNull(sanitizeEmailField(req.ConfirmEmailSubject, 120, true))
 	upd["confirm_email_message"] = orNull(sanitizeEmailField(req.ConfirmEmailMessage, 1000, false))
+	// email_brand_* ship in add_email_branding.sql — referenced ONLY when set so an
+	// edit never breaks before the migration is applied (clearing back to default
+	// won't persist until the columns are live; acceptable). Sanitized: color must
+	// be a #RRGGBB hex, logo must be an http(s) URL, signature is plain multi-line.
+	if c := sanitizeHexColor(req.EmailBrandColor); c != "" {
+		upd["email_brand_color"] = c
+	}
+	if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
+		upd["email_brand_logo_url"] = u
+	}
+	if sig := sanitizeEmailField(req.EmailSignature, 200, false); sig != "" {
+		upd["email_signature"] = sig
+	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
 	// an edit never breaks before the migration is applied. (Trade-off: clearing
 	// a bound back to 0 won't persist until the column is live; acceptable.)
@@ -3204,14 +3265,14 @@ func (s *Service) SyncDivisions(eventID string, divs []model.BracketInput) ([]st
 			dt = "open"
 		}
 		fields := map[string]any{
-			"name":          d.Name,
-			"min_rating":    fOrNull(d.MinRating),
-			"max_rating":    fOrNull(d.MaxRating),
-			"min_age":       iOrNull(d.MinAge),
-			"max_age":       iOrNull(d.MaxAge),
-			"division_type": dt,
-			"dupr_min":      fOrNull(d.DuprMin),
-			"dupr_max":      fOrNull(d.DuprMax),
+			"name":             d.Name,
+			"min_rating":       fOrNull(d.MinRating),
+			"max_rating":       fOrNull(d.MaxRating),
+			"min_age":          iOrNull(d.MinAge),
+			"max_age":          iOrNull(d.MaxAge),
+			"division_type":    dt,
+			"dupr_min":         fOrNull(d.DuprMin),
+			"dupr_max":         fOrNull(d.DuprMax),
 			"courts":           iaOrNull(d.Courts),
 			"player_count":     iOrNull(d.PlayerCount),
 			"start_minutes":    iOrNull(d.StartMinutes),

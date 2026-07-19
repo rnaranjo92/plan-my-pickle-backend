@@ -15,6 +15,150 @@ import (
 // the request path (the caller wraps them in a goroutine): a mail hiccup must
 // never fail a registration.
 
+// poweredByFooter is the free-tier PlanMyPickle sign-off appended below the card.
+// Premium events omit it (branding removed).
+const poweredByFooter = `<p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">
+  Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a>
+  — tournaments, minus the chaos.</p>`
+
+// emailBrand is the resolved organizer branding for one event's emails. The zero
+// value renders the PlanMyPickle default look (navy header, green eyebrow, yellow
+// button). Branding is a Premium perk, so brandFor returns the zero value for
+// free-tier owners regardless of what's stored.
+type emailBrand struct {
+	logoURL   string
+	color     string // #rrggbb accent; "" = default palette
+	signature string
+}
+
+func brandFor(ev model.Event) emailBrand {
+	if !ev.OwnerPremium {
+		return emailBrand{}
+	}
+	return emailBrand{
+		logoURL:   strings.TrimSpace(ev.EmailBrandLogoURL),
+		color:     strings.TrimSpace(ev.EmailBrandColor),
+		signature: strings.TrimSpace(ev.EmailSignature),
+	}
+}
+
+// readableText returns "#16203a" (dark) or "#ffffff" (white) — whichever has
+// enough contrast to sit on the given #rrggbb background (perceived-luminance
+// threshold). Keeps a header/button legible under ANY organizer accent color.
+func readableText(hex string) string {
+	if len(hex) != 7 || hex[0] != '#' {
+		return "#ffffff"
+	}
+	v := func(a, b byte) int {
+		hv := func(c byte) int {
+			switch {
+			case c >= '0' && c <= '9':
+				return int(c - '0')
+			case c >= 'a' && c <= 'f':
+				return int(c-'a') + 10
+			case c >= 'A' && c <= 'F':
+				return int(c-'A') + 10
+			}
+			return 0
+		}
+		return hv(a)*16 + hv(b)
+	}
+	r, g, b := v(hex[1], hex[2]), v(hex[3], hex[4]), v(hex[5], hex[6])
+	if (299*r+587*g+114*b)/1000 > 150 {
+		return "#16203a"
+	}
+	return "#ffffff"
+}
+
+// header renders the card's top band. Default = navy bg + green eyebrow + white
+// title. With a brand color, the band takes the accent and the text flips to the
+// readable shade. A brand logo, when set, sits above the eyebrow.
+func (b emailBrand) header(eyebrow, title string) string {
+	bg, eye, txt := "#16245c", "#8dc63f", "#ffffff"
+	if b.color != "" {
+		bg = b.color
+		txt = readableText(bg)
+		eye = txt
+	}
+	logo := ""
+	if b.logoURL != "" {
+		logo = fmt.Sprintf(`<img src="%s" alt="" style="height:38px;max-width:220px;margin:0 0 12px;display:block;object-fit:contain">`,
+			html.EscapeString(b.logoURL))
+	}
+	return fmt.Sprintf(`<div style="background:%s;padding:22px 26px">%s<p style="margin:0;color:%s;font-size:12px;font-weight:800;letter-spacing:1.4px;opacity:0.92">%s</p><h1 style="margin:6px 0 0;color:%s;font-size:22px;line-height:1.25">%s</h1></div>`,
+		bg, logo, eye, html.EscapeString(eyebrow), txt, html.EscapeString(title))
+}
+
+// button renders the primary CTA. Default yellow; a brand color overrides it with
+// a contrast-picked label color.
+func (b emailBrand) button(label, href string) string {
+	bg, txt := "#f5c518", "#16203a"
+	if b.color != "" {
+		bg = b.color
+		txt = readableText(bg)
+	}
+	return fmt.Sprintf(`<a href="%s" style="display:block;margin:22px 0 4px;background:%s;color:%s;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">%s</a>`,
+		html.EscapeString(href), bg, txt, html.EscapeString(label))
+}
+
+// shell wraps body HTML in the branded card: header + body + optional signature,
+// with the free-tier powered-by mark appended below the card. bodyHTML is trusted
+// (assembled by the caller from escaped parts).
+func (b emailBrand) shell(eyebrow, title, bodyHTML string, ownerPremium bool) string {
+	sig := ""
+	if b.signature != "" {
+		sig = fmt.Sprintf(`<p style="margin:20px 0 0;padding-top:14px;border-top:1px solid #eef2e6;font-size:13px;color:#5b6b80;line-height:1.5;white-space:pre-line">%s</p>`,
+			html.EscapeString(b.signature))
+	}
+	pw := ""
+	if !ownerPremium {
+		pw = poweredByFooter
+	}
+	return fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    %s
+    <div style="padding:24px 26px">
+%s%s
+    </div>
+  </div>%s
+</div>`, b.header(eyebrow, title), bodyHTML, sig, pw)
+}
+
+// customEmailBody renders a free-form organizer email (subject → title, message →
+// body) through the shared branded shell. The message is plain text: escaped,
+// newlines kept as <br>.
+func customEmailBody(brand emailBrand, fullName, eventName, subject, message, eventURL string,
+	ownerPremium bool) (string, string) {
+	esc := html.EscapeString
+	firstName := fullName
+	if i := strings.IndexByte(fullName, ' '); i > 0 {
+		firstName = fullName[:i]
+	}
+	message = strings.ReplaceAll(strings.ReplaceAll(message, "\r\n", "\n"), "\r", "\n")
+	bodyHTML := fmt.Sprintf(
+		`      <p style="margin:0 0 12px;color:#16203a;font-size:15px">Hi %s —</p>
+      <div style="color:#16203a;font-size:14.5px;line-height:1.6">%s</div>
+      %s`,
+		esc(firstName), strings.ReplaceAll(esc(message), "\n", "<br>"),
+		brand.button("Open the event", eventURL))
+	title := subject
+	if strings.TrimSpace(title) == "" {
+		title = eventName
+	}
+	htmlBody := brand.shell(eventName, title, bodyHTML, ownerPremium)
+
+	var tb strings.Builder
+	fmt.Fprintf(&tb, "%s\n\nHi %s,\n\n%s\n\nEvent page: %s\n",
+		title, firstName, message, eventURL)
+	if brand.signature != "" {
+		fmt.Fprintf(&tb, "\n%s\n", brand.signature)
+	}
+	if !ownerPremium {
+		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
+	}
+	return htmlBody, tb.String()
+}
+
 // SendRegistrationEmail emails a branded confirmation to a just-registered
 // player. Called from the register HTTP handler only — bulk imports and QA
 // seeders deliberately don't email (a 150-row CSV import must not fire 150
@@ -70,7 +214,7 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 		customMsg = sanitizeEmailField(*ev.ConfirmEmailMessage, 1000, false)
 	}
 	htmlBody, textBody := registrationEmailBody(
-		fullName, ev.Name, when, where, division, eventURL, ev.OwnerPremium, customMsg)
+		brandFor(ev), fullName, ev.Name, when, where, division, eventURL, ev.OwnerPremium, customMsg)
 	if err := s.Email.SendEmail(email, subject, htmlBody, textBody); err != nil {
 		log.Printf("email: registration confirm to %s failed: %v", email, err)
 	}
@@ -79,7 +223,7 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 // registrationEmailBody renders the branded confirmation (HTML + plain text).
 // Free-tier events carry the "Powered by PlanMyPickle" footer; Premium
 // organizers' emails are unbranded (same rule as the app views / TV board).
-func registrationEmailBody(fullName, eventName, when, where, division, eventURL string,
+func registrationEmailBody(brand emailBrand, fullName, eventName, when, where, division, eventURL string,
 	ownerPremium bool, customMessage string) (string, string) {
 	esc := html.EscapeString
 	firstName := fullName
@@ -109,30 +253,14 @@ func registrationEmailBody(fullName, eventName, when, where, division, eventURL 
 </tr>`, esc(label), esc(value))
 	}
 
-	footer := ""
-	if !ownerPremium {
-		footer = `<p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">
-  Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a>
-  — tournaments, minus the chaos.</p>`
-	}
-
-	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
-    <div style="background:#16245c;padding:22px 26px">
-      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">YOU'RE REGISTERED</p>
-      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
-    </div>
-    <div style="padding:24px 26px">
-      <p style="margin:0 0 14px;color:#16203a;font-size:15px">Hi %s — you're locked in. Here's your event at a glance:</p>
+	bodyHTML := fmt.Sprintf(`      <p style="margin:0 0 14px;color:#16203a;font-size:15px">Hi %s — you're locked in. Here's your event at a glance:</p>
       %s<table cellpadding="0" cellspacing="0" style="border-collapse:collapse">%s%s%s</table>
-      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the event — schedule &amp; live scores</a>
-      <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">On game day you'll check in with a QR code — no clipboard, no line.</p>
-    </div>
-  </div>%s
-</div>`,
-		esc(eventName), esc(firstName), noteHTML,
+      %s
+      <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">On game day you'll check in with a QR code — no clipboard, no line.</p>`,
+		esc(firstName), noteHTML,
 		row("When", when), row("Where", where), row("Division", division),
-		eventURL, footer)
+		brand.button("Open the event — schedule & live scores", eventURL))
+	htmlBody := brand.shell("YOU'RE REGISTERED", eventName, bodyHTML, ownerPremium)
 
 	var tb strings.Builder
 	fmt.Fprintf(&tb, "You're registered — %s\n\nHi %s, you're locked in.\n\n", eventName, firstName)
@@ -222,11 +350,12 @@ func (s *Service) EmailScheduleToPlayers(eventID string) (int, error) {
 	}
 	scheduleURL := "https://app.planmypickle.com/?schedule=" + ev.ID
 	eventName, premium := ev.Name, ev.OwnerPremium
+	brand := brandFor(ev)
 
 	go func() {
 		for _, rc := range recips {
 			htmlBody, textBody := scheduleEmailBody(
-				rc.name, eventName, when, where, rc.lines, scheduleURL, premium)
+				brand, rc.name, eventName, when, where, rc.lines, scheduleURL, premium)
 			if err := s.Email.SendEmail(
 				rc.email, "Your schedule — "+eventName, htmlBody, textBody); err != nil {
 				log.Printf("email: schedule to %s failed: %v", rc.email, err)
@@ -279,10 +408,11 @@ func (s *Service) EmailInstructionsToPlayers(eventID, message string) (int, erro
 	}
 	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
 	eventName, premium := ev.Name, ev.OwnerPremium
+	brand := brandFor(ev)
 	go func() {
 		for _, rc := range recips {
 			htmlBody, textBody := instructionsEmailBody(
-				rc.name, eventName, message, eventURL, premium)
+				brand, rc.name, eventName, message, eventURL, premium)
 			if err := s.Email.SendEmail(
 				rc.email, "Tournament info — "+eventName, htmlBody, textBody); err != nil {
 				log.Printf("email: instructions to %s failed: %v", rc.email, err)
@@ -295,39 +425,154 @@ func (s *Service) EmailInstructionsToPlayers(eventID, message string) (int, erro
 	return len(recips), nil
 }
 
+// customEmailRecip is one resolved recipient for a custom organizer blast.
+type customEmailRecip struct{ email, name string }
+
+// customEmailRecipients resolves the audience for a custom email by segment:
+//
+//	"" | "all"  → every registered player (registrations, or team members)
+//	"checkedIn" → only players checked in at the event
+//	"waitlist"  → the event's waitlist entries
+//
+// Dedup keys differ per source (player_id for players, lowercased email for the
+// waitlist, which has no player_id) so a person is emailed once. Rows without an
+// email are skipped.
+func (s *Service) customEmailRecipients(ev model.Event, segment string) ([]customEmailRecip, error) {
+	seen := map[string]bool{}
+	var out []customEmailRecip
+	add := func(key, email, name string) {
+		email = strings.TrimSpace(email)
+		if email == "" || key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, customEmailRecip{email: email, name: name})
+	}
+	switch segment {
+	case "waitlist":
+		rows, err := s.sb.SelectAll("event_waitlist",
+			"event_id=eq."+store.Q(ev.ID)+"&select=full_name,email")
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			e := asStr(r, "email")
+			add(strings.ToLower(strings.TrimSpace(e)), e, asStr(r, "full_name"))
+		}
+	case "checkedIn":
+		rows, err := s.sb.SelectAll("registrations",
+			"event_id=eq."+store.Q(ev.ID)+"&checked_in=eq.true"+
+				"&select=player_id,player:players!player_id(full_name,email)")
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			p := asMap(r, "player")
+			if p == nil {
+				continue
+			}
+			add(asStr(r, "player_id"), asStr(p, "email"), asStr(p, "full_name"))
+		}
+	default: // "all" and ""
+		idents, err := s.scheduleIdentities(ev)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range idents {
+			add(id.pid, id.email, id.name)
+		}
+	}
+	return out, nil
+}
+
+// SendCustomEmail sends a free-form organizer email (subject + message) to a
+// segment of the event's people (see customEmailRecipients). Returns the number
+// of recipients the blast was QUEUED for — delivery is async/best-effort, run off
+// the request path in a throttled goroutine (same as the schedule/instructions
+// blasts) so a bulk send never blocks or times out the handler.
+func (s *Service) SendCustomEmail(eventID, subject, message, segment string) (int, error) {
+	if s.Email == nil || !s.Email.Live() {
+		return 0, fmt.Errorf("email is not configured")
+	}
+	subject = sanitizeEmailField(subject, 140, true)
+	message = strings.TrimSpace(message)
+	if subject == "" {
+		return 0, fmt.Errorf("subject is required")
+	}
+	if message == "" {
+		return 0, fmt.Errorf("message is required")
+	}
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return 0, err
+	}
+	recips, err := s.customEmailRecipients(ev, segment)
+	if err != nil {
+		return 0, err
+	}
+	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
+	brand := brandFor(ev)
+	eventName, premium := ev.Name, ev.OwnerPremium
+	go func() {
+		for _, rc := range recips {
+			htmlBody, textBody := customEmailBody(
+				brand, rc.name, eventName, subject, message, eventURL, premium)
+			if err := s.Email.SendEmail(rc.email, subject, htmlBody, textBody); err != nil {
+				log.Printf("email: custom to %s failed: %v", rc.email, err)
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+		log.Printf("email: custom blast for %s (segment=%q) dispatched to %d",
+			eventID, segment, len(recips))
+	}()
+	return len(recips), nil
+}
+
+// SendCustomEmailTest sends ONE copy of the composed email to a single address
+// (the organizer's own), so they can preview the real thing before blasting.
+func (s *Service) SendCustomEmailTest(eventID, subject, message, toEmail, toName string) error {
+	if s.Email == nil || !s.Email.Live() {
+		return fmt.Errorf("email is not configured")
+	}
+	subject = sanitizeEmailField(subject, 140, true)
+	message = strings.TrimSpace(message)
+	toEmail = strings.TrimSpace(toEmail)
+	if subject == "" || message == "" {
+		return fmt.Errorf("subject and message are required")
+	}
+	if toEmail == "" {
+		return fmt.Errorf("no address to send the test to")
+	}
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return err
+	}
+	if toName == "" {
+		toName = "there"
+	}
+	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
+	htmlBody, textBody := customEmailBody(
+		brandFor(ev), toName, ev.Name, subject, message, eventURL, ev.OwnerPremium)
+	return s.Email.SendEmail(toEmail, "[Test] "+subject, htmlBody, textBody)
+}
+
 // instructionsEmailBody renders the organizer's pre-tournament briefing (HTML +
 // text). The organizer's message is plain text — escaped, with newlines kept as
 // line breaks. Free-tier events carry the PlanMyPickle footer; Premium is clean.
-func instructionsEmailBody(fullName, eventName, message, eventURL string,
+func instructionsEmailBody(brand emailBrand, fullName, eventName, message, eventURL string,
 	ownerPremium bool) (string, string) {
 	esc := html.EscapeString
 	firstName := fullName
 	if i := strings.IndexByte(fullName, ' '); i > 0 {
 		firstName = fullName[:i]
 	}
-	bodyHTML := strings.ReplaceAll(esc(message), "\n", "<br>")
-
-	footer := ""
-	if !ownerPremium {
-		footer = `<p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">
-  Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a>
-  — tournaments, minus the chaos.</p>`
-	}
-
-	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
-    <div style="background:#16245c;padding:22px 26px">
-      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">PLAYER INSTRUCTIONS</p>
-      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
-    </div>
-    <div style="padding:24px 26px">
-      <p style="margin:0 0 12px;color:#16203a;font-size:15px">Hi %s —</p>
+	bodyHTML := fmt.Sprintf(
+		`      <p style="margin:0 0 12px;color:#16203a;font-size:15px">Hi %s —</p>
       <div style="color:#16203a;font-size:14.5px;line-height:1.6">%s</div>
-      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the event</a>
-    </div>
-  </div>%s
-</div>`,
-		esc(eventName), esc(firstName), bodyHTML, eventURL, footer)
+      %s`,
+		esc(firstName), strings.ReplaceAll(esc(message), "\n", "<br>"),
+		brand.button("Open the event", eventURL))
+	htmlBody := brand.shell("PLAYER INSTRUCTIONS", eventName, bodyHTML, ownerPremium)
 
 	var tb strings.Builder
 	fmt.Fprintf(&tb, "Player instructions — %s\n\nHi %s,\n\n%s\n\nEvent page: %s\n",
@@ -468,7 +713,7 @@ func scheduleLinesByPlayer(matches []model.Match) map[string][]string {
 // scheduleEmailBody renders a player's personal schedule email (HTML + text).
 // Free-tier events carry the "Powered by PlanMyPickle" footer; Premium is
 // unbranded — same rule as the confirmation email and the TV board.
-func scheduleEmailBody(fullName, eventName, when, where string, lines []string,
+func scheduleEmailBody(brand emailBrand, fullName, eventName, when, where string, lines []string,
 	scheduleURL string, ownerPremium bool) (string, string) {
 	esc := html.EscapeString
 	firstName := fullName
@@ -499,29 +744,14 @@ func scheduleEmailBody(fullName, eventName, when, where string, lines []string,
 		meta = fmt.Sprintf(`<p style="margin:0 0 16px;color:#5b6b80;font-size:13.5px">%s</p>`, w)
 	}
 
-	footer := ""
-	if !ownerPremium {
-		footer = `<p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">
-  Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a>
-  — tournaments, minus the chaos.</p>`
-	}
-
-	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
-    <div style="background:#16245c;padding:22px 26px">
-      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">YOUR GAME SCHEDULE</p>
-      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
-    </div>
-    <div style="padding:24px 26px">
-      <p style="margin:0 0 6px;color:#16203a;font-size:15px">Hi %s — here are your matches:</p>
+	bodyHTML := fmt.Sprintf(`      <p style="margin:0 0 6px;color:#16203a;font-size:15px">Hi %s — here are your matches:</p>
       %s
       %s
-      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the live schedule</a>
-      <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">Times &amp; courts can shift on game day — the live schedule always has the latest.</p>
-    </div>
-  </div>%s
-</div>`,
-		esc(eventName), esc(firstName), meta, items.String(), scheduleURL, footer)
+      %s
+      <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">Times &amp; courts can shift on game day — the live schedule always has the latest.</p>`,
+		esc(firstName), meta, items.String(),
+		brand.button("Open the live schedule", scheduleURL))
+	htmlBody := brand.shell("YOUR GAME SCHEDULE", eventName, bodyHTML, ownerPremium)
 
 	var tb strings.Builder
 	fmt.Fprintf(&tb, "Your schedule — %s\n\nHi %s, here are your matches:\n\n", eventName, firstName)

@@ -320,6 +320,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Email every registered player their personal game schedule.
 	mux.HandleFunc("POST /events/{id}/email-schedule", s.ownerOnly("event", "id", s.emailSchedule))
 	mux.HandleFunc("POST /events/{id}/instructions", s.ownerOnly("event", "id", s.emailInstructions))
+	mux.HandleFunc("POST /events/{id}/email", s.ownerOnly("event", "id", s.emailCustom))
 
 	// Behind-schedule flag: owner-only status read-out, acknowledge, and a
 	// notify that messages ONLY the players still waiting on an unfinished match.
@@ -2548,6 +2549,51 @@ func (s *Server) emailInstructions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	queued, err := s.svc.EmailInstructionsToPlayers(r.PathValue("id"), req.Message)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+}
+
+// emailCustom sends a free-form organizer email (subject + body) to a segment of
+// the event's people (owner-only). With test=true it sends ONE copy to the
+// caller's own address for preview instead of blasting the segment.
+func (s *Server) emailCustom(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Subject string `json:"subject"`
+		Body    string `json:"body"`
+		Segment string `json:"segment"`
+		Test    bool   `json:"test"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Subject) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("subject is required"))
+		return
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("message is required"))
+		return
+	}
+	if req.Test {
+		to := strings.TrimSpace(userEmail(r))
+		if to == "" {
+			writeErr(w, http.StatusBadRequest,
+				errors.New("your account has no email to send a test to"))
+			return
+		}
+		if err := s.svc.SendCustomEmailTest(
+			r.PathValue("id"), req.Subject, req.Body, to, userName(r)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"queued": 1, "test": true})
+		return
+	}
+	queued, err := s.svc.SendCustomEmail(
+		r.PathValue("id"), req.Subject, req.Body, req.Segment)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

@@ -3,6 +3,8 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 )
 
 func TestSanitizeEmailField(t *testing.T) {
@@ -168,5 +170,42 @@ func TestBrandedEmailApplies(t *testing.T) {
 		"<script>alert(1)</script>", "https://x", true)
 	if strings.Contains(htmlInj, "<script>") {
 		t.Error("custom message must be HTML-escaped")
+	}
+}
+
+// The signature must land in BOTH the HTML and the plain-text alternative of the
+// transactional emails (regression: the shared-shell refactor added it to HTML
+// only). A junk stored accent color must not leak into the HTML.
+func TestTransactionalEmailsBrandParity(t *testing.T) {
+	b := emailBrand{color: "#0f4299", signature: "— Chula Vista PB Club"}
+
+	regHTML, regText := registrationEmailBody(b, "Kim", "Slam", "TBA", "", "",
+		"https://x", true, "")
+	if !strings.Contains(regHTML, "Chula Vista PB Club") ||
+		!strings.Contains(regText, "Chula Vista PB Club") {
+		t.Error("registration: signature must be in both HTML and text")
+	}
+
+	insHTML, insText := instructionsEmailBody(b, "Kim", "Slam", "hi", "https://x", true)
+	if !strings.Contains(insHTML, "Chula Vista PB Club") ||
+		!strings.Contains(insText, "Chula Vista PB Club") {
+		t.Error("instructions: signature must be in both HTML and text")
+	}
+
+	schHTML, schText := scheduleEmailBody(b, "Kim", "Slam", "TBA", "",
+		[]string{"Court 1"}, "https://x", true)
+	if !strings.Contains(schHTML, "Chula Vista PB Club") ||
+		!strings.Contains(schText, "Chula Vista PB Club") {
+		t.Error("schedule: signature must be in both HTML and text")
+	}
+
+	// brandFor re-sanitizes: a junk stored accent color falls back to default
+	// (never interpolated raw into a style attribute).
+	junk := brandFor(model.Event{
+		OwnerPremium:    true,
+		EmailBrandColor: "#fff;color:red",
+	})
+	if junk.color != "" {
+		t.Errorf("junk accent color must be dropped, got %q", junk.color)
 	}
 }

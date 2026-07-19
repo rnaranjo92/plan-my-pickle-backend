@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"log"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
@@ -75,13 +76,15 @@ func (s *Service) UploadEmailLogo(eventID, contentType string, data []byte) (str
 	if err != nil {
 		return "", err
 	}
-	// Persist immediately so the logo is live without a second save. Guarded to a
-	// non-empty url; email_brand_logo_url ships in add_email_branding.sql (this
-	// path is only reachable once that migration is applied — the column is read
-	// on GetEvent). Best-effort persist: return the URL even if the write races.
-	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
-		map[string]any{"email_brand_logo_url": url}); err != nil {
-		return url, err
+	// Persist so the logo is live without a second save — but only once the probe
+	// confirms email_brand_logo_url exists (add_email_branding.sql), and only as a
+	// best effort: a failed persist logs and still returns the uploaded URL rather
+	// than reporting the whole upload as failed (the object is already stored).
+	if s.brandingReady() {
+		if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+			map[string]any{"email_brand_logo_url": url}); err != nil {
+			log.Printf("email logo: persist for %s failed (upload kept): %v", eventID, err)
+		}
 	}
 	return url, nil
 }

@@ -35,9 +35,13 @@ func brandFor(ev model.Event) emailBrand {
 	if !ev.OwnerPremium {
 		return emailBrand{}
 	}
+	// Re-sanitize at render time: these values are interpolated into style
+	// attributes / an <img src>, so a junk value written directly in the DB (or
+	// by an older code path) must never inject CSS or a bad scheme into a sent
+	// email. color falls back to "" (→ default palette) if it isn't #rrggbb.
 	return emailBrand{
-		logoURL:   strings.TrimSpace(ev.EmailBrandLogoURL),
-		color:     strings.TrimSpace(ev.EmailBrandColor),
+		logoURL:   sanitizeHTTPURL(strings.TrimSpace(ev.EmailBrandLogoURL), 400),
+		color:     sanitizeHexColor(ev.EmailBrandColor),
 		signature: strings.TrimSpace(ev.EmailSignature),
 	}
 }
@@ -276,6 +280,9 @@ func registrationEmailBody(brand emailBrand, fullName, eventName, when, where, d
 	}
 	fmt.Fprintf(&tb, "\nSchedule & live scores: %s\n", eventURL)
 	fmt.Fprintf(&tb, "On game day you'll check in with a QR code.\n")
+	if brand.signature != "" {
+		fmt.Fprintf(&tb, "\n%s\n", brand.signature)
+	}
 	if !ownerPremium {
 		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
 	}
@@ -510,10 +517,30 @@ func (s *Service) SendCustomEmail(eventID, subject, message, segment string) (in
 	if err != nil {
 		return 0, err
 	}
+	// Refuse a second concurrent blast for the same event: a double-click or a
+	// timeout-retry would otherwise stack goroutines that each walk the whole
+	// segment — double-sending to everyone and spiking the send rate past Resend's
+	// limit (starving transactional mail like registration confirmations).
+	s.customEmailMu.Lock()
+	if s.customEmailInFlight == nil {
+		s.customEmailInFlight = map[string]bool{}
+	}
+	if s.customEmailInFlight[eventID] {
+		s.customEmailMu.Unlock()
+		return 0, fmt.Errorf("an email is already sending for this event — give it a moment")
+	}
+	s.customEmailInFlight[eventID] = true
+	s.customEmailMu.Unlock()
+
 	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
 	brand := brandFor(ev)
 	eventName, premium := ev.Name, ev.OwnerPremium
 	go func() {
+		defer func() {
+			s.customEmailMu.Lock()
+			delete(s.customEmailInFlight, eventID)
+			s.customEmailMu.Unlock()
+		}()
 		for _, rc := range recips {
 			htmlBody, textBody := customEmailBody(
 				brand, rc.name, eventName, subject, message, eventURL, premium)
@@ -577,6 +604,9 @@ func instructionsEmailBody(brand emailBrand, fullName, eventName, message, event
 	var tb strings.Builder
 	fmt.Fprintf(&tb, "Player instructions — %s\n\nHi %s,\n\n%s\n\nEvent page: %s\n",
 		eventName, firstName, message, eventURL)
+	if brand.signature != "" {
+		fmt.Fprintf(&tb, "\n%s\n", brand.signature)
+	}
 	if !ownerPremium {
 		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
 	}
@@ -770,6 +800,9 @@ func scheduleEmailBody(brand emailBrand, fullName, eventName, when, where string
 	}
 	fmt.Fprintf(&tb, "\nLive schedule: %s\n", scheduleURL)
 	fmt.Fprintf(&tb, "Times & courts can shift on game day — the live schedule has the latest.\n")
+	if brand.signature != "" {
+		fmt.Fprintf(&tb, "\n%s\n", brand.signature)
+	}
 	if !ownerPremium {
 		tb.WriteString("\n— Powered by PlanMyPickle (planmypickle.com)\n")
 	}

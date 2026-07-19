@@ -44,6 +44,17 @@ type Service struct {
 	Courts courts.Finder
 	// Serializes DrainDuprPendingDeletes (reconciler tick vs post-wipe kick).
 	duprDeleteDrain sync.Mutex
+	// brandingProbe/brandingCols cache whether add_email_branding.sql has been
+	// applied (the email_brand_* columns exist). Probed once, lazily. When false,
+	// branding writes are skipped so a deploy ahead of the migration never breaks
+	// an event edit or a logo upload; when true, they're written unconditionally
+	// so an organizer can clear a color/signature back to the default.
+	brandingProbe sync.Once
+	brandingCols  bool
+	// Serializes custom-email blasts per event so a double-click / retry can't
+	// stack concurrent goroutines that each walk the whole segment.
+	customEmailMu       sync.Mutex
+	customEmailInFlight map[string]bool
 }
 
 func New() *Service {
@@ -330,6 +341,18 @@ func sanitizeHTTPURL(s string, maxLen int) string {
 	return s
 }
 
+// brandingReady reports whether add_email_branding.sql has been applied (the
+// email_brand_* columns exist). Probed once, lazily, via a cheap one-column
+// select. Until it's true, branding writes are skipped entirely so a backend
+// deploy ahead of the migration never breaks an event edit or a logo upload.
+func (s *Service) brandingReady() bool {
+	s.brandingProbe.Do(func() {
+		_, err := s.sb.SelectOne("events", "select=email_brand_color&limit=1")
+		s.brandingCols = err == nil
+	})
+	return s.brandingCols
+}
+
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
 func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
@@ -489,15 +512,15 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if msg := sanitizeEmailField(req.ConfirmEmailMessage, 1000, false); msg != "" {
 		payload["confirm_email_message"] = msg
 	}
-	// email_brand_* ship in add_email_branding.sql — migration-safe (only set here).
-	if c := sanitizeHexColor(req.EmailBrandColor); c != "" {
-		payload["email_brand_color"] = c
-	}
-	if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
-		payload["email_brand_logo_url"] = u
-	}
-	if sig := sanitizeEmailField(req.EmailSignature, 200, false); sig != "" {
-		payload["email_signature"] = sig
+	// email_brand_* ship in add_email_branding.sql — only touched once the probe
+	// confirms the columns exist, so a deploy ahead of the migration can't break
+	// event creation.
+	if s.brandingReady() {
+		payload["email_brand_color"] = orNull(sanitizeHexColor(req.EmailBrandColor))
+		payload["email_signature"] = orNull(sanitizeEmailField(req.EmailSignature, 200, false))
+		if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
+			payload["email_brand_logo_url"] = u
+		}
 	}
 	// sms_notifications ships in add_sms_notifications.sql — migration-safe (only
 	// referenced when true; premium gate enforced at the handler).
@@ -1435,18 +1458,19 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// default (the frontend always sends both fields on edit). Sanitized as in create.
 	upd["confirm_email_subject"] = orNull(sanitizeEmailField(req.ConfirmEmailSubject, 120, true))
 	upd["confirm_email_message"] = orNull(sanitizeEmailField(req.ConfirmEmailMessage, 1000, false))
-	// email_brand_* ship in add_email_branding.sql — referenced ONLY when set so an
-	// edit never breaks before the migration is applied (clearing back to default
-	// won't persist until the columns are live; acceptable). Sanitized: color must
-	// be a #RRGGBB hex, logo must be an http(s) URL, signature is plain multi-line.
-	if c := sanitizeHexColor(req.EmailBrandColor); c != "" {
-		upd["email_brand_color"] = c
-	}
-	if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
-		upd["email_brand_logo_url"] = u
-	}
-	if sig := sanitizeEmailField(req.EmailSignature, 200, false); sig != "" {
-		upd["email_signature"] = sig
+	// email_brand_* ship in add_email_branding.sql — only touched once the probe
+	// confirms the columns exist (else an edit before the migration would fail).
+	// Color + signature are written UNCONDITIONALLY (via orNull) so clearing a
+	// value back to the default persists as NULL. The logo is owned by
+	// UploadEmailLogo and only set here when the request explicitly carries one —
+	// never cleared by a plain edit (the edit form doesn't send it). Sanitized:
+	// color = #rrggbb hex, logo = http(s) URL, signature = plain multi-line.
+	if s.brandingReady() {
+		upd["email_brand_color"] = orNull(sanitizeHexColor(req.EmailBrandColor))
+		upd["email_signature"] = orNull(sanitizeEmailField(req.EmailSignature, 200, false))
+		if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
+			upd["email_brand_logo_url"] = u
+		}
 	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
 	// an edit never breaks before the migration is applied. (Trade-off: clearing

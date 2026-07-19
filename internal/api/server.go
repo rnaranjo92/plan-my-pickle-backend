@@ -302,6 +302,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/divisions", s.ownerOnly("event", "id", s.syncDivisions))
 	mux.HandleFunc("POST /events/{id}/division-order", s.ownerOnly("event", "id", s.setDivisionOrder))
 	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
+	mux.HandleFunc("POST /events/{id}/email-logo", s.ownerOnly("event", "id", s.uploadEmailLogo))
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.setSponsorWatermarkImage))
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark/settings", s.ownerOnly("event", "id", s.setSponsorWatermarkSettings))
 	mux.HandleFunc("DELETE /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.clearSponsorWatermark))
@@ -1206,6 +1207,23 @@ func (s *Server) setSponsorWatermarkImage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	url, err := s.svc.SetSponsorWatermarkImage(
+		r.PathValue("id"), r.Header.Get("Content-Type"), data)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// uploadEmailLogo stores an organizer's email-branding logo (owner-only) and
+// returns its public URL; the client then saves it via the event edit.
+func (s *Server) uploadEmailLogo(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 3<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	url, err := s.svc.UploadEmailLogo(
 		r.PathValue("id"), r.Header.Get("Content-Type"), data)
 	if err != nil {
 		status(w, err)

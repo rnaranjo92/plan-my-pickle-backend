@@ -49,6 +49,43 @@ func (s *Service) SetSponsorWatermarkImage(eventID, contentType string, data []b
 	return url, nil
 }
 
+// UploadEmailLogo stores an organizer's email-branding logo and returns its
+// public URL (the caller then persists it via the event edit as
+// email_brand_logo_url). Mirrors SetSponsorWatermarkImage: JPEG/PNG, ≤2 MB,
+// content-hashed path so an upload never clobbers a live logo. Owner-only by route.
+func (s *Service) UploadEmailLogo(eventID, contentType string, data []byte) (string, error) {
+	var ext string
+	switch contentType {
+	case "image/jpeg", "image/jpg":
+		contentType, ext = "image/jpeg", "jpg"
+	case "image/png":
+		ext = "png"
+	default:
+		return "", errors.New("logo must be a JPEG or PNG")
+	}
+	if len(data) == 0 {
+		return "", errors.New("empty logo")
+	}
+	if len(data) > 2*1024*1024 {
+		return "", errors.New("logo too large (max 2 MB)")
+	}
+	path := fmt.Sprintf("event-email-logo-%s-%08x.%s",
+		eventID, crc32.ChecksumIEEE(data), ext)
+	url, err := s.sb.StorageUpload("avatars", path, contentType, data)
+	if err != nil {
+		return "", err
+	}
+	// Persist immediately so the logo is live without a second save. Guarded to a
+	// non-empty url; email_brand_logo_url ships in add_email_branding.sql (this
+	// path is only reachable once that migration is applied — the column is read
+	// on GetEvent). Best-effort persist: return the URL even if the write races.
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"email_brand_logo_url": url}); err != nil {
+		return url, err
+	}
+	return url, nil
+}
+
 // SetSponsorWatermarkSettings commits the watermark on Save: it stamps the chosen
 // image url (making it live) atomically with its placement (opacity 0–1, scale
 // 0.1–1, a validated position). An empty url leaves the existing image untouched

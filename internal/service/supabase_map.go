@@ -213,6 +213,7 @@ func mapEvent(m map[string]any) model.Event {
 		ScoreConfirmMinutes:      asInt(m, "score_confirm_minutes"),
 		MaxPlayers:               asIntPtr(m, "max_players"),
 		RegistrationCloseAt:      asStrPtr(m, "registration_close_at"),
+		RoundStartMinutes:        mapIntMap(m, "round_start_minutes"),
 		PosterURL:                asStrPtr(m, "poster_url"),
 		SponsorWatermarkURL:      asStr(m, "sponsor_watermark_url"),
 		SponsorWatermarkOpacity:  asFloatOr(m, "sponsor_watermark_opacity", 0.08),
@@ -257,6 +258,22 @@ func mapIntArray(m map[string]any, key string) []int {
 			out = append(out, int(f))
 		} else {
 			out = append(out, -1)
+		}
+	}
+	return out
+}
+
+// mapIntMap parses a jsonb object of string→int (e.g. events.round_start_minutes,
+// round-number → minute-of-day). JSON numbers arrive as float64.
+func mapIntMap(m map[string]any, key string) map[string]int {
+	raw, ok := m[key].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(raw))
+	for k, v := range raw {
+		if f, ok := v.(float64); ok {
+			out[k] = int(f)
 		}
 	}
 	return out

@@ -421,6 +421,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/breaks", s.ownerOnly("event", "id", s.setEventBreaks))
 	mux.HandleFunc("POST /events/{id}/day-cap", s.ownerOnly("event", "id", s.setDayCap))
 	mux.HandleFunc("POST /events/{id}/day-ends", s.ownerOnly("event", "id", s.setDayEnds))
+	mux.HandleFunc("POST /events/{id}/round-times", s.ownerOnly("event", "id", s.setRoundTimes))
 	mux.HandleFunc("GET /brackets/{id}/playoff-seed", s.ownerOnly("bracket", "id", s.playoffSeed))
 	mux.HandleFunc("POST /brackets/{id}/playoff", s.ownerOnly("bracket", "id", s.playoff))
 	mux.HandleFunc("POST /rounds/{id}/start", s.ownerOnly("round", "id", s.startRound))
@@ -3810,6 +3811,22 @@ func (s *Server) setDayEnds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]int{"dayEndMinutes": req.DayEndMinutes})
+}
+
+// setRoundTimes stores the organizer's proposed per-round start times
+// (round-number → minute-of-day). Owner-only. An empty map clears them.
+func (s *Server) setRoundTimes(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RoundStartMinutes map[string]int `json:"roundStartMinutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRoundStartTimes(r.PathValue("id"), req.RoundStartMinutes); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"rounds": len(req.RoundStartMinutes)})
 }
 
 // setMatchDay assigns a match to a tournament day (0-based); a negative day

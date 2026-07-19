@@ -11372,6 +11372,18 @@ func (s *Service) SetDayEnds(eventID string, ends []int) error {
 	return err
 }
 
+// SetRoundStartTimes stores the organizer's proposed per-round start times
+// (round-number → minute-of-day). An empty map clears them (auto-pack).
+func (s *Service) SetRoundStartTimes(eventID string, times map[string]int) error {
+	var val any
+	if len(times) > 0 {
+		val = times
+	}
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"round_start_minutes": val})
+	return err
+}
+
 // SetMatchDay assigns a match to a 0-based tournament day. A negative day clears
 // the assignment (the schedule falls back to its automatic even split).
 func (s *Service) SetMatchDay(matchID string, day int) error {

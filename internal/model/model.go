@@ -116,6 +116,10 @@ type Event struct {
 	// RegistrationCloseAt (RFC3339) is an explicit self-registration cutoff; nil =
 	// no cutoff (falls back to the event-day close). Enforced on self-registration.
 	RegistrationCloseAt *string `json:"registrationCloseAt,omitempty"`
+	// RoundStartMinutes is the organizer's proposed start time (minute-of-day) per
+	// round number, e.g. {"1":540,"2":600}. The client schedule cascade anchors
+	// each round to its proposed time; empty = auto-pack. No wall-clock is stored.
+	RoundStartMinutes map[string]int `json:"roundStartMinutes,omitempty"`
 	// PosterURL is the uploaded event poster (public Storage URL), or nil.
 	PosterURL *string `json:"posterUrl,omitempty"`
 	// Recurring social: RecurIntervalDays>0 marks a series head that auto-spawns

@@ -102,6 +102,7 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 	// Static free-tool + guide pages (served by the apex/Vercel, listed here so the
 	// single sitemap covers them). Add new evergreen pages to this list.
 	for _, p := range []string{
+		"/tools",
 		"/tools/pickleball-round-robin-generator",
 		"/tools/pickleball-bracket-generator",
 		"/tools/pickleball-double-elimination-bracket",

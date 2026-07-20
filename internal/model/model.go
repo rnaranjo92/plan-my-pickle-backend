@@ -1212,6 +1212,16 @@ type FeedComment struct {
 	Mine       bool   `json:"mine"` // authored by the calling user
 	CanDelete  bool   `json:"canDelete"`
 	CreatedAt  string `json:"createdAt"`
+	// ReportCount is populated ONLY for the event owner (moderation view) so they
+	// can see and act on flagged comments; 0/omitted for everyone else.
+	ReportCount int `json:"reportCount,omitempty"`
+}
+
+// BlockedUser is one account the caller has blocked (for the "Blocked accounts"
+// management list). Name is best-effort display only.
+type BlockedUser struct {
+	UserID string `json:"userId"`
+	Name   string `json:"name"`
 }
 
 // CommentRequest adds a comment to a feed item.

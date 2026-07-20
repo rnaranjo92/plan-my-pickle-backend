@@ -406,6 +406,11 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /feed/{id}/react", requireAuth(s.feedReact))
 	mux.HandleFunc("POST /feed/{id}/comments", requireAuth(s.commentAdd))
 	mux.HandleFunc("DELETE /comments/{id}", requireAuth(s.commentDelete))
+	// Comment moderation (Guideline 1.2): report a comment, block its author, manage blocks.
+	mux.HandleFunc("POST /comments/{id}/report", requireAuth(s.commentReport))
+	mux.HandleFunc("POST /comments/{id}/block-author", requireAuth(s.commentBlockAuthor))
+	mux.HandleFunc("GET /me/blocks", requireAuth(s.myBlocks))
+	mux.HandleFunc("DELETE /me/blocks/{id}", requireAuth(s.unblockUser))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
@@ -4098,6 +4103,51 @@ func (s *Server) commentAdd(w http.ResponseWriter, r *http.Request) {
 // commentDelete removes a comment (author or event owner).
 func (s *Server) commentDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.DeleteComment(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// commentReport flags a comment as objectionable (Guideline 1.2). Throttled.
+func (s *Server) commentReport(w http.ResponseWriter, r *http.Request) {
+	if !s.socialLimiter.allow("report:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("slow down"))
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = decode(w, r, &req) // reason optional; body may be empty
+	if err := s.svc.ReportComment(r.PathValue("id"), userID(r), req.Reason); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reported"})
+}
+
+// commentBlockAuthor blocks the author of a comment for the caller (Guideline 1.2).
+func (s *Server) commentBlockAuthor(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.BlockCommentAuthor(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "blocked"})
+}
+
+// myBlocks lists the caller's blocked accounts.
+func (s *Server) myBlocks(w http.ResponseWriter, r *http.Request) {
+	blocks, err := s.svc.ListMyBlocks(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, blocks)
+}
+
+// unblockUser reverses a block.
+func (s *Server) unblockUser(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.UnblockUser(userID(r), r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}

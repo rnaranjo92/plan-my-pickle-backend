@@ -141,6 +141,13 @@ func TestServiceWrites(t *testing.T) {
 	_, _ = s.ToggleReaction("fi1", "u1", "like")
 	_, _ = s.AddComment("fi1", "u1", "a@b.com", "nice")
 
+	// Comment moderation (Guideline 1.2).
+	_ = s.ReportComment("fc1", "u2", "spam")
+	_ = s.BlockCommentAuthor("fc1", "u2")
+	_, _ = s.ListMyBlocks("u2")
+	_ = s.UnblockUser("u2", "u1")
+	_, _ = s.ListComments("fi1", "u2")
+
 	// Check-in flow.
 	_, _ = s.CheckIn("r1", "manual")
 	_ = s.UncheckIn("r1")

@@ -8691,13 +8691,29 @@ func (s *Service) ListComments(feedItemID, callerID string) ([]model.FeedComment
 	if err != nil {
 		return nil, err
 	}
+	blocked := s.blockedSet(callerID) // best-effort; empty if none / not signed in / pre-migration
 	out := make([]model.FeedComment, 0, len(rows))
+	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
+		author := asStr(r, "user_id")
+		// Hide comments authored by anyone the caller has blocked.
+		if callerID != "" && author != "" && blocked[author] {
+			continue
+		}
 		c := mapFeedComment(r)
-		mine := callerID != "" && asStr(r, "user_id") == callerID
+		mine := callerID != "" && author == callerID
 		c.Mine = mine
 		c.CanDelete = mine || (callerID != "" && callerID == owner)
 		out = append(out, c)
+		ids = append(ids, c.ID)
+	}
+	// The event owner sees per-comment report counts so they can act on flagged
+	// content (timely moderation). Best-effort — hidden from everyone else.
+	if callerID != "" && callerID == owner && len(ids) > 0 {
+		counts := s.commentReportCounts(ids)
+		for i := range out {
+			out[i].ReportCount = counts[out[i].ID]
+		}
 	}
 	return out, nil
 }
@@ -8752,6 +8768,136 @@ func (s *Service) DeleteComment(commentID, userID string) error {
 		}
 	}
 	return s.sb.Delete("feed_comments", "id=eq."+store.Q(commentID))
+}
+
+// --- Comment moderation (App Store Guideline 1.2): report + block ---
+
+// blockedSet returns the set of user ids the caller has blocked. Best-effort: an
+// empty caller, no blocks, or a missing table (pre-migration) all yield nil, so
+// comment listing never breaks.
+func (s *Service) blockedSet(userID string) map[string]bool {
+	if userID == "" {
+		return nil
+	}
+	rows, err := s.sb.Select("user_blocks",
+		"blocker_id=eq."+store.Q(userID)+"&select=blocked_id&limit=1000")
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if b := asStr(r, "blocked_id"); b != "" {
+			m[b] = true
+		}
+	}
+	return m
+}
+
+// commentReportCounts tallies reports per comment id. Best-effort (empty on error).
+func (s *Service) commentReportCounts(commentIDs []string) map[string]int {
+	m := map[string]int{}
+	if len(commentIDs) == 0 {
+		return m
+	}
+	rows, err := s.sb.Select("comment_reports",
+		"comment_id="+store.In(commentIDs)+"&select=comment_id&limit=2000")
+	if err != nil {
+		return m
+	}
+	for _, r := range rows {
+		m[asStr(r, "comment_id")]++
+	}
+	return m
+}
+
+// ReportComment flags a comment as objectionable (one report per user per comment;
+// a duplicate is a silent no-op). The event owner sees the flag via ListComments
+// and can delete the comment.
+func (s *Service) ReportComment(commentID, reporterID, reason string) error {
+	if reporterID == "" {
+		return ErrForbidden
+	}
+	c, err := s.sb.SelectOne("feed_comments", "id=eq."+store.Q(commentID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return ErrNotFound
+	}
+	if dup, _ := s.sb.SelectOne("comment_reports",
+		"comment_id=eq."+store.Q(commentID)+"&reporter_id=eq."+store.Q(reporterID)+
+			"&select=id&limit=1"); dup != nil {
+		return nil // already reported
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+	_, err = s.sb.Insert("comment_reports", map[string]any{
+		"id": newID(), "comment_id": commentID, "reporter_id": reporterID,
+		"reason": orNull(reason),
+	})
+	return err
+}
+
+// BlockCommentAuthor blocks the author of a comment for the caller (so they stop
+// seeing that person's comments). Blocking is keyed on the comment so the client
+// never needs the author's raw user id.
+func (s *Service) BlockCommentAuthor(commentID, blockerID string) error {
+	if blockerID == "" {
+		return ErrForbidden
+	}
+	row, err := s.sb.SelectOne("feed_comments", "id=eq."+store.Q(commentID)+"&select=user_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	author := asStr(row, "user_id")
+	if author == "" || author == blockerID {
+		return errors.New("you can't block this account")
+	}
+	if dup, _ := s.sb.SelectOne("user_blocks",
+		"blocker_id=eq."+store.Q(blockerID)+"&blocked_id=eq."+store.Q(author)+
+			"&select=id&limit=1"); dup != nil {
+		return nil
+	}
+	_, err = s.sb.Insert("user_blocks", map[string]any{
+		"id": newID(), "blocker_id": blockerID, "blocked_id": author,
+	})
+	return err
+}
+
+// UnblockUser reverses a block.
+func (s *Service) UnblockUser(blockerID, blockedID string) error {
+	if blockerID == "" {
+		return ErrForbidden
+	}
+	return s.sb.Delete("user_blocks",
+		"blocker_id=eq."+store.Q(blockerID)+"&blocked_id=eq."+store.Q(blockedID))
+}
+
+// ListMyBlocks returns the caller's blocked accounts (with best-effort names) for
+// the "Blocked accounts" management list.
+func (s *Service) ListMyBlocks(blockerID string) ([]model.BlockedUser, error) {
+	if blockerID == "" {
+		return nil, ErrForbidden
+	}
+	rows, err := s.sb.Select("user_blocks",
+		"blocker_id=eq."+store.Q(blockerID)+"&select=blocked_id&order=created_at.desc&limit=500")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.BlockedUser, 0, len(rows))
+	for _, r := range rows {
+		bid := asStr(r, "blocked_id")
+		if bid == "" {
+			continue
+		}
+		out = append(out, model.BlockedUser{UserID: bid, Name: s.resolveDisplayName(bid, "")})
+	}
+	return out, nil
 }
 
 // feedItemOwner returns the auth-user id that owns the event behind a feed item,

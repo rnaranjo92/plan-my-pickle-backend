@@ -44,13 +44,13 @@ type Service struct {
 	Courts courts.Finder
 	// Serializes DrainDuprPendingDeletes (reconciler tick vs post-wipe kick).
 	duprDeleteDrain sync.Mutex
-	// brandingProbe/brandingCols cache whether add_email_branding.sql has been
-	// applied (the email_brand_* columns exist). Probed once, lazily. When false,
-	// branding writes are skipped so a deploy ahead of the migration never breaks
-	// an event edit or a logo upload; when true, they're written unconditionally
-	// so an organizer can clear a color/signature back to the default.
-	brandingProbe sync.Once
-	brandingCols  bool
+	// brandingMu/brandingCols cache whether add_email_branding.sql has been applied
+	// (the email_brand_* columns exist). Probed lazily and cached only on SUCCESS —
+	// a transient probe failure is retried on the next call rather than permanently
+	// disabling branding writes. When still false, branding writes are skipped so a
+	// deploy ahead of the migration never breaks an event edit or a logo upload.
+	brandingMu   sync.Mutex
+	brandingCols bool
 	// Serializes custom-email blasts per event so a double-click / retry can't
 	// stack concurrent goroutines that each walk the whole segment.
 	customEmailMu       sync.Mutex
@@ -342,14 +342,21 @@ func sanitizeHTTPURL(s string, maxLen int) string {
 }
 
 // brandingReady reports whether add_email_branding.sql has been applied (the
-// email_brand_* columns exist). Probed once, lazily, via a cheap one-column
-// select. Until it's true, branding writes are skipped entirely so a backend
-// deploy ahead of the migration never breaks an event edit or a logo upload.
+// email_brand_* columns exist). Probed lazily via a cheap one-column select and
+// cached only once it SUCCEEDS: while still false it re-probes on each call, so a
+// transient DB error on the first probe doesn't permanently disable branding
+// writes, and applying the migration takes effect without a process restart.
+// Until true, branding writes are skipped so a backend deploy ahead of the
+// migration never breaks an event edit or a logo upload.
 func (s *Service) brandingReady() bool {
-	s.brandingProbe.Do(func() {
-		_, err := s.sb.SelectOne("events", "select=email_brand_color&limit=1")
-		s.brandingCols = err == nil
-	})
+	s.brandingMu.Lock()
+	defer s.brandingMu.Unlock()
+	if s.brandingCols {
+		return true
+	}
+	if _, err := s.sb.SelectOne("events", "select=email_brand_color&limit=1"); err == nil {
+		s.brandingCols = true
+	}
 	return s.brandingCols
 }
 
@@ -514,12 +521,17 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	}
 	// email_brand_* ship in add_email_branding.sql — only touched once the probe
 	// confirms the columns exist, so a deploy ahead of the migration can't break
-	// event creation.
+	// event creation. Each field is written only when the request carries it
+	// (non-nil), so an omitted field never clobbers a stored value.
 	if s.brandingReady() {
-		payload["email_brand_color"] = orNull(sanitizeHexColor(req.EmailBrandColor))
-		payload["email_signature"] = orNull(sanitizeEmailField(req.EmailSignature, 200, false))
-		if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
-			payload["email_brand_logo_url"] = u
+		if req.EmailBrandColor != nil {
+			payload["email_brand_color"] = orNull(sanitizeHexColor(*req.EmailBrandColor))
+		}
+		if req.EmailSignature != nil {
+			payload["email_signature"] = orNull(sanitizeEmailField(*req.EmailSignature, 200, false))
+		}
+		if req.EmailBrandLogoURL != nil {
+			payload["email_brand_logo_url"] = orNull(sanitizeHTTPURL(*req.EmailBrandLogoURL, 400))
 		}
 	}
 	// sms_notifications ships in add_sms_notifications.sql — migration-safe (only
@@ -1460,16 +1472,20 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	upd["confirm_email_message"] = orNull(sanitizeEmailField(req.ConfirmEmailMessage, 1000, false))
 	// email_brand_* ship in add_email_branding.sql — only touched once the probe
 	// confirms the columns exist (else an edit before the migration would fail).
-	// Color + signature are written UNCONDITIONALLY (via orNull) so clearing a
-	// value back to the default persists as NULL. The logo is owned by
-	// UploadEmailLogo and only set here when the request explicitly carries one —
-	// never cleared by a plain edit (the edit form doesn't send it). Sanitized:
+	// Each field is written ONLY when the request carries it (non-nil pointer), so
+	// an edit that omits branding (e.g. saved before Premium status loaded, or a
+	// future partial-edit screen) never wipes a stored value. A field sent empty
+	// ("") clears to NULL — that's how the editor resets to the default. Sanitized:
 	// color = #rrggbb hex, logo = http(s) URL, signature = plain multi-line.
 	if s.brandingReady() {
-		upd["email_brand_color"] = orNull(sanitizeHexColor(req.EmailBrandColor))
-		upd["email_signature"] = orNull(sanitizeEmailField(req.EmailSignature, 200, false))
-		if u := sanitizeHTTPURL(req.EmailBrandLogoURL, 400); u != "" {
-			upd["email_brand_logo_url"] = u
+		if req.EmailBrandColor != nil {
+			upd["email_brand_color"] = orNull(sanitizeHexColor(*req.EmailBrandColor))
+		}
+		if req.EmailSignature != nil {
+			upd["email_signature"] = orNull(sanitizeEmailField(*req.EmailSignature, 200, false))
+		}
+		if req.EmailBrandLogoURL != nil {
+			upd["email_brand_logo_url"] = orNull(sanitizeHTTPURL(*req.EmailBrandLogoURL, 400))
 		}
 	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so

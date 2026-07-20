@@ -853,12 +853,13 @@ type CreateEventRequest struct {
 	ConfirmEmailSubject        string `json:"confirmEmailSubject"`
 	ConfirmEmailMessage        string `json:"confirmEmailMessage"`
 	// Organizer email branding (Premium) — applied to every outgoing email for
-	// this event when the owner is Premium. All optional; empty = PlanMyPickle
-	// default look. EmailBrandColor is a #RRGGBB accent; EmailSignature is a
-	// plain-text sign-off shown above the footer.
-	EmailBrandLogoURL string   `json:"emailBrandLogoUrl,omitempty"`
-	EmailBrandColor   string   `json:"emailBrandColor,omitempty"`
-	EmailSignature    string   `json:"emailSignature,omitempty"`
+	// this event when the owner is Premium. EmailBrandColor is a #RRGGBB accent;
+	// EmailSignature is a plain-text sign-off. Pointers so the write path can tell
+	// "field omitted → leave the stored value alone" (nil) from "field sent empty
+	// → clear back to the default" (""). Never NULL a value the client didn't send.
+	EmailBrandLogoURL *string  `json:"emailBrandLogoUrl,omitempty"`
+	EmailBrandColor   *string  `json:"emailBrandColor,omitempty"`
+	EmailSignature    *string  `json:"emailSignature,omitempty"`
 	VenueName         string   `json:"venueName"`
 	VenueAddress      string   `json:"venueAddress"`
 	VenuePhone        string   `json:"venuePhone"`

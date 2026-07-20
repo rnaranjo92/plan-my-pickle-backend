@@ -303,6 +303,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/division-order", s.ownerOnly("event", "id", s.setDivisionOrder))
 	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
 	mux.HandleFunc("POST /events/{id}/email-logo", s.ownerOnly("event", "id", s.uploadEmailLogo))
+	mux.HandleFunc("DELETE /events/{id}/email-logo", s.ownerOnly("event", "id", s.clearEmailLogo))
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.setSponsorWatermarkImage))
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark/settings", s.ownerOnly("event", "id", s.setSponsorWatermarkSettings))
 	mux.HandleFunc("DELETE /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.clearSponsorWatermark))
@@ -1230,6 +1231,15 @@ func (s *Server) uploadEmailLogo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// clearEmailLogo removes an event's email-branding logo (owner-only).
+func (s *Server) clearEmailLogo(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearEmailLogo(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 // setSponsorWatermarkSettings saves the watermark placement (opacity/scale/position).

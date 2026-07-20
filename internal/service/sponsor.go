@@ -89,6 +89,17 @@ func (s *Service) UploadEmailLogo(eventID, contentType string, data []byte) (str
 	return url, nil
 }
 
+// ClearEmailLogo removes an event's email-branding logo (sets the column NULL).
+// No-op until the branding columns exist. Owner-only by route.
+func (s *Service) ClearEmailLogo(eventID string) error {
+	if !s.brandingReady() {
+		return nil
+	}
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"email_brand_logo_url": nil})
+	return err
+}
+
 // SetSponsorWatermarkSettings commits the watermark on Save: it stamps the chosen
 // image url (making it live) atomically with its placement (opacity 0–1, scale
 // 0.1–1, a validated position). An empty url leaves the existing image untouched

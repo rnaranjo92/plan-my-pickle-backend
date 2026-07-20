@@ -50,6 +50,7 @@ func NewServer(svc *service.Service) http.Handler {
 		captcha:         gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
+	s.registerSEO(mux) // public crawlable pages + sitemap (see seo.go)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		// Echo the deployed commit (Railway injects RAILWAY_GIT_COMMIT_SHA) so a
 		// deploy can be VERIFIED — a 200 alone doesn't prove the new build is live

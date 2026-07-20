@@ -41,7 +41,7 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 	if dayType == "" {
 		dayType = "multi"
 	}
-	rows, err := s.sb.Insert("leagues", map[string]any{
+	payload := map[string]any{
 		"owner_id":          ownerID,
 		"name":              req.Name,
 		"description":       orNull(req.Description),
@@ -50,7 +50,13 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 		"sanctioned":        req.Sanctioned,
 		"cash_prize":        req.CashPrize,
 		"cash_prize_amount": fOrNull(req.CashPrizeAmount),
-	})
+	}
+	// `listed` ships in add_league_listed.sql — only written (when opting in) once
+	// the probe confirms the column exists, so create never breaks pre-migration.
+	if req.Listed && s.columnReady("leagues", "listed") {
+		payload["listed"] = true
+	}
+	rows, err := s.sb.Insert("leagues", payload)
 	if err != nil {
 		return "", err
 	}
@@ -111,6 +117,137 @@ func (s *Service) ListLeagues(ownerID string) ([]model.League, error) {
 		out = append(out, mapLeague(r))
 	}
 	return out, nil
+}
+
+// SetLeagueListed opts a league into (or out of) public discovery. Owner-only.
+// No-op-safe pre-migration: returns a clear error until the `listed` column exists.
+func (s *Service) SetLeagueListed(leagueID, ownerID string, listed bool) error {
+	if ownerID == "" {
+		return ErrForbidden
+	}
+	row, err := s.sb.SelectOne("leagues", "id=eq."+store.Q(leagueID)+"&select=owner_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "owner_id") != ownerID {
+		return ErrForbidden
+	}
+	if !s.columnReady("leagues", "listed") {
+		return errors.New("public league listing isn't available yet")
+	}
+	_, err = s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+		map[string]any{"listed": listed})
+	return err
+}
+
+// PublicLeagues returns every publicly-listed, non-demo league with its city/state
+// DERIVED from its events (sessions). Best-effort: a missing `listed` column
+// (pre-migration) or any error yields nil so the SEO hubs just show nothing.
+// Leagues with no geocoded events are skipped (they can't be placed on a hub).
+func (s *Service) PublicLeagues() ([]model.PublicLeague, error) {
+	rows, err := s.sb.SelectAll("leagues",
+		"listed=eq.true&select=id,name,league_type,sanctioned&limit=2000")
+	if err != nil {
+		return nil, nil // pre-migration / error → treat as none
+	}
+	type meta struct {
+		name, ltype string
+		sanctioned  bool
+	}
+	m := map[string]meta{}
+	var ids []string
+	for _, r := range rows {
+		id, name := asStr(r, "id"), asStr(r, "name")
+		if id == "" || publicFeedTestName.MatchString(name) {
+			continue
+		}
+		m[id] = meta{name: name, ltype: asStr(r, "league_type"), sanctioned: asBool(r, "sanctioned")}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	evs, err := s.sb.SelectAll("events",
+		"league_id="+store.In(ids)+"&select=league_id,county,state,starts_at&limit=5000")
+	if err != nil {
+		return nil, nil
+	}
+	type geo struct {
+		county, state, next string
+		count               int
+	}
+	g := map[string]*geo{}
+	for _, e := range evs {
+		lid := asStr(e, "league_id")
+		if lid == "" {
+			continue
+		}
+		gg := g[lid]
+		if gg == nil {
+			gg = &geo{}
+			g[lid] = gg
+		}
+		gg.count++
+		if gg.county == "" {
+			if c := asStr(e, "county"); c != "" {
+				gg.county, gg.state = c, asStr(e, "state")
+			}
+		}
+		if sa := asStr(e, "starts_at"); sa != "" && (gg.next == "" || sa < gg.next) {
+			gg.next = sa
+		}
+	}
+	out := make([]model.PublicLeague, 0, len(ids))
+	for _, id := range ids {
+		gg := g[id]
+		if gg == nil || gg.county == "" {
+			continue
+		}
+		md := m[id]
+		out = append(out, model.PublicLeague{
+			ID: id, Name: md.name, LeagueType: md.ltype, Sanctioned: md.sanctioned,
+			County: gg.county, State: gg.state, SessionCount: gg.count, NextDate: gg.next,
+		})
+	}
+	return out, nil
+}
+
+// PublicLeagueByID returns a single listed, non-demo league (with derived geo)
+// plus its non-demo events (sessions) for the per-league SEO page. ErrNotFound
+// if the league isn't public.
+func (s *Service) PublicLeagueByID(id string) (model.PublicLeague, []model.Event, error) {
+	row, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(id)+"&listed=eq.true&select=id,name,league_type,sanctioned,description")
+	if err != nil {
+		return model.PublicLeague{}, nil, err
+	}
+	if row == nil || publicFeedTestName.MatchString(asStr(row, "name")) {
+		return model.PublicLeague{}, nil, ErrNotFound
+	}
+	lg := model.PublicLeague{
+		ID: id, Name: asStr(row, "name"), LeagueType: asStr(row, "league_type"),
+		Sanctioned: asBool(row, "sanctioned"), Description: asStr(row, "description"),
+	}
+	rows, err := s.sb.SelectAll("events",
+		"league_id=eq."+store.Q(id)+"&select=*&order=starts_at.asc.nullslast&limit=500")
+	sessions := make([]model.Event, 0)
+	if err == nil {
+		for _, r := range rows {
+			e := mapEvent(r)
+			if publicFeedTestName.MatchString(e.Name) {
+				continue
+			}
+			if lg.County == "" && e.County != "" {
+				lg.County, lg.State = e.County, e.State
+			}
+			sessions = append(sessions, e)
+		}
+	}
+	lg.SessionCount = len(sessions)
+	return lg, sessions, nil
 }
 
 // leagueIDsForUser returns the set of league ids the caller PARTICIPATES in

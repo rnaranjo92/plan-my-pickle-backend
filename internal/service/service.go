@@ -55,6 +55,30 @@ type Service struct {
 	// stack concurrent goroutines that each walk the whole segment.
 	customEmailMu       sync.Mutex
 	customEmailInFlight map[string]bool
+	// colProbe caches "table.column exists" (probed once each, only cached on
+	// success) so a write that references a column added by an unapplied migration
+	// is skipped rather than failing. Same self-healing pattern as brandingReady.
+	colProbeMu sync.Mutex
+	colProbe   map[string]bool
+}
+
+// columnReady reports whether table.column exists (migration applied). Probed via
+// a cheap one-column select; cached only on success and re-probed while false, so
+// a transient error or pre-migration state never permanently disables a feature.
+func (s *Service) columnReady(table, column string) bool {
+	key := table + "." + column
+	s.colProbeMu.Lock()
+	defer s.colProbeMu.Unlock()
+	if s.colProbe == nil {
+		s.colProbe = map[string]bool{}
+	}
+	if s.colProbe[key] {
+		return true
+	}
+	if _, err := s.sb.SelectOne(table, "select="+column+"&limit=1"); err == nil {
+		s.colProbe[key] = true
+	}
+	return s.colProbe[key]
 }
 
 func New() *Service {

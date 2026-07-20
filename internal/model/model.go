@@ -194,6 +194,20 @@ type PublicEvent struct {
 	State  string `json:"state,omitempty"`
 }
 
+// PublicLeague is a listed league projected for the public SEO hubs. County/State
+// are derived from the league's events (sessions), not stored on the league.
+type PublicLeague struct {
+	ID           string
+	Name         string
+	LeagueType   string
+	Sanctioned   bool
+	Description  string
+	County       string
+	State        string
+	SessionCount int
+	NextDate     string // earliest session starts_at (RFC3339), "" if none
+}
+
 // League groups multiple EXISTING events (each event = a session) for recurring
 // or season play; standings aggregate every player's record across all of them.
 // Owner-scoped (OwnerID = the organizer's auth user id), like events.
@@ -210,6 +224,10 @@ type League struct {
 	DayType    string `json:"dayType"`
 	// Sanctioned flags an officially sanctioned league.
 	Sanctioned bool `json:"sanctioned"`
+	// Listed opts the league into public discovery (the "pickleball leagues in
+	// <city>" SEO hubs). Default false = private. City/state is derived from its
+	// events, not stored on the league.
+	Listed bool `json:"listed"`
 	// CashPrize flags a cash-prize league; CashPrizeAmount is the optional pot.
 	CashPrize       bool     `json:"cashPrize"`
 	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
@@ -228,6 +246,7 @@ type CreateLeagueRequest struct {
 	LeagueType      string   `json:"leagueType"` // round_robin | ladder | team (default round_robin)
 	DayType         string   `json:"dayType"`    // single | multi (default multi)
 	Sanctioned      bool     `json:"sanctioned"`
+	Listed          bool     `json:"listed"` // opt into public discovery (default false)
 	CashPrize       bool     `json:"cashPrize"`
 	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
 	// Divisions are the league's brackets (skill/age/DUPR bands). Empty creates

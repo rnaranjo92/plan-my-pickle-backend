@@ -60,6 +60,19 @@ func (s *Server) registerSEO(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sitemap.xml", s.seoSitemap)
 	mux.HandleFunc("GET /e/{id}", s.seoEventPage)
 	mux.HandleFunc("GET /pickleball-tournaments/{state}/{county}", s.seoCityHub)
+	mux.HandleFunc("GET /pickleball-leagues/{state}/{county}", s.seoLeagueHub)
+	mux.HandleFunc("GET /l/{id}", s.seoLeaguePage)
+}
+
+func leagueTypeLabel(t string) string {
+	switch t {
+	case "ladder":
+		return "Ladder league"
+	case "team":
+		return "Team league"
+	default:
+		return "Round-robin league"
+	}
 }
 
 // --- data helpers ---
@@ -122,6 +135,18 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 		if st != "" && co != "" && !seenHub[st+"/"+co] {
 			seenHub[st+"/"+co] = true
 			urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-tournaments/" + st + "/" + co})
+		}
+	}
+	// Public leagues + their per-metro league hubs.
+	if leagues, _ := s.svc.PublicLeagues(); len(leagues) > 0 {
+		seenLHub := map[string]bool{}
+		for _, lg := range leagues {
+			urls = append(urls, url{loc: seoCanonicalBase + "/l/" + lg.ID, lastmod: isoDate(lg.NextDate)})
+			st, co := slugify(lg.State), slugify(lg.County)
+			if st != "" && co != "" && !seenLHub[st+"/"+co] {
+				seenLHub[st+"/"+co] = true
+				urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-leagues/" + st + "/" + co})
+			}
 		}
 	}
 
@@ -302,6 +327,103 @@ func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
 		JSONLD:      template.HTML(ldJSON),
 	}
 	s.seoRender(w, seoHubTmpl, data)
+}
+
+// --- league hub + per-league page ---
+
+func (s *Server) seoLeagueHub(w http.ResponseWriter, r *http.Request) {
+	stateSlug, countySlug := r.PathValue("state"), r.PathValue("county")
+	leagues, _ := s.svc.PublicLeagues()
+	var match []model.PublicLeague
+	var stateName, countyName string
+	for _, lg := range leagues {
+		if slugify(lg.State) == stateSlug && slugify(lg.County) == countySlug {
+			match = append(match, lg)
+			stateName, countyName = lg.State, lg.County
+		}
+	}
+	if len(match) == 0 {
+		s.seoNotFound(w)
+		return
+	}
+	place := countyName
+	if stateName != "" {
+		place += ", " + stateName
+	}
+	var cards []seoHubCard
+	var items []any
+	for i, lg := range match {
+		cards = append(cards, seoHubCard{
+			Name:     lg.Name,
+			DateLine: leagueTypeLabel(lg.LeagueType) + " · " + plural(lg.SessionCount, "session", "sessions"),
+			URL:      "/l/" + lg.ID, Dupr: lg.Sanctioned,
+		})
+		items = append(items, map[string]any{"@type": "ListItem", "position": i + 1,
+			"url": seoCanonicalBase + "/l/" + lg.ID, "name": lg.Name})
+	}
+	ld, _ := json.Marshal(map[string]any{"@context": "https://schema.org", "@type": "ItemList",
+		"name": "Pickleball Leagues in " + place, "itemListElement": items})
+	s.seoRender(w, seoHubTmpl, seoHubData{
+		Title:       "Pickleball Leagues in " + place + " — Join or Start a League | PlanMyPickle",
+		Canonical:   seoCanonicalBase + "/pickleball-leagues/" + stateSlug + "/" + countySlug,
+		Description: "Find and join pickleball leagues in " + place + " — round-robin, ladder and team leagues on PlanMyPickle.",
+		H1:          "Pickleball Leagues in " + place,
+		Intro:       plural(len(match), "pickleball league", "pickleball leagues") + " in " + place + " — round-robin, ladder and team play. Join one or start your own.",
+		Cards:       cards, JSONLD: template.HTML(ld),
+	})
+}
+
+func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
+	lg, sessions, err := s.svc.PublicLeagueByID(r.PathValue("id"))
+	if err != nil {
+		s.seoNotFound(w)
+		return
+	}
+	place := strings.TrimSpace(lg.County)
+	if lg.State != "" {
+		if place != "" {
+			place += ", " + lg.State
+		} else {
+			place = lg.State
+		}
+	}
+	var cards []seoHubCard
+	var items []any
+	for i, e := range sessions {
+		venue := strings.TrimSpace(strOr(e.VenueName))
+		if venue == "" {
+			venue = strings.TrimSpace(strOr(e.Location))
+		}
+		cards = append(cards, seoHubCard{
+			Name: e.Name, DateLine: fmtEventDate(strOr(e.StartsAt)),
+			Venue: venue, URL: "/e/" + e.ID, Dupr: e.DuprSanctioned,
+		})
+		items = append(items, map[string]any{"@type": "ListItem", "position": i + 1,
+			"url": seoCanonicalBase + "/e/" + e.ID, "name": e.Name})
+	}
+	ld, _ := json.Marshal(map[string]any{"@context": "https://schema.org", "@type": "ItemList",
+		"name": lg.Name + " — sessions", "itemListElement": items})
+
+	titlePlace := ""
+	if place != "" {
+		titlePlace = " in " + place
+	}
+	intro := leagueTypeLabel(lg.LeagueType)
+	if place != "" {
+		intro += " in " + place
+	}
+	intro += " · " + plural(lg.SessionCount, "session", "sessions") + "."
+	if d := strings.TrimSpace(lg.Description); d != "" {
+		intro += " " + d
+	}
+	s.seoRender(w, seoHubTmpl, seoHubData{
+		Title:       lg.Name + " — Pickleball League" + titlePlace + " | PlanMyPickle",
+		Canonical:   seoCanonicalBase + "/l/" + lg.ID,
+		Description: "Join " + lg.Name + ", a pickleball league" + titlePlace + ". Sessions, standings and live scores on PlanMyPickle.",
+		H1:          lg.Name,
+		Intro:       intro,
+		Cards:       cards, JSONLD: template.HTML(ld),
+	})
 }
 
 // --- rendering ---

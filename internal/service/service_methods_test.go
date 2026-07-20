@@ -141,6 +141,11 @@ func TestServiceWrites(t *testing.T) {
 	_, _ = s.ToggleReaction("fi1", "u1", "like")
 	_, _ = s.AddComment("fi1", "u1", "a@b.com", "nice")
 
+	// Public leagues (SEO).
+	_ = s.SetLeagueListed("l1", "o1", true)
+	_, _ = s.PublicLeagues()
+	_, _, _ = s.PublicLeagueByID("l1")
+
 	// Comment moderation (Guideline 1.2).
 	_ = s.ReportComment("fc1", "u2", "spam")
 	_ = s.BlockCommentAuthor("fc1", "u2")

@@ -245,6 +245,7 @@ func mapLeague(m map[string]any) model.League {
 		Sanctioned:      asBool(m, "sanctioned"),
 		CashPrize:       asBool(m, "cash_prize"),
 		CashPrizeAmount: asFloatPtr(m, "cash_prize_amount"),
+		Listed:          asBool(m, "listed"),
 	}
 }
 

@@ -236,6 +236,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Set/clear the league banner (the client uploaded the image to Storage; this
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
+	mux.HandleFunc("POST /leagues/{id}/listing", s.ownerOnly("league", "id", s.setLeagueListing))
 
 	// --- Ladder League (organizer-driven): a division's (league_bracket) ladder
 	// is an ordered ranking of entrants; recording a result applies the leapfrog
@@ -723,6 +724,21 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// setLeagueListing opts a league into (or out of) public discovery (owner-only).
+func (s *Server) setLeagueListing(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Listed bool `json:"listed"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetLeagueListed(r.PathValue("id"), userID(r), req.Listed); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"listed": req.Listed})
 }
 
 // listLeagues returns the leagues owned by the authenticated caller.

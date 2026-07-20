@@ -99,6 +99,15 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 	type url struct{ loc, lastmod string }
 	var urls []url
 	urls = append(urls, url{loc: seoCanonicalBase + "/"})
+	// Static free-tool + guide pages (served by the apex/Vercel, listed here so the
+	// single sitemap covers them). Add new evergreen pages to this list.
+	for _, p := range []string{
+		"/tools/pickleball-round-robin-generator",
+		"/tools/pickleball-bracket-generator",
+		"/guides/how-to-run-a-dupr-sanctioned-pickleball-tournament",
+	} {
+		urls = append(urls, url{loc: seoCanonicalBase + p})
+	}
 
 	seenHub := map[string]bool{}
 	for _, e := range evs {

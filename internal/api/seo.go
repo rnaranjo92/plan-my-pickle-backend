@@ -104,7 +104,12 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 	for _, p := range []string{
 		"/tools/pickleball-round-robin-generator",
 		"/tools/pickleball-bracket-generator",
+		"/tools/pickleball-double-elimination-bracket",
+		"/tools/pickleball-americano-generator",
+		"/tools/pickleball-tournament-time-calculator",
 		"/guides/how-to-run-a-dupr-sanctioned-pickleball-tournament",
+		"/guides/how-to-run-a-pickleball-round-robin",
+		"/guides/pickleball-tournament-formats-explained",
 	} {
 		urls = append(urls, url{loc: seoCanonicalBase + p})
 	}

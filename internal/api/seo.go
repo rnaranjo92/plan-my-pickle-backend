@@ -59,6 +59,7 @@ func slugify(s string) string {
 func (s *Server) registerSEO(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sitemap.xml", s.seoSitemap)
 	mux.HandleFunc("GET /e/{id}", s.seoEventPage)
+	mux.HandleFunc("GET /e/{id}/results", s.seoEventResults)
 	mux.HandleFunc("GET /pickleball-tournaments/{state}/{county}", s.seoCityHub)
 	mux.HandleFunc("GET /pickleball-leagues/{state}/{county}", s.seoLeagueHub)
 	mux.HandleFunc("GET /l/{id}", s.seoLeaguePage)
@@ -173,7 +174,7 @@ type seoEventData struct {
 	Title, Canonical, Description, H1 string
 	DateLine, VenueLine, FeeLine      string
 	Dupr                              bool
-	RegisterURL                       string
+	RegisterURL, ResultsURL           string
 	JSONLD                            template.HTML
 }
 
@@ -252,6 +253,7 @@ func (s *Server) seoEventPage(w http.ResponseWriter, r *http.Request) {
 		FeeLine:     feeLine,
 		Dupr:        ev.DuprSanctioned,
 		RegisterURL: seoAppBase + "/?event=" + ev.ID,
+		ResultsURL:  seoCanonicalBase + "/e/" + ev.ID + "/results",
 		JSONLD:      template.HTML(ldJSON),
 	}
 	s.seoRender(w, seoEventTmpl, data)
@@ -426,6 +428,90 @@ func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- event results / standings page ---
+
+type seoResultsData struct {
+	Title, Canonical, Description, H1, Sub, EventURL string
+	Body                                             template.HTML
+	JSONLD                                           template.HTML
+}
+
+func (s *Server) seoEventResults(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ev, err := s.svc.GetEvent(id)
+	if err != nil || !ev.Listed || seoIsDemoName(ev.Name) {
+		s.seoNotFound(w)
+		return
+	}
+	brackets, _ := s.svc.GetBrackets(id)
+	var body strings.Builder
+	champ := ""
+	hasResults := false
+	for _, b := range brackets {
+		st, e2 := s.svc.Standings(id, b.ID, true)
+		if e2 != nil || len(st) == 0 {
+			continue
+		}
+		hasResults = true
+		name := strings.TrimSpace(b.Name)
+		if name == "" {
+			name = "Division"
+		}
+		body.WriteString(`<div class="round"><h3>` + template.HTMLEscapeString(name) + `</h3>`)
+		body.WriteString(`<table style="width:100%;border-collapse:collapse;font-size:14px">` +
+			`<tr style="color:#5b6b80;text-align:left"><th style="padding:6px 8px 6px 0">#</th>` +
+			`<th style="padding:6px 8px">Player</th><th style="padding:6px 8px;text-align:center">W</th>` +
+			`<th style="padding:6px 8px;text-align:center">L</th><th style="padding:6px 8px;text-align:center">Diff</th></tr>`)
+		for i, row := range st {
+			medal := ""
+			if i == 0 {
+				medal = " 🏆"
+				if champ == "" {
+					champ = row.FullName
+				}
+			}
+			ds := strconv.Itoa(row.PointDiff)
+			if row.PointDiff > 0 {
+				ds = "+" + ds
+			}
+			body.WriteString(fmt.Sprintf(
+				`<tr style="border-top:1px solid #eef2e6"><td style="padding:7px 8px 7px 0;font-weight:800;color:#4f8b3b">%d</td>`+
+					`<td style="padding:7px 8px;font-weight:600">%s%s</td><td style="padding:7px 8px;text-align:center">%d</td>`+
+					`<td style="padding:7px 8px;text-align:center">%d</td><td style="padding:7px 8px;text-align:center">%s</td></tr>`,
+				i+1, template.HTMLEscapeString(row.FullName), medal, row.Wins, row.Losses, ds))
+		}
+		body.WriteString(`</table></div>`)
+	}
+	eventURL := seoCanonicalBase + "/e/" + id
+	if !hasResults {
+		// No results posted yet — link back, noindex (don't index a thin page).
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8">` +
+			`<meta name="robots" content="noindex"><title>Results — ` +
+			template.HTMLEscapeString(ev.Name) + `</title><p>Results for ` +
+			template.HTMLEscapeString(ev.Name) + ` aren't posted yet. <a href="` +
+			eventURL + `">See the event</a>.</p>`))
+		return
+	}
+	sub := "Live standings & results"
+	if champ != "" {
+		sub = "🏆 Champion: " + champ
+	}
+	ld, _ := json.Marshal(map[string]any{
+		"@context": "https://schema.org", "@type": "SportsEvent",
+		"name": ev.Name + " — Results", "sport": "Pickleball",
+		"url": seoCanonicalBase + "/e/" + id + "/results",
+	})
+	s.seoRender(w, seoResultsTmpl, seoResultsData{
+		Title:       ev.Name + " — Results & Standings | PlanMyPickle",
+		Canonical:   seoCanonicalBase + "/e/" + id + "/results",
+		Description: "Final standings and results for " + ev.Name + " — division standings, wins and point differentials on PlanMyPickle.",
+		H1:          ev.Name + " — Results",
+		Sub:         sub, Body: template.HTML(body.String()),
+		EventURL: eventURL, JSONLD: template.HTML(ld),
+	})
+}
+
 // --- rendering ---
 
 func (s *Server) seoRender(w http.ResponseWriter, t *template.Template, data any) {
@@ -492,6 +578,14 @@ var seoEventTmpl = template.Must(template.New("ev").Parse(seoHead + `
 {{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
 <p><a class="cta" href="{{.RegisterURL}}">Register &amp; see the live bracket →</a></p>
 <p class="meta">Registration, live scores, schedule, and standings run on PlanMyPickle. Tap above to open the event and sign up.</p>
+{{if .ResultsURL}}<p class="meta">🏆 <a href="{{.ResultsURL}}">Results &amp; standings</a></p>{{end}}
+` + seoFoot))
+
+var seoResultsTmpl = template.Must(template.New("res").Parse(seoHead + `
+<h1>{{.H1}}</h1>
+<p class="meta">{{.Sub}}</p>
+{{.Body}}
+<p><a class="cta" href="{{.EventURL}}">Event details &amp; registration →</a></p>
 ` + seoFoot))
 
 var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `

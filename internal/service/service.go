@@ -10119,12 +10119,13 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(courtID)+
 			"&status=eq.scheduled&order=play_order.asc.nullslast,created_at.asc"+
-			"&select=id,scheduled_day,match_participants(team,player:players!player_id(user_id))")
+			"&select=id,scheduled_day,match_participants(team,player:players!player_id(user_id,phone,sms_consent))")
 	if err != nil {
 		return
 	}
 	var nextID string
 	var userIDs []string
+	var phones []string // consented NANP numbers for the SMS add-on (if enabled)
 	for _, r := range rows {
 		if !sameSchedDay(startedDay, asIntPtr(r, "scheduled_day")) {
 			continue // tomorrow's game is not "on deck" now
@@ -10139,7 +10140,9 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 		// actual "you're up" push at start time).
 		teams := map[int]bool{}
 		var uids []string
+		var phs []string
 		seen := map[string]bool{}
+		seenPh := map[string]bool{}
 		if ps, ok := r["match_participants"].([]any); ok {
 			for _, p := range ps {
 				pm, ok := p.(map[string]any)
@@ -10152,16 +10155,32 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 						seen[uid] = true
 						uids = append(uids, uid)
 					}
+					// Consented US/Canada numbers only (partners sharing a phone
+					// get one text); the SMS itself is gated on the premium add-on
+					// below. Push above already covers linked-account players.
+					if ph := asStr(pl, "phone"); ph != "" && asBool(pl, "sms_consent") &&
+						gateway.IsNANP(ph) && !seenPh[ph] {
+						seenPh[ph] = true
+						phs = append(phs, ph)
+					}
 				}
 			}
 		}
 		if teams[1] && teams[2] {
-			nextID, userIDs = asStr(r, "id"), uids
+			nextID, userIDs, phones = asStr(r, "id"), uids, phs
 		}
 		break
 	}
-	if nextID == "" || len(userIDs) == 0 {
+	if nextID == "" {
 		return
+	}
+	// SMS is the premium "both channels" add-on (default is push-first). Only
+	// resolve it when there are consented numbers to text; a match with only
+	// unlinked-but-consented players still earns an on-deck heads-up when the
+	// add-on is on, so don't bail on an empty push list until SMS is ruled out.
+	smsOn := len(phones) > 0 && s.eventSmsEnabled(eventID)
+	if len(userIDs) == 0 && !smsOn {
+		return // nobody reachable on this match
 	}
 	// Fast-path dedup (skip the wasted insert when already announced); the INSERT
 	// below is the real atomic claim — with the notifications_on_deck_once partial
@@ -10180,6 +10199,33 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 	}
 	_ = s.sendPush(userIDs, "You're on deck",
 		fmt.Sprintf("Warm up — you're next on %s", court), "")
+
+	// Premium SMS: one warm-up text per consented number. Recorded under a
+	// distinct type (on_deck_sms) so the per-recipient rows don't collide with the
+	// single type='on_deck' dedup claim above (notifications_on_deck_once). The
+	// claim already gates the whole announcement, so these need no further dedup.
+	if !smsOn {
+		return
+	}
+	body := fmt.Sprintf("PlanMyPickle: You're on deck — warm up, you're next on %s. Reply STOP to opt out.", court)
+	for _, phone := range phones {
+		ins, err := s.sb.Insert("notifications", map[string]any{
+			"event_id": eventID, "match_id": nextID, "type": "on_deck_sms",
+			"to_address": phone, "body": body,
+		})
+		if err != nil || len(ins) == 0 {
+			continue // best-effort: a failed record must not abort the rest
+		}
+		notifID := asStr(ins[0], "id")
+		st := "failed"
+		var ref, sentAt any
+		if r, err := s.Sms.Send(phone, body); err == nil && r.OK {
+			st, ref, sentAt = "sent", r.ProviderRef, now()
+		}
+		_, _ = s.sb.Update("notifications", "id=eq."+store.Q(notifID), map[string]any{
+			"status": st, "provider_ref": ref, "sent_at": sentAt,
+		})
+	}
 }
 
 func (s *Service) queueDuprSubmission(matchID, eventID string) error {

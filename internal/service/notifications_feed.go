@@ -82,8 +82,10 @@ func (s *Service) feedItemRecipient(feedItemID string) string {
 }
 
 // notifPushURL turns a deep-link target into a web launch URL for the push
-// (tapping the notification opens the right place). Unknown/unsupported targets
-// fall back to the app home.
+// (tapping the notification opens the right place). Only event targets have a
+// distinct web URL; "feed" IS the home tab and "profile:<userId>" has no web
+// route (there's no user-id profile page), so both correctly fall back to home
+// — the bell row itself still carries the precise in-app link for tap routing.
 func notifPushURL(link string) string {
 	const base = "https://app.planmypickle.com"
 	switch {
@@ -148,7 +150,9 @@ func (s *Service) ListNotifications(userID string, limit int) ([]model.UserNotif
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.sb.SelectAll("user_notifications",
+	// Single bounded page (Select, not SelectAll — SelectAll owns its own
+	// windowing and forbids an embedded limit).
+	rows, err := s.sb.Select("user_notifications",
 		"recipient_id=eq."+store.Q(userID)+
 			"&order=created_at.desc&limit="+fmt.Sprint(limit)+
 			"&select=id,type,actor_id,actor_name,title,body,link,read,created_at")
@@ -174,11 +178,13 @@ func (s *Service) ListNotifications(userID string, limit int) ([]model.UserNotif
 }
 
 // UnreadNotificationCount powers the bell's badge. Best-effort → 0 on any error.
+// Bounded to 100 (single Select page); the badge renders 100+ as "99+" anyway,
+// so an exact count past that isn't needed and we avoid scanning a huge backlog.
 func (s *Service) UnreadNotificationCount(userID string) (int, error) {
 	if userID == "" {
 		return 0, ErrForbidden
 	}
-	rows, err := s.sb.SelectAll("user_notifications",
+	rows, err := s.sb.Select("user_notifications",
 		"recipient_id=eq."+store.Q(userID)+"&read=eq.false&select=id&limit=100")
 	if err != nil {
 		log.Printf("UnreadNotificationCount: %v", err)
@@ -190,22 +196,25 @@ func (s *Service) UnreadNotificationCount(userID string) (int, error) {
 // MarkNotificationsRead flips the read flag. With all=true it clears the whole
 // feed for the user (the "mark all read" the client fires when the bell opens);
 // otherwise it clears the given ids (scoped to the caller so one user can't
-// touch another's rows).
+// touch another's rows). Best-effort like its read siblings: a transient DB
+// error (or a missing table pre-migration) is logged and swallowed so opening
+// the bell never surfaces a 500 for a purely cosmetic mark-read.
 func (s *Service) MarkNotificationsRead(userID string, ids []string, all bool) error {
 	if userID == "" {
 		return ErrForbidden
 	}
+	q := ""
 	if all {
-		_, err := s.sb.Update("user_notifications",
-			"recipient_id=eq."+store.Q(userID)+"&read=eq.false",
-			map[string]any{"read": true})
-		return err
+		q = "recipient_id=eq." + store.Q(userID) + "&read=eq.false"
+	} else {
+		if len(ids) == 0 {
+			return nil
+		}
+		q = "recipient_id=eq." + store.Q(userID) + "&id=" + store.In(ids)
 	}
-	if len(ids) == 0 {
-		return nil
+	if _, err := s.sb.Update("user_notifications", q,
+		map[string]any{"read": true}); err != nil {
+		log.Printf("MarkNotificationsRead: %v", err)
 	}
-	_, err := s.sb.Update("user_notifications",
-		"recipient_id=eq."+store.Q(userID)+"&id="+store.In(ids),
-		map[string]any{"read": true})
-	return err
+	return nil
 }

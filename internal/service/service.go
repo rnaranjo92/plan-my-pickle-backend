@@ -639,6 +639,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if s.columnReady("events", "ondeck_sms") {
 		payload["ondeck_sms"] = req.OnDeckSms
 	}
+	// gcash_handle ships in add_gcash_handle.sql — columnReady-guarded.
+	if s.columnReady("events", "gcash_handle") {
+		payload["gcash_handle"] = orNull(req.GcashHandle)
+	}
 	// max_players ships in add_max_players.sql — reference only when a real cap is
 	// set so create keeps working before the migration is applied.
 	if req.MaxPlayers != nil && *req.MaxPlayers > 0 {
@@ -1556,6 +1560,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// the toggle once migrated, and never references a missing column before then.
 	if s.columnReady("events", "ondeck_sms") {
 		upd["ondeck_sms"] = req.OnDeckSms
+	}
+	// gcash_handle (add_gcash_handle.sql): columnReady-guarded manual PH handle.
+	if s.columnReady("events", "gcash_handle") {
+		upd["gcash_handle"] = orNull(req.GcashHandle)
 	}
 	// max_players (add_max_players.sql): the frontend sends this only when a cap is
 	// set or being cleared, so a no-cap edit never references the column before the

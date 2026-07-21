@@ -31,6 +31,9 @@ type Event struct {
 	Currency        string  `json:"currency"`
 	ZelleHandle     *string `json:"zelleHandle,omitempty"`
 	VenmoHandle     *string `json:"venmoHandle,omitempty"`
+	// GcashHandle = the organizer's GCash mobile number for manual PH collection
+	// (players pay out-of-band, organizer marks paid). Same model as Zelle/Venmo.
+	GcashHandle *string `json:"gcashHandle,omitempty"`
 	ClubID          *string `json:"clubId,omitempty"`
 	Location        *string `json:"location,omitempty"`
 	ContactPhone    *string `json:"contactPhone,omitempty"`
@@ -876,6 +879,7 @@ type CreateEventRequest struct {
 	AddonGripsCents            int    `json:"addonGripsCents,omitempty"`
 	ZelleHandle                string `json:"zelleHandle,omitempty"`
 	VenmoHandle                string `json:"venmoHandle,omitempty"`
+	GcashHandle                string `json:"gcashHandle,omitempty"`
 	ClubID                     string `json:"clubId,omitempty"`
 	Location                   string `json:"location"`
 	ContactPhone               string `json:"contactPhone"`

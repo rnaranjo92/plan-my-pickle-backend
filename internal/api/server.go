@@ -4015,6 +4015,7 @@ func (s *Server) nearbyEvents(w http.ResponseWriter, r *http.Request) {
 		events[i].ContactPhone = nil
 		events[i].ZelleHandle = nil
 		events[i].VenmoHandle = nil
+		events[i].GcashHandle = nil
 	}
 	writeJSON(w, http.StatusOK, events)
 }

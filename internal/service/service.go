@@ -239,6 +239,22 @@ func normalizeRatingEnforcement(v string) string {
 	}
 }
 
+// supportedCurrencies are the ISO-4217 codes an organizer may collect fees in —
+// all Stripe-chargeable. Empty/unknown input falls back to USD so a fee is never
+// stored in a currency the processor can't charge.
+var supportedCurrencies = map[string]bool{
+	"USD": true, "CAD": true, "PHP": true, "GBP": true, "AUD": true,
+	"EUR": true, "AED": true, "MXN": true, "INR": true, "NZD": true, "SGD": true,
+}
+
+func normalizeCurrency(v string) string {
+	c := strings.ToUpper(strings.TrimSpace(v))
+	if supportedCurrencies[c] {
+		return c
+	}
+	return "USD"
+}
+
 // ratingOutsideBand reports whether rating falls outside [min,max] (either bound
 // optional) and returns a human reason for the organizer. Used at register time
 // (flag + optional block) and at read time (roster flag) so both agree.
@@ -532,7 +548,7 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"additional_division_fee_cents": max(req.AdditionalDivisionFeeCents, 0),
 		"addon_tee_cents":               req.AddonTeeCents,
 		"addon_grips_cents":             req.AddonGripsCents,
-		"currency":                      "USD",
+		"currency":                      normalizeCurrency(req.Currency),
 		"location":                      orNull(req.Location),
 		"contact_phone":                 orNull(req.ContactPhone),
 		"zelle_handle":                  orNull(req.ZelleHandle),
@@ -1529,6 +1545,13 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// so the premium toggle round-trips both ways. The premium gate already forced
 	// this false for a non-premium caller at the handler.
 	upd["sms_notifications"] = req.SmsNotifications
+	// Currency: omit-vs-clear — only write when the client actually sends one, so
+	// an older client that doesn't know about currency can't silently reset a
+	// PHP/CAD event back to USD. (Changing it after fees are collected is a
+	// footgun the UI guards against.)
+	if req.Currency != "" {
+		upd["currency"] = normalizeCurrency(req.Currency)
+	}
 	// ondeck_sms (add_ondeck_sms.sql): columnReady-guarded so an edit round-trips
 	// the toggle once migrated, and never references a missing column before then.
 	if s.columnReady("events", "ondeck_sms") {

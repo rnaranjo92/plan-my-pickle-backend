@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	stripe "github.com/stripe/stripe-go/v79"
@@ -179,7 +180,9 @@ func (g *StripeGateway) CreateCheckoutSession(p CheckoutParams) (string, error) 
 	ctx, cancel := stripeCtx()
 	defer cancel()
 
-	currency := p.Currency
+	// Stripe requires lowercase ISO currency codes; events store them uppercase
+	// (e.g. "PHP") for display, so normalize at the API boundary.
+	currency := strings.ToLower(p.Currency)
 	if currency == "" {
 		currency = "usd"
 	}

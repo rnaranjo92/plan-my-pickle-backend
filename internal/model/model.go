@@ -866,6 +866,9 @@ type CreateEventRequest struct {
 	MinPoolRounds        int    `json:"minPoolRounds"`
 	MaxPoolRounds        int    `json:"maxPoolRounds"`
 	RegistrationFeeCents int    `json:"registrationFeeCents"`
+	// Currency the fees are collected in (ISO-4217, e.g. USD/CAD/PHP/GBP/AUD).
+	// Empty on update = leave unchanged; empty on create defaults to USD.
+	Currency string `json:"currency"`
 	// Multi-division pricing (see CreateEventRequest).
 	ExtraDivisionFeeMode       string `json:"extraDivisionFeeMode"`
 	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`

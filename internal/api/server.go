@@ -1612,6 +1612,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		// Rating-Integrity Guard: DUPR outside the division band + enforcement=block.
+		if errors.Is(err, service.ErrRatingOutOfBand) {
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

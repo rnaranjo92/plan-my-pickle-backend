@@ -1,0 +1,11 @@
+-- Rating-Integrity Guard: per-division DUPR eligibility enforcement at registration.
+-- Anti-sandbagging — an organizer can require a self-registering player's connected
+-- DUPR rating to fall within the division's rating band (min_rating/max_rating).
+--   'off'   (default) — no check (fully backward-compatible)
+--   'warn'  — allow, but the out-of-band flag already surfaces to the organizer
+--   'block' — reject a self-registration whose DUPR is outside the division band
+-- Organizer-added players are never blocked (trusted). The out-of-band flag itself
+-- is computed live from the bracket band (no new registration columns needed). The
+-- backend references this column only once a probe confirms it exists, so deploying
+-- the code before this migration is safe.
+alter table events add column if not exists rating_enforcement text not null default 'off';

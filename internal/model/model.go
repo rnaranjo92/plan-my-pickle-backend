@@ -42,9 +42,12 @@ type Event struct {
 	ConfirmEmailSubject *string `json:"confirmEmailSubject,omitempty"`
 	ConfirmEmailMessage *string `json:"confirmEmailMessage,omitempty"`
 	// Organizer email branding (Premium) — see CreateEventRequest for semantics.
-	EmailBrandLogoURL string   `json:"emailBrandLogoUrl,omitempty"`
-	EmailBrandColor   string   `json:"emailBrandColor,omitempty"`
-	EmailSignature    string   `json:"emailSignature,omitempty"`
+	EmailBrandLogoURL string `json:"emailBrandLogoUrl,omitempty"`
+	EmailBrandColor   string `json:"emailBrandColor,omitempty"`
+	EmailSignature    string `json:"emailSignature,omitempty"`
+	// RatingEnforcement gates self-registration against a division's DUPR band:
+	// "off" (default) | "warn" (flag out-of-band) | "block" (reject out-of-band).
+	RatingEnforcement string   `json:"ratingEnforcement,omitempty"`
 	VenueName         *string  `json:"venueName,omitempty"`
 	VenueAddress      *string  `json:"venueAddress,omitempty"`
 	VenuePhone        *string  `json:"venuePhone,omitempty"`
@@ -590,8 +593,10 @@ type Registration struct {
 	DuprID     *string  `json:"duprId,omitempty"`
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	// OutsideRating is true when the player's DUPR rating falls outside their
-	// chosen division's rating band (a soft flag, not a block).
-	OutsideRating bool `json:"outsideRating"`
+	// chosen division's rating band. OutsideRatingReason explains it for the
+	// organizer's roster (e.g. "DUPR 4.20 is above this division's 3.5 ceiling").
+	OutsideRating       bool   `json:"outsideRating"`
+	OutsideRatingReason string `json:"outsideRatingReason,omitempty"`
 	// Partner pairing (doubles). PartnerID is the partner's PLAYER id when paired
 	// with a registered player (set mutually on both registrations); PartnerName
 	// is that partner's resolved display name. PartnerNote holds a free-text
@@ -876,9 +881,11 @@ type CreateEventRequest struct {
 	// EmailSignature is a plain-text sign-off. Pointers so the write path can tell
 	// "field omitted → leave the stored value alone" (nil) from "field sent empty
 	// → clear back to the default" (""). Never NULL a value the client didn't send.
-	EmailBrandLogoURL *string  `json:"emailBrandLogoUrl,omitempty"`
-	EmailBrandColor   *string  `json:"emailBrandColor,omitempty"`
-	EmailSignature    *string  `json:"emailSignature,omitempty"`
+	EmailBrandLogoURL *string `json:"emailBrandLogoUrl,omitempty"`
+	EmailBrandColor   *string `json:"emailBrandColor,omitempty"`
+	EmailSignature    *string `json:"emailSignature,omitempty"`
+	// RatingEnforcement: "off" | "warn" | "block" (anti-sandbagging DUPR gating).
+	RatingEnforcement string   `json:"ratingEnforcement,omitempty"`
 	VenueName         string   `json:"venueName"`
 	VenueAddress      string   `json:"venueAddress"`
 	VenuePhone        string   `json:"venuePhone"`

@@ -189,6 +189,7 @@ func mapEvent(m map[string]any) model.Event {
 		EmailBrandLogoURL:          asStr(m, "email_brand_logo_url"),
 		EmailBrandColor:            asStr(m, "email_brand_color"),
 		EmailSignature:             asStr(m, "email_signature"),
+		RatingEnforcement:          asStr(m, "rating_enforcement"),
 		VenueName:                  asStrPtr(m, "venue_name"),
 		VenueAddress:               asStrPtr(m, "venue_address"),
 		VenuePhone:                 asStrPtr(m, "venue_phone"),
@@ -610,11 +611,8 @@ func mapRegistration(m map[string]any) model.Registration {
 			rating = skill
 		}
 		if rating != nil {
-			mn := asFloatPtr(b, "min_rating")
-			mx := asFloatPtr(b, "max_rating")
-			if (mn != nil && *rating < *mn) || (mx != nil && *rating > *mx) {
-				r.OutsideRating = true
-			}
+			r.OutsideRating, r.OutsideRatingReason = ratingOutsideBand(
+				rating, asFloatPtr(b, "min_rating"), asFloatPtr(b, "max_rating"))
 		}
 	}
 	return r

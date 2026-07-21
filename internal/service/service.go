@@ -223,6 +223,56 @@ var ErrPremiumRequired = errors.New("a Premium subscription is required")
 // their DUPR account does not hold. The message names the tier.
 var ErrDuprEntitlementRequired = errors.New("your DUPR account isn't eligible for this event's tier")
 
+// ErrRatingOutOfBand means a self-registering player's DUPR rating falls outside
+// the chosen division's band and the organizer set enforcement to "block".
+var ErrRatingOutOfBand = errors.New("your rating is outside this division")
+
+// normalizeRatingEnforcement clamps the organizer's setting to a known mode.
+func normalizeRatingEnforcement(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "warn":
+		return "warn"
+	case "block":
+		return "block"
+	default:
+		return "off"
+	}
+}
+
+// ratingOutsideBand reports whether rating falls outside [min,max] (either bound
+// optional) and returns a human reason for the organizer. Used at register time
+// (flag + optional block) and at read time (roster flag) so both agree.
+func ratingOutsideBand(rating, min, max *float64) (bool, string) {
+	if rating == nil {
+		return false, ""
+	}
+	if max != nil && *rating > *max {
+		return true, fmt.Sprintf("DUPR %.2f is above this division's %.1f ceiling", *rating, *max)
+	}
+	if min != nil && *rating < *min {
+		return true, fmt.Sprintf("DUPR %.2f is below this division's %.1f floor", *rating, *min)
+	}
+	return false, ""
+}
+
+// eventRatingEnforcement returns the event's rating-gate mode ("off"|"warn"|
+// "block"), defaulting to "off" until add_rating_enforcement.sql is applied.
+func (s *Service) eventRatingEnforcement(eventID string) string {
+	if !s.columnReady("events", "rating_enforcement") {
+		return "off"
+	}
+	row, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=rating_enforcement")
+	if err != nil || row == nil {
+		return "off"
+	}
+	switch m := asStr(row, "rating_enforcement"); m {
+	case "warn", "block":
+		return m
+	default:
+		return "off"
+	}
+}
+
 // normalizeDuprEntitlement validates an event's required DUPR gate, returning
 // "" for anything that isn't a gated tier (so a stray value can't silently lock
 // an event nobody can join). Per DUPR's guidance there is ONE user-facing tier:
@@ -557,6 +607,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		if req.EmailBrandLogoURL != nil {
 			payload["email_brand_logo_url"] = orNull(sanitizeHTTPURL(*req.EmailBrandLogoURL, 400))
 		}
+	}
+	// rating_enforcement ships in add_rating_enforcement.sql — set only when the
+	// probe confirms the column exists, so create never breaks pre-migration.
+	if s.columnReady("events", "rating_enforcement") {
+		payload["rating_enforcement"] = normalizeRatingEnforcement(req.RatingEnforcement)
 	}
 	// sms_notifications ships in add_sms_notifications.sql — migration-safe (only
 	// referenced when true; premium gate enforced at the handler).
@@ -1511,6 +1566,11 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		if req.EmailBrandLogoURL != nil {
 			upd["email_brand_logo_url"] = orNull(sanitizeHTTPURL(*req.EmailBrandLogoURL, 400))
 		}
+	}
+	// rating_enforcement — always written on edit (the form sends it) once the
+	// column exists, so an organizer can flip the gate on/off.
+	if s.columnReady("events", "rating_enforcement") {
+		upd["rating_enforcement"] = normalizeRatingEnforcement(req.RatingEnforcement)
 	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
 	// an edit never breaks before the migration is applied. (Trade-off: clearing
@@ -4189,18 +4249,21 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		}
 	}
 
-	// Soft eligibility flag: surface (don't block) when the player's rating falls
-	// outside the division's band. Prefer DUPR; fall back to self-reported skill.
+	// Rating-Integrity flag/guard: is the player's rating outside the division band?
+	// Prefer DUPR; fall back to self-reported skill.
 	playerRating := req.DuprRating
 	if playerRating == nil {
 		playerRating = req.SkillLevel
 	}
-	outside := false
-	if chosen != nil && playerRating != nil {
-		if (chosen.MinRating != nil && *playerRating < *chosen.MinRating) ||
-			(chosen.MaxRating != nil && *playerRating > *chosen.MaxRating) {
-			outside = true
-		}
+	outside, outsideReason := false, ""
+	if chosen != nil {
+		outside, outsideReason = ratingOutsideBand(playerRating, chosen.MinRating, chosen.MaxRating)
+	}
+	// Anti-sandbagging: when the organizer set enforcement to "block", reject an
+	// out-of-band SELF-registration. Organizer-adds (Self=false) are trusted and
+	// only flagged. "warn"/"off" never block (the flag surfaces on the roster).
+	if outside && req.Self && s.eventRatingEnforcement(eventID) == "block" {
+		return model.Registration{}, fmt.Errorf("%w — %s", ErrRatingOutOfBand, outsideReason)
 	}
 	// A linked account already registered for THIS DIVISION would collide on the
 	// unique (event_id, player_id, bracket_id) — surface a friendly message, not a
@@ -4248,7 +4311,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	return model.Registration{
 		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,
-		OutsideRating: outside,
+		OutsideRating: outside, OutsideRatingReason: outsideReason,
 	}, nil
 }
 

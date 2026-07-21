@@ -3879,9 +3879,10 @@ func (s *Service) sendWelcomeSmsOnce(playerID, eventID string) {
 		return
 	}
 	phone := strings.TrimSpace(asStr(pl, "phone"))
-	// Only text US/Canada (NANP) numbers — the A2P 10DLC campaign is NANP-only, and
-	// this keeps the "every send path gates on IsNANP" invariant.
-	if phone == "" || !gateway.IsNANP(phone) {
+	// Only text numbers in an SMS-enabled country (SMS_COUNTRIES allowlist —
+	// defaults to US/Canada). Push covers everyone else. Keeps the "every send
+	// path gates on SmsReachable" invariant.
+	if phone == "" || !gateway.SmsReachable(phone) {
 		return
 	}
 	name := "your tournament"
@@ -10110,7 +10111,7 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 		// Our A2P 10DLC campaign only reaches US/Canada numbers. International
 		// players are covered by the push above (if they have a linked account);
 		// skip the SMS rather than log a guaranteed carrier failure.
-		if !gateway.IsNANP(phone) {
+		if !gateway.SmsReachable(phone) {
 			continue
 		}
 		// Wording mirrors the registered A2P sample; the STOP footer is required
@@ -10230,7 +10231,7 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 					// get one text); the SMS itself is gated on the premium add-on
 					// below. Push above already covers linked-account players.
 					if ph := asStr(pl, "phone"); ph != "" && asBool(pl, "sms_consent") &&
-						gateway.IsNANP(ph) && !seenPh[ph] {
+						gateway.SmsReachable(ph) && !seenPh[ph] {
 						seenPh[ph] = true
 						phs = append(phs, ph)
 					}

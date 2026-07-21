@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -125,6 +127,62 @@ func IsNANP(raw string) bool {
 	}
 	d := digitsOnly(raw)
 	return len(d) == 10 || (len(d) == 11 && d[0] == '1')
+}
+
+// smsCountryCodes is the set of E.164 country calling codes we can actually
+// deliver A2P SMS to — i.e. countries where a Twilio sender is registered.
+// Configured via SMS_COUNTRIES (comma-separated, e.g. "1,44,61,63"); defaults to
+// "1" (US/Canada), preserving the original NANP-only behavior. This lets SMS be
+// switched on per country as senders get registered, with no code change.
+func smsCountryCodes() []string {
+	v := strings.TrimSpace(os.Getenv("SMS_COUNTRIES"))
+	if v == "" {
+		return []string{"1"}
+	}
+	var out []string
+	for _, c := range strings.Split(v, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"1"}
+	}
+	return out
+}
+
+// SmsReachable reports whether we can send A2P SMS to this number today: its
+// E.164 country code must be in the configured allowlist (SMS_COUNTRIES). Push
+// covers everyone else. A bare 10-digit number (no country code) is treated as a
+// legacy US/CA entry and allowed only when "1" is enabled. With the default
+// allowlist this is exactly equivalent to the old IsNANP gate.
+func SmsReachable(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	d := digitsOnly(raw)
+	if d == "" {
+		return false
+	}
+	codes := smsCountryCodes()
+	has1 := false
+	for _, c := range codes {
+		if c == "1" {
+			has1 = true
+			break
+		}
+	}
+	// Legacy stored numbers with no "+" and 10 digits are US/CA.
+	if !strings.HasPrefix(raw, "+") && len(d) == 10 {
+		return has1
+	}
+	// Longest code first so a specific code wins over a shorter shared prefix.
+	sorted := append([]string(nil), codes...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, c := range sorted {
+		if strings.HasPrefix(d, c) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsFictionalNANP reports whether a NANP number is reserved/fictional or

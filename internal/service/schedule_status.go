@@ -229,7 +229,7 @@ func (s *Service) NotifyScheduleDelay(eventID string, sms bool, customMsg string
 		body += " Reply STOP to opt out."
 		seen := map[string]bool{}
 		for _, phone := range phones {
-			if phone == "" || seen[phone] || !gateway.IsNANP(phone) {
+			if phone == "" || seen[phone] || !gateway.SmsReachable(phone) {
 				continue
 			}
 			seen[phone] = true

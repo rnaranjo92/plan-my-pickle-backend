@@ -295,4 +295,6 @@ func (s *Service) notifySocialToClub(clubID, eventID, name string) {
 	// the deep-linked event page shows the correct local date/time.
 	url := "https://app.planmypickle.com/?event=" + eventID
 	_ = s.sendPush(uids, name, "A new session is up — tap to RSVP", url)
+	s.recordNotifications(uids, "session",
+		name+": a new session is up — tap to RSVP", "playevent:"+eventID)
 }

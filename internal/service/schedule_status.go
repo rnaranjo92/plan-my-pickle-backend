@@ -207,6 +207,8 @@ func (s *Service) NotifyScheduleDelay(eventID string, sms bool, customMsg string
 			"https://app.planmypickle.com/?event="+ev.ID); perr == nil {
 			pushCount = len(uids)
 		}
+		// File the delay update in each affected player's bell.
+		s.recordNotifications(uids, "schedule", detail, "playevent:"+ev.ID)
 	}
 
 	// SMS is the premium "both channels" add-on — only text the delay update when

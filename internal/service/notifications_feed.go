@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
@@ -21,6 +22,20 @@ func (s *Service) notifyUser(recipientID, typ, actorID, actorName, body, link st
 	if recipientID == "" || recipientID == actorID {
 		return
 	}
+	s.recordNotification(recipientID, typ, actorID, actorName, body, link)
+	// Push to the recipient's linked device(s) (external_id = Supabase user id).
+	_ = s.sendPush([]string{recipientID}, "PlanMyPickle", body,
+		notifPushURL(link))
+}
+
+// recordNotification files a bell row WITHOUT sending a push — for events that
+// ALREADY push/SMS on their own (match start, on-deck, score confirm, delays,
+// disputes), so the activity feed captures them without a duplicate push.
+// Best-effort: logs+swallows errors (incl. a missing table pre-migration).
+func (s *Service) recordNotification(recipientID, typ, actorID, actorName, body, link string) {
+	if recipientID == "" || recipientID == actorID {
+		return
+	}
 	if _, err := s.sb.Insert("user_notifications", map[string]any{
 		"recipient_id": recipientID,
 		"type":         typ,
@@ -29,12 +44,21 @@ func (s *Service) notifyUser(recipientID, typ, actorID, actorName, body, link st
 		"body":         body,
 		"link":         link,
 	}); err != nil {
-		log.Printf("notifyUser: insert (%s): %v", typ, err)
-		// Still try the push below — the feed row is best-effort, not a gate.
+		log.Printf("recordNotification: insert (%s): %v", typ, err)
 	}
-	// Push to the recipient's linked device(s) (external_id = Supabase user id).
-	_ = s.sendPush([]string{recipientID}, "PlanMyPickle", body,
-		notifPushURL(link))
+}
+
+// recordNotifications files the same bell row for many recipients (bulk sites
+// like a court call or a delay blast). De-dupes the recipient list.
+func (s *Service) recordNotifications(recipientIDs []string, typ, body, link string) {
+	seen := map[string]bool{}
+	for _, uid := range recipientIDs {
+		if uid == "" || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		s.recordNotification(uid, typ, "", "", body, link)
+	}
 }
 
 // feedItemRecipient is who should be notified about activity on a post: the
@@ -62,8 +86,10 @@ func (s *Service) feedItemRecipient(feedItemID string) string {
 func notifPushURL(link string) string {
 	const base = "https://app.planmypickle.com"
 	switch {
-	case len(link) > 6 && link[:6] == "event:":
-		return base + "/?event=" + link[6:]
+	case strings.HasPrefix(link, "event:"):
+		return base + "/?event=" + strings.TrimPrefix(link, "event:")
+	case strings.HasPrefix(link, "playevent:"):
+		return base + "/?event=" + strings.TrimPrefix(link, "playevent:")
 	default:
 		return base
 	}

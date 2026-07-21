@@ -9482,6 +9482,8 @@ func (s *Service) notifyEventPlayers(eventID, text string) {
 	}
 	_ = s.sendPush(uids, heading, content,
 		"https://app.planmypickle.com/?event="+eventID)
+	// File the organizer's announcement in each player's bell.
+	s.recordNotifications(uids, "announcement", content, "playevent:"+eventID)
 }
 
 // notifyOrganizerNewRegistration pushes the event owner a heads-up that a player
@@ -10035,6 +10037,11 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	// bundles the sound file, default tone until then. sendPushSound swallows errors.
 	_ = s.sendPushSound(userIDs, "Match starting",
 		fmt.Sprintf("You're up on %s", court), "", courtCallSound)
+	// Also file it in each player's bell so the court call is there to review
+	// (push already sent above → record only, no duplicate push).
+	s.recordNotifications(userIDs, "match_start",
+		fmt.Sprintf("You're up on %s — round %d", court, roundNumber),
+		"playevent:"+eventID)
 
 	// SMS is the premium "both channels" add-on — default is push-first (above),
 	// so only text court calls when the event opted in. Best-effort: a missing
@@ -10241,6 +10248,9 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 	}
 	_ = s.sendPush(userIDs, "You're on deck",
 		fmt.Sprintf("Warm up — you're next on %s", court), "")
+	s.recordNotifications(userIDs, "ondeck",
+		fmt.Sprintf("You're on deck — warm up for %s", court),
+		"playevent:"+eventID)
 
 	// Premium SMS: one warm-up text per consented number. Recorded under a
 	// distinct type (on_deck_sms) so the per-recipient rows don't collide with the

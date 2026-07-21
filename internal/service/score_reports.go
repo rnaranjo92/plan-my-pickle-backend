@@ -273,6 +273,10 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 	_ = s.sendPush(userIDs, "Confirm your score",
 		fmt.Sprintf("Your opponents reported %s. Confirm or dispute within %d min.", scoreTxt, minutes),
 		"https://app.planmypickle.com/?event="+eventID)
+	// File in the bell so the score-entry prompt is reviewable there too.
+	s.recordNotifications(userIDs, "score",
+		fmt.Sprintf("Confirm your score: opponents reported %s", scoreTxt),
+		"playevent:"+eventID)
 }
 
 // ConfirmScore finalizes a pending report (opposite-side participant only) via
@@ -339,6 +343,10 @@ func (s *Service) DisputeScore(matchID, token, note, callerUserID string) (Score
 		_ = s.sendPush([]string{asStr(ev, "owner_id")}, "Score disputed",
 			"A reported score was disputed — enter the final score in the app to resolve it.",
 			"https://app.planmypickle.com/?e="+eventID)
+		// Organizer bell entry — tapping opens the event to resolve it.
+		s.recordNotification(asStr(ev, "owner_id"), "dispute", "", "",
+			"A reported score was disputed — enter the final score to resolve it",
+			"event:"+eventID)
 	}
 	return s.GetScoreReportState(matchID, token, callerUserID)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
@@ -93,6 +94,48 @@ func notifPushURL(link string) string {
 	default:
 		return base
 	}
+}
+
+// SeedDemoNotifications fills the caller's OWN bell with one of each notification
+// type (staggered timestamps + left unread) so the feed can be previewed. Links
+// are intentionally empty so a tapped demo row navigates nowhere. Returns the
+// count inserted. Dev/QA convenience — only ever touches the caller's own rows.
+func (s *Service) SeedDemoNotifications(userID string) (int, error) {
+	if userID == "" {
+		return 0, ErrForbidden
+	}
+	demos := []struct {
+		typ, actor, body string
+		minsAgo          int
+	}{
+		{"match_start", "", "You're up on Court 3 — round 2", 1},
+		{"ondeck", "", "You're on deck — warm up for Court 3", 6},
+		{"score", "", "Confirm your score: opponents reported 11-7", 12},
+		{"registration", "Taylor Kim", "Taylor Kim registered for Spring Paddle Mixer", 40},
+		{"comment", "Sam Carter", "Sam Carter commented on your post", 95},
+		{"reaction", "Jordan Lee", "Jordan Lee reacted to your post", 140},
+		{"follow", "Alex Rivera", "Alex Rivera started following you", 190},
+		{"schedule", "", "Running about 15 min behind — hang tight, we'll call your court soon.", 260},
+		{"announcement", "", "Organizer: lunch break at noon — courts pause 12:00–12:45.", 400},
+		{"dispute", "", "A reported score was disputed — enter the final score to resolve it", 700},
+		{"session", "", "Tuesday Night Mixer: a new session is up — tap to RSVP", 1500},
+	}
+	n := 0
+	for _, d := range demos {
+		ts := time.Now().Add(-time.Duration(d.minsAgo) * time.Minute).
+			UTC().Format("2006-01-02T15:04:05.000Z")
+		if _, err := s.sb.Insert("user_notifications", map[string]any{
+			"recipient_id": userID,
+			"type":         d.typ,
+			"actor_name":   d.actor,
+			"body":         d.body,
+			"link":         "",
+			"created_at":   ts,
+		}); err == nil {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // ListNotifications returns a user's activity feed, newest first (capped).

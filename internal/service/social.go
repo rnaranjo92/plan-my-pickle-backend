@@ -62,6 +62,15 @@ func (s *Service) Follow(callerID, targetID string) error {
 		"follower_id": callerID,
 		"followee_id": targetID,
 	})
+	if err == nil {
+		// Notify the followed user (best-effort, off the request path). Tapping it
+		// opens the follower's profile.
+		go func() {
+			name := s.resolveDisplayName(callerID, "")
+			s.notifyUser(targetID, "follow", callerID, name,
+				name+" started following you", "profile:"+callerID)
+		}()
+	}
 	return err
 }
 

@@ -1235,6 +1235,22 @@ type ReactionResult struct {
 }
 
 // FeedComment is one comment on a feed item.
+// UserNotification is one entry in a user's in-app activity feed (the bell):
+// someone followed them, reacted to / commented on their post, or registered
+// for their event. Type drives the client's icon + copy; Link is a deep-link
+// target the client routes on tap (e.g. "event:<id>", "profile:<id>", "feed").
+type UserNotification struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	ActorID   string `json:"actorId,omitempty"`
+	ActorName string `json:"actorName"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Link      string `json:"link"`
+	Read      bool   `json:"read"`
+	CreatedAt string `json:"createdAt"`
+}
+
 type FeedComment struct {
 	ID         string `json:"id"`
 	FeedItemID string `json:"feedItemId"`

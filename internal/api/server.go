@@ -412,6 +412,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /comments/{id}/block-author", requireAuth(s.commentBlockAuthor))
 	mux.HandleFunc("GET /me/blocks", requireAuth(s.myBlocks))
 	mux.HandleFunc("DELETE /me/blocks/{id}", requireAuth(s.unblockUser))
+	// The bell: in-app activity feed + unread badge + mark-read.
+	mux.HandleFunc("GET /me/notifications", requireAuth(s.myNotifications))
+	mux.HandleFunc("GET /me/notifications/unread-count", requireAuth(s.myNotificationCount))
+	mux.HandleFunc("POST /me/notifications/read", requireAuth(s.markNotificationsRead))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
@@ -4173,6 +4177,43 @@ func (s *Server) myBlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, blocks)
+}
+
+// myNotifications returns the caller's in-app activity feed (newest first).
+func (s *Server) myNotifications(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ListNotifications(userID(r), 50)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// myNotificationCount powers the bell's unread badge.
+func (s *Server) myNotificationCount(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.UnreadNotificationCount(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"count": n})
+}
+
+// markNotificationsRead clears unread state — {"all":true} for the whole feed
+// (fired when the bell opens) or {"ids":[...]} for specific entries.
+func (s *Server) markNotificationsRead(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+		All bool     `json:"all"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.MarkNotificationsRead(userID(r), req.IDs, req.All); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // unblockUser reverses a block.

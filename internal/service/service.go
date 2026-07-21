@@ -8768,6 +8768,13 @@ func (s *Service) ToggleReaction(feedItemID, userID, typ string) (model.Reaction
 			return model.ReactionResult{}, err
 		}
 		reacted = true
+		// Notify the post's author/organizer that someone reacted (off the request
+		// path; notifyUser skips self-reactions + is best-effort).
+		go func() {
+			name := s.resolveDisplayName(userID, "")
+			s.notifyUser(s.feedItemRecipient(feedItemID), "reaction", userID, name,
+				name+" reacted to your post", "feed")
+		}()
 	}
 	counts := map[string]int{}
 	if rows, err := s.sb.Select("feed_reactions",
@@ -8843,6 +8850,13 @@ func (s *Service) AddComment(feedItemID, userID, email, text string) (model.Feed
 	c := mapFeedComment(rows[0])
 	c.Mine = true
 	c.CanDelete = true
+	// Notify the post's author/organizer of the new comment (best-effort, off
+	// the request path).
+	go func() {
+		name := s.resolveDisplayName(userID, email)
+		s.notifyUser(s.feedItemRecipient(feedItemID), "comment", userID, name,
+			name+" commented on your post", "feed")
+	}()
 	return c, nil
 }
 
@@ -9492,9 +9506,10 @@ func (s *Service) notifyOrganizerNewRegistration(eventID, playerName, registrant
 	if who == "" {
 		who = "A player"
 	}
-	_ = s.sendPush([]string{owner}, "New registration",
-		who+" registered for "+name,
-		"https://app.planmypickle.com/?event="+eventID)
+	// In-app bell entry — tapping opens the event. notifyUser also fires the push
+	// (external_id = owner's user id), so we don't send a separate one here.
+	s.notifyUser(owner, "registration", registrantUserID, who,
+		who+" registered for "+name, "event:"+eventID)
 }
 
 func (s *Service) DeleteFeedItem(id string) error {

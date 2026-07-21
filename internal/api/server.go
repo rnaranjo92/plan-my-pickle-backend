@@ -689,6 +689,11 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if req.SmsNotifications && !premiumAllowed(userEmail(r)) {
 		req.SmsNotifications = false
 	}
+	// On-deck SMS is a sub-option of the SMS add-on — meaningless (and never fires)
+	// without it, so keep the stored flag honest.
+	if !req.SmsNotifications {
+		req.OnDeckSms = false
+	}
 	// Organizing is FREE — anyone can create + run a tournament (the engine is
 	// never paywalled). Premium gates only specific features: CreateEvent itself
 	// returns ErrPremiumRequired for a DUPR-sanctioned event, and advanced draws /
@@ -1029,6 +1034,10 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 	// SMS "both channels" is premium — non-premium callers can't enable it on edit.
 	if req.SmsNotifications && !premiumAllowed(userEmail(r)) {
 		req.SmsNotifications = false
+	}
+	// On-deck SMS is a sub-option of the SMS add-on — off whenever SMS is off.
+	if !req.SmsNotifications {
+		req.OnDeckSms = false
 	}
 	if err := s.svc.UpdateEvent(r.PathValue("id"), req); err != nil {
 		status(w, err)

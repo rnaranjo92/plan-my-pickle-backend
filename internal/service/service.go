@@ -618,6 +618,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.SmsNotifications {
 		payload["sms_notifications"] = true
 	}
+	// ondeck_sms ships in add_ondeck_sms.sql — columnReady-guarded so create never
+	// breaks pre-migration (unlike sms_notifications, referenced only when true).
+	if s.columnReady("events", "ondeck_sms") {
+		payload["ondeck_sms"] = req.OnDeckSms
+	}
 	// max_players ships in add_max_players.sql — reference only when a real cap is
 	// set so create keeps working before the migration is applied.
 	if req.MaxPlayers != nil && *req.MaxPlayers > 0 {
@@ -1524,6 +1529,11 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// so the premium toggle round-trips both ways. The premium gate already forced
 	// this false for a non-premium caller at the handler.
 	upd["sms_notifications"] = req.SmsNotifications
+	// ondeck_sms (add_ondeck_sms.sql): columnReady-guarded so an edit round-trips
+	// the toggle once migrated, and never references a missing column before then.
+	if s.columnReady("events", "ondeck_sms") {
+		upd["ondeck_sms"] = req.OnDeckSms
+	}
 	// max_players (add_max_players.sql): the frontend sends this only when a cap is
 	// set or being cleared, so a no-cap edit never references the column before the
 	// migration is applied. >0 sets the cap; <=0 clears it.
@@ -9960,6 +9970,22 @@ func (s *Service) eventSmsEnabled(eventID string) bool {
 	return asBool(row, "sms_notifications")
 }
 
+// eventOnDeckSmsEnabled reports whether the event opted into texting the on-deck
+// warm-up heads-up (an independent toggle on top of sms_notifications). Default
+// OFF; columnReady-guarded so a missing column (pre add_ondeck_sms.sql) reads as
+// off and on-deck stays push-only.
+func (s *Service) eventOnDeckSmsEnabled(eventID string) bool {
+	if !s.columnReady("events", "ondeck_sms") {
+		return false
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=ondeck_sms")
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "ondeck_sms")
+}
+
 // notifyMatchStart texts every player in a match that they're up, recording each
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
@@ -10178,7 +10204,8 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 	// resolve it when there are consented numbers to text; a match with only
 	// unlinked-but-consented players still earns an on-deck heads-up when the
 	// add-on is on, so don't bail on an empty push list until SMS is ruled out.
-	smsOn := len(phones) > 0 && s.eventSmsEnabled(eventID)
+	smsOn := len(phones) > 0 && s.eventSmsEnabled(eventID) &&
+		s.eventOnDeckSmsEnabled(eventID)
 	if len(userIDs) == 0 && !smsOn {
 		return // nobody reachable on this match
 	}

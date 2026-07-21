@@ -214,6 +214,7 @@ func mapEvent(m map[string]any) model.Event {
 		Listed:                     asBool(m, "listed"),
 		PlayerScoring:              asBool(m, "player_scoring"),
 		SmsNotifications:           asBool(m, "sms_notifications"),
+		OnDeckSms:                  asBool(m, "ondeck_sms"),
 		ScoreConfirmMinutes:        asInt(m, "score_confirm_minutes"),
 		MaxPlayers:                 asIntPtr(m, "max_players"),
 		RegistrationCloseAt:        asStrPtr(m, "registration_close_at"),

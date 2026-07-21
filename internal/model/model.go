@@ -119,6 +119,10 @@ type Event struct {
 	// premium), automated alerts (court calls, delay updates) ALSO go by SMS on
 	// top of push. Default false = push-first (free). Gated at the API.
 	SmsNotifications bool `json:"smsNotifications"`
+	// OnDeckSms = also text the on-deck warm-up heads-up (needs SmsNotifications).
+	// Default false — on-deck stays push-only unless the organizer opts in, since
+	// it ~doubles court-call SMS volume.
+	OnDeckSms bool `json:"onDeckSms"`
 	// MaxPlayers caps how many distinct players may register for the event; nil or
 	// <=0 = unlimited. Enforced on self-registration (an organizer adding players
 	// can still exceed it).
@@ -912,6 +916,7 @@ type CreateEventRequest struct {
 	PlayerScoring       bool           `json:"playerScoring"`
 	ScoreConfirmMinutes int            `json:"scoreConfirmMinutes"`
 	SmsNotifications    bool           `json:"smsNotifications"`
+	OnDeckSms           bool           `json:"onDeckSms"`
 	MaxPlayers          *int           `json:"maxPlayers,omitempty"`
 	RegistrationCloseAt *string        `json:"registrationCloseAt,omitempty"`
 	PosterURL           string         `json:"posterUrl"`

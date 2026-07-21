@@ -140,22 +140,29 @@ func (s *Service) SeedDemoNotifications(userID string) (int, error) {
 	return n, nil
 }
 
-// ListNotifications returns a user's activity feed, newest first (capped).
+// ListNotifications returns one page of a user's activity feed, newest first.
+// Cursor pagination: pass the previous page's oldest created_at as [before] to
+// get the next (older) page; empty [before] starts at the newest. The client
+// stops when a page returns fewer than [limit] rows.
 // Best-effort: any error (incl. a missing table pre-migration) yields an empty
 // list rather than a 500 so the bell always renders.
-func (s *Service) ListNotifications(userID string, limit int) ([]model.UserNotification, error) {
+func (s *Service) ListNotifications(userID, before string, limit int) ([]model.UserNotification, error) {
 	if userID == "" {
 		return nil, ErrForbidden
 	}
 	if limit <= 0 || limit > 100 {
-		limit = 50
+		limit = 30
 	}
 	// Single bounded page (Select, not SelectAll — SelectAll owns its own
 	// windowing and forbids an embedded limit).
-	rows, err := s.sb.Select("user_notifications",
-		"recipient_id=eq."+store.Q(userID)+
-			"&order=created_at.desc&limit="+fmt.Sprint(limit)+
-			"&select=id,type,actor_id,actor_name,title,body,link,read,created_at")
+	q := "recipient_id=eq." + store.Q(userID) + "&order=created_at.desc&limit=" +
+		fmt.Sprint(limit) +
+		"&select=id,type,actor_id,actor_name,title,body,link,read,created_at"
+	if before != "" {
+		// Next page = strictly-older rows than the last one we returned.
+		q += "&created_at=lt." + store.Q(before)
+	}
+	rows, err := s.sb.Select("user_notifications", q)
 	if err != nil {
 		log.Printf("ListNotifications: %v", err)
 		return []model.UserNotification{}, nil

@@ -4180,9 +4180,18 @@ func (s *Server) myBlocks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, blocks)
 }
 
-// myNotifications returns the caller's in-app activity feed (newest first).
+// myNotifications returns one page of the caller's activity feed (newest first).
+// Cursor pagination: ?before=<created_at of the last item> fetches the next
+// (older) page; ?limit caps the page size (default 30).
 func (s *Server) myNotifications(w http.ResponseWriter, r *http.Request) {
-	items, err := s.svc.ListNotifications(userID(r), 50)
+	before := r.URL.Query().Get("before")
+	limit := 30
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil {
+			limit = n
+		}
+	}
+	items, err := s.svc.ListNotifications(userID(r), before, limit)
 	if err != nil {
 		status(w, err)
 		return

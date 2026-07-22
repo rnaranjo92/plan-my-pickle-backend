@@ -643,6 +643,66 @@ func (s *Service) voidActiveChallengesForEntrant(entrantID, reason string) {
 	}
 }
 
+// JoinLadder adds the authenticated caller to a division's ladder as an
+// account-LINKED entrant (so they can issue + receive challenges), at the
+// bottom. Idempotent: returns their existing entrant if already on it. This is
+// how real players self-register for a ladder (via the shared join QR/link) —
+// the only path that produces the linked entrants challenges require.
+func (s *Service) JoinLadder(userID, div string) (model.LadderEntrant, error) {
+	if strings.TrimSpace(userID) == "" {
+		return model.LadderEntrant{}, ErrForbidden
+	}
+	if strings.TrimSpace(div) == "" {
+		return model.LadderEntrant{}, errors.New("division is required")
+	}
+	// The division must exist (resolving its league owner proves it).
+	if _, err := s.LadderOwner(div); err != nil {
+		return model.LadderEntrant{}, err
+	}
+	pid := s.ensurePlayerForUser(userID)
+	if pid == "" {
+		return model.LadderEntrant{}, errors.New("please finish setting up your profile first")
+	}
+	if existing, _ := s.sb.SelectOne("ladder_entrants",
+		"league_bracket_id=eq."+store.Q(div)+"&player_id=eq."+store.Q(pid)+"&select=*&limit=1"); existing != nil {
+		return mapLadderEntrant(existing), nil
+	}
+	return s.AddLadderEntrant(div, model.AddLadderEntrantRequest{
+		DisplayName: s.displayNameForUser(userID),
+		PlayerID:    &pid,
+	})
+}
+
+// ensurePlayerForUser returns the caller's player id, creating a minimal linked
+// player row if the account doesn't have one yet (a brand-new player joining a
+// ladder from a QR before ever registering for an event).
+func (s *Service) ensurePlayerForUser(userID string) string {
+	if pid := s.playerIDForUser(userID); pid != "" {
+		return pid
+	}
+	rows, err := s.sb.Insert("players", map[string]any{
+		"user_id":   userID,
+		"full_name": s.displayNameForUser(userID),
+	})
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	return asStr(rows[0], "id")
+}
+
+// displayNameForUser resolves the account's display name from its profile,
+// falling back to "Player".
+func (s *Service) displayNameForUser(userID string) string {
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=full_name")
+	if err == nil && row != nil {
+		if n := strings.TrimSpace(asStr(row, "full_name")); n != "" {
+			return n
+		}
+	}
+	return "Player"
+}
+
 // playerIDByEmail resolves an ACCOUNT-LINKED player by email (user_id not null),
 // so a seeded entrant can be a real, challengeable opponent. "" if none.
 func (s *Service) playerIDByEmail(email string) string {

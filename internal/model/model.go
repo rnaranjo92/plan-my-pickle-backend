@@ -445,7 +445,10 @@ type RotationSession struct {
 	Status          string `json:"status"` // setup | live | paused | done
 	CourtCount      int    `json:"courtCount"`
 	RoundMinutes    int    `json:"roundMinutes"`
-	CurrentRound    int    `json:"currentRound"`
+	// AutoAdvance: app rotates automatically at the buzzer (true, default) vs the
+	// organizer taps "Next round" (false).
+	AutoAdvance  bool `json:"autoAdvance"`
+	CurrentRound int  `json:"currentRound"`
 	// RoundStartedAt / RoundEndsAt (RFC3339, "" when not live) drive the countdown
 	// every client renders; RoundEndsAt is the buzzer time.
 	RoundStartedAt string `json:"roundStartedAt,omitempty"`
@@ -501,6 +504,9 @@ type CreateRotationSessionRequest struct {
 	Name         string `json:"name"`
 	CourtCount   int    `json:"courtCount"`
 	RoundMinutes int    `json:"roundMinutes"`
+	// AutoAdvance defaults to true (nil-safe via a pointer so an omitted field
+	// still means "auto").
+	AutoAdvance *bool `json:"autoAdvance,omitempty"`
 }
 
 // AddRotationPlayerRequest adds a competitor to a session's roster. EntrantID

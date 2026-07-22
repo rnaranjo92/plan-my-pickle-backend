@@ -80,12 +80,16 @@ func (s *Service) CreateRotationSession(divisionID string, req model.CreateRotat
 	if mins < 1 {
 		mins = 12
 	}
-	rows, err := s.sb.Insert("rotation_sessions", map[string]any{
+	body := map[string]any{
 		"league_bracket_id": divisionID,
 		"name":              name,
 		"court_count":       courts,
 		"round_minutes":     mins,
-	})
+	}
+	if req.AutoAdvance != nil && s.columnReady("rotation_sessions", "auto_advance") {
+		body["auto_advance"] = *req.AutoAdvance
+	}
+	rows, err := s.sb.Insert("rotation_sessions", body)
 	if err != nil {
 		return model.RotationSession{}, err
 	}
@@ -167,6 +171,18 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 	}, nil
 }
 
+// autoAdvanceOf reads a session row's auto_advance flag, defaulting to true when
+// the column is absent (pre-migration) or unset — so existing sessions keep the
+// original fully-automatic behavior.
+func autoAdvanceOf(r map[string]any) bool {
+	if v, ok := r["auto_advance"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return true
+}
+
 // SetRotationSessionCourts sets the venue court count on a session (a positive
 // number = cap; the extras become byes). Only meaningful before the session
 // starts; owner-gated at the route.
@@ -176,6 +192,17 @@ func (s *Service) SetRotationSessionCourts(sessionID string, courtCount int) err
 	}
 	_, err := s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
 		map[string]any{"court_count": courtCount})
+	return err
+}
+
+// SetRotationSessionAutoAdvance toggles whether the app auto-rotates at the
+// buzzer (true) or waits for the organizer to tap "Next round" (false).
+func (s *Service) SetRotationSessionAutoAdvance(sessionID string, auto bool) error {
+	if !s.columnReady("rotation_sessions", "auto_advance") {
+		return fmt.Errorf("auto-advance toggle isn't available yet")
+	}
+	_, err := s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
+		map[string]any{"auto_advance": auto})
 	return err
 }
 
@@ -308,17 +335,60 @@ func (s *Service) ImportLadderEntrantsToSession(sessionID string) (int, error) {
 	return added, nil
 }
 
-// RemoveRotationPlayer deletes a roster player (pre-start cleanup).
+// rosterEditable guards roster mutations to before the session starts — editing
+// the roster mid-session would null court seats (on delete set null) and corrupt
+// the board. Returns an error once the session is live/done.
+func (s *Service) rosterEditable(playerID string) error {
+	row, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(playerID)+"&select=session_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	srow, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(asStr(row, "session_id"))+"&select=status")
+	if err != nil {
+		return err
+	}
+	if srow != nil && asStr(srow, "status") != "setup" {
+		return fmt.Errorf("the roster can't be changed once the session has started")
+	}
+	return nil
+}
+
+// RemoveRotationPlayer deletes a roster player (pre-start cleanup only).
 func (s *Service) RemoveRotationPlayer(playerID string) error {
+	if err := s.rosterEditable(playerID); err != nil {
+		return err
+	}
 	return s.sb.Delete("rotation_players", "id=eq."+store.Q(playerID))
 }
 
-// SetRotationPlayerActive benches (active=false) or brings back a roster player.
-// Benched players aren't seeded — the way to hit a perfect 4:1 without deleting
-// anyone (e.g. sit 2 out of 22 to seat 20 → 5 courts).
+// SetRotationPlayerActive benches (active=false) or brings back a roster player
+// (pre-start only). The way to trim the roster without deleting anyone.
 func (s *Service) SetRotationPlayerActive(playerID string, active bool) error {
+	if err := s.rosterEditable(playerID); err != nil {
+		return err
+	}
 	_, err := s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
 		map[string]any{"active": active})
+	return err
+}
+
+// SetRotationPlayerRating sets a roster player's self-rating (pre-start only) —
+// so the organizer can rate imported ladder players before seeding the courts.
+func (s *Service) SetRotationPlayerRating(playerID string, rating float64) error {
+	if err := s.rosterEditable(playerID); err != nil {
+		return err
+	}
+	if rating < 1.0 {
+		rating = 1.0
+	} else if rating > 7.0 {
+		rating = 7.0
+	}
+	_, err := s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
+		map[string]any{"self_rating": rating})
 	return err
 }
 
@@ -431,9 +501,11 @@ func (s *Service) ReportRotationCourt(sessionID string, req model.ReportRotation
 // AdvanceRotationSession closes the current round and opens the next. It reads
 // the finished round's courts + winners, asks the engine for the next round's
 // layout, and calls the atomic advance RPC (which tallies wins/games for the
-// finished round and writes the next). Concurrency-safe: the RPC no-ops if the
-// round was already advanced (so any client's auto-advance is idempotent).
-func (s *Service) AdvanceRotationSession(sessionID string) error {
+// finished round and writes the next). expectedRound is the round the caller
+// believes is current; if it no longer matches (someone already advanced), this
+// is a no-op — so two racing advances (e.g. "Ring now" + auto-advance) can't
+// skip a round. Pass 0 to advance whatever's current (unguarded).
+func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) error {
 	srow, err := s.sb.SelectOne("rotation_sessions", "id=eq."+store.Q(sessionID))
 	if err != nil {
 		return err
@@ -446,6 +518,10 @@ func (s *Service) AdvanceRotationSession(sessionID string) error {
 		return fmt.Errorf("session is not live")
 	}
 	round := asInt(srow, "current_round")
+	// Someone already advanced past the round the caller saw → no-op (idempotent).
+	if expectedRound > 0 && expectedRound != round {
+		return nil
+	}
 	mins := asInt(srow, "round_minutes")
 	bench := asStrSlice(srow, "bench") // players sitting out the current round
 
@@ -498,71 +574,24 @@ func (s *Service) AdvanceRotationSession(sessionID string) error {
 	return nil
 }
 
-// EndRotationSession tallies the CURRENT round's reported courts (which a normal
-// advance never got to, since the organizer ends instead of ringing again) and
-// marks the session done. Only reported courts count — a round abandoned mid-play
-// doesn't award phantom wins.
+// EndRotationSession tallies the current round's reported courts AND marks the
+// session done in ONE transaction (the end_rotation_session RPC), so it can't
+// race a participant-fired auto-advance and double-count / drop the final round.
+// Idempotent — a second End is a no-op (RPC returns already_done).
 func (s *Service) EndRotationSession(sessionID string) error {
-	srow, err := s.sb.SelectOne("rotation_sessions",
-		"id=eq."+store.Q(sessionID)+"&select=current_round,status")
+	body, err := s.sb.RPC("end_rotation_session", map[string]any{"p_session": sessionID})
 	if err != nil {
 		return err
 	}
-	if srow == nil {
+	var res struct {
+		Ended  bool   `json:"ended"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return err
+	}
+	if !res.Ended && res.Reason == "not_found" {
 		return ErrNotFound
-	}
-	// Tally the final round's reported courts (idempotency: only when still live,
-	// so a double-tap End can't double-count).
-	if status := asStr(srow, "status"); status == "live" || status == "paused" {
-		round := asInt(srow, "current_round")
-		if round >= 1 {
-			if err := s.tallyRotationRound(sessionID, round); err != nil {
-				return err
-			}
-		}
-	}
-	_, err = s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
-		map[string]any{"status": "done", "round_ends_at": nil})
-	return err
-}
-
-// tallyRotationRound credits wins/games for one round's REPORTED courts (used by
-// End; advance does its own tally atomically in the RPC). Unreported courts are
-// skipped. Non-atomic, but End is a single-owner terminal action.
-func (s *Service) tallyRotationRound(sessionID string, round int) error {
-	rows, err := s.sb.Select("rotation_round_courts",
-		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round))
-	if err != nil {
-		return err
-	}
-	inc := func(ids []string, wins bool) {
-		for _, id := range ids {
-			if id == "" {
-				continue
-			}
-			cur, _ := s.sb.SelectOne("rotation_players",
-				"id=eq."+store.Q(id)+"&select=wins,games")
-			body := map[string]any{"games": asInt(cur, "games") + 1}
-			if wins {
-				body["wins"] = asInt(cur, "wins") + 1
-			}
-			s.sb.Update("rotation_players", "id=eq."+store.Q(id), body)
-		}
-	}
-	for _, r := range rows {
-		w := asStr(r, "winner")
-		if w != "a" && w != "b" {
-			continue // unreported → don't award anything
-		}
-		a := []string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")}
-		b := []string{asStr(r, "team_b_p1"), asStr(r, "team_b_p2")}
-		if w == "a" {
-			inc(a, true)
-			inc(b, false)
-		} else {
-			inc(b, true)
-			inc(a, false)
-		}
 	}
 	return nil
 }
@@ -577,6 +606,7 @@ func rotationSessionFromRow(r map[string]any) model.RotationSession {
 		Status:          asStr(r, "status"),
 		CourtCount:      asInt(r, "court_count"),
 		RoundMinutes:    asInt(r, "round_minutes"),
+		AutoAdvance:     autoAdvanceOf(r),
 		CurrentRound:    asInt(r, "current_round"),
 		RoundStartedAt:  asStr(r, "round_started_at"),
 		RoundEndsAt:     asStr(r, "round_ends_at"),

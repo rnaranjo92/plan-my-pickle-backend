@@ -183,6 +183,21 @@ func (s *Server) setRotationCourts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"courtCount": req.CourtCount})
 }
 
+// setRotationAutoAdvance toggles auto-rotate vs organizer-taps-Next. Owner-gated.
+func (s *Server) setRotationAutoAdvance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AutoAdvance bool `json:"autoAdvance"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationSessionAutoAdvance(r.PathValue("id"), req.AutoAdvance); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"autoAdvance": req.AutoAdvance})
+}
+
 // setRotationPlayerActive benches / brings back a roster player (to hit a 4:1
 // ratio without deleting anyone).
 func (s *Server) setRotationPlayerActive(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +212,22 @@ func (s *Server) setRotationPlayerActive(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"active": req.Active})
+}
+
+// setRotationPlayerRating sets a roster player's self-rating (pre-start) so the
+// organizer can rate imported ladder players before seeding. Owner-gated.
+func (s *Server) setRotationPlayerRating(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SelfRating float64 `json:"selfRating"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationPlayerRating(r.PathValue("id"), req.SelfRating); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]float64{"selfRating": req.SelfRating})
 }
 
 // startRotation seeds round 1 and flips the session live (owner-gated).
@@ -221,11 +252,16 @@ func (s *Server) reportRotationCourt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reported"})
 }
 
-// advanceRotation closes the current round and opens the next. Idempotent — the
-// advance RPC no-ops if the round already moved, so any client's auto-advance is
-// safe to fire when the timer expires.
+// advanceRotation closes the current round and opens the next. The optional
+// `round` in the body is the round the caller believes is current; the service
+// no-ops if it no longer matches (so a "Ring now" racing the auto-advance can't
+// skip a round). Idempotent regardless.
 func (s *Server) advanceRotation(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.AdvanceRotationSession(r.PathValue("id")); err != nil {
+	var req struct {
+		Round int `json:"round"`
+	}
+	_ = decode(w, r, &req) // body is optional; round 0 = advance whatever's current
+	if err := s.svc.AdvanceRotationSession(r.PathValue("id"), req.Round); err != nil {
 		status(w, err)
 		return
 	}

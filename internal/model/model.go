@@ -361,6 +361,9 @@ type LeagueBracket struct {
 	DuprMin      *float64 `json:"duprMin,omitempty"`
 	DuprMax      *float64 `json:"duprMax,omitempty"`
 	SortOrder    int      `json:"sortOrder"`
+	// EntrantCount is the number of ladder entrants in this division (populated
+	// on the league-detail read for ladder leagues; 0 otherwise).
+	EntrantCount int `json:"entrantCount"`
 }
 
 // LadderEntrant is one competitor on a league division's ladder. Position is the

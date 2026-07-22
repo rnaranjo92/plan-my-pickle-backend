@@ -508,6 +508,25 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 	for _, r := range bkRows {
 		brackets = append(brackets, mapLeagueBracket(r))
 	}
+	// For ladder leagues (challenge or rotation), the "roster" is the ladder
+	// entrants, not event registrations — count them per division so the header
+	// shows the real player count.
+	if detail.League.LeagueType == "ladder" && len(brackets) > 0 {
+		ids := make([]string, len(brackets))
+		for i, b := range brackets {
+			ids[i] = b.ID
+		}
+		if ents, eerr := s.sb.Select("ladder_entrants",
+			"league_bracket_id="+store.In(ids)+"&select=league_bracket_id"); eerr == nil {
+			counts := make(map[string]int, len(brackets))
+			for _, r := range ents {
+				counts[asStr(r, "league_bracket_id")]++
+			}
+			for i := range brackets {
+				brackets[i].EntrantCount = counts[brackets[i].ID]
+			}
+		}
+	}
 	detail.Brackets = brackets
 
 	// nullsfirst=false keeps date-less sessions at the bottom; created_at breaks

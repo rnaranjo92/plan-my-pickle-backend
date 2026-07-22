@@ -3893,15 +3893,25 @@ func (s *Service) sendWelcomeSmsOnce(playerID, eventID string) {
 	if phone == "" || !gateway.SmsReachable(phone) {
 		return
 	}
+	// Metering: skip (fall through to no-send) when the owner has exhausted their
+	// monthly SMS allowance — the welcome text is the most droppable of all.
+	owner := s.eventOwnerID(eventID)
+	if !s.smsMeterAllows(owner) {
+		return
+	}
 	name := "your tournament"
 	if ev, err := s.GetEvent(eventID); err == nil && strings.TrimSpace(ev.Name) != "" {
 		name = ev.Name
 	}
 	body := "You're set for " + name + " on PlanMyPickle 🥒 — we'll text match times " +
 		"and updates here. Reply STOP to opt out, HELP for help."
-	if _, err := s.Sms.Send(phone, body); err != nil {
+	res, err := s.Sms.Send(phone, body)
+	if err != nil {
 		log.Printf("welcome sms to player %s failed: %v", playerID, err)
 		return
+	}
+	if res.OK {
+		s.recordSmsSent(owner, 1)
 	}
 	if _, err := s.sb.Update("players", "id=eq."+store.Q(playerID),
 		map[string]any{"sms_welcomed": true}); err != nil {
@@ -10109,6 +10119,12 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	}
 
 	sent := 0
+	// Metering: resolve the owner + their remaining allowance ONCE for the whole
+	// round, then gate every text on it. When over budget the SMS is skipped (the
+	// push above already reached linked players); we record the count actually
+	// sent after the loop.
+	owner := s.eventOwnerID(eventID)
+	smsAllowed := s.smsMeterAllows(owner)
 	seen := map[string]bool{} // de-dupe: partners sharing a phone get ONE text.
 	for _, rc := range phones {
 		phone := rc.phone
@@ -10120,6 +10136,10 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 		// players are covered by the push above (if they have a linked account);
 		// skip the SMS rather than log a guaranteed carrier failure.
 		if !gateway.SmsReachable(phone) {
+			continue
+		}
+		// Owner over their monthly SMS allowance → degrade to push (already sent).
+		if !smsAllowed {
 			continue
 		}
 		// Wording mirrors the registered A2P sample; the STOP footer is required
@@ -10159,6 +10179,7 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 			return 0, err
 		}
 	}
+	s.recordSmsSent(owner, sent)
 	return sent, nil
 }
 
@@ -10291,7 +10312,14 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 	if !smsOn {
 		return
 	}
+	// Metering: over the owner's monthly allowance, the on-deck TEXT degrades to
+	// push (already sent above) — the warm-up heads-up still lands, just no SMS.
+	owner := s.eventOwnerID(eventID)
+	if !s.smsMeterAllows(owner) {
+		return
+	}
 	body := fmt.Sprintf("PlanMyPickle: You're on deck — warm up, you're next on %s. Reply STOP to opt out.", court)
+	smsSent := 0
 	for _, phone := range phones {
 		ins, err := s.sb.Insert("notifications", map[string]any{
 			"event_id": eventID, "match_id": nextID, "type": "on_deck_sms",
@@ -10305,11 +10333,13 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 		var ref, sentAt any
 		if r, err := s.Sms.Send(phone, body); err == nil && r.OK {
 			st, ref, sentAt = "sent", r.ProviderRef, now()
+			smsSent++
 		}
 		_, _ = s.sb.Update("notifications", "id=eq."+store.Q(notifID), map[string]any{
 			"status": st, "provider_ref": ref, "sent_at": sentAt,
 		})
 	}
+	s.recordSmsSent(owner, smsSent)
 }
 
 func (s *Service) queueDuprSubmission(matchID, eventID string) error {

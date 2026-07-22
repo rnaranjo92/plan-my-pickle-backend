@@ -227,9 +227,16 @@ func (s *Service) NotifyScheduleDelay(eventID string, sms bool, customMsg string
 			body = "PlanMyPickle: " + customMsg
 		}
 		body += " Reply STOP to opt out."
+		// Metering: resolve the owner's remaining allowance once; over budget, the
+		// delay TEXT degrades to push (already sent) for the rest of the month.
+		owner := s.eventOwnerID(eventID)
+		smsAllowed := s.smsMeterAllows(owner)
 		seen := map[string]bool{}
 		for _, phone := range phones {
 			if phone == "" || seen[phone] || !gateway.SmsReachable(phone) {
+				continue
+			}
+			if !smsAllowed {
 				continue
 			}
 			seen[phone] = true
@@ -253,6 +260,7 @@ func (s *Service) NotifyScheduleDelay(eventID string, sms bool, customMsg string
 				"status": stt, "provider_ref": ref, "sent_at": sentAt,
 			})
 		}
+		s.recordSmsSent(owner, smsCount)
 	}
 	return pushCount, smsCount, nil
 }

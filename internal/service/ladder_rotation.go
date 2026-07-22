@@ -92,7 +92,12 @@ func (s *Service) CreateRotationSession(divisionID string, req model.CreateRotat
 	if len(rows) == 0 {
 		return model.RotationSession{}, fmt.Errorf("rotation session insert returned no row")
 	}
-	return rotationSessionFromRow(rows[0]), nil
+	session := rotationSessionFromRow(rows[0])
+	// Pre-fill the roster from the division's ladder so the players are already
+	// there in setup (the organizer just prunes no-shows + adds walk-ups). Best
+	// effort — a failure here shouldn't fail session creation.
+	_, _ = s.ImportLadderEntrantsToSession(session.ID)
+	return session, nil
 }
 
 // ListRotationSessions returns a division's sessions, newest first.
@@ -349,10 +354,22 @@ func (s *Service) StartRotationSession(sessionID string) error {
 	maxCourts := asInt(srow, "court_count") // 0/absent = no cap (auto from roster)
 
 	// Active players, strongest self-rating first (stable by created_at).
-	rows, err := s.sb.Select("rotation_players",
-		"session_id=eq."+store.Q(sessionID)+"&active=eq.true&order=self_rating.desc,created_at.asc&select=id")
+	loadActive := func() ([]map[string]any, error) {
+		return s.sb.Select("rotation_players",
+			"session_id=eq."+store.Q(sessionID)+"&active=eq.true&order=self_rating.desc,created_at.asc&select=id")
+	}
+	rows, err := loadActive()
 	if err != nil {
 		return err
+	}
+	// Safety net: an empty roster at Start → pull the division's ladder in first
+	// (covers players who joined the ladder after the session was created).
+	if len(rows) == 0 {
+		if _, ierr := s.ImportLadderEntrantsToSession(sessionID); ierr == nil {
+			if rows, err = loadActive(); err != nil {
+				return err
+			}
+		}
 	}
 	// Need at least one full court. Any remainder (or players beyond the court
 	// cap) becomes the bench and rotates in — no perfect 4:1 required.

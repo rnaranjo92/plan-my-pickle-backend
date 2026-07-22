@@ -421,6 +421,91 @@ type MoveLadderEntrantRequest struct {
 	NewPosition int `json:"newPosition"`
 }
 
+// --- Rotation session ("up and down the river" / king-of-the-court) ---------
+//
+// A LIVE, timed session that runs UNDER a ladder division: players self-rate and
+// are seeded onto numbered courts (1 = top), play timed rounds, and each round's
+// winners move up a court / losers down (engine.NextRound). Cumulative game-wins
+// are the standings. Distinct from the persistent challenge ladder above.
+
+// RotationSession is one session + its round-timer state.
+type RotationSession struct {
+	ID              string `json:"id"`
+	LeagueBracketID string `json:"leagueBracketId"`
+	Name            string `json:"name"`
+	Status          string `json:"status"` // setup | live | paused | done
+	CourtCount      int    `json:"courtCount"`
+	RoundMinutes    int    `json:"roundMinutes"`
+	CurrentRound    int    `json:"currentRound"`
+	// RoundStartedAt / RoundEndsAt (RFC3339, "" when not live) drive the countdown
+	// every client renders; RoundEndsAt is the buzzer time.
+	RoundStartedAt string `json:"roundStartedAt,omitempty"`
+	RoundEndsAt    string `json:"roundEndsAt,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+}
+
+// RotationPlayer is one competitor in a session's roster snapshot, with the
+// self-rating that seeds them and the win/game tallies that rank the standings.
+type RotationPlayer struct {
+	ID          string  `json:"id"`
+	SessionID   string  `json:"sessionId"`
+	EntrantID   *string `json:"entrantId,omitempty"`
+	DisplayName string  `json:"displayName"`
+	SelfRating  float64 `json:"selfRating"`
+	Wins        int     `json:"wins"`
+	Games       int     `json:"games"`
+	Active      bool    `json:"active"`
+}
+
+// RotationCourt is one court in one round: the four players as two teams (a/b),
+// court 1 = top, plus the reported winner ("a" | "b" | ""). Player fields carry
+// display names (resolved from the roster) so the live board renders directly.
+type RotationCourt struct {
+	Court   int                `json:"court"`
+	Round   int                `json:"round"`
+	TeamA   []RotationCourtSeat `json:"teamA"`
+	TeamB   []RotationCourtSeat `json:"teamB"`
+	Winner  string             `json:"winner,omitempty"`
+}
+
+// RotationCourtSeat is one player's slot on a court (id + display name).
+type RotationCourtSeat struct {
+	PlayerID    string `json:"playerId"`
+	DisplayName string `json:"displayName"`
+}
+
+// RotationBoard is the full live view: the session, its roster (standings order),
+// and the current round's courts. It's what both the organizer board and each
+// player's screen render from.
+type RotationBoard struct {
+	Session   RotationSession  `json:"session"`
+	Players   []RotationPlayer `json:"players"`
+	Courts    []RotationCourt  `json:"courts"`
+	Standings []RotationPlayer `json:"standings"`
+}
+
+// CreateRotationSessionRequest opens a new session under a ladder division.
+type CreateRotationSessionRequest struct {
+	Name         string `json:"name"`
+	CourtCount   int    `json:"courtCount"`
+	RoundMinutes int    `json:"roundMinutes"`
+}
+
+// AddRotationPlayerRequest adds a competitor to a session's roster. EntrantID
+// optionally links a ladder entrant (else a walk-up with just a name).
+type AddRotationPlayerRequest struct {
+	DisplayName string  `json:"displayName"`
+	EntrantID   *string `json:"entrantId,omitempty"`
+	SelfRating  float64 `json:"selfRating"`
+}
+
+// ReportRotationCourtRequest reports which team won a court in the current round.
+type ReportRotationCourtRequest struct {
+	Round  int    `json:"round"`
+	Court  int    `json:"court"`
+	Winner string `json:"winner"` // "a" | "b"
+}
+
 // LadderConfig is a ladder league's rule configuration (stored on the league).
 // Defaults reproduce the classic behavior: leapfrog reorder, unlimited challenge
 // range, no inactivity penalty. Response/play/inactivity knobs drive the phase-2

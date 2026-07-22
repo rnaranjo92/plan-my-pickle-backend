@@ -287,6 +287,32 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/seed-test",
 		s.ladderDivisionOwner("id", s.seedLadderTest))
 
+	// --- Rotation session ("up and down the river" / king-of-the-court) — a
+	// LIVE, timed second ladder format run under a division. Management is
+	// owner-gated; the live board is division-viewer readable; report/advance are
+	// participant-OR-owner (so the "app is the cowbell" auto-advance fires from
+	// any player's phone, guarded idempotently by the advance RPC).
+	mux.HandleFunc("GET /league-brackets/{id}/rotation-sessions",
+		s.ladderDivisionOwner("id", s.listRotationSessions))
+	mux.HandleFunc("POST /league-brackets/{id}/rotation-sessions",
+		s.ladderDivisionOwner("id", s.createRotationSession))
+	mux.HandleFunc("GET /rotation-sessions/{id}/board",
+		s.rotationSessionViewer("id", s.rotationBoard))
+	mux.HandleFunc("POST /rotation-sessions/{id}/players",
+		s.rotationSessionOwner("id", s.addRotationPlayer))
+	mux.HandleFunc("POST /rotation-sessions/{id}/import-entrants",
+		s.rotationSessionOwner("id", s.importRotationEntrants))
+	mux.HandleFunc("DELETE /rotation-players/{id}",
+		s.rotationPlayerOwner("id", s.removeRotationPlayer))
+	mux.HandleFunc("POST /rotation-sessions/{id}/start",
+		s.rotationSessionOwner("id", s.startRotation))
+	mux.HandleFunc("POST /rotation-sessions/{id}/report",
+		s.rotationSessionActor("id", s.reportRotationCourt))
+	mux.HandleFunc("POST /rotation-sessions/{id}/advance",
+		s.rotationSessionActor("id", s.advanceRotation))
+	mux.HandleFunc("POST /rotation-sessions/{id}/end",
+		s.rotationSessionOwner("id", s.endRotation))
+
 	// --- Team League (organizer-driven, SIMPLE single-fixture model): a
 	// division's (league_bracket) teams + recorded fixtures. Standings (W-L +
 	// win %) are computed from the fixtures on read, not stored. All writes are

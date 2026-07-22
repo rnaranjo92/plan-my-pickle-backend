@@ -269,6 +269,8 @@ func NewServer(svc *service.Service) http.Handler {
 		s.ladderEntrantOwner("id", s.moveLadderEntrant))
 	// Ladder rule config (reorder model, challenge range, windows, inactivity) —
 	// keyed on the league id, so ownerOnly fits.
+	mux.HandleFunc("POST /leagues/{id}/ladder-format",
+		s.ownerOnly("league", "id", s.setLadderFormat))
 	mux.HandleFunc("POST /leagues/{id}/ladder-config",
 		s.ownerOnly("league", "id", s.setLadderConfig))
 	// Ladder challenges (player-driven). Reads: division-viewer + the caller's own
@@ -995,6 +997,22 @@ func (s *Server) moveLadderEntrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "moved"})
+}
+
+// setLadderFormat switches a ladder league between challenge + rotation formats.
+// Owner-gated on the league.
+func (s *Server) setLadderFormat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Format string `json:"format"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetLadderFormat(r.PathValue("id"), req.Format); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
 // setLadderConfig updates a ladder league's rule config (reorder model, challenge

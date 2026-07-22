@@ -335,6 +335,24 @@ func (s *Service) SetLadderConfig(leagueID string, cfg model.LadderConfig) error
 	return err
 }
 
+// SetLadderFormat switches a ladder league between the 'challenge' and
+// 'rotation' formats (owner-gated at the HTTP layer). Only meaningful for ladder
+// leagues; no-op-safe pre-migration (columnReady guard).
+func (s *Service) SetLadderFormat(leagueID, format string) error {
+	if strings.TrimSpace(leagueID) == "" {
+		return errors.New("leagueId is required")
+	}
+	if format != "rotation" {
+		format = "challenge"
+	}
+	if !s.columnReady("leagues", "ladder_format") {
+		return errors.New("ladder format switching is not available yet")
+	}
+	_, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+		map[string]any{"ladder_format": format})
+	return err
+}
+
 // LadderHistory returns a division's recorded matches, newest first.
 func (s *Service) LadderHistory(leagueBracketID string) ([]model.LadderMatch, error) {
 	rows, err := s.sb.Select("ladder_matches",

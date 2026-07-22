@@ -66,6 +66,15 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 			payload[k] = v
 		}
 	}
+	// Ladder format (0072) — challenge (default) vs rotation. Only for ladder
+	// leagues, and only when the column exists (safe pre-migration).
+	if leagueType == "ladder" && s.columnReady("leagues", "ladder_format") {
+		format := req.LadderFormat
+		if format != "rotation" {
+			format = "challenge"
+		}
+		payload["ladder_format"] = format
+	}
 	rows, err := s.sb.Insert("leagues", payload)
 	if err != nil {
 		return "", err

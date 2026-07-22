@@ -255,6 +255,12 @@ func mapLeague(m map[string]any) model.League {
 	// pre-migration → the defaults below fill in).
 	if lg.LeagueType == "ladder" {
 		lg.Ladder = mapLadderConfig(m)
+		// Format (0072): challenge (default) vs rotation. Absent pre-migration →
+		// challenge.
+		lg.LadderFormat = asStr(m, "ladder_format")
+		if lg.LadderFormat != "rotation" {
+			lg.LadderFormat = "challenge"
+		}
 	}
 	return lg
 }

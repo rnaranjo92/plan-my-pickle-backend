@@ -232,6 +232,10 @@ type League struct {
 	// LeagueType: round_robin | ladder | team. DayType: single | multi.
 	LeagueType string `json:"leagueType"`
 	DayType    string `json:"dayType"`
+	// LadderFormat (ladder leagues only): challenge | rotation. 'challenge' is the
+	// persistent challenge ladder; 'rotation' is the live "up & down the river"
+	// session league. Empty/other for non-ladder leagues.
+	LadderFormat string `json:"ladderFormat,omitempty"`
 	// Sanctioned flags an officially sanctioned league.
 	Sanctioned bool `json:"sanctioned"`
 	// Listed opts the league into public discovery (the "pickleball leagues in
@@ -259,6 +263,8 @@ type CreateLeagueRequest struct {
 	Description     string   `json:"description"`
 	LeagueType      string   `json:"leagueType"` // round_robin | ladder | team (default round_robin)
 	DayType         string   `json:"dayType"`    // single | multi (default multi)
+	// LadderFormat (ladder only): challenge (default) | rotation.
+	LadderFormat string `json:"ladderFormat"`
 	Sanctioned      bool     `json:"sanctioned"`
 	Listed          bool     `json:"listed"` // opt into public discovery (default false)
 	CashPrize       bool     `json:"cashPrize"`

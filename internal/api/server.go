@@ -678,15 +678,23 @@ func emailInAllowlist(email, list, dflt string) bool {
 
 const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 
-// earlyAccessGrants: individually comped organizers during early access. They
-// get organizing (createEvent/createLeague) but NOT premium or QA-only tools.
-// TEMPORARY — revisit when subscriptions launch (SUBSCRIPTIONS_ENABLED), since
-// paid plans replace these comps. Overridden entirely if ORGANIZER_ALLOWLIST is
-// set in the env.
-const earlyAccessGrants = "michellecruzsd@gmail.com"
+// ladderOnlyGrants: comped accounts restricted to creating LADDER leagues only —
+// no tournaments, no other league types (round-robin/team/flex). They still pass
+// organizerAllowed (so the Organize tab + create endpoints are reachable), but
+// ladderOnly() blocks everything except a ladder. TEMPORARY — revisit when
+// subscriptions launch (SUBSCRIPTIONS_ENABLED). Overridden by LADDER_ONLY_ALLOWLIST.
+const ladderOnlyGrants = "michellecruzsd@gmail.com"
 
 func organizerAllowed(email string) bool {
-	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), qaAllowlist+","+earlyAccessGrants)
+	// Everyone who can reach Organize at all: full organizers + ladder-only comps.
+	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), qaAllowlist+","+ladderOnlyGrants)
+}
+
+// ladderOnly reports whether the account may create ONLY ladder leagues. Such
+// accounts are rejected from createEvent (tournaments) and from createLeague
+// with any non-ladder type.
+func ladderOnly(email string) bool {
+	return emailInAllowlist(email, os.Getenv("LADDER_ONLY_ALLOWLIST"), ladderOnlyGrants)
 }
 
 // premiumAllowed reports whether the caller may use premium-gated features — e.g.
@@ -700,6 +708,12 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !organizerAllowed(userEmail(r)) {
 		writeErr(w, http.StatusForbidden,
 			errors.New("organizing is limited during early access"))
+		return
+	}
+	// Ladder-only comps can't create tournaments.
+	if ladderOnly(userEmail(r)) {
+		writeErr(w, http.StatusForbidden,
+			errors.New("your account can only create ladders"))
 		return
 	}
 	var req model.CreateEventRequest
@@ -741,6 +755,12 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 	}
 	var req model.CreateLeagueRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	// Ladder-only comps may create a ladder league but no other league type.
+	if ladderOnly(userEmail(r)) && !strings.EqualFold(strings.TrimSpace(req.LeagueType), "ladder") {
+		writeErr(w, http.StatusForbidden,
+			errors.New("your account can only create ladders"))
 		return
 	}
 	// Organizing (incl. leagues) is FREE; the Club tier monetizes the durable

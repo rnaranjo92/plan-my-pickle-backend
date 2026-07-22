@@ -43,6 +43,26 @@ func TestSeedCourts(t *testing.T) {
 	}
 }
 
+// A non-multiple-of-4 roster seats only full courts; the remainder is dropped
+// (the session layer benches them to keep a perfect 4:1 ratio).
+func TestSeedCourtsDropsRemainder(t *testing.T) {
+	// 10 players → 2 full courts (8 seated); p9,p10 not seated.
+	players := []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"}
+	courts := SeedCourts(players)
+	if len(courts) != 2 {
+		t.Fatalf("want 2 full courts, got %d", len(courts))
+	}
+	seated := allPlayers(courts)
+	if len(seated) != 8 {
+		t.Fatalf("want 8 seated, got %d (%v)", len(seated), seated)
+	}
+	for _, id := range seated {
+		if id == "p9" || id == "p10" {
+			t.Fatalf("remainder player %s should not be seated", id)
+		}
+	}
+}
+
 // After a round: winners up, losers down, court-1 winners + last-court losers
 // stay, everyone re-pairs, and no player is lost or duplicated.
 func TestNextRoundMovementAndRepair(t *testing.T) {

@@ -158,6 +158,22 @@ func (s *Server) removeRotationPlayer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
+// setRotationPlayerActive benches / brings back a roster player (to hit a 4:1
+// ratio without deleting anyone).
+func (s *Server) setRotationPlayerActive(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationPlayerActive(r.PathValue("id"), req.Active); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"active": req.Active})
+}
+
 // startRotation seeds round 1 and flips the session live (owner-gated).
 func (s *Server) startRotation(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.StartRotationSession(r.PathValue("id")); err != nil {

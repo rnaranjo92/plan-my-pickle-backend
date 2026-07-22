@@ -26,32 +26,20 @@ type RotResult struct {
 }
 
 // SeedCourts places players (already ordered strongest→weakest, e.g. by
-// self-rating) onto ceil(n/4) courts, 4 per court, top court first. A trailing
-// court with fewer than 4 keeps whatever it has (the session layer decides
-// whether to allow a short court or bench the remainder). Players re-pair as
-// [0,1] vs [2,3] within each court for the opening round.
+// self-rating) onto floor(n/4) FULL courts of 4, top court first. Up-and-down-
+// the-river needs a perfect 4:1 player:court ratio, so any remainder (n mod 4)
+// is NOT seated — a partial trailing court would break the up/down re-pair
+// (phantom empty seats). The session layer enforces a multiple of 4 before
+// calling this (the extras sit out), so in practice there's no remainder.
+// Players seed as [0,2] vs [1,3] within each court for the opening round.
 func SeedCourts(players []string) []RotCourt {
 	courts := []RotCourt{}
-	for i := 0; i < len(players); i += 4 {
-		end := i + 4
-		if end > len(players) {
-			end = len(players)
-		}
-		grp := players[i:end]
-		c := RotCourt{Court: len(courts) + 1}
-		if len(grp) > 0 {
-			c.TeamA[0] = grp[0]
-		}
-		if len(grp) > 1 {
-			c.TeamB[0] = grp[1]
-		}
-		if len(grp) > 2 {
-			c.TeamA[1] = grp[2]
-		}
-		if len(grp) > 3 {
-			c.TeamB[1] = grp[3]
-		}
-		courts = append(courts, c)
+	for i := 0; i+4 <= len(players); i += 4 {
+		courts = append(courts, RotCourt{
+			Court: len(courts) + 1,
+			TeamA: [2]string{players[i], players[i+2]},
+			TeamB: [2]string{players[i+1], players[i+3]},
+		})
 	}
 	return courts
 }

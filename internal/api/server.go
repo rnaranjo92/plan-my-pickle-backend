@@ -304,6 +304,8 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.importRotationEntrants))
 	mux.HandleFunc("DELETE /rotation-players/{id}",
 		s.rotationPlayerOwner("id", s.removeRotationPlayer))
+	mux.HandleFunc("POST /rotation-players/{id}/active",
+		s.rotationPlayerOwner("id", s.setRotationPlayerActive))
 	mux.HandleFunc("POST /rotation-sessions/{id}/start",
 		s.rotationSessionOwner("id", s.startRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/report",

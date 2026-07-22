@@ -281,6 +281,15 @@ func (s *Service) RemoveRotationPlayer(playerID string) error {
 	return s.sb.Delete("rotation_players", "id=eq."+store.Q(playerID))
 }
 
+// SetRotationPlayerActive benches (active=false) or brings back a roster player.
+// Benched players aren't seeded — the way to hit a perfect 4:1 without deleting
+// anyone (e.g. sit 2 out of 22 to seat 20 → 5 courts).
+func (s *Service) SetRotationPlayerActive(playerID string, active bool) error {
+	_, err := s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
+		map[string]any{"active": active})
+	return err
+}
+
 // OwnerOfRotationPlayer resolves a roster player → session → division → owner.
 func (s *Service) OwnerOfRotationPlayer(playerID string) (string, error) {
 	row, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(playerID)+"&select=session_id")
@@ -317,8 +326,13 @@ func (s *Service) StartRotationSession(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if len(rows) < 4 {
-		return fmt.Errorf("need at least 4 players to start a rotation (have %d)", len(rows))
+	// Up-and-down-the-river needs a perfect 4:1 player:court ratio, so the active
+	// roster must be a positive multiple of 4 (extras "sit out" — active=false).
+	if len(rows) < 4 || len(rows)%4 != 0 {
+		short := (4 - len(rows)%4) % 4
+		return fmt.Errorf(
+			"rotation needs a multiple of 4 players (4 per court) — you have %d active; sit %d out or add %d",
+			len(rows), len(rows)%4, short)
 	}
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {

@@ -145,12 +145,33 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 		return standings[i].Games < standings[j].Games // fewer games = better win rate at equal wins
 	})
 
+	// Players sitting out the current round (the bench), resolved to roster order.
+	byes := make([]model.RotationPlayer, 0)
+	for _, id := range asStrSlice(srow, "bench") {
+		if p, ok := byID[id]; ok {
+			byes = append(byes, p)
+		}
+	}
+
 	return model.RotationBoard{
 		Session:   session,
 		Players:   players,
 		Courts:    courts,
 		Standings: standings,
+		Byes:      byes,
 	}, nil
+}
+
+// SetRotationSessionCourts sets the venue court count on a session (a positive
+// number = cap; the extras become byes). Only meaningful before the session
+// starts; owner-gated at the route.
+func (s *Service) SetRotationSessionCourts(sessionID string, courtCount int) error {
+	if courtCount < 1 {
+		courtCount = 1
+	}
+	_, err := s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
+		map[string]any{"court_count": courtCount})
+	return err
 }
 
 // rotationPlayers loads a session's roster and returns both the slice (roster
@@ -325,6 +346,7 @@ func (s *Service) StartRotationSession(sessionID string) error {
 		return fmt.Errorf("session already started")
 	}
 	mins := asInt(srow, "round_minutes")
+	maxCourts := asInt(srow, "court_count") // 0/absent = no cap (auto from roster)
 
 	// Active players, strongest self-rating first (stable by created_at).
 	rows, err := s.sb.Select("rotation_players",
@@ -332,24 +354,21 @@ func (s *Service) StartRotationSession(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	// Up-and-down-the-river needs a perfect 4:1 player:court ratio, so the active
-	// roster must be a positive multiple of 4 (extras "sit out" — active=false).
-	if len(rows) < 4 || len(rows)%4 != 0 {
-		short := (4 - len(rows)%4) % 4
-		return fmt.Errorf(
-			"rotation needs a multiple of 4 players (4 per court) — you have %d active; sit %d out or add %d",
-			len(rows), len(rows)%4, short)
+	// Need at least one full court. Any remainder (or players beyond the court
+	// cap) becomes the bench and rotates in — no perfect 4:1 required.
+	if len(rows) < 4 {
+		return fmt.Errorf("need at least 4 players to start a rotation (have %d)", len(rows))
 	}
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, asStr(r, "id"))
 	}
 
-	// maxCourts 0 = no cap (bench unused) — the court-cap/bye wiring lands with 0073.
-	courts, _ := engine.SeedCourts(ids, 0)
+	courts, bench := engine.SeedCourts(ids, maxCourts)
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_courts":  rotationCourtsJSON(courts),
+		"p_bench":   bench,
 		"p_ends_at": roundEndsAt(mins),
 	}
 	body, err := s.sb.RPC("start_rotation_session", payload)
@@ -411,6 +430,7 @@ func (s *Service) AdvanceRotationSession(sessionID string) error {
 	}
 	round := asInt(srow, "current_round")
 	mins := asInt(srow, "round_minutes")
+	bench := asStrSlice(srow, "bench") // players sitting out the current round
 
 	rows, err := s.sb.Select("rotation_round_courts",
 		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+"&order=court.asc")
@@ -436,11 +456,12 @@ func (s *Service) AdvanceRotationSession(sessionID string) error {
 		results = append(results, engine.RotResult{Court: court, Winner: w})
 	}
 
-	nextCourts, _ := engine.NextRound(cur, results, nil)
+	nextCourts, nextBench := engine.NextRound(cur, results, bench)
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_round":   round,
 		"p_courts":  rotationCourtsJSON(nextCourts),
+		"p_bench":   nextBench,
 		"p_ends_at": roundEndsAt(mins),
 	}
 	body, err := s.sb.RPC("advance_rotation_session", payload)

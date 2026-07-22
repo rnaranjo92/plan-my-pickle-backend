@@ -167,6 +167,22 @@ func (s *Server) removeRotationPlayer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
+// setRotationCourts sets the venue court count on a session (extras beyond
+// courts×4 become byes). Owner-gated.
+func (s *Server) setRotationCourts(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CourtCount int `json:"courtCount"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationSessionCourts(r.PathValue("id"), req.CourtCount); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"courtCount": req.CourtCount})
+}
+
 // setRotationPlayerActive benches / brings back a roster player (to hit a 4:1
 // ratio without deleting anyone).
 func (s *Server) setRotationPlayerActive(w http.ResponseWriter, r *http.Request) {

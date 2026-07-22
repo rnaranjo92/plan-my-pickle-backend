@@ -120,6 +120,21 @@ func asIntSlice(m map[string]any, k string) []int {
 	return out
 }
 
+// asStrSlice reads a jsonb/text[] column as []string (e.g. the rotation bench).
+func asStrSlice(m map[string]any, k string) []string {
+	arr, ok := m[k].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // intOr dereferences a *int, returning def when nil — used as a sort key so a
 // missing value (e.g. unassigned court) sorts last.
 func intOr(p *int, def int) int {

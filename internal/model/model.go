@@ -491,6 +491,9 @@ type RotationBoard struct {
 	Players   []RotationPlayer `json:"players"`
 	Courts    []RotationCourt  `json:"courts"`
 	Standings []RotationPlayer `json:"standings"`
+	// Byes are the players sitting out the CURRENT round (the bench), in rotation
+	// order — empty when everyone plays (roster ≤ courts×4).
+	Byes []RotationPlayer `json:"byes"`
 }
 
 // CreateRotationSessionRequest opens a new session under a ladder division.

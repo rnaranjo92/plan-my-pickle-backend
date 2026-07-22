@@ -91,6 +91,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// with the app secret. Free court-call channel for opted-in players.
 	mux.HandleFunc("GET /messenger/webhook", s.messengerVerify)
 	mux.HandleFunc("POST /messenger/webhook", s.messengerWebhook)
+	// Public: the FB Page username the client uses to build m.me opt-in links.
+	// Empty when unconfigured → the client hides the Messenger opt-in.
+	mux.HandleFunc("GET /messenger/config", s.messengerConfig)
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
@@ -3579,6 +3582,15 @@ func (s *Server) paymentsConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"stripe": s.svc.StripeConfigured(),
 		"paypal": s.svc.PayPalConfigured(),
+	})
+}
+
+// messengerConfig exposes the FB Page username so the client can build m.me
+// opt-in links (m.me/<username>?ref=ply_<playerID>). Empty when unconfigured →
+// the client hides the "get free alerts on Messenger" option.
+func (s *Server) messengerConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"pageUsername": service.MessengerPageUsername(),
 	})
 }
 

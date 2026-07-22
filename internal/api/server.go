@@ -271,6 +271,17 @@ func NewServer(svc *service.Service) http.Handler {
 	// keyed on the league id, so ownerOnly fits.
 	mux.HandleFunc("POST /leagues/{id}/ladder-config",
 		s.ownerOnly("league", "id", s.setLadderConfig))
+	// Ladder challenges (player-driven). Reads: division-viewer + the caller's own
+	// list. Writes: authenticated; the service enforces the acting party.
+	mux.HandleFunc("GET /league-brackets/{id}/ladder/challenges",
+		s.leagueBracketViewer("id", s.listChallenges))
+	mux.HandleFunc("POST /league-brackets/{id}/ladder/challenges",
+		requireAuth(s.issueChallenge))
+	mux.HandleFunc("GET /me/ladder-challenges", requireAuth(s.myChallenges))
+	mux.HandleFunc("POST /ladder-challenges/{id}/accept", requireAuth(s.acceptChallenge))
+	mux.HandleFunc("POST /ladder-challenges/{id}/decline", requireAuth(s.declineChallenge))
+	mux.HandleFunc("POST /ladder-challenges/{id}/cancel", requireAuth(s.cancelChallenge))
+	mux.HandleFunc("POST /ladder-challenges/{id}/report", requireAuth(s.reportChallenge))
 
 	// --- Team League (organizer-driven, SIMPLE single-fixture model): a
 	// division's (league_bracket) teams + recorded fixtures. Standings (W-L +
@@ -964,6 +975,80 @@ func (s *Server) setLadderConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// --- Ladder challenges (player-driven). Writes are authenticated; the SERVICE
+// resolves the caller's entrant / league ownership from the challenge id and
+// enforces which party may act (no confused-deputy via a division path param).
+
+// issueChallenge creates a challenge from the caller's entrant to one above them.
+func (s *Server) issueChallenge(w http.ResponseWriter, r *http.Request) {
+	var req model.IssueChallengeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	ch, err := s.svc.IssueChallenge(userID(r), r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ch)
+}
+
+// listChallenges returns a division's challenges (viewer-readable).
+func (s *Server) listChallenges(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.ListChallenges(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// myChallenges returns the challenges the caller is a party to (all ladders).
+func (s *Server) myChallenges(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.MyChallenges(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) acceptChallenge(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.AcceptChallenge(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (s *Server) declineChallenge(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeclineChallenge(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "declined"})
+}
+
+func (s *Server) cancelChallenge(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CancelChallenge(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+func (s *Server) reportChallenge(w http.ResponseWriter, r *http.Request) {
+	var req model.ReportChallengeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.ReportChallenge(userID(r), r.PathValue("id"), req); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
 }
 
 // listTeamStandings returns a division's teams with their computed W-L record
@@ -4739,6 +4824,10 @@ func status(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, service.ErrDrawExists) {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, service.ErrChallengeConflict) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}

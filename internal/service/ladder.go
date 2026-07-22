@@ -146,11 +146,17 @@ func (s *Service) MoveLadderEntrant(entrantID string, newPosition int) error {
 	if newPosition < 1 {
 		return errors.New("newPosition must be >= 1")
 	}
-	_, err := s.sb.RPC("move_ladder_entrant", map[string]any{
+	if _, err := s.sb.RPC("move_ladder_entrant", map[string]any{
 		"p_entrant":      entrantID,
 		"p_new_position": newPosition,
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	// The moved entrant's relative positions changed → any open challenge it's in
+	// is now stale; void + notify rather than resolve against a moved ladder.
+	s.voidActiveChallengesForEntrant(entrantID,
+		"The ladder was reordered — your open challenge was cancelled.")
+	return nil
 }
 
 // AddLadderEntrant appends an entrant to the BOTTOM of a division's ladder
@@ -200,6 +206,10 @@ func (s *Service) RemoveLadderEntrant(entrantID string) error {
 	if strings.TrimSpace(entrantID) == "" {
 		return errors.New("entrantId is required")
 	}
+	// Notify + void the entrant's active challenges BEFORE the delete cascades
+	// them away silently (so the surviving counterparty learns why).
+	s.voidActiveChallengesForEntrant(entrantID,
+		"The other player left the ladder — your challenge was cancelled.")
 	_, err := s.sb.RPC("remove_ladder_entrant", map[string]any{"p_entrant": entrantID})
 	return err
 }
@@ -267,6 +277,10 @@ func (s *Service) RecordLadderResult(leagueBracketID string, req model.RecordLad
 	if mrow == nil {
 		return model.LadderMatch{}, ErrNotFound
 	}
+	// An organizer-recorded result moved these entrants → void their open
+	// challenges (they'd otherwise resolve against stale positions).
+	s.voidActiveChallengesForEntrant(a, "The organizer recorded a result — your open challenge was cancelled.")
+	s.voidActiveChallengesForEntrant(b, "The organizer recorded a result — your open challenge was cancelled.")
 	return mapLadderMatch(mrow), nil
 }
 

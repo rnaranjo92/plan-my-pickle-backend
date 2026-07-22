@@ -174,6 +174,19 @@ func main() {
 		}
 	}()
 
+	// Ladder challenge timers: auto-forfeit challenges past respond_by, void
+	// accepted ones past play_by, and send 24h deadline reminders. Day-scale
+	// deadlines, so a 5-minute tick is ample; each row is claimed atomically so
+	// overlapping ticks/instances can't double-process. Inert until the
+	// ladder_challenges table exists.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			svc.SweepLadderChallenges()
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

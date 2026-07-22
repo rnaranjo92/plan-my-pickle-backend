@@ -430,6 +430,39 @@ type LadderConfig struct {
 	InactivityAction string `json:"inactivityAction"` // none | drop_one | drop_bottom
 }
 
+// LadderChallenge is one player-driven challenge between two entrants on a
+// division's ladder, with its lifecycle status and deadline timers.
+type LadderChallenge struct {
+	ID                  string  `json:"id"`
+	LeagueBracketID     string  `json:"leagueBracketId"`
+	ChallengerEntrantID string  `json:"challengerEntrantId"`
+	ChallengedEntrantID string  `json:"challengedEntrantId"`
+	ChallengerName      string  `json:"challengerName"`
+	ChallengedName      string  `json:"challengedName"`
+	Status              string  `json:"status"` // pending|accepted|completed|forfeited|declined|voided|cancelled
+	RespondBy           string  `json:"respondBy,omitempty"`
+	PlayBy              string  `json:"playBy,omitempty"`
+	ResultMatchID       *string `json:"resultMatchId,omitempty"`
+	CreatedAt           string  `json:"createdAt"`
+	ResolvedAt          string  `json:"resolvedAt,omitempty"`
+	// Viewer-relative helpers (set on the /me list): is the caller the challenger?
+	Mine         bool `json:"mine,omitempty"`
+	IsChallenger bool `json:"isChallenger,omitempty"`
+}
+
+// IssueChallengeRequest challenges an entrant above the caller on a division.
+type IssueChallengeRequest struct {
+	ChallengedEntrantID string `json:"challengedEntrantId"`
+}
+
+// ReportChallengeRequest reports a challenge's played result. WinnerSide is
+// 'challenger' | 'challenged' | 'tie' — never a raw entrant id (the backend maps
+// it against the challenge row, closing the entrant-id IDOR).
+type ReportChallengeRequest struct {
+	WinnerSide string `json:"winnerSide"`
+	Score      string `json:"score"`
+}
+
 // Team is one team on a league division (Team League — the SIMPLE single-fixture
 // model). Name is the display name; PlayerID optionally links to a real app
 // player (e.g. the captain) — the roster is minimal and NOT required to score.

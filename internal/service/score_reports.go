@@ -273,10 +273,11 @@ func (s *Service) notifyScoreConfirm(eventID, matchID string, team, t1, t2, minu
 	_ = s.sendPush(userIDs, "Confirm your score",
 		fmt.Sprintf("Your opponents reported %s. Confirm or dispute within %d min.", scoreTxt, minutes),
 		"https://app.planmypickle.com/?event="+eventID)
-	// File in the bell so the score-entry prompt is reviewable there too.
+	// File in the bell — link straight to THIS match's report/confirm screen so
+	// tapping the notification lets the player enter/confirm the score directly.
 	s.recordNotifications(userIDs, "score",
 		fmt.Sprintf("Confirm your score: opponents reported %s", scoreTxt),
-		"playevent:"+eventID)
+		"match:"+matchID)
 }
 
 // ConfirmScore finalizes a pending report (opposite-side participant only) via

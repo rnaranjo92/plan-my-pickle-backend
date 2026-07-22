@@ -63,15 +63,31 @@ func (s *Service) Follow(callerID, targetID string) error {
 		"followee_id": targetID,
 	})
 	if err == nil {
-		// Notify the followed user (best-effort, off the request path). Tapping it
-		// opens the follower's profile.
+		// Notify the followed user (best-effort, off the request path). Link with
+		// the follower's PLAYER id (not their user id) so the tap opens their
+		// profile; empty when they have no player row (tap stays read-only).
 		go func() {
 			name := s.resolveDisplayName(callerID, "")
+			link := ""
+			if pid := s.playerIDForUser(callerID); pid != "" {
+				link = "profile:" + pid
+			}
 			s.notifyUser(targetID, "follow", callerID, name,
-				name+" started following you", "profile:"+callerID)
+				name+" started following you", link)
 		}()
 	}
 	return err
+}
+
+// playerIDForUser returns the players.id for a Supabase user, or "" when the
+// user has no player row (e.g. an organizer-only account).
+func (s *Service) playerIDForUser(userID string) string {
+	row, err := s.sb.SelectOne("players",
+		"user_id=eq."+store.Q(userID)+"&select=id&limit=1")
+	if err != nil || row == nil {
+		return ""
+	}
+	return asStr(row, "id")
 }
 
 // Unfollow removes callerID's follow of targetID (idempotent).

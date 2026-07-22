@@ -578,7 +578,17 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 // session done in ONE transaction (the end_rotation_session RPC), so it can't
 // race a participant-fired auto-advance and double-count / drop the final round.
 // Idempotent — a second End is a no-op (RPC returns already_done).
+//
+// Pre-0074 (the RPC + auto_advance column ship together), fall back to a plain
+// status flip so End never hard-fails during the deploy window — the RPC path
+// takes over the moment the migration is applied.
 func (s *Service) EndRotationSession(sessionID string) error {
+	if !s.columnReady("rotation_sessions", "auto_advance") {
+		_, err := s.sb.Update("rotation_sessions",
+			"id=eq."+store.Q(sessionID)+"&status=in.(live,paused)",
+			map[string]any{"status": "done", "round_ends_at": nil})
+		return err
+	}
 	body, err := s.sb.RPC("end_rotation_session", map[string]any{"p_session": sessionID})
 	if err != nil {
 		return err

@@ -93,6 +93,15 @@ func main() {
 	} else {
 		log.Printf("SMS: mock — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM to send real texts")
 	}
+	// Real Messenger (free court calls to opted-in players) only when a Page token
+	// is configured; otherwise the mock records without calling Meta. The app
+	// secret signs webhook payloads. Secrets live in the platform env, never code.
+	if pageTok := os.Getenv("MESSENGER_PAGE_TOKEN"); pageTok != "" {
+		svc.Msgr = gateway.NewMetaMessenger(pageTok, os.Getenv("MESSENGER_APP_SECRET"))
+		log.Printf("Messenger: Meta Send API configured")
+	} else {
+		log.Printf("Messenger: mock — set MESSENGER_PAGE_TOKEN to send real Messenger court calls")
+	}
 	// Real DUPR (rating verification + sanctioned-match submission) only when the
 	// partner Client Key + Secret are set; otherwise the mock stands in. Base URL
 	// defaults to UAT — set DUPR_BASE_URL=https://prod.mydupr.com/api for production.

@@ -86,6 +86,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// DUPR rating webhook (DUPR posts here — public; validated by clientId +
 	// only updates an existing connected DUPR id).
 	mux.HandleFunc("POST /dupr/webhook", s.duprWebhook)
+	// Facebook Messenger webhook (public; Meta posts here). GET verifies the
+	// callback (hub.challenge), POST delivers opt-ins + inbound messages. Signed
+	// with the app secret. Free court-call channel for opted-in players.
+	mux.HandleFunc("GET /messenger/webhook", s.messengerVerify)
+	mux.HandleFunc("POST /messenger/webhook", s.messengerWebhook)
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))

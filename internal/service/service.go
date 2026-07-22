@@ -39,6 +39,7 @@ type Service struct {
 	// is dormant until then, so it ships env-gated and inactive.
 	PayPal *gateway.PayPalGateway
 	Sms    gateway.SmsGateway
+	Msgr   gateway.MessengerGateway
 	Dupr   gateway.DuprGateway
 	Email  gateway.EmailGateway
 	Courts courts.Finder
@@ -86,6 +87,7 @@ func New() *Service {
 		sb:     store.NewClient(),
 		Pay:    gateway.NewMockPayment(),
 		Sms:    gateway.NewMockSms(),
+		Msgr:   gateway.NewMockMessenger(),
 		Dupr:   gateway.NewMockDupr(),
 		Email:  &gateway.MockEmail{},
 		Courts: courts.NewFinder(), // Google Places if PMP_PLACES_KEY set, else OSM
@@ -10049,9 +10051,16 @@ func (s *Service) eventOnDeckSmsEnabled(eventID string) bool {
 // notification. Returns the count successfully sent.
 func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber int) (int, error) {
 	prows, err := s.sb.Select("match_participants",
-		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(id,phone,user_id,sms_consent)")
+		"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(id,phone,user_id,sms_consent,messenger_psid,messenger_last_in)")
 	if err != nil {
-		return 0, err
+		// Pre-migration the messenger_* columns don't exist yet → PostgREST 400s the
+		// whole select. Fall back to the legacy column set so court calls keep
+		// working until add_messenger.sql is applied.
+		prows, err = s.sb.Select("match_participants",
+			"match_id=eq."+store.Q(matchID)+"&select=player:players!player_id(id,phone,user_id,sms_consent)")
+		if err != nil {
+			return 0, err
+		}
 	}
 	type recipient struct{ phone, playerID string }
 	var phones []recipient
@@ -10084,6 +10093,12 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	s.recordNotifications(userIDs, "match_start",
 		fmt.Sprintf("You're up on %s — round %d", court, roundNumber),
 		"playevent:"+eventID)
+
+	// Messenger court call (FREE) to players who opted in via the check-in QR and
+	// are still inside the 24h window. Runs regardless of the SMS add-on and sits
+	// ABOVE SMS in the ladder — a player reached here is skipped in the SMS loop
+	// so we never pay for a text we delivered for free. Best-effort.
+	msgrDone := s.notifyMatchStartMessenger(prows, eventID, matchID, court, roundNumber)
 
 	// SMS is the premium "both channels" add-on — default is push-first (above),
 	// so only text court calls when the event opted in. Best-effort: a missing
@@ -10132,6 +10147,10 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 			continue
 		}
 		seen[phone] = true
+		// Already reached for free on Messenger → don't pay for a duplicate text.
+		if msgrDone[rc.playerID] {
+			continue
+		}
 		// Our A2P 10DLC campaign only reaches US/Canada numbers. International
 		// players are covered by the push above (if they have a linked account);
 		// skip the SMS rather than log a guaranteed carrier failure.

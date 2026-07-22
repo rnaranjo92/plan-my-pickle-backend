@@ -100,6 +100,32 @@ func (s *Service) recordSmsSent(ownerID string, n int) {
 	}
 }
 
+// SmsUsageStatus is an organizer's current-month SMS position for the dashboard.
+type SmsUsageStatus struct {
+	Used      int    `json:"used"`      // segments sent this month across all their events
+	Allowance int    `json:"allowance"` // monthly cap (0 when metering is off)
+	Remaining int    `json:"remaining"` // max(0, allowance-used); 0 when unmetered
+	Period    string `json:"period"`    // "YYYY-MM"
+	Metered   bool   `json:"metered"`   // false → no cap (unlimited); UI can hide the bar
+}
+
+// SmsUsageStatus reports how many SMS segments an owner has spent this month
+// against their allowance. When metering is off (no allowance configured or the
+// table isn't present) Metered=false and the counts are zero — the UI then
+// shows "no cap" rather than a progress bar.
+func (s *Service) SmsUsageStatus(userID string) SmsUsageStatus {
+	st := SmsUsageStatus{Period: smsPeriod(), Metered: s.smsMeterOn()}
+	if !st.Metered || userID == "" {
+		return st
+	}
+	st.Allowance = smsMonthlyAllowance()
+	st.Used = s.smsUsedThisPeriod(userID)
+	if r := st.Allowance - st.Used; r > 0 {
+		st.Remaining = r
+	}
+	return st
+}
+
 // eventOwnerID resolves an event to its owning organizer's user id (owner_id),
 // the metering key. Empty on any miss/error so the caller fails open.
 func (s *Service) eventOwnerID(eventID string) string {

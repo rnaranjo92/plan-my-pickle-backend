@@ -94,6 +94,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Public: the FB Page username the client uses to build m.me opt-in links.
 	// Empty when unconfigured → the client hides the Messenger opt-in.
 	mux.HandleFunc("GET /messenger/config", s.messengerConfig)
+	// The caller's SMS usage vs their monthly allowance (organizer dashboard).
+	mux.HandleFunc("GET /me/sms-usage", requireAuth(s.mySmsUsage))
 	// In-app account deletion (Apple Guideline 5.1.1(v)): erases the caller's own
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
@@ -3424,6 +3426,12 @@ func (s *Server) startEventPassCheckout(w http.ResponseWriter, r *http.Request) 
 // subscriptionStatus reports the caller's Premium plan state.
 func (s *Server) subscriptionStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.GetPremiumStatus(userID(r)))
+}
+
+// mySmsUsage reports the caller's SMS segments used this month vs their monthly
+// allowance (0/unmetered when no cap is configured) for the organizer dashboard.
+func (s *Server) mySmsUsage(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.SmsUsageStatus(userID(r)))
 }
 
 // billingPortal opens the Stripe billing portal for the caller to manage/cancel.

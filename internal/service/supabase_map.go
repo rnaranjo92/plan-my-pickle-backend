@@ -236,7 +236,7 @@ func mapEvent(m map[string]any) model.Event {
 }
 
 func mapLeague(m map[string]any) model.League {
-	return model.League{
+	lg := model.League{
 		ID:              asStr(m, "id"),
 		OwnerID:         asStr(m, "owner_id"),
 		Name:            asStr(m, "name"),
@@ -250,6 +250,36 @@ func mapLeague(m map[string]any) model.League {
 		CashPrizeAmount: asFloatPtr(m, "cash_prize_amount"),
 		Listed:          asBool(m, "listed"),
 	}
+	// Ladder rule config rides along on ladder-type leagues (0068 columns; absent
+	// pre-migration → the defaults below fill in).
+	if lg.LeagueType == "ladder" {
+		lg.Ladder = mapLadderConfig(m)
+	}
+	return lg
+}
+
+// mapLadderConfig reads a league row's ladder_* config, filling defaults for any
+// column that's missing (pre-migration) or blank.
+func mapLadderConfig(m map[string]any) *model.LadderConfig {
+	reorder := asStr(m, "ladder_reorder_model")
+	if reorder != "swap" {
+		reorder = "leapfrog"
+	}
+	action := asStr(m, "ladder_inactivity_action")
+	switch action {
+	case "drop_one", "drop_bottom":
+	default:
+		action = "none"
+	}
+	c := &model.LadderConfig{
+		ReorderModel:     reorder,
+		ChallengeRange:   asInt(m, "ladder_challenge_range"),
+		ResponseDays:     asInt(m, "ladder_response_days"),
+		PlayDays:         asInt(m, "ladder_play_days"),
+		InactivityDays:   asInt(m, "ladder_inactivity_days"),
+		InactivityAction: action,
+	}
+	return c
 }
 
 // mapIntArray parses a jsonb int array (e.g. events.day_end_minutes). JSON
@@ -352,6 +382,7 @@ func mapLadderEntrant(m map[string]any) model.LadderEntrant {
 		PlayerID:        asStrPtr(m, "player_id"),
 		IsTeam:          asBool(m, "is_team"),
 		Position:        asInt(m, "position"),
+		LastActiveAt:    asStr(m, "last_active_at"),
 	}
 }
 

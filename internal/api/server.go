@@ -265,6 +265,12 @@ func NewServer(svc *service.Service) http.Handler {
 		s.ladderDivisionOwner("id", s.recordLadderResult))
 	mux.HandleFunc("DELETE /ladder-entrants/{id}",
 		s.ladderEntrantOwner("id", s.removeLadderEntrant))
+	mux.HandleFunc("POST /ladder-entrants/{id}/move",
+		s.ladderEntrantOwner("id", s.moveLadderEntrant))
+	// Ladder rule config (reorder model, challenge range, windows, inactivity) —
+	// keyed on the league id, so ownerOnly fits.
+	mux.HandleFunc("POST /leagues/{id}/ladder-config",
+		s.ownerOnly("league", "id", s.setLadderConfig))
 
 	// --- Team League (organizer-driven, SIMPLE single-fixture model): a
 	// division's (league_bracket) teams + recorded fixtures. Standings (W-L +
@@ -930,6 +936,34 @@ func (s *Server) removeLadderEntrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// moveLadderEntrant repositions an entrant to a new rank (organizer reorder /
+// reseed), shifting the entrants it passes. Owner-gated.
+func (s *Server) moveLadderEntrant(w http.ResponseWriter, r *http.Request) {
+	var req model.MoveLadderEntrantRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.MoveLadderEntrant(r.PathValue("id"), req.NewPosition); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "moved"})
+}
+
+// setLadderConfig updates a ladder league's rule config (reorder model, challenge
+// range, response/play windows, inactivity policy). Owner-gated on the league.
+func (s *Server) setLadderConfig(w http.ResponseWriter, r *http.Request) {
+	var req model.LadderConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetLadderConfig(r.PathValue("id"), req); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
 // listTeamStandings returns a division's teams with their computed W-L record

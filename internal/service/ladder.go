@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -67,7 +66,8 @@ func (s *Service) divisionOfEntrant(entrantID string) (string, error) {
 }
 
 // ListLadder returns a division's ladder, ordered by position (1 = top). This is
-// also the standings — the ladder order IS the ranking.
+// also the standings — the ladder order IS the ranking. Each entrant carries its
+// win/loss/tie record, tallied from the division's recorded matches.
 func (s *Service) ListLadder(leagueBracketID string) ([]model.LadderEntrant, error) {
 	rows, err := s.sb.Select("ladder_entrants",
 		"league_bracket_id=eq."+store.Q(leagueBracketID)+"&select=*&order=position.asc")
@@ -75,10 +75,82 @@ func (s *Service) ListLadder(leagueBracketID string) ([]model.LadderEntrant, err
 		return nil, err
 	}
 	out := make([]model.LadderEntrant, 0, len(rows))
+	idx := make(map[string]int, len(rows)) // entrant id → index in out
 	for _, r := range rows {
-		out = append(out, mapLadderEntrant(r))
+		e := mapLadderEntrant(r)
+		idx[e.ID] = len(out)
+		out = append(out, e)
+	}
+	// Tally W/L/T from the match history (best-effort — a stats read failure must
+	// not hide the ladder itself).
+	matches, mErr := s.sb.Select("ladder_matches",
+		"league_bracket_id=eq."+store.Q(leagueBracketID)+
+			"&select=entrant_a_id,entrant_b_id,winner_entrant_id")
+	if mErr == nil {
+		for _, m := range matches {
+			a, b, w := asStr(m, "entrant_a_id"), asStr(m, "entrant_b_id"), asStr(m, "winner_entrant_id")
+			if w == "" { // tie (null winner)
+				if i, ok := idx[a]; ok {
+					out[i].Ties++
+				}
+				if i, ok := idx[b]; ok {
+					out[i].Ties++
+				}
+				continue
+			}
+			loser := a
+			if w == a {
+				loser = b
+			}
+			if i, ok := idx[w]; ok {
+				out[i].Wins++
+			}
+			if i, ok := idx[loser]; ok {
+				out[i].Losses++
+			}
+		}
 	}
 	return out, nil
+}
+
+// ladderReorderModel returns a ladder's configured reorder model ('leapfrog' or
+// 'swap'), defaulting to 'leapfrog' when unset or pre-migration.
+func (s *Service) ladderReorderModel(leagueBracketID string) string {
+	if !s.columnReady("leagues", "ladder_reorder_model") {
+		return "leapfrog"
+	}
+	row, err := s.sb.SelectOne("league_brackets",
+		"id=eq."+store.Q(leagueBracketID)+"&select=league_id")
+	if err != nil || row == nil {
+		return "leapfrog"
+	}
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(asStr(row, "league_id"))+"&select=ladder_reorder_model")
+	if err != nil || lg == nil {
+		return "leapfrog"
+	}
+	if m := strings.TrimSpace(asStr(lg, "ladder_reorder_model")); m == "swap" {
+		return "swap"
+	}
+	return "leapfrog"
+}
+
+// MoveLadderEntrant repositions an entrant to a new 1-based rank, shifting the
+// entrants it passes so the ladder stays a clean 1..N permutation (atomic RPC).
+// Lets an organizer reseed by rating or fix an order. Position is clamped to
+// [1, N] server-side.
+func (s *Service) MoveLadderEntrant(entrantID string, newPosition int) error {
+	if strings.TrimSpace(entrantID) == "" {
+		return errors.New("entrantId is required")
+	}
+	if newPosition < 1 {
+		return errors.New("newPosition must be >= 1")
+	}
+	_, err := s.sb.RPC("move_ladder_entrant", map[string]any{
+		"p_entrant":      entrantID,
+		"p_new_position": newPosition,
+	})
+	return err
 }
 
 // AddLadderEntrant appends an entrant to the BOTTOM of a division's ladder
@@ -122,44 +194,14 @@ func (s *Service) AddLadderEntrant(leagueBracketID string, req model.AddLadderEn
 // RemoveLadderEntrant deletes an entrant and CLOSES the gap so the ladder stays
 // a contiguous 1..N permutation: every entrant below the removed one moves up
 // by one. The entrant's match history cascade-deletes (FK on delete cascade).
+// Delete + compaction run ATOMICALLY in the remove_ladder_entrant() RPC (one
+// transaction), so a partial failure can never leave a permanent position gap.
 func (s *Service) RemoveLadderEntrant(entrantID string) error {
-	div, err := s.divisionOfEntrant(entrantID)
-	if err != nil {
-		return err
+	if strings.TrimSpace(entrantID) == "" {
+		return errors.New("entrantId is required")
 	}
-	// Read the removed entrant's position so we can compact below it.
-	row, err := s.sb.SelectOne("ladder_entrants",
-		"id=eq."+store.Q(entrantID)+"&select=position")
-	if err != nil {
-		return err
-	}
-	if row == nil {
-		return ErrNotFound
-	}
-	removedPos := asInt(row, "position")
-
-	if err := s.sb.Delete("ladder_entrants", "id=eq."+store.Q(entrantID)); err != nil {
-		return err
-	}
-
-	// Compact: everyone below the removed slot shifts up one. Done as a single
-	// ordered pass (lowest first) so the unique(position) constraint never trips.
-	below, err := s.sb.Select("ladder_entrants",
-		"league_bracket_id=eq."+store.Q(div)+
-			"&position=gt."+store.Q(strconv.Itoa(removedPos))+
-			"&select=id,position&order=position.asc")
-	if err != nil {
-		return err
-	}
-	for _, e := range below {
-		id := asStr(e, "id")
-		newPos := asInt(e, "position") - 1
-		if _, uerr := s.sb.Update("ladder_entrants", "id=eq."+store.Q(id),
-			map[string]any{"position": newPos}); uerr != nil {
-			return uerr
-		}
-	}
-	return nil
+	_, err := s.sb.RPC("remove_ladder_entrant", map[string]any{"p_entrant": entrantID})
+	return err
 }
 
 // RecordLadderResult records a match between two entrants and applies the
@@ -169,13 +211,16 @@ func (s *Service) RecordLadderResult(leagueBracketID string, req model.RecordLad
 	a := strings.TrimSpace(req.EntrantAID)
 	b := strings.TrimSpace(req.EntrantBID)
 	w := strings.TrimSpace(req.WinnerEntrantID)
-	if a == "" || b == "" || w == "" {
-		return model.LadderMatch{}, errors.New("entrantAId, entrantBId and winnerEntrantId are required")
+	if a == "" || b == "" {
+		return model.LadderMatch{}, errors.New("entrantAId and entrantBId are required")
 	}
 	if a == b {
 		return model.LadderMatch{}, errors.New("the two entrants must be different")
 	}
-	if w != a && w != b {
+	// A tie is an explicit flag OR simply no winner supplied. Otherwise the winner
+	// must be one of the two sides.
+	tie := req.Tie || w == ""
+	if !tie && w != a && w != b {
 		return model.LadderMatch{}, errors.New("winnerEntrantId must be entrantAId or entrantBId")
 	}
 	// Bind the mutation to the authorized (path) division: BOTH entrants must
@@ -192,15 +237,16 @@ func (s *Service) RecordLadderResult(leagueBracketID string, req model.RecordLad
 			return model.LadderMatch{}, errors.New("entrant does not belong to this division")
 		}
 	}
-	loser := a
-	if w == a {
-		loser = b
-	}
 
 	payload := map[string]any{
-		"p_winner_entrant_id": w,
-		"p_loser_entrant_id":  loser,
-		"p_score":             orNull(strings.TrimSpace(req.Score)),
+		"p_entrant_a":     a,
+		"p_entrant_b":     b,
+		"p_reorder_model": s.ladderReorderModel(leagueBracketID),
+		"p_score":         orNull(strings.TrimSpace(req.Score)),
+	}
+	// Omit p_winner on a tie → the RPC default (null) records a tie with no reorder.
+	if !tie {
+		payload["p_winner"] = w
 	}
 	if pa := strings.TrimSpace(req.PlayedAt); pa != "" {
 		payload["p_played_at"] = pa
@@ -224,10 +270,52 @@ func (s *Service) RecordLadderResult(leagueBracketID string, req model.RecordLad
 	return mapLadderMatch(mrow), nil
 }
 
+// ladderConfigColumns normalizes a LadderConfig into its leagues-table columns,
+// clamping to safe values so bad input can't poison the ladder rules.
+func ladderConfigColumns(c model.LadderConfig) map[string]any {
+	reorder := "leapfrog"
+	if c.ReorderModel == "swap" {
+		reorder = "swap"
+	}
+	action := "none"
+	switch c.InactivityAction {
+	case "drop_one", "drop_bottom":
+		action = c.InactivityAction
+	}
+	nonNeg := func(n int) int {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	return map[string]any{
+		"ladder_reorder_model":     reorder,
+		"ladder_challenge_range":   nonNeg(c.ChallengeRange),
+		"ladder_response_days":     nonNeg(c.ResponseDays),
+		"ladder_play_days":         nonNeg(c.PlayDays),
+		"ladder_inactivity_days":   nonNeg(c.InactivityDays),
+		"ladder_inactivity_action": action,
+	}
+}
+
+// SetLadderConfig updates a ladder league's rule config (owner-gated at the HTTP
+// layer). No-op-safe pre-migration (columnReady guard).
+func (s *Service) SetLadderConfig(leagueID string, cfg model.LadderConfig) error {
+	if strings.TrimSpace(leagueID) == "" {
+		return errors.New("leagueId is required")
+	}
+	if !s.columnReady("leagues", "ladder_reorder_model") {
+		return errors.New("ladder config is not available yet")
+	}
+	_, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID), ladderConfigColumns(cfg))
+	return err
+}
+
 // LadderHistory returns a division's recorded matches, newest first.
 func (s *Service) LadderHistory(leagueBracketID string) ([]model.LadderMatch, error) {
 	rows, err := s.sb.Select("ladder_matches",
-		"league_bracket_id=eq."+store.Q(leagueBracketID)+"&select=*&order=played_at.desc")
+		"league_bracket_id=eq."+store.Q(leagueBracketID)+
+			"&select=*&order=played_at.desc,created_at.desc")
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +357,25 @@ func leapfrogReorder(order []string, winnerID, loserID string) []string {
 	// Shift the block [li, wi) one step toward the bottom.
 	copy(out[li+1:wi+1], out[li:wi])
 	out[li] = winner
+	return out
+}
+
+// swapReorder is the PURE in-memory model of the SWAP rule (the alternate to
+// leapfrog, selectable via the ladder's reorder model). When the LOWER-ranked
+// entrant wins, the two entrants simply exchange positions and NOBODY else
+// moves; when the higher-ranked entrant wins (or ids are absent / equal), the
+// order is unchanged. Mirrors the 'swap' branch of apply_ladder_result().
+func swapReorder(order []string, winnerID, loserID string) []string {
+	out := make([]string, len(order))
+	copy(out, order)
+	if winnerID == loserID {
+		return out
+	}
+	wi, li := indexOf(out, winnerID), indexOf(out, loserID)
+	if wi < 0 || li < 0 || wi <= li {
+		return out // absent, or higher-ranked already won → no change
+	}
+	out[wi], out[li] = out[li], out[wi]
 	return out
 }
 

@@ -56,6 +56,13 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 	if req.Listed && s.columnReady("leagues", "listed") {
 		payload["listed"] = true
 	}
+	// Ladder rule config (0068 columns) — only for ladder leagues, and only when
+	// the columns exist so create stays safe pre-migration.
+	if leagueType == "ladder" && req.Ladder != nil && s.columnReady("leagues", "ladder_reorder_model") {
+		for k, v := range ladderConfigColumns(*req.Ladder) {
+			payload[k] = v
+		}
+	}
 	rows, err := s.sb.Insert("leagues", payload)
 	if err != nil {
 		return "", err

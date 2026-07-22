@@ -111,6 +111,67 @@ func TestLeapfrogReorder(t *testing.T) {
 	}
 }
 
+// TestSwapReorder exercises the SWAP model: a lower-ranked winner exchanges
+// spots with the loser and nobody else moves; a higher-ranked winner (or
+// absent/equal ids) leaves the order untouched.
+func TestSwapReorder(t *testing.T) {
+	base := func() []string { return []string{"A", "B", "C", "D", "E"} }
+	cases := []struct {
+		name          string
+		order         []string
+		winner, loser string
+		want          []string
+	}{
+		{
+			// Bottom beats top: E and A swap; B, C, D stay put (the leapfrog case
+			// would have slid them all down — this is the key contrast).
+			name:   "bottom beats top swaps only the pair",
+			order:  base(),
+			winner: "E", loser: "A",
+			want: []string{"E", "B", "C", "D", "A"},
+		},
+		{
+			name:   "middle lower beats higher",
+			order:  base(),
+			winner: "D", loser: "B",
+			want: []string{"A", "D", "C", "B", "E"},
+		},
+		{
+			name:   "higher wins no change",
+			order:  base(),
+			winner: "A", loser: "D",
+			want: []string{"A", "B", "C", "D", "E"},
+		},
+		{
+			name:   "adjacent lower beats higher",
+			order:  base(),
+			winner: "B", loser: "A",
+			want: []string{"B", "A", "C", "D", "E"},
+		},
+		{
+			name:   "same entrant no-op",
+			order:  base(),
+			winner: "C", loser: "C",
+			want: []string{"A", "B", "C", "D", "E"},
+		},
+		{
+			name:   "unknown entrant no-op",
+			order:  base(),
+			winner: "Z", loser: "A",
+			want: []string{"A", "B", "C", "D", "E"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := swapReorder(c.order, c.winner, c.loser)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("swapReorder(%v, %q, %q) = %v, want %v",
+					c.order, c.winner, c.loser, got, c.want)
+			}
+		})
+	}
+}
+
 // TestLeapfrogReorderDoesNotMutateInput verifies the function returns a fresh
 // slice and never reorders the caller's input in place (the service relies on
 // this when it logs / compares before-and-after).

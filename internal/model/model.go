@@ -33,12 +33,12 @@ type Event struct {
 	VenmoHandle     *string `json:"venmoHandle,omitempty"`
 	// GcashHandle = the organizer's GCash mobile number for manual PH collection
 	// (players pay out-of-band, organizer marks paid). Same model as Zelle/Venmo.
-	GcashHandle *string `json:"gcashHandle,omitempty"`
-	ClubID          *string `json:"clubId,omitempty"`
-	Location        *string `json:"location,omitempty"`
-	ContactPhone    *string `json:"contactPhone,omitempty"`
-	VenueNotes      *string `json:"venueNotes,omitempty"`
-	WaiverURL       *string `json:"waiverUrl,omitempty"`
+	GcashHandle  *string `json:"gcashHandle,omitempty"`
+	ClubID       *string `json:"clubId,omitempty"`
+	Location     *string `json:"location,omitempty"`
+	ContactPhone *string `json:"contactPhone,omitempty"`
+	VenueNotes   *string `json:"venueNotes,omitempty"`
+	WaiverURL    *string `json:"waiverUrl,omitempty"`
 	// Optional organizer-customized registration-confirmation email. Subject
 	// overrides the default "You're in! …"; Message is a personal note added to
 	// the top of the email. Both empty/unset → the branded default.
@@ -247,6 +247,8 @@ type League struct {
 	// (Happening now / Upcoming / Past). Nil when the league has no dated session.
 	FirstSessionAt *string `json:"firstSessionAt,omitempty"`
 	LastSessionAt  *string `json:"lastSessionAt,omitempty"`
+	// Ladder is the rule config for ladder-type leagues (nil for others).
+	Ladder *LadderConfig `json:"ladder,omitempty"`
 }
 
 // CreateLeagueRequest is the create-payload for a league.
@@ -259,6 +261,9 @@ type CreateLeagueRequest struct {
 	Listed          bool     `json:"listed"` // opt into public discovery (default false)
 	CashPrize       bool     `json:"cashPrize"`
 	CashPrizeAmount *float64 `json:"cashPrizeAmount,omitempty"`
+	// Ladder config (optional; only applied when LeagueType == "ladder"). Nil
+	// leaves the schema defaults (leapfrog / unlimited / no inactivity).
+	Ladder *LadderConfig `json:"ladder,omitempty"`
 	// Divisions are the league's brackets (skill/age/DUPR bands). Empty creates
 	// a single "Open" division by default (mirrors event creation).
 	Divisions []LeagueBracketInput `json:"divisions"`
@@ -360,6 +365,13 @@ type LadderEntrant struct {
 	PlayerID        *string `json:"playerId,omitempty"`
 	IsTeam          bool    `json:"isTeam"`
 	Position        int     `json:"position"`
+	// Win/loss/tie record, tallied from the division's recorded matches.
+	Wins   int `json:"wins"`
+	Losses int `json:"losses"`
+	Ties   int `json:"ties"`
+	// LastActiveAt is the entrant's most recent match time (RFC3339), "" if none —
+	// powers the inactivity policy + a "last played" display.
+	LastActiveAt string `json:"lastActiveAt,omitempty"`
 }
 
 // LadderMatch is one recorded result between two entrants on a division's ladder
@@ -391,9 +403,31 @@ type RecordLadderResultRequest struct {
 	EntrantAID      string `json:"entrantAId"`
 	EntrantBID      string `json:"entrantBId"`
 	WinnerEntrantID string `json:"winnerEntrantId"`
-	Score           string `json:"score"`
+	// Tie records a drawn match (no winner) — positions stay unchanged. An empty
+	// WinnerEntrantID is also treated as a tie.
+	Tie   bool   `json:"tie"`
+	Score string `json:"score"`
 	// PlayedAt is an optional ISO-8601 timestamp; empty defaults to now().
 	PlayedAt string `json:"playedAt"`
+}
+
+// MoveLadderEntrantRequest repositions an entrant to a new 1-based rank
+// (organizer reorder / reseed).
+type MoveLadderEntrantRequest struct {
+	NewPosition int `json:"newPosition"`
+}
+
+// LadderConfig is a ladder league's rule configuration (stored on the league).
+// Defaults reproduce the classic behavior: leapfrog reorder, unlimited challenge
+// range, no inactivity penalty. Response/play/inactivity knobs drive the phase-2
+// player-driven challenge lifecycle.
+type LadderConfig struct {
+	ReorderModel     string `json:"reorderModel"`     // leapfrog | swap
+	ChallengeRange   int    `json:"challengeRange"`   // 0 = unlimited; N = spots above
+	ResponseDays     int    `json:"responseDays"`     // days to accept a challenge
+	PlayDays         int    `json:"playDays"`         // days to play once accepted
+	InactivityDays   int    `json:"inactivityDays"`   // 0 = off; N idle days → action
+	InactivityAction string `json:"inactivityAction"` // none | drop_one | drop_bottom
 }
 
 // Team is one team on a league division (Team League — the SIMPLE single-fixture

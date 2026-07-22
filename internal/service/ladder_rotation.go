@@ -345,7 +345,8 @@ func (s *Service) StartRotationSession(sessionID string) error {
 		ids = append(ids, asStr(r, "id"))
 	}
 
-	courts := engine.SeedCourts(ids)
+	// maxCourts 0 = no cap (bench unused) — the court-cap/bye wiring lands with 0073.
+	courts, _ := engine.SeedCourts(ids, 0)
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_courts":  rotationCourtsJSON(courts),
@@ -435,7 +436,7 @@ func (s *Service) AdvanceRotationSession(sessionID string) error {
 		results = append(results, engine.RotResult{Court: court, Winner: w})
 	}
 
-	nextCourts := engine.NextRound(cur, results)
+	nextCourts, _ := engine.NextRound(cur, results, nil)
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_round":   round,
@@ -459,12 +460,73 @@ func (s *Service) AdvanceRotationSession(sessionID string) error {
 	return nil
 }
 
-// EndRotationSession marks a session done (tallying its final round first, via a
-// last advance is NOT done — the organizer ends after the last round's report).
+// EndRotationSession tallies the CURRENT round's reported courts (which a normal
+// advance never got to, since the organizer ends instead of ringing again) and
+// marks the session done. Only reported courts count — a round abandoned mid-play
+// doesn't award phantom wins.
 func (s *Service) EndRotationSession(sessionID string) error {
-	_, err := s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
+	srow, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=current_round,status")
+	if err != nil {
+		return err
+	}
+	if srow == nil {
+		return ErrNotFound
+	}
+	// Tally the final round's reported courts (idempotency: only when still live,
+	// so a double-tap End can't double-count).
+	if status := asStr(srow, "status"); status == "live" || status == "paused" {
+		round := asInt(srow, "current_round")
+		if round >= 1 {
+			if err := s.tallyRotationRound(sessionID, round); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
 		map[string]any{"status": "done", "round_ends_at": nil})
 	return err
+}
+
+// tallyRotationRound credits wins/games for one round's REPORTED courts (used by
+// End; advance does its own tally atomically in the RPC). Unreported courts are
+// skipped. Non-atomic, but End is a single-owner terminal action.
+func (s *Service) tallyRotationRound(sessionID string, round int) error {
+	rows, err := s.sb.Select("rotation_round_courts",
+		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round))
+	if err != nil {
+		return err
+	}
+	inc := func(ids []string, wins bool) {
+		for _, id := range ids {
+			if id == "" {
+				continue
+			}
+			cur, _ := s.sb.SelectOne("rotation_players",
+				"id=eq."+store.Q(id)+"&select=wins,games")
+			body := map[string]any{"games": asInt(cur, "games") + 1}
+			if wins {
+				body["wins"] = asInt(cur, "wins") + 1
+			}
+			s.sb.Update("rotation_players", "id=eq."+store.Q(id), body)
+		}
+	}
+	for _, r := range rows {
+		w := asStr(r, "winner")
+		if w != "a" && w != "b" {
+			continue // unreported → don't award anything
+		}
+		a := []string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")}
+		b := []string{asStr(r, "team_b_p1"), asStr(r, "team_b_p2")}
+		if w == "a" {
+			inc(a, true)
+			inc(b, false)
+		} else {
+			inc(b, true)
+			inc(a, false)
+		}
+	}
+	return nil
 }
 
 // --- mapping helpers --------------------------------------------------------

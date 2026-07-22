@@ -7,6 +7,13 @@ package engine
 // with a new partner. Court 1 winners stay at the top; the last court's losers
 // stay at the bottom. This file is the PURE movement engine (no DB/timers) so it
 // can be unit-tested exhaustively; the session/timer/live-view layer calls it.
+//
+// COURT CAP + BYES: a venue has a fixed number of courts. When there are more
+// players than seats (courts×4), the extras wait on a BENCH (a FIFO queue). Byes
+// rotate through the BOTTOM court and are game-driven: the bottom court's losers
+// step off to the back of the bench, and the longest-waiting bench players take
+// their seats. So you only sit out after LOSING on the bottom court, and you're
+// always the last to be re-benched — fair playing time over the session.
 
 // RotCourt is the four players on one court, as two teams (a vs b). Each team is
 // a pair of player ids (entrant ids). Court number is 1-based (1 = top).
@@ -26,22 +33,30 @@ type RotResult struct {
 }
 
 // SeedCourts places players (already ordered strongest→weakest, e.g. by
-// self-rating) onto floor(n/4) FULL courts of 4, top court first. Up-and-down-
-// the-river needs a perfect 4:1 player:court ratio, so any remainder (n mod 4)
-// is NOT seated — a partial trailing court would break the up/down re-pair
-// (phantom empty seats). The session layer enforces a multiple of 4 before
-// calling this (the extras sit out), so in practice there's no remainder.
-// Players seed as [0,2] vs [1,3] within each court for the opening round.
-func SeedCourts(players []string) []RotCourt {
-	courts := []RotCourt{}
-	for i := 0; i+4 <= len(players); i += 4 {
+// self-rating) onto up to maxCourts FULL courts of 4, top court first, and
+// returns any remainder as the initial bench (they wait, then rotate in). The
+// court count is min(maxCourts, floor(n/4)); maxCourts <= 0 means "no cap" (seat
+// every full court). Players seed as [0,2] vs [1,3] within each court for the
+// opening round; the bench keeps its (rating) order so the lowest-seeded wait
+// first, then FIFO rotation evens it out.
+func SeedCourts(players []string, maxCourts int) ([]RotCourt, []string) {
+	full := len(players) / 4
+	c := full
+	if maxCourts > 0 && maxCourts < c {
+		c = maxCourts
+	}
+	seats := c * 4
+	courts := make([]RotCourt, 0, c)
+	for k := 0; k < c; k++ {
+		i := k * 4
 		courts = append(courts, RotCourt{
-			Court: len(courts) + 1,
+			Court: k + 1,
 			TeamA: [2]string{players[i], players[i+2]},
 			TeamB: [2]string{players[i+1], players[i+3]},
 		})
 	}
-	return courts
+	bench := append([]string(nil), players[seats:]...)
+	return courts, bench
 }
 
 // NextRound applies one round's results and returns the next round's courts.
@@ -50,10 +65,16 @@ func SeedCourts(players []string) []RotCourt {
 // keeps their partner (the "split + new partner" rule): the two who arrive from
 // BELOW (winners moving up) each pair with one who arrives from ABOVE (losers
 // moving down). Courts must be contiguous 1..N with exactly 4 players each.
-func NextRound(courts []RotCourt, results []RotResult) []RotCourt {
+//
+// BYES: when `bench` is non-empty, the bottom court's losers step OFF (to the
+// back of the bench) and the same number of longest-waiting bench players step
+// ON, filling the bottom court. Up to 2 rotate per round (a losing pair's worth).
+// Returns the next courts and the next bench (FIFO). An empty bench reproduces
+// the classic no-bye behavior exactly.
+func NextRound(courts []RotCourt, results []RotResult, bench []string) ([]RotCourt, []string) {
 	n := len(courts)
 	if n == 0 {
-		return nil
+		return nil, append([]string(nil), bench...)
 	}
 	win := map[int]string{} // court → winning result ("a"/"b")
 	for _, r := range results {
@@ -76,13 +97,36 @@ func NextRound(courts []RotCourt, results []RotResult) []RotCourt {
 		}
 	}
 
+	// Bye swap on the bottom court: k = how many losers step off (0..2, capped by
+	// the bench size). The stepped-off players go to the back of the bench; the
+	// front-of-bench players fill the bottom court's "stay" slots.
+	nextBench := append([]string(nil), bench...)
+	bottomStay := losers[n] // who would normally stay at the bottom
+	if k := min2(len(bench)); k > 0 {
+		comingIn := append([]string(nil), bench[:k]...) // longest-waiting (FIFO front)
+		// New bench = the rest, then the newly-benched bottom losers (back).
+		nb := append([]string(nil), bench[k:]...)
+		for j := 0; j < k; j++ {
+			nb = append(nb, losers[n][j])
+		}
+		nextBench = nb
+		// Rebuild the bottom "stay" pair: incoming bench players, then any bottom
+		// loser who didn't step off.
+		var stay [2]string
+		copy(stay[:], comingIn)
+		for j := k; j < 2; j++ {
+			stay[j] = losers[n][j]
+		}
+		bottomStay = stay
+	}
+
 	next := make([]RotCourt, n)
 	for k := 1; k <= n; k++ {
 		// Who arrives at court k:
 		//  - from ABOVE (court k-1 losers moving down) — or, at the top, court 1's
 		//    own winners who stay.
-		//  - from BELOW (court k+1 winners moving up) — or, at the bottom, court n's
-		//    own losers who stay.
+		//  - from BELOW (court k+1 winners moving up) — or, at the bottom, the
+		//    "stay" pair (bottom losers, possibly swapped with bench players).
 		var fromAbove, fromBelow [2]string
 		if k == 1 {
 			fromAbove = winners[1] // court 1 winners stay at the top
@@ -90,7 +134,7 @@ func NextRound(courts []RotCourt, results []RotResult) []RotCourt {
 			fromAbove = losers[k-1] // court k-1 losers drop into k
 		}
 		if k == n {
-			fromBelow = losers[n] // last court losers stay at the bottom
+			fromBelow = bottomStay // bottom stayers (after any bye swap)
 		} else {
 			fromBelow = winners[k+1] // court k+1 winners climb into k
 		}
@@ -101,5 +145,13 @@ func NextRound(courts []RotCourt, results []RotResult) []RotCourt {
 			TeamB: [2]string{fromBelow[1], fromAbove[1]},
 		}
 	}
-	return next
+	return next, nextBench
+}
+
+// min2 caps a bench size to the at-most-2 players that rotate per round.
+func min2(n int) int {
+	if n < 2 {
+		return n
+	}
+	return 2
 }

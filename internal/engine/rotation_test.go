@@ -23,11 +23,14 @@ func allPlayers(courts []RotCourt) []string {
 }
 
 func TestSeedCourts(t *testing.T) {
-	// 8 players → 2 courts of 4, seeded [0,2] vs [1,3] per court.
+	// 8 players, no cap → 2 courts of 4, seeded [0,2] vs [1,3] per court.
 	players := []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"}
-	courts := SeedCourts(players)
+	courts, bench := SeedCourts(players, 0)
 	if len(courts) != 2 {
 		t.Fatalf("want 2 courts, got %d", len(courts))
+	}
+	if len(bench) != 0 {
+		t.Fatalf("want empty bench, got %v", bench)
 	}
 	if courts[0].Court != 1 || courts[1].Court != 2 {
 		t.Fatalf("courts not numbered 1..2: %+v", courts)
@@ -36,29 +39,104 @@ func TestSeedCourts(t *testing.T) {
 	if courts[0].TeamA != [2]string{"p1", "p3"} || courts[0].TeamB != [2]string{"p2", "p4"} {
 		t.Fatalf("court 1 seeding wrong: %+v", courts[0])
 	}
-	// Conservation: all 8 present, no dups.
 	got := allPlayers(courts)
 	if len(got) != 8 {
 		t.Fatalf("want 8 players seeded, got %d (%v)", len(got), got)
 	}
 }
 
-// A non-multiple-of-4 roster seats only full courts; the remainder is dropped
-// (the session layer benches them to keep a perfect 4:1 ratio).
-func TestSeedCourtsDropsRemainder(t *testing.T) {
-	// 10 players → 2 full courts (8 seated); p9,p10 not seated.
+// A non-multiple-of-4 roster seats only full courts; the remainder benches.
+func TestSeedCourtsBenchesRemainder(t *testing.T) {
+	// 10 players, no cap → 2 full courts (8 seated); p9,p10 on the bench.
 	players := []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"}
-	courts := SeedCourts(players)
+	courts, bench := SeedCourts(players, 0)
 	if len(courts) != 2 {
 		t.Fatalf("want 2 full courts, got %d", len(courts))
 	}
-	seated := allPlayers(courts)
-	if len(seated) != 8 {
-		t.Fatalf("want 8 seated, got %d (%v)", len(seated), seated)
+	if len(bench) != 2 || bench[0] != "p9" || bench[1] != "p10" {
+		t.Fatalf("want bench [p9 p10], got %v", bench)
 	}
-	for _, id := range seated {
-		if id == "p9" || id == "p10" {
-			t.Fatalf("remainder player %s should not be seated", id)
+}
+
+// A court CAP benches everyone beyond capacity: 24 players, 5 courts → 20 seated,
+// 4 on the bench.
+func TestSeedCourtsCap(t *testing.T) {
+	players := make([]string, 24)
+	for i := range players {
+		players[i] = string(rune('a' + i))
+	}
+	courts, bench := SeedCourts(players, 5)
+	if len(courts) != 5 {
+		t.Fatalf("want 5 courts (capped), got %d", len(courts))
+	}
+	if len(bench) != 4 {
+		t.Fatalf("want 4 benched, got %d (%v)", len(bench), bench)
+	}
+	if len(allPlayers(courts))+len(bench) != 24 {
+		t.Fatalf("players lost: %d seated + %d benched", len(allPlayers(courts)), len(bench))
+	}
+}
+
+// With a bench, the bottom court's losers step off and the longest-waiting bench
+// players step on; nobody is lost, and the bench stays the same size.
+func TestNextRoundByes(t *testing.T) {
+	// 2 courts (8 seated) + 2 on the bench.
+	courts := []RotCourt{
+		{Court: 1, TeamA: [2]string{"a1", "a2"}, TeamB: [2]string{"b1", "b2"}},
+		{Court: 2, TeamA: [2]string{"c1", "c2"}, TeamB: [2]string{"d1", "d2"}},
+	}
+	bench := []string{"z1", "z2"}
+	all := append(allPlayers(courts), bench...)
+	sort.Strings(all)
+
+	// Court 1: A wins. Court 2: A wins (so d1,d2 are the bottom losers → step off).
+	next, nb := NextRound(courts,
+		[]RotResult{{Court: 1, Winner: "a"}, {Court: 2, Winner: "a"}}, bench)
+
+	// Conservation: same 10 players across courts + bench, no dups.
+	after := append(allPlayers(next), nb...)
+	sort.Strings(after)
+	if len(after) != 10 {
+		t.Fatalf("player count changed: %d", len(after))
+	}
+	for i := range all {
+		if all[i] != after[i] {
+			t.Fatalf("player set changed:\n before %v\n after  %v", all, after)
+		}
+	}
+	// Bench stays size 2, and the bottom losers d1,d2 are now on it.
+	if len(nb) != 2 {
+		t.Fatalf("bench size changed: %v", nb)
+	}
+	benchSet := sortedSet(nb...)
+	if !equalSets(benchSet, sortedSet("d1", "d2")) {
+		t.Fatalf("bottom losers should be benched, got bench %v", nb)
+	}
+	// The waiting z1,z2 are now on court (bottom court).
+	seated := sortedSet(playersOfCourt(next, 2)...)
+	if !containsAll(seated, "z1", "z2") {
+		t.Fatalf("bench players should have come in on court 2, got %v", seated)
+	}
+}
+
+// Everyone gets even playing time: over many rounds every player sits out a
+// roughly equal number of times (FIFO fairness).
+func TestByesRotateFairly(t *testing.T) {
+	courts, bench := SeedCourts(
+		[]string{"p1", "p2", "p3", "p4", "p5", "p6"}, 1) // 1 court, 2 on bench
+	sat := map[string]int{}
+	for round := 0; round < 30; round++ {
+		for _, id := range bench {
+			sat[id]++
+		}
+		// Court 1: team A always wins (deterministic; losers cycle to bench).
+		courts, bench = NextRound(courts, []RotResult{{Court: 1, Winner: "a"}}, bench)
+	}
+	// 6 players, 2 sit each round over 30 rounds = 60 sit-outs; a fair spread is
+	// ~10 each. Assert nobody is starved (played every round) or benched always.
+	for _, id := range []string{"p1", "p2", "p3", "p4", "p5", "p6"} {
+		if sat[id] == 0 || sat[id] >= 30 {
+			t.Fatalf("unfair byes: %s sat %d/30 rounds (all: %v)", id, sat[id], sat)
 		}
 	}
 }
@@ -80,7 +158,7 @@ func TestNextRoundMovementAndRepair(t *testing.T) {
 		{Court: 2, Winner: "b"},
 		{Court: 3, Winner: "a"},
 	}
-	next := NextRound(courts, results)
+	next, _ := NextRound(courts, results, nil)
 
 	if len(next) != 3 {
 		t.Fatalf("want 3 courts, got %d", len(next))
@@ -133,7 +211,7 @@ func TestNextRoundSingleCourt(t *testing.T) {
 	courts := []RotCourt{
 		{Court: 1, TeamA: [2]string{"x1", "x2"}, TeamB: [2]string{"y1", "y2"}},
 	}
-	next := NextRound(courts, []RotResult{{Court: 1, Winner: "a"}})
+	next, _ := NextRound(courts, []RotResult{{Court: 1, Winner: "a"}}, nil)
 	if len(next) != 1 {
 		t.Fatalf("want 1 court, got %d", len(next))
 	}
@@ -159,6 +237,19 @@ func sortedSet(ids ...string) []string {
 	s := append([]string(nil), ids...)
 	sort.Strings(s)
 	return s
+}
+
+func containsAll(sorted []string, ids ...string) bool {
+	have := map[string]bool{}
+	for _, s := range sorted {
+		have[s] = true
+	}
+	for _, id := range ids {
+		if !have[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func equalSets(a, b []string) bool {

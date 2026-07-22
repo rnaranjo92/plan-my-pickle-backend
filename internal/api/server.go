@@ -678,8 +678,15 @@ func emailInAllowlist(email, list, dflt string) bool {
 
 const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 
+// earlyAccessGrants: individually comped organizers during early access. They
+// get organizing (createEvent/createLeague) but NOT premium or QA-only tools.
+// TEMPORARY — revisit when subscriptions launch (SUBSCRIPTIONS_ENABLED), since
+// paid plans replace these comps. Overridden entirely if ORGANIZER_ALLOWLIST is
+// set in the env.
+const earlyAccessGrants = "michellecruzsd@gmail.com"
+
 func organizerAllowed(email string) bool {
-	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), qaAllowlist)
+	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), qaAllowlist+","+earlyAccessGrants)
 }
 
 // premiumAllowed reports whether the caller may use premium-gated features — e.g.

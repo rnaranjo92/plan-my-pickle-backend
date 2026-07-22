@@ -643,6 +643,64 @@ func (s *Service) voidActiveChallengesForEntrant(entrantID, reason string) {
 	}
 }
 
+// playerIDByEmail resolves an ACCOUNT-LINKED player by email (user_id not null),
+// so a seeded entrant can be a real, challengeable opponent. "" if none.
+func (s *Service) playerIDByEmail(email string) string {
+	row, err := s.sb.SelectOne("players",
+		"email=eq."+store.Q(strings.ToLower(strings.TrimSpace(email)))+
+			"&user_id=not.is.null&select=id&limit=1")
+	if err != nil || row == nil {
+		return ""
+	}
+	return asStr(row, "id")
+}
+
+// SeedLadderTestEntrants populates a division's ladder for testing: a few demo
+// entrants + a couple of recorded results (so W/L + a leapfrog show), PLUS two
+// ACCOUNT-LINKED entrants — the caller (at the bottom, so they can challenge up)
+// and the other QA account — so the full player-driven challenge flow is
+// testable solo (the caller, as league owner, can accept/report via override).
+// Owner-gated at the HTTP layer. Returns the number of entrants added.
+func (s *Service) SeedLadderTestEntrants(callerUserID, div string) (int, error) {
+	if strings.TrimSpace(div) == "" {
+		return 0, errors.New("division is required")
+	}
+	added := 0
+	var demoIDs []string
+	addDemo := func(name string) {
+		if e, err := s.AddLadderEntrant(div, model.AddLadderEntrantRequest{DisplayName: name}); err == nil {
+			demoIDs = append(demoIDs, e.ID)
+			added++
+		}
+	}
+	addLinked := func(name, playerID string) {
+		if playerID == "" {
+			return
+		}
+		pid := playerID
+		if _, err := s.AddLadderEntrant(div, model.AddLadderEntrantRequest{DisplayName: name, PlayerID: &pid}); err == nil {
+			added++
+		}
+	}
+
+	for _, nm := range []string{"Sparky Dill", "Gwen Gherkin", "Rick Relish", "Barb Brine"} {
+		addDemo(nm)
+	}
+	// A second linked opponent so a real challenge has an account-linked target.
+	addLinked("Krizhia (test)", s.playerIDByEmail("krizhia_roxas29@yahoo.com"))
+	// The caller, linked + at the bottom (added last → highest position).
+	addLinked("You (test)", s.playerIDForUser(callerUserID))
+
+	// A couple of demo results so the ladder looks alive (a leapfrog + a tie).
+	if len(demoIDs) >= 4 {
+		_, _ = s.RecordLadderResult(div, model.RecordLadderResultRequest{
+			EntrantAID: demoIDs[2], EntrantBID: demoIDs[0], WinnerEntrantID: demoIDs[2]})
+		_, _ = s.RecordLadderResult(div, model.RecordLadderResultRequest{
+			EntrantAID: demoIDs[1], EntrantBID: demoIDs[3], Tie: true})
+	}
+	return added, nil
+}
+
 // humanDay renders an RFC3339 timestamp as a short local-ish day ("Jul 28").
 func humanDay(iso string) string {
 	t, err := time.Parse(time.RFC3339, iso)

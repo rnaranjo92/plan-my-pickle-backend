@@ -56,6 +56,9 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 	if req.Listed && s.columnReady("leagues", "listed") {
 		payload["listed"] = true
 	}
+	if loc := strings.TrimSpace(req.Location); loc != "" && s.columnReady("leagues", "location") {
+		payload["location"] = loc
+	}
 	// Ladder rule config (0068 columns) — only for ladder leagues, and only when
 	// the columns exist so create stays safe pre-migration.
 	if leagueType == "ladder" && req.Ladder != nil && s.columnReady("leagues", "ladder_reorder_model") {

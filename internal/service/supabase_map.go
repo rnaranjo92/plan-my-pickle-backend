@@ -249,6 +249,7 @@ func mapLeague(m map[string]any) model.League {
 		CashPrize:       asBool(m, "cash_prize"),
 		CashPrizeAmount: asFloatPtr(m, "cash_prize_amount"),
 		Listed:          asBool(m, "listed"),
+		Location:        asStrPtr(m, "location"),
 	}
 	// Ladder rule config rides along on ladder-type leagues (0068 columns; absent
 	// pre-migration → the defaults below fill in).

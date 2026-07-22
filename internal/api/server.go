@@ -283,6 +283,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /ladder-challenges/{id}/decline", requireAuth(s.declineChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/cancel", requireAuth(s.cancelChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/report", requireAuth(s.reportChallenge))
+	mux.HandleFunc("POST /league-brackets/{id}/ladder/seed-test",
+		s.ladderDivisionOwner("id", s.seedLadderTest))
 
 	// --- Team League (organizer-driven, SIMPLE single-fixture model): a
 	// division's (league_bracket) teams + recorded fixtures. Standings (W-L +
@@ -1001,6 +1003,17 @@ func (s *Server) myLadderEntrant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"entrantId": s.svc.MyLadderEntrant(userID(r), r.PathValue("id")),
 	})
+}
+
+// seedLadderTest populates a division's ladder with demo + linked entrants for
+// testing (owner-gated). Returns how many were added.
+func (s *Server) seedLadderTest(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.SeedLadderTestEntrants(userID(r), r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"added": n})
 }
 
 // listChallenges returns a division's challenges (viewer-readable).

@@ -298,6 +298,8 @@ func NewServer(svc *service.Service) http.Handler {
 		s.ladderDivisionOwner("id", s.createRotationSession))
 	mux.HandleFunc("GET /rotation-sessions/{id}/board",
 		s.rotationSessionViewer("id", s.rotationBoard))
+	mux.HandleFunc("DELETE /rotation-sessions/{id}",
+		s.rotationSessionOwner("id", s.deleteRotationSession))
 	mux.HandleFunc("POST /rotation-sessions/{id}/players",
 		s.rotationSessionOwner("id", s.addRotationPlayer))
 	mux.HandleFunc("POST /rotation-sessions/{id}/import-entrants",

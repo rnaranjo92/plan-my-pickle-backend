@@ -114,6 +114,15 @@ func (s *Server) createRotationSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sess)
 }
 
+// deleteRotationSession removes a session and its roster/rounds (owner-gated).
+func (s *Server) deleteRotationSession(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteRotationSession(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // rotationBoard returns the full live view (session + roster + current courts +
 // standings) — the screen both the organizer board and each player render from.
 func (s *Server) rotationBoard(w http.ResponseWriter, r *http.Request) {

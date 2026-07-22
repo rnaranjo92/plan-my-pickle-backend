@@ -109,6 +109,12 @@ func (s *Service) ListRotationSessions(divisionID string) ([]model.RotationSessi
 	return out, nil
 }
 
+// DeleteRotationSession removes a session and (via ON DELETE CASCADE) its roster
+// + round-court rows. Owner-gated at the route.
+func (s *Service) DeleteRotationSession(sessionID string) error {
+	return s.sb.Delete("rotation_sessions", "id=eq."+store.Q(sessionID))
+}
+
 // GetRotationBoard returns the full live view: session + roster + current round's
 // courts (with player display names resolved) + standings (by wins).
 func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error) {

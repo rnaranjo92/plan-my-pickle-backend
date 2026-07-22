@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -37,6 +38,12 @@ func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // challengeOn reports whether the challenges table exists (migration applied).
 func (s *Service) challengeOn() bool {
 	return s.columnReady("ladder_challenges", "status")
+}
+
+// MyLadderEntrant returns the caller's entrant id on a division (or ""), so the
+// client can show challenge affordances only on rungs above the viewer.
+func (s *Service) MyLadderEntrant(userID, div string) string {
+	return s.callerEntrantID(userID, div)
 }
 
 // callerEntrantID returns the caller's entrant id on a division (their linked
@@ -201,9 +208,13 @@ func (s *Service) IssueChallenge(userID, div string, req model.IssueChallengeReq
 	}
 	// Cooldown: don't let a just-voided pair be immediately re-challenged.
 	since := rfc3339(time.Now().Add(-challengeCooldown))
+	// Only voids that came from an accepted-then-unplayed challenge (play_by set)
+	// trip the cooldown — that's the accept-stall-recycle ducking loop. Voids from
+	// an external reorder (organizer result / manual move; play_by null) must NOT
+	// block a legitimate re-challenge.
 	if recent, _ := s.sb.SelectOne("ladder_challenges",
 		"challenger_entrant_id=eq."+store.Q(challenger)+"&challenged_entrant_id=eq."+store.Q(challenged)+
-			"&status=eq.voided&resolved_at=gt."+store.Q(since)+"&select=id&limit=1"); recent != nil {
+			"&status=eq.voided&play_by=not.is.null&resolved_at=gt."+store.Q(since)+"&select=id&limit=1"); recent != nil {
 		return model.LadderChallenge{}, errors.New("please wait a day before re-challenging this player")
 	}
 	// Caps on active challenges.
@@ -310,13 +321,18 @@ func (s *Service) DeclineChallenge(userID, challengeID string) error {
 		return ErrForbidden
 	}
 	div := asStr(ch, "league_bracket_id")
-	if err := s.resolveChallenge(challengeID, []string{"pending"}, "declined",
-		"challenger", true, "", true, s.ladderRangeForDivision(div)); err != nil {
+	final, err := s.resolveChallenge(challengeID, []string{"pending"}, "declined",
+		"challenger", true, "", true, s.ladderRangeForDivision(div))
+	if err != nil {
 		return err
 	}
-	s.notifyBoth(ch, fmt.Sprintf("%s declined — %s moves up",
-		s.entrantName(asStr(ch, "challenged_entrant_id")),
-		s.entrantName(asStr(ch, "challenger_entrant_id"))))
+	if final == "voided" {
+		s.notifyBoth(ch, "The ladder changed — that challenge was voided (no position change).")
+	} else {
+		s.notifyBoth(ch, fmt.Sprintf("%s declined — %s moves up",
+			s.entrantName(asStr(ch, "challenged_entrant_id")),
+			s.entrantName(asStr(ch, "challenger_entrant_id"))))
+	}
 	return nil
 }
 
@@ -336,7 +352,7 @@ func (s *Service) ReportChallenge(userID, challengeID string, req model.ReportCh
 	}
 	// Report can claim from pending/accepted, and can even reverse a stale void
 	// (a real result should beat a play_by timeout).
-	if err := s.resolveChallenge(challengeID, []string{"pending", "accepted", "voided"},
+	if _, err := s.resolveChallenge(challengeID, []string{"pending", "accepted", "voided"},
 		"completed", side, true, strings.TrimSpace(req.Score), false, 0); err != nil {
 		return err
 	}
@@ -344,8 +360,12 @@ func (s *Service) ReportChallenge(userID, challengeID string, req model.ReportCh
 	return nil
 }
 
-// resolveChallenge invokes the atomic resolver RPC and maps the race-lost error.
-func (s *Service) resolveChallenge(challengeID string, expected []string, newStatus, winnerSide string, recordMatch bool, score string, revalidate bool, rng int) error {
+// resolveChallenge invokes the atomic resolver RPC and returns the challenge's
+// FINAL status (which may differ from newStatus — range re-validation can void a
+// forfeit/decline). Returns ErrChallengeConflict when the row was already
+// resolved (the RPC returns {claimed:false} rather than raising, since PostgREST
+// strips RAISE messages).
+func (s *Service) resolveChallenge(challengeID string, expected []string, newStatus, winnerSide string, recordMatch bool, score string, revalidate bool, rng int) (string, error) {
 	payload := map[string]any{
 		"p_challenge":    challengeID,
 		"p_expected":     expected,
@@ -360,13 +380,21 @@ func (s *Service) resolveChallenge(challengeID string, expected []string, newSta
 	if score != "" {
 		payload["p_score"] = score
 	}
-	if _, err := s.sb.RPC("resolve_ladder_challenge", payload); err != nil {
-		if strings.Contains(err.Error(), "challenge_race_lost") {
-			return ErrChallengeConflict
-		}
-		return err
+	body, err := s.sb.RPC("resolve_ladder_challenge", payload)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	var res struct {
+		Claimed bool   `json:"claimed"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", err
+	}
+	if !res.Claimed {
+		return "", ErrChallengeConflict
+	}
+	return res.Status, nil
 }
 
 // authorizeChallenge loads a challenge and returns the caller's role:
@@ -512,16 +540,23 @@ func (s *Service) SweepLadderChallenges() {
 		for _, ch := range pend {
 			id := asStr(ch, "id")
 			div := asStr(ch, "league_bracket_id")
-			if err := s.resolveChallenge(id, []string{"pending"}, "forfeited",
-				"challenger", true, "", true, s.ladderRangeForDivision(div)); err != nil {
+			final, err := s.resolveChallenge(id, []string{"pending"}, "forfeited",
+				"challenger", true, "", true, s.ladderRangeForDivision(div))
+			if err != nil {
 				if !errors.Is(err, ErrChallengeConflict) {
 					log.Printf("sweep: forfeit challenge %s: %v", id, err)
 				}
 				continue
 			}
-			s.notifyBoth(ch, fmt.Sprintf("%s didn't respond in time — %s moves up",
-				s.entrantName(asStr(ch, "challenged_entrant_id")),
-				s.entrantName(asStr(ch, "challenger_entrant_id"))))
+			// Range re-validation may have voided it instead of forfeiting →
+			// notify what actually happened.
+			if final == "voided" {
+				s.notifyBoth(ch, "A ladder challenge expired but the ladder had changed — voided, no position change.")
+			} else {
+				s.notifyBoth(ch, fmt.Sprintf("%s didn't respond in time — %s moves up",
+					s.entrantName(asStr(ch, "challenged_entrant_id")),
+					s.entrantName(asStr(ch, "challenger_entrant_id"))))
+			}
 		}
 	}
 
@@ -547,7 +582,7 @@ func (s *Service) SweepLadderChallenges() {
 		for _, ch := range rem {
 			id := asStr(ch, "id")
 			claimed, uerr := s.sb.Update("ladder_challenges",
-				"id=eq."+store.Q(id)+"&reminded_respond=eq.false",
+				"id=eq."+store.Q(id)+"&status=eq.pending&reminded_respond=eq.false",
 				map[string]any{"reminded_respond": true})
 			if uerr != nil || len(claimed) == 0 {
 				continue
@@ -566,7 +601,7 @@ func (s *Service) SweepLadderChallenges() {
 		for _, ch := range rem {
 			id := asStr(ch, "id")
 			claimed, uerr := s.sb.Update("ladder_challenges",
-				"id=eq."+store.Q(id)+"&reminded_play=eq.false",
+				"id=eq."+store.Q(id)+"&status=eq.accepted&reminded_play=eq.false",
 				map[string]any{"reminded_play": true})
 			if uerr != nil || len(claimed) == 0 {
 				continue

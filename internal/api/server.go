@@ -278,6 +278,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/challenges",
 		requireAuth(s.issueChallenge))
 	mux.HandleFunc("GET /me/ladder-challenges", requireAuth(s.myChallenges))
+	mux.HandleFunc("GET /league-brackets/{id}/ladder/me", requireAuth(s.myLadderEntrant))
 	mux.HandleFunc("POST /ladder-challenges/{id}/accept", requireAuth(s.acceptChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/decline", requireAuth(s.declineChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/cancel", requireAuth(s.cancelChallenge))
@@ -993,6 +994,13 @@ func (s *Server) issueChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, ch)
+}
+
+// myLadderEntrant returns the caller's entrant id on a division (or "").
+func (s *Server) myLadderEntrant(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"entrantId": s.svc.MyLadderEntrant(userID(r), r.PathValue("id")),
+	})
 }
 
 // listChallenges returns a division's challenges (viewer-readable).

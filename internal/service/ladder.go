@@ -288,11 +288,21 @@ func ladderConfigColumns(c model.LadderConfig) map[string]any {
 		}
 		return n
 	}
+	// A 0-day respond/play window is nonsensical (it would expire instantly) and
+	// usually just means the field was omitted by a non-Flutter client, so fall
+	// back to the researched 7/14 defaults rather than writing 0. challengeRange
+	// and inactivityDays legitimately use 0 (unlimited / off), so they keep it.
+	daysOr := func(n, def int) int {
+		if n <= 0 {
+			return def
+		}
+		return n
+	}
 	return map[string]any{
 		"ladder_reorder_model":     reorder,
 		"ladder_challenge_range":   nonNeg(c.ChallengeRange),
-		"ladder_response_days":     nonNeg(c.ResponseDays),
-		"ladder_play_days":         nonNeg(c.PlayDays),
+		"ladder_response_days":     daysOr(c.ResponseDays, 7),
+		"ladder_play_days":         daysOr(c.PlayDays, 14),
 		"ladder_inactivity_days":   nonNeg(c.InactivityDays),
 		"ladder_inactivity_action": action,
 	}

@@ -737,6 +737,12 @@ func (s *Service) SeedLadderTestEntrants(callerUserID, div string) (int, error) 
 		if playerID == "" {
 			return
 		}
+		// Idempotent: a re-seed must not add a second entrant for the same linked
+		// player (two entrants sharing a player_id makes callerEntrantID ambiguous).
+		if ex, _ := s.sb.SelectOne("ladder_entrants",
+			"league_bracket_id=eq."+store.Q(div)+"&player_id=eq."+store.Q(playerID)+"&select=id&limit=1"); ex != nil {
+			return
+		}
 		pid := playerID
 		if _, err := s.AddLadderEntrant(div, model.AddLadderEntrantRequest{DisplayName: name, PlayerID: &pid}); err == nil {
 			added++

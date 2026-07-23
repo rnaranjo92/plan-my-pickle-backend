@@ -2670,8 +2670,10 @@ func (s *Service) autoPlayEvent(eventID string) error {
 func (s *Service) AutoPlayRemaining(eventID string) (int, error) {
 	played := 0
 	for iter := 0; iter < 80; iter++ {
+		// in_progress too: the demo console starts matches like a real game
+		// day, and a started-but-unscored court must not strand the podium.
 		rows, err := s.sb.SelectAll("matches",
-			"event_id=eq."+store.Q(eventID)+"&status=eq.scheduled"+
+			"event_id=eq."+store.Q(eventID)+"&status=in.(scheduled,in_progress)"+
 				"&select=id,match_participants(team)")
 		if err != nil {
 			return played, err

@@ -28,6 +28,21 @@ var pushHTTP = &http.Client{Timeout: 10 * time.Second}
 // subscriptions asynchronously), so we do NOT gate on it — the reliable signal is
 // whether OneSignal accepted the notification (an id, no `errors`).
 func (s *Service) SendTestPush(externalID string) error {
+	return s.sendTestPushContent(externalID, "PlanMyPickle test 🥒",
+		"If you can see this, push notifications are working!")
+}
+
+// SendRotationTestPush sends a SAMPLE rotation-round notification to the caller,
+// so an organizer can confirm delivery + see the exact format their players get.
+func (s *Service) SendRotationTestPush(externalID string) error {
+	return s.sendTestPushContent(externalID, "PlanMyPickle 🎾",
+		"Round 1 — head to Court 2. (Test — your players get one like this each round.)")
+}
+
+// sendTestPushContent sends a single diagnostic push to one external id with the
+// given heading/content, returning a descriptive error when push is unconfigured
+// or the device isn't reachable (so the UI can guide the organizer).
+func (s *Service) sendTestPushContent(externalID, heading, content string) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" {
 		return fmt.Errorf("push is not configured (no OneSignal key)")
@@ -36,8 +51,8 @@ func (s *Service) SendTestPush(externalID string) error {
 		"app_id":          onesignalAppID,
 		"target_channel":  "push",
 		"include_aliases": map[string]any{"external_id": []string{externalID}},
-		"headings":        map[string]string{"en": "PlanMyPickle test 🥒"},
-		"contents":        map[string]string{"en": "If you can see this, push notifications are working!"},
+		"headings":        map[string]string{"en": heading},
+		"contents":        map[string]string{"en": content},
 		"url":             "https://app.planmypickle.com",
 	})
 	req, err := http.NewRequest(http.MethodPost,

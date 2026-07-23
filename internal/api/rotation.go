@@ -183,6 +183,16 @@ func (s *Server) setRotationCourts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"courtCount": req.CourtCount})
 }
 
+// rotationTestPush sends a sample rotation-round push to the organizer's own
+// device so they can verify delivery before a real session. Owner-gated.
+func (s *Server) rotationTestPush(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.SendRotationTestPush(userID(r)); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // setRotationAutoAdvance toggles auto-rotate vs organizer-taps-Next. Owner-gated.
 func (s *Server) setRotationAutoAdvance(w http.ResponseWriter, r *http.Request) {
 	var req struct {

@@ -1075,8 +1075,14 @@ func (s *Server) joinLadder(w http.ResponseWriter, r *http.Request) {
 }
 
 // seedLadderTest populates a division's ladder with demo + linked entrants for
-// testing (owner-gated). Returns how many were added.
+// testing. QA-ONLY (the hidden button isn't security — enforce the allowlist
+// server-side so a non-QA owner can't seed test data via a direct API call).
 func (s *Server) seedLadderTest(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
 	n, err := s.svc.SeedLadderTestEntrants(userID(r), r.PathValue("id"))
 	if err != nil {
 		status(w, err)

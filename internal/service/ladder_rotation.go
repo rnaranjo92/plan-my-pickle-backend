@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -472,6 +473,10 @@ func (s *Service) StartRotationSession(sessionID string) error {
 	if !res.Started && res.Reason != "already_started" {
 		return fmt.Errorf("could not start session: %s", res.Reason)
 	}
+	if res.Started {
+		// Push each player their opening court (round 1). Fire-and-forget.
+		go s.notifyRotationRound(sessionID, courts, bench, 1)
+	}
 	return nil
 }
 
@@ -571,6 +576,11 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	if !res.Advanced && res.Reason != "stale" {
 		return fmt.Errorf("could not advance session: %s", res.Reason)
 	}
+	if res.Advanced {
+		// Only the winning advance (not the stale/no-op racer) pushes the new
+		// round, so nobody gets a duplicate. Fire-and-forget.
+		go s.notifyRotationRound(sessionID, nextCourts, nextBench, round+1)
+	}
 	return nil
 }
 
@@ -604,6 +614,71 @@ func (s *Service) EndRotationSession(sessionID string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// notifyRotationRound pushes each LINKED player their new court (and the byes
+// their rest), plus a summary to the organizer, when a round starts. Fire-and-
+// forget + no-op when push isn't configured; call in a goroutine so it never
+// blocks start/advance. `courts`/`bench` are the round that just began (`round`).
+// (Native delivery requires FCM/APNs configured in OneSignal; web delivers now.)
+func (s *Service) notifyRotationRound(sessionID string, courts []engine.RotCourt, bench []string, round int) {
+	if os.Getenv("ONESIGNAL_REST_API_KEY") == "" {
+		return // push not configured → skip the recipient lookups entirely
+	}
+	rows, err := s.sb.Select("rotation_players",
+		"session_id=eq."+store.Q(sessionID)+"&select=id,entrant_id")
+	if err != nil {
+		return
+	}
+	entrantOf := make(map[string]string, len(rows))
+	for _, r := range rows {
+		entrantOf[asStr(r, "id")] = asStr(r, "entrant_id")
+	}
+	// player id → the linked account's push external id (auth user id), or "".
+	uidOf := func(playerID string) string {
+		ent := entrantOf[playerID]
+		if ent == "" {
+			return ""
+		}
+		return s.entrantUserID(ent)
+	}
+
+	// Per court: "you're on Court N" to the four (linked) players there.
+	for _, c := range courts {
+		var uids []string
+		for _, pid := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			if u := uidOf(pid); u != "" {
+				uids = append(uids, u)
+			}
+		}
+		if len(uids) > 0 {
+			_ = s.sendPush(uids, "PlanMyPickle 🎾",
+				fmt.Sprintf("Round %d — head to Court %d", round, c.Court), "")
+		}
+	}
+	// Byes: resting this round.
+	var benchUids []string
+	for _, pid := range bench {
+		if u := uidOf(pid); u != "" {
+			benchUids = append(benchUids, u)
+		}
+	}
+	if len(benchUids) > 0 {
+		_ = s.sendPush(benchUids, "PlanMyPickle 🎾",
+			fmt.Sprintf("Round %d — you're resting this round. You rotate back in next.", round), "")
+	}
+	// Organizer summary (the session owner).
+	if owner, _ := s.OwnerOfRotationSession(sessionID); owner != "" {
+		word := "courts"
+		if len(courts) == 1 {
+			word = "court"
+		}
+		msg := fmt.Sprintf("Round %d started — %d %s playing", round, len(courts), word)
+		if len(bench) > 0 {
+			msg += fmt.Sprintf(", %d resting", len(bench))
+		}
+		_ = s.sendPush([]string{owner}, "Rotation session", msg, "")
+	}
 }
 
 // --- mapping helpers --------------------------------------------------------

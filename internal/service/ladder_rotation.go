@@ -268,8 +268,11 @@ func (s *Service) rotationCourtsForRound(sessionID string, round int, byID map[s
 // --- roster -----------------------------------------------------------------
 
 // joinBench appends newly-added players to the session's FIFO bench when it's
-// LIVE, so a mid-session arrival rotates in on the next round (best-effort +
-// no-op in setup, where players seed at Start). Atomic via the RPC's row lock.
+// LIVE, so a mid-session arrival shows as "resting" immediately and rotates in
+// next round (best-effort + no-op in setup). The RPC's row lock only serializes
+// concurrent joinBench calls; the join-vs-advance race is handled separately by
+// AdvanceRotationSession's reconciliation (active-but-unseated players are
+// re-added), so a clobbered append here can never permanently strand a player.
 func (s *Service) joinBench(sessionID string, playerIDs []string) {
 	if len(playerIDs) == 0 {
 		return
@@ -572,9 +575,39 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		})
 		w := asStr(r, "winner")
 		if w == "" {
-			w = "a" // unreported court defaults to team A (matches the RPC tally)
+			// Unreported court → default team A UP for MOVEMENT only. (The RPC
+			// tally credits games to all four but a win only to a reported team,
+			// so an unreported court awards no phantom win.)
+			w = "a"
 		}
 		results = append(results, engine.RotResult{Court: court, Winner: w})
+	}
+
+	// Reconcile mid-session joiners (self-heals the join-vs-advance race): any
+	// ACTIVE roster player who isn't seated this round and isn't already on the
+	// bench snapshot was added since we read the bench → append to the bench back
+	// (newest waits longest). Roster edits are setup-only, so active players only
+	// GROW mid-session, never shrink — this can only add, never lose, a player.
+	seated := map[string]bool{}
+	for _, c := range cur {
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			if id != "" {
+				seated[id] = true
+			}
+		}
+	}
+	benchSet := map[string]bool{}
+	for _, id := range bench {
+		benchSet[id] = true
+	}
+	if activeRows, aerr := s.sb.Select("rotation_players",
+		"session_id=eq."+store.Q(sessionID)+"&active=eq.true&order=created_at.asc&select=id"); aerr == nil {
+		for _, r := range activeRows {
+			id := asStr(r, "id")
+			if id != "" && !seated[id] && !benchSet[id] {
+				bench = append(bench, id)
+			}
+		}
 	}
 
 	nextCourts, nextBench := engine.NextRound(cur, results, bench)

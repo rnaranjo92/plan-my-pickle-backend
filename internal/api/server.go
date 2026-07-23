@@ -468,6 +468,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/start-time", s.ownerOnly("event", "id", s.setStartTime))
 	mux.HandleFunc("POST /events/{id}/fill-demo-players", s.ownerOnly("event", "id", s.fillRandomPlayers))
 	mux.HandleFunc("POST /events/{id}/clear-demo-players", s.ownerOnly("event", "id", s.clearDemoPlayers))
+	// Live sales demo: random-score every remaining game (the "Skip to results" button).
+	mux.HandleFunc("POST /events/{id}/demo-autoplay", s.ownerOnly("event", "id", s.demoAutoplay))
 	// Demo helper: enroll the fixed DUPR UAT test accounts into a sanctioned event.
 	mux.HandleFunc("POST /events/{id}/register-dupr-testers", s.ownerOnly("event", "id", s.registerDuprTesters))
 	// Reverse an event's submitted results on DUPR (the delete leg of the round-trip).
@@ -4559,6 +4561,24 @@ func (s *Server) clearDemoPlayers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"removed": n})
+}
+
+// demoAutoplay random-scores every remaining ready game in the event (the live
+// sales-demo "Skip to results" button). Owner-only via middleware, and further
+// QA-gated: it instantly falsifies results, so it must never be reachable on a
+// real organizer's event.
+func (s *Server) demoAutoplay(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.AutoPlayRemaining(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"played": n})
 }
 
 // registerDuprTesters enrolls the fixed DUPR UAT test accounts into the event

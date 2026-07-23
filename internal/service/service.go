@@ -2661,6 +2661,51 @@ func (s *Service) autoPlayEvent(eventID string) error {
 	return nil
 }
 
+// AutoPlayRemaining scores every still-unscored ready match (both sides filled)
+// with a RANDOMIZED but realistic result — either side can win, loser lands
+// 3–9 — repeating as pools complete and bracket winners advance, until nothing
+// is left to play. The live-demo "Skip" button: unlike autoPlayEvent (fixed
+// 11-7, stable seeds) this produces varied standings so every sales demo ends
+// differently. Returns how many games were scored.
+func (s *Service) AutoPlayRemaining(eventID string) (int, error) {
+	played := 0
+	for iter := 0; iter < 80; iter++ {
+		rows, err := s.sb.SelectAll("matches",
+			"event_id=eq."+store.Q(eventID)+"&status=eq.scheduled"+
+				"&select=id,match_participants(team)")
+		if err != nil {
+			return played, err
+		}
+		scoredAny := false
+		for _, r := range rows {
+			teams := map[int]bool{}
+			if ps, ok := r["match_participants"].([]any); ok {
+				for _, p := range ps {
+					if pm, ok := p.(map[string]any); ok {
+						teams[asInt(pm, "team")] = true
+					}
+				}
+			}
+			if teams[1] && teams[2] { // both sides known → playable
+				win, lose := 11, 3+rand.Intn(7) // loser 3..9
+				t1, t2 := win, lose
+				if rand.Intn(2) == 0 {
+					t1, t2 = lose, win
+				}
+				if err := s.applyScore(asStr(r, "id"), t1, t2); err != nil {
+					return played, err
+				}
+				played++
+				scoredAny = true
+			}
+		}
+		if !scoredAny {
+			break
+		}
+	}
+	return played, nil
+}
+
 // FillRandomPlayers seeds the given EXISTING event with a batch of demo players
 // spread across its divisions — enough to run a full day. Each player's rating
 // lands inside its bracket's band (so RegisterPlayer keeps it in that division),

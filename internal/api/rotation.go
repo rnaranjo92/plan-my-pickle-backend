@@ -187,7 +187,10 @@ func (s *Server) setRotationCourts(w http.ResponseWriter, r *http.Request) {
 // device so they can verify delivery before a real session. Owner-gated.
 func (s *Server) rotationTestPush(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.SendRotationTestPush(userID(r)); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		// NOT 502 — Railway/Cloudflare's edge intercepts gateway (502/503/504)
+		// statuses and serves its own error page (no CORS), which the browser
+		// reports as "Failed to fetch". 400 passes through with CORS intact.
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

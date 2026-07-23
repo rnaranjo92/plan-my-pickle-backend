@@ -267,8 +267,22 @@ func (s *Service) rotationCourtsForRound(sessionID string, round int, byID map[s
 
 // --- roster -----------------------------------------------------------------
 
+// joinBench appends newly-added players to the session's FIFO bench when it's
+// LIVE, so a mid-session arrival rotates in on the next round (best-effort +
+// no-op in setup, where players seed at Start). Atomic via the RPC's row lock.
+func (s *Service) joinBench(sessionID string, playerIDs []string) {
+	if len(playerIDs) == 0 {
+		return
+	}
+	_, _ = s.sb.RPC("rotation_join_bench", map[string]any{
+		"p_session": sessionID,
+		"p_players": playerIDs,
+	})
+}
+
 // AddRotationPlayer adds one competitor to a session's roster (a walk-up, or a
-// linked ladder entrant). Only allowed before the session goes live.
+// linked ladder entrant). Works before AND during a session — a live add joins
+// the bench and rotates in next round (rulebook: "anyone present may join").
 func (s *Service) AddRotationPlayer(sessionID string, req model.AddRotationPlayerRequest) (model.RotationPlayer, error) {
 	rating := req.SelfRating
 	if rating < 1.0 || rating > 7.0 {
@@ -289,7 +303,9 @@ func (s *Service) AddRotationPlayer(sessionID string, req model.AddRotationPlaye
 	if len(rows) == 0 {
 		return model.RotationPlayer{}, fmt.Errorf("rotation player insert returned no row")
 	}
-	return rotationPlayerFromRow(rows[0]), nil
+	p := rotationPlayerFromRow(rows[0])
+	s.joinBench(sessionID, []string{p.ID}) // live → rotate in next round; setup → no-op
+	return p, nil
 }
 
 // ImportLadderEntrantsToSession snapshots every entrant on the division's ladder
@@ -318,21 +334,28 @@ func (s *Service) ImportLadderEntrantsToSession(sessionID string) (int, error) {
 		}
 	}
 	added := 0
+	var newIDs []string
 	for _, e := range entrants {
 		id := asStr(e, "id")
 		if id == "" || have[id] {
 			continue
 		}
-		if _, err := s.sb.Insert("rotation_players", map[string]any{
+		rows, err := s.sb.Insert("rotation_players", map[string]any{
 			"session_id":   sessionID,
 			"entrant_id":   id,
 			"display_name": asStr(e, "display_name"),
 			"self_rating":  3.0,
-		}); err != nil {
+		})
+		if err != nil {
 			return added, err
+		}
+		if len(rows) > 0 {
+			newIDs = append(newIDs, asStr(rows[0], "id"))
 		}
 		added++
 	}
+	// A live "Sync from ladder" pulls late joiners onto the bench (no-op in setup).
+	s.joinBench(sessionID, newIDs)
 	return added, nil
 }
 

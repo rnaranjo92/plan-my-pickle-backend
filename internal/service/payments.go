@@ -107,6 +107,16 @@ func (s *Service) WebhookConfigured() bool {
 	return ok && gw.WebhookReady()
 }
 
+// PaymentsMode reports the Stripe environment: "live", "test", or "off" (no
+// Stripe wired). Lets /healthz confirm which keys prod is using at a glance.
+func (s *Service) PaymentsMode() string {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "off"
+	}
+	return gw.Mode()
+}
+
 // ErrPaymentsNotConfigured means online payments (Stripe) aren't wired up on the
 // server (no STRIPE_SECRET_KEY) — the caller should fall back to manual mark-paid.
 var ErrPaymentsNotConfigured = errors.New("online payments are not enabled")

@@ -67,6 +67,8 @@ func NewServer(svc *service.Service) http.Handler {
 			// to mark registrations paid).
 			"payments": s.svc.PaymentsConfigured(),
 			"webhook":  s.svc.WebhookConfigured(),
+			// "live" | "test" | "off" — which Stripe environment prod points at.
+			"paymentsMode": s.svc.PaymentsMode(),
 		})
 	})
 	// --- Public: spectator/shareable reads + the on-site self-service flows

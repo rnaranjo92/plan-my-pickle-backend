@@ -35,6 +35,9 @@ type StripeGateway struct {
 	// webhookSecret verifies the signature on incoming Stripe webhooks
 	// (STRIPE_WEBHOOK_SECRET). Empty disables verification → events are rejected.
 	webhookSecret string
+	// mode is "live" | "test" | "unknown", derived from the secret-key prefix, so
+	// /healthz can report which Stripe environment prod is pointed at.
+	mode string
 }
 
 // stripeClient bundles the per-instance Stripe API client built from the secret
@@ -50,6 +53,13 @@ type stripeClient struct {
 // secret key (sk_…) and the webhook signing secret (whsec_…).
 func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 	backends := stripe.NewBackends(nil) // default HTTP backends (Stripe's API)
+	mode := "unknown"
+	switch {
+	case strings.HasPrefix(secretKey, "sk_live"), strings.HasPrefix(secretKey, "rk_live"):
+		mode = "live"
+	case strings.HasPrefix(secretKey, "sk_test"), strings.HasPrefix(secretKey, "rk_test"):
+		mode = "test"
+	}
 	return &StripeGateway{
 		client: &stripeClient{
 			accounts: &account.Client{B: backends.API, Key: secretKey},
@@ -58,8 +68,13 @@ func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 			portal:   &billingportalsession.Client{B: backends.API, Key: secretKey},
 		},
 		webhookSecret: webhookSecret,
+		mode:          mode,
 	}
 }
+
+// Mode reports the Stripe environment ("live" | "test" | "unknown") from the
+// secret-key prefix, so /healthz can confirm which keys prod is using.
+func (g *StripeGateway) Mode() string { return g.mode }
 
 // Live reports that this is a real payment processor.
 func (g *StripeGateway) Live() bool { return true }

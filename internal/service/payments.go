@@ -2,9 +2,11 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -371,9 +373,12 @@ func (s *Service) PaymentsSelfTest(ownerID, successURL, cancelURL string) (strin
 	if bks, berr := s.GetBrackets(eventID); berr == nil && len(bks) > 0 {
 		bracketID = bks[0].ID
 	}
+	// Unique phone per run so the bracket-scoped duplicate guard never blocks a
+	// re-test (registrations persist for their webhooks, so we can't reuse one).
+	uniq := time.Now().UnixNano() % 10000000
 	reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
 		FullName:   "Self Test",
-		Phone:      "+15550100100",
+		Phone:      fmt.Sprintf("+1555%07d", uniq),
 		BracketID:  bracketID,
 		TrustedAdd: true,
 	}, "")

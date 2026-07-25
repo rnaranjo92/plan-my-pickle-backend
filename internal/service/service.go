@@ -1116,9 +1116,13 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 // division, and check-in status only (no phone/email/DUPR) — in join order, so
 // players/spectators can see who's playing.
 func (s *Service) Roster(eventID string) ([]model.RosterEntry, error) {
-	rows, err := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(eventID)+"&order=created_at.asc"+
-			"&select=checked_in,partner_id,player:players!player_id(id,full_name,user_id),bracket:brackets!bracket_id(name)")
+	q := "event_id=eq." + store.Q(eventID) + "&order=created_at.asc"
+	// Keep not-yet-approved entries out of the public roster (column-guarded).
+	if s.columnReady("registrations", "approved") {
+		q += "&approved=is.true"
+	}
+	q += "&select=checked_in,partner_id,player:players!player_id(id,full_name,user_id),bracket:brackets!bracket_id(name)"
+	rows, err := s.sb.Select("registrations", q)
 	if err != nil {
 		return nil, err
 	}

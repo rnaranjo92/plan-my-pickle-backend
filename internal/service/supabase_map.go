@@ -233,6 +233,8 @@ func mapEvent(m map[string]any) model.Event {
 		OnDeckSms:                  asBool(m, "ondeck_sms"),
 		ScoreConfirmMinutes:        asInt(m, "score_confirm_minutes"),
 		MaxPlayers:                 asIntPtr(m, "max_players"),
+		RequireApproval:            asBool(m, "require_approval"),
+		RequiresRegistrationCode:   asStr(m, "registration_code") != "",
 		RegistrationCloseAt:        asStrPtr(m, "registration_close_at"),
 		RoundStartMinutes:          mapIntMap(m, "round_start_minutes"),
 		PosterURL:                  asStrPtr(m, "poster_url"),
@@ -644,6 +646,9 @@ func mapRegistration(m map[string]any) model.Registration {
 		// partner_name may be absent (column added by a later migration); asStrPtr
 		// returns nil when the key is missing, so this is safe pre-migration.
 		PartnerNote: asStrPtr(m, "partner_name"),
+		// Approved defaults true when the column is absent (pre-migration) or the
+		// row predates it — only an explicit false marks a pending registration.
+		Approved: m["approved"] == nil || asBool(m, "approved"),
 	}
 	var skill *float64
 	if p := asMap(m, "player"); p != nil {

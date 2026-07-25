@@ -655,6 +655,15 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.RegistrationCloseAt != nil && *req.RegistrationCloseAt != "" {
 		payload["registration_close_at"] = *req.RegistrationCloseAt
 	}
+	// Anti-dummy controls ship in add_registration_gating.sql — reference only when
+	// the columns exist so a create still works before the migration runs.
+	if s.columnReady("events", "require_approval") {
+		payload["require_approval"] = req.RequireApproval
+	}
+	if req.RegistrationCode != nil && strings.TrimSpace(*req.RegistrationCode) != "" &&
+		s.columnReady("events", "registration_code") {
+		payload["registration_code"] = strings.TrimSpace(*req.RegistrationCode)
+	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — only reference when set.
 	if req.MinPoolRounds > 0 {
 		payload["min_pool_rounds"] = req.MinPoolRounds
@@ -1614,6 +1623,16 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// column exists, so an organizer can flip the gate on/off.
 	if s.columnReady("events", "rating_enforcement") {
 		upd["rating_enforcement"] = normalizeRatingEnforcement(req.RatingEnforcement)
+	}
+	// Anti-dummy controls (add_registration_gating.sql). require_approval is always
+	// sent by the form. The invite code is a pointer: nil = keep current, "" = clear
+	// (open registration), any value = set — so editing other settings never wipes
+	// a code the form didn't re-send.
+	if s.columnReady("events", "require_approval") {
+		upd["require_approval"] = req.RequireApproval
+	}
+	if req.RegistrationCode != nil && s.columnReady("events", "registration_code") {
+		upd["registration_code"] = strings.TrimSpace(*req.RegistrationCode)
 	}
 	// min/max_pool_rounds ship in add_pool_rounds.sql — reference only when set so
 	// an edit never breaks before the migration is applied. (Trade-off: clearing
@@ -3603,6 +3622,14 @@ var ErrAlreadyRegistered = errors.New("already registered for this event")
 // player tries to self-register. The HTTP layer maps it to 409 Conflict.
 var ErrEventFull = errors.New("this event is full")
 
+// ErrPhoneRequired is returned when a public/self registration omits a phone
+// number (required to keep out dummy entries). Owner-adds are exempt.
+var ErrPhoneRequired = errors.New("a phone number is required to register")
+
+// ErrBadRegistrationCode is returned when the event has an invite code set and a
+// self-registrant supplies a wrong/blank one.
+var ErrBadRegistrationCode = errors.New("that invite code isn't right — check with the organizer")
+
 // ErrRegistrationClosed is returned when self-registration is attempted after
 // the event's RegistrationCloseAt cutoff. Mapped to 409 Conflict.
 var ErrRegistrationClosed = errors.New("registration for this event has closed")
@@ -3719,6 +3746,34 @@ func (s *Service) PromoteWaitlist(eventID, wid string) (model.Registration, erro
 	return reg, nil
 }
 
+// eventRegistrationCode reads the event's invite code ("" = open). Best-effort:
+// a pre-migration DB (no column) reports no code, so registration stays open.
+func (s *Service) eventRegistrationCode(eventID string) string {
+	if !s.columnReady("events", "registration_code") {
+		return ""
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=registration_code")
+	if err != nil || row == nil {
+		return ""
+	}
+	return strings.TrimSpace(asStr(row, "registration_code"))
+}
+
+// eventRequiresApproval reports whether self-registrations must be approved
+// before they count. Best-effort: pre-migration (no column) reports false.
+func (s *Service) eventRequiresApproval(eventID string) bool {
+	if !s.columnReady("events", "require_approval") {
+		return false
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=require_approval")
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "require_approval")
+}
+
 // eventMaxPlayers reads the event's player cap; nil = unlimited. Best-effort so a
 // pre-migration DB (no max_players column) simply reports no cap.
 func (s *Service) eventMaxPlayers(eventID string) *int {
@@ -3733,8 +3788,12 @@ func (s *Service) eventMaxPlayers(eventID string) *int {
 // distinctPlayerCount counts the unique players registered for an event (a player
 // entering multiple divisions still counts once).
 func (s *Service) distinctPlayerCount(eventID string) (int, error) {
-	rows, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(eventID)+"&select=player_id")
+	q := "event_id=eq." + store.Q(eventID) + "&select=player_id"
+	// Pending (unapproved) entries don't count toward the cap or the roster total.
+	if s.columnReady("registrations", "approved") {
+		q += "&approved=is.true"
+	}
+	rows, err := s.sb.SelectAll("registrations", q)
 	if err != nil {
 		return 0, err
 	}
@@ -4120,6 +4179,23 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
 	}
+	// Anti-dummy-registration gates apply to PUBLIC / self registration only — an
+	// authenticated event owner adding a player (TrustedAdd, set server-side) is
+	// trusted and bypasses all of them.
+	if !req.TrustedAdd {
+		// A real, reachable phone number is required.
+		if strings.TrimSpace(req.Phone) == "" {
+			return model.Registration{}, ErrPhoneRequired
+		}
+		// Invite code: if the organizer set one, it must match (case-insensitive).
+		if code := s.eventRegistrationCode(eventID); code != "" &&
+			!strings.EqualFold(strings.TrimSpace(req.RegistrationCode), code) {
+			return model.Registration{}, ErrBadRegistrationCode
+		}
+	}
+	// Hold the entry for organizer approval when the event requires it (public/
+	// self only). Set on the row below; keeps pending entries out of the draw.
+	needsApproval := !req.TrustedAdd && s.eventRequiresApproval(eventID)
 	// Resolve the division FIRST so every duplicate check below is scoped to it —
 	// a player may enter MULTIPLE divisions of one event, just not the same one
 	// twice. An explicitly-chosen bracket must actually belong to this event
@@ -4381,13 +4457,19 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		}
 	}
 	token := newID()
-	reg, err := s.sb.Insert("registrations", map[string]any{
+	regRow := map[string]any{
 		"event_id":       eventID,
 		"player_id":      playerID,
 		"partner_id":     orNull(req.PartnerID),
 		"bracket_id":     orNull(bracketID),
 		"check_in_token": token,
-	})
+	}
+	// Mark the row pending when approval is required (column-guarded so a
+	// pre-migration DB simply ignores it and every entry stays approved).
+	if s.columnReady("registrations", "approved") {
+		regRow["approved"] = !needsApproval
+	}
+	reg, err := s.sb.Insert("registrations", regRow)
 	if err != nil {
 		return model.Registration{}, err
 	}
@@ -4525,8 +4607,15 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	// must name the FK column; alias both embeds to stable keys. partner is the
 	// registered partner's player row (for paired doubles); partner_name is the
 	// free-text partner column.
+	// approved is migration-guarded — include it only once the column exists, so
+	// the roster read never breaks on a pre-migration DB (mapRegistration then
+	// defaults every row to approved).
+	approvedCol := ""
+	if s.columnReady("registrations", "approved") {
+		approvedCol = "approved,"
+	}
 	base := "event_id=eq." + store.Q(eventID) +
-		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,addon_tee,addon_grips,%s" +
+		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,addon_tee,addon_grips," + approvedCol + "%s" +
 		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level,user_id)," +
 		"partner:players!partner_id(full_name)," +
 		"bracket:brackets(min_rating,max_rating)"
@@ -4931,6 +5020,41 @@ func (s *Service) DeleteRegistration(regID string) error {
 		return ErrNotFound
 	}
 	return s.sb.Delete("registrations", "id=eq."+store.Q(regID))
+}
+
+// PendingRegistrations returns the self-registrations awaiting organizer approval
+// (approved=false) for an event, newest-relevant first. Reuses the full roster
+// read so pending entries carry the same player/partner/rating details, then
+// filters — the list is small (only what's queued), so this is cheap.
+func (s *Service) PendingRegistrations(eventID string) ([]model.Registration, error) {
+	all, err := s.Registrations(eventID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Registration, 0)
+	for _, r := range all {
+		if !r.Approved {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// ApproveRegistration clears a registration's pending flag so it joins the roster
+// count and the draw (owner-only at the handler). Declining a pending entry is
+// just DeleteRegistration.
+func (s *Service) ApproveRegistration(regID string) error {
+	reg, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(regID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if reg == nil {
+		return ErrNotFound
+	}
+	_, err = s.sb.Update("registrations", "id=eq."+store.Q(regID),
+		map[string]any{"approved": true})
+	return err
 }
 
 // BusyCourts returns the distinct court numbers that currently have an
@@ -12067,8 +12191,13 @@ type reg struct {
 }
 
 func (s *Service) bracketRegs(eventID, bracketID string) ([]reg, error) {
-	rows, err := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+"&select=id,player_id,partner_id")
+	q := "event_id=eq." + store.Q(eventID) + "&bracket_id=eq." + store.Q(bracketID) +
+		"&select=id,player_id,partner_id"
+	// Keep not-yet-approved entries out of the draw (column-guarded for pre-migration).
+	if s.columnReady("registrations", "approved") {
+		q += "&approved=is.true"
+	}
+	rows, err := s.sb.Select("registrations", q)
 	if err != nil {
 		return nil, err
 	}

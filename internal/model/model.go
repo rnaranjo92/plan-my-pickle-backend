@@ -130,6 +130,14 @@ type Event struct {
 	// <=0 = unlimited. Enforced on self-registration (an organizer adding players
 	// can still exceed it).
 	MaxPlayers *int `json:"maxPlayers,omitempty"`
+	// RequireApproval holds every self-registration as pending (approved=false)
+	// until the organizer approves it — pending entries stay out of the roster
+	// counts and the draw. Organizer-added players are always approved.
+	RequireApproval bool `json:"requireApproval"`
+	// RequiresRegistrationCode reports whether the event has an invite code set,
+	// so the public form knows to ask for one. The code VALUE itself is never
+	// returned (write-only secret, like AdminPasscode).
+	RequiresRegistrationCode bool `json:"requiresRegistrationCode"`
 	// RegistrationCloseAt (RFC3339) is an explicit self-registration cutoff; nil =
 	// no cutoff (falls back to the event-day close). Enforced on self-registration.
 	RegistrationCloseAt *string `json:"registrationCloseAt,omitempty"`
@@ -259,12 +267,12 @@ type League struct {
 
 // CreateLeagueRequest is the create-payload for a league.
 type CreateLeagueRequest struct {
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	LeagueType      string   `json:"leagueType"` // round_robin | ladder | team (default round_robin)
-	DayType         string   `json:"dayType"`    // single | multi (default multi)
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	LeagueType  string `json:"leagueType"` // round_robin | ladder | team (default round_robin)
+	DayType     string `json:"dayType"`    // single | multi (default multi)
 	// LadderFormat (ladder only): challenge (default) | rotation.
-	LadderFormat string `json:"ladderFormat"`
+	LadderFormat    string   `json:"ladderFormat"`
 	Sanctioned      bool     `json:"sanctioned"`
 	Listed          bool     `json:"listed"` // opt into public discovery (default false)
 	CashPrize       bool     `json:"cashPrize"`
@@ -473,11 +481,11 @@ type RotationPlayer struct {
 // court 1 = top, plus the reported winner ("a" | "b" | ""). Player fields carry
 // display names (resolved from the roster) so the live board renders directly.
 type RotationCourt struct {
-	Court   int                `json:"court"`
-	Round   int                `json:"round"`
-	TeamA   []RotationCourtSeat `json:"teamA"`
-	TeamB   []RotationCourtSeat `json:"teamB"`
-	Winner  string             `json:"winner,omitempty"`
+	Court  int                 `json:"court"`
+	Round  int                 `json:"round"`
+	TeamA  []RotationCourtSeat `json:"teamA"`
+	TeamB  []RotationCourtSeat `json:"teamB"`
+	Winner string              `json:"winner,omitempty"`
 }
 
 // RotationCourtSeat is one player's slot on a court (id + display name).
@@ -786,6 +794,10 @@ type Registration struct {
 	PartnerID   *string `json:"partnerId,omitempty"`
 	PartnerName *string `json:"partnerName,omitempty"`
 	PartnerNote *string `json:"partnerNote,omitempty"`
+	// Approved is false only while a self-registration awaits organizer approval
+	// (events.require_approval). Pending entries are kept out of the roster counts
+	// and the draw. Defaults true for every pre-existing / organizer-added row.
+	Approved bool `json:"approved"`
 	// AccountExists is set ONLY on the self-registration response (anonymous):
 	// whether an app account already exists for the registrant's email, so the
 	// thank-you screen can nudge sign-in vs sign-up. nil otherwise.
@@ -1101,6 +1113,12 @@ type CreateEventRequest struct {
 	MaxPlayers          *int           `json:"maxPlayers,omitempty"`
 	RegistrationCloseAt *string        `json:"registrationCloseAt,omitempty"`
 	PosterURL           string         `json:"posterUrl"`
+	// RequireApproval gates self-registrations behind organizer approval.
+	RequireApproval bool `json:"requireApproval"`
+	// RegistrationCode is the invite code self-registrants must supply. Pointer so
+	// edit can distinguish the three cases: nil (omitted) = keep the current code,
+	// "" = clear it (open registration), any value = set it.
+	RegistrationCode *string `json:"registrationCode,omitempty"`
 	// Recurring "socials": RecurIntervalDays>0 makes this event the head of a
 	// series that auto-spawns the next occurrence every N days (7=weekly,
 	// 14=biweekly, custom otherwise). RecurUntil (RFC3339, "" = open-ended) caps
@@ -1136,6 +1154,9 @@ type RegisterRequest struct {
 	// self-registration form (anonymous). The handler verifies it server-side;
 	// the service ignores it.
 	CaptchaToken string `json:"captchaToken,omitempty"`
+	// RegistrationCode is the invite code a self-registrant must supply when the
+	// event has one set (events.registration_code). Ignored for owner-adds.
+	RegistrationCode string `json:"registrationCode,omitempty"`
 	// TrustedAdd is a SERVER-ONLY flag (json:"-" so a client can never inject it):
 	// the register handler sets it true only when an AUTHENTICATED event OWNER is
 	// adding a player. It gates the contact→account matcher (accountForContact) so

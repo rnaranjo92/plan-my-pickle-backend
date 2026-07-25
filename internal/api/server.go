@@ -28,6 +28,9 @@ type Server struct {
 	// regLimiter throttles the public self-registration endpoint per event so a
 	// bot can't flood an event with fake players.
 	regLimiter *rateLimiter
+	// regContactLimiter throttles self-registration PER CONTACT (phone/email) so one
+	// person can't spray many dummy entries across divisions/events from one form.
+	regContactLimiter *rateLimiter
 	// passcodeLimiter throttles admin-passcode verification/scoring PER EVENT so
 	// the organizer passcode can't be brute-forced against the verify-admin oracle.
 	passcodeLimiter *rateLimiter
@@ -42,12 +45,13 @@ type Server struct {
 // NewServer wires the routes and returns the HTTP handler.
 func NewServer(svc *service.Service) http.Handler {
 	s := &Server{
-		svc:             svc,
-		phoneCheckin:    newRateLimiter(60, 60),
-		regLimiter:      newRateLimiter(40, 60), // 40 self-registrations/min per event
-		passcodeLimiter: newRateLimiter(10, 60), // 10 passcode attempts/min per event
-		socialLimiter:   newRateLimiter(30, 60), // 30 social writes/min per user
-		captcha:         gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
+		svc:               svc,
+		phoneCheckin:      newRateLimiter(60, 60),
+		regLimiter:        newRateLimiter(40, 60), // 40 self-registrations/min per event
+		regContactLimiter: newRateLimiter(5, 600), // 5 self-registrations / 10 min per phone|email
+		passcodeLimiter:   newRateLimiter(10, 60), // 10 passcode attempts/min per event
+		socialLimiter:     newRateLimiter(30, 60), // 30 social writes/min per user
+		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
 	s.registerSEO(mux) // public crawlable pages + sitemap (see seo.go)
@@ -518,6 +522,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /registrations/{id}/mark-paid", s.ownerOnly("registration", "id", s.markPaid))
 	mux.HandleFunc("POST /registrations/{id}/details", s.ownerOnly("registration", "id", s.updateRegistrationDetails))
 	mux.HandleFunc("POST /registrations/{id}/move", s.ownerOnly("registration", "id", s.moveRegistrationDivision))
+	mux.HandleFunc("GET /events/{id}/pending", s.ownerOnly("event", "id", s.pendingRegistrations))
+	mux.HandleFunc("POST /registrations/{id}/approve", s.ownerOnly("registration", "id", s.approveRegistration))
 	mux.HandleFunc("POST /events/{id}/merge-division", s.ownerOnly("event", "id", s.mergeDivision))
 	mux.HandleFunc("POST /events/{id}/recurrence", s.ownerOnly("event", "id", s.setEventRecurrence))
 	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
@@ -1838,6 +1844,20 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if userID(r) == "" && !s.captcha.Verify(req.CaptchaToken, "") {
 		writeErr(w, http.StatusForbidden, errors.New("please complete the human check and try again"))
 		return
+	}
+	// Per-contact cooldown on the PUBLIC form: cap how many self-registrations one
+	// phone (or email) can fire in a short window, so one person can't spray dummy
+	// entries across divisions/events. Authenticated organizer-adds are exempt.
+	if userID(r) == "" {
+		key := strings.ToLower(strings.TrimSpace(req.Phone))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(req.Email))
+		}
+		if key != "" && !s.regContactLimiter.allow("reg-contact:"+key) {
+			writeErr(w, http.StatusTooManyRequests,
+				errors.New("you've registered several times just now — please wait a few minutes and try again"))
+			return
+		}
 	}
 	// Link the player to the caller's account ONLY when a logged-in user is
 	// registering themselves (req.Self). An organizer adding others does not.
@@ -3913,6 +3933,27 @@ func (s *Server) mergeDivision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"moved": moved})
+}
+
+// pendingRegistrations lists an event's self-registrations awaiting approval
+// (owner-only) — the approval queue for the require-approval setting.
+func (s *Server) pendingRegistrations(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.svc.PendingRegistrations(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// approveRegistration approves a pending registration so it counts and enters the
+// draw (owner-only). Declining is the existing DELETE /registrations/{id}.
+func (s *Server) approveRegistration(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ApproveRegistration(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "approved"})
 }
 
 // setEventRecurrence turns a recurring social on/off or changes its cadence

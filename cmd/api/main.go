@@ -81,6 +81,20 @@ func main() {
 	if pk := os.Getenv("PBVISION_API_KEY"); pk != "" {
 		svc.PBV = gateway.NewPBVision(pk, os.Getenv("PBVISION_BASE_URL"))
 		log.Printf("PB Vision: configured (Match Video Analysis)")
+		// Auto-register the completion webhook on boot when the token is set, so
+		// there's no manual step. webhook/set is idempotent (it just points PB
+		// Vision at our public callback), so re-running it every deploy is safe.
+		if os.Getenv("PBVISION_WEBHOOK_TOKEN") != "" {
+			go func() {
+				if err := svc.RegisterPBVisionWebhook("https://api.planmypickle.com"); err != nil {
+					log.Printf("PB Vision: webhook auto-register failed: %v", err)
+				} else {
+					log.Printf("PB Vision: completion webhook registered")
+				}
+			}()
+		} else {
+			log.Printf("PB Vision: set PBVISION_WEBHOOK_TOKEN to auto-register the completion webhook")
+		}
 	} else {
 		log.Printf("PB Vision: mock — set PBVISION_API_KEY to enable Match Video Analysis")
 	}

@@ -8106,24 +8106,29 @@ func (s *Service) CollectPayment(registrationID, provider string) (bool, error) 
 // records the EXACT amount Stripe captured — never a recomputed total that a
 // later price/cart change could desync from the real charge.
 func (s *Service) CollectPaidFromStripe(registrationID string, amountCents int, tee, grips bool) error {
+	// The registration may no longer exist (deleted between checkout and this
+	// webhook — e.g. an organizer removed it, or a QA self-test re-ran). Nothing
+	// to attribute the payment to → ack (return nil) so Stripe stops retrying
+	// instead of failing the delivery forever.
+	reg, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(registrationID)+"&select=event_id")
+	if err != nil {
+		return err
+	}
+	if reg == nil {
+		return nil
+	}
 	// Pin the add-on flags to the paid-for set first, so roster/CSV and any
 	// re-derivation reflect what was purchased.
 	if _, err := s.sb.Update("registrations", "id=eq."+store.Q(registrationID),
 		map[string]any{"addon_tee": tee, "addon_grips": grips}); err != nil {
 		return err
 	}
-	_, _, _, err := s.registrationChargeCents(registrationID) // validates existence
-	if err != nil {
-		return err
-	}
 	currency := "usd"
-	if reg, _ := s.sb.SelectOne("registrations",
-		"id=eq."+store.Q(registrationID)+"&select=event_id"); reg != nil {
-		if ev, _ := s.sb.SelectOne("events",
-			"id=eq."+store.Q(asStr(reg, "event_id"))+"&select=currency"); ev != nil {
-			if c := asStr(ev, "currency"); c != "" {
-				currency = c
-			}
+	if ev, _ := s.sb.SelectOne("events",
+		"id=eq."+store.Q(asStr(reg, "event_id"))+"&select=currency"); ev != nil {
+		if c := asStr(ev, "currency"); c != "" {
+			currency = c
 		}
 	}
 	_, err = s.recordPayment(registrationID, "stripe", "", amountCents, currency, "paid", "paid")

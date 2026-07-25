@@ -362,8 +362,9 @@ func (s *Service) PaymentsSelfTest(ownerID, successURL, cancelURL string) (strin
 		}
 	}
 
-	// Clear prior dummy registrations so this hidden event doesn't accumulate.
-	_ = s.sb.Delete("registrations", "event_id=eq."+store.Q(eventID))
+	// NB: do NOT delete prior dummy registrations here — a still-in-flight
+	// checkout.session.completed webhook needs its registration to exist to mark
+	// it paid. They just accumulate in this hidden QA event (harmless).
 
 	// A trusted dummy registrant (skips the public phone/code/approval gates).
 	bracketID := ""

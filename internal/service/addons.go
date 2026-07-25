@@ -2,11 +2,129 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
+
+// teeSelfTestName is the hidden event the QA tee self-test reuses so runs don't
+// pile up new events.
+const teeSelfTestName = "Tee Self-Test (hidden QA)"
+
+// TeeSelfTest exercises the event-tee presale end to end against the real DB
+// (no Stripe): it configures a hidden event with a tee + sizes, registers a
+// dummy player, then asserts (1) an invalid size is rejected, (2) a valid size
+// is accepted, (3) the charge total = entry + tee, and (4) the size shows up in
+// the orders breakdown. The dummy registration is always cleaned up. Returns a
+// human-readable PASS summary, or an error whose message is the failing check.
+func (s *Service) TeeSelfTest(ownerID string) (string, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return "", errors.New("not signed in")
+	}
+	const teePriceCents = 2500
+	teeSizes := []string{"S", "M", "L", "XL"}
+
+	// Find-or-create the hidden self-test event, tee configured.
+	row, err := s.sb.SelectOne("events",
+		"owner_id=eq."+store.Q(ownerID)+"&name=eq."+store.Q(teeSelfTestName)+"&select=id&limit=1")
+	if err != nil {
+		return "", err
+	}
+	var eventID string
+	if row != nil {
+		eventID = asStr(row, "id")
+		if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
+			"addon_tee_cents": teePriceCents,
+			"addon_tee_name":  "Self-Test Tee",
+			"addon_tee_sizes": teeSizes,
+		}); err != nil {
+			return "", err
+		}
+	} else {
+		eventID, err = s.CreateEvent(model.CreateEventRequest{
+			Name:                 teeSelfTestName,
+			Format:               "doubles",
+			TournamentFormat:     "round_robin",
+			NumCourts:            1,
+			PointsToWin:          11,
+			WinBy:                2,
+			BestOf:               1,
+			RegistrationFeeCents: 100, // $1.00 entry
+			Currency:             "USD",
+			AddonTeeCents:        teePriceCents,
+			AddonTeeName:         "Self-Test Tee",
+			AddonTeeSizes:        teeSizes,
+			Brackets:             []model.BracketInput{{Name: "Open", DivisionType: "open"}},
+		}, ownerID)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Register a dummy player (trusted add skips the public gates); unique phone.
+	bracketID := ""
+	if bks, berr := s.GetBrackets(eventID); berr == nil && len(bks) > 0 {
+		bracketID = bks[0].ID
+	}
+	uniq := time.Now().UnixNano() % 10000000
+	reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+		FullName:   "Tee Self Test",
+		Phone:      fmt.Sprintf("+1555%07d", uniq),
+		BracketID:  bracketID,
+		TrustedAdd: true,
+	}, "")
+	if err != nil {
+		return "", err
+	}
+	// No payment/webhook is in flight, so always clean the dummy registration up.
+	defer func() { _ = s.sb.Delete("registrations", "id=eq."+store.Q(reg.ID)) }()
+
+	// (1) An invalid size must be rejected.
+	if err := s.SetRegistrationAddons(reg.ID, true, false, "XXL"); err == nil {
+		return "", errors.New("FAIL: an invalid tee size (\"XXL\") was accepted")
+	}
+	// (2) A valid size must be accepted.
+	if err := s.SetRegistrationAddons(reg.ID, true, false, "M"); err != nil {
+		return "", fmt.Errorf("FAIL: valid size \"M\" was rejected: %w", err)
+	}
+	// (3) The charge total must include the tee.
+	total, _, _, err := s.registrationChargeCents(reg.ID)
+	if err != nil {
+		return "", err
+	}
+	wantTotal := 100 + teePriceCents
+	if total != wantTotal {
+		return "", fmt.Errorf("FAIL: charge total = %d cents, want %d (entry + tee)", total, wantTotal)
+	}
+	// (4) The orders breakdown must reflect our M.
+	sum, err := s.TeeOrders(eventID)
+	if err != nil {
+		return "", err
+	}
+	if sum.SizeCounts["M"] < 1 {
+		return "", fmt.Errorf("FAIL: tee-orders shows no size \"M\" (got %v)", sum.SizeCounts)
+	}
+	found := false
+	for _, o := range sum.Orders {
+		if o.RegistrationID == reg.ID {
+			if o.Size != "M" {
+				return "", fmt.Errorf("FAIL: our order size = %q, want \"M\"", o.Size)
+			}
+			found = true
+		}
+	}
+	if !found {
+		return "", errors.New("FAIL: our registration is missing from tee-orders")
+	}
+
+	return fmt.Sprintf(
+		"PASS — invalid size rejected, \"M\" accepted, charge = $%.2f ($1.00 entry + $%.2f tee), and it shows in the size breakdown.",
+		float64(wantTotal)/100, float64(teePriceCents)/100), nil
+}
 
 // canonicalTeeSizes is the master size list an organizer picks from for the
 // event-tee presale. Registrants choose one of the sizes the organizer offers.

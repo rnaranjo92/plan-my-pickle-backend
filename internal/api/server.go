@@ -120,6 +120,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/stripe/status", requireAuth(s.stripeStatus))
 	// QA one-tap end-to-end payment check (gated to QA accounts in the handler).
 	mux.HandleFunc("POST /me/payments/self-test", requireAuth(s.paymentsSelfTest))
+	mux.HandleFunc("POST /me/tee-selftest", requireAuth(s.teeSelfTest))
 	// Premium subscription (organizer pays PlanMyPickle): start Checkout, read
 	// status, open the billing portal.
 	// Paid PB Vision "Match Video Analysis" (à-la-carte). Dark until the migration
@@ -3800,6 +3801,23 @@ func (s *Server) paymentsSelfTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"checkoutUrl": url})
+}
+
+// teeSelfTest runs the event-tee presale end-to-end (config → register → size
+// validation → charge rollup → orders breakdown) against the real DB, no Stripe.
+// QA-gated. A failing assertion returns 400 so the UI surfaces the FAIL message.
+func (s *Server) teeSelfTest(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	msg, err := s.svc.TeeSelfTest(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"result": msg})
 }
 
 // checkout opens a Stripe Checkout Session for a registration's entry fee and

@@ -41,15 +41,22 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 		return "", errors.New("a video is required")
 	}
 
-	// PB Vision accepts up to 4 player emails for the shared report.
+	// PB Vision shares the hosted report with the emails we pass (up to 4). Always
+	// include the uploader first so they get their own report, then any partners
+	// they named — de-duped, capped at 4.
 	emails := make([]string, 0, 4)
-	for _, e := range req.PartnerEmails {
-		if e = strings.TrimSpace(e); e != "" {
-			emails = append(emails, e)
-			if len(emails) == 4 {
-				break
-			}
+	seen := map[string]bool{}
+	addEmail := func(e string) {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" || seen[e] || len(emails) >= 4 {
+			return
 		}
+		seen[e] = true
+		emails = append(emails, e)
+	}
+	addEmail(email)
+	for _, e := range req.PartnerEmails {
+		addEmail(e)
 	}
 
 	ins, err := s.sb.Insert("video_analyses", map[string]any{

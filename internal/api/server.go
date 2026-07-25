@@ -3984,7 +3984,10 @@ func (s *Server) getAnalysis(w http.ResponseWriter, r *http.Request) {
 // nothing, so we authenticate with a shared secret carried in the URL (?t=…).
 // Always 200 on a well-formed, authorized call so PB Vision doesn't retry.
 func (s *Server) pbvisionWebhook(w http.ResponseWriter, r *http.Request) {
-	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	// Generous cap: the completion payload carries insights + stats + frame-by-
+	// frame `cv` data, which for a full match runs to tens of MB. Too small a
+	// limit would 400 every callback and the analysis would never complete.
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("could not read request body"))
 		return

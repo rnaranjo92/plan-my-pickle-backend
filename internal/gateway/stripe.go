@@ -123,17 +123,15 @@ func (g *StripeGateway) CreateConnectedAccount(email string) (string, error) {
 	ctx, cancel := stripeCtx()
 	defer cancel()
 	// Express accounts match the "you collect payments and pay recipients"
-	// (destination-charge) platform model this integration uses — the platform is
-	// the merchant of record, keeps an application fee, and pays out the organizer.
-	// Request both capabilities: transfers (to receive the destination-charge
-	// payout) and card_payments (so charges_enabled reflects payout-readiness for
-	// our connected check). Stripe runs KYC via the hosted onboarding link.
+	// (destination-charge) model: the platform is the merchant of record, keeps an
+	// application fee, and pays out the organizer. The connected account only needs
+	// the `transfers` capability to RECEIVE the payout — it never processes card
+	// charges itself, so we deliberately do NOT request card_payments (that would
+	// gate readiness on a capability we don't use, and can sit "pending" on a new
+	// account). Stripe runs KYC via the hosted onboarding link.
 	params := &stripe.AccountParams{
 		Type: stripe.String(string(stripe.AccountTypeExpress)),
 		Capabilities: &stripe.AccountCapabilitiesParams{
-			CardPayments: &stripe.AccountCapabilitiesCardPaymentsParams{
-				Requested: stripe.Bool(true),
-			},
 			Transfers: &stripe.AccountCapabilitiesTransfersParams{
 				Requested: stripe.Bool(true),
 			},
@@ -181,7 +179,9 @@ func (g *StripeGateway) RetrieveAccount(accountID string) (ConnectAccount, error
 	if err != nil {
 		return ConnectAccount{}, err
 	}
-	return ConnectAccount{AccountID: acct.ID, ChargesEnabled: acct.ChargesEnabled}, nil
+	// Readiness = payouts_enabled (this account receives payouts, never processes
+	// card charges), stored under the legacy ChargesEnabled field.
+	return ConnectAccount{AccountID: acct.ID, ChargesEnabled: acct.PayoutsEnabled}, nil
 }
 
 // CheckoutParams describes a destination-charge Checkout Session for an entry
@@ -481,9 +481,11 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			return WebhookEvent{}, err
 		}
 		return WebhookEvent{
-			Type:           string(event.Type),
-			AccountID:      acct.ID,
-			ChargesEnabled: acct.ChargesEnabled,
+			Type:      string(event.Type),
+			AccountID: acct.ID,
+			// Readiness = payouts_enabled (see RetrieveAccount): the organizer's
+			// account receives payouts, it doesn't process card charges.
+			ChargesEnabled: acct.PayoutsEnabled,
 		}, nil
 	default:
 		return WebhookEvent{Type: string(event.Type)}, ErrUnhandledWebhook

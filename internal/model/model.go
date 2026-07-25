@@ -1165,6 +1165,32 @@ type RegisterRequest struct {
 	TrustedAdd bool `json:"-"`
 }
 
+// VideoAnalysis is one paid Match Video Analysis (PB Vision). Status flows
+// pending_payment -> processing -> ready | failed. ReportURL is the hosted PB
+// Vision report, filled in by the completion webhook.
+type VideoAnalysis struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Name        string `json:"name,omitempty"`
+	Court       string `json:"court,omitempty"`
+	ReportURL   string `json:"reportUrl,omitempty"`
+	Error       string `json:"error,omitempty"`
+	AmountCents int    `json:"amountCents"`
+	Currency    string `json:"currency,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+}
+
+// AnalysisCheckoutRequest starts a paid analysis: the uploaded video's public URL
+// plus optional labels + player emails (for PB Vision to attach the report to).
+type AnalysisCheckoutRequest struct {
+	VideoURL      string   `json:"videoUrl"`
+	Name          string   `json:"name"`
+	Court         string   `json:"court"`
+	PartnerEmails []string `json:"partnerEmails"`
+	SuccessURL    string   `json:"successUrl"`
+	CancelURL     string   `json:"cancelUrl"`
+}
+
 // WaitlistEntry is one person on an event's waitlist (used when the event is at
 // its MaxPlayers cap). Kept separate from registrations so it never touches
 // standings/scheduling/counts until an organizer promotes it.

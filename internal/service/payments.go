@@ -424,6 +424,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.VendorID != "" {
 			return s.MarkVendorPaid(evt.VendorID)
 		}
+		// A paid Match Video Analysis — mark paid + submit the video to PB Vision.
+		if evt.AnalysisID != "" {
+			return s.markAnalysisPaid(evt.AnalysisID)
+		}
 		if evt.RegistrationID == "" {
 			return nil // nothing to attribute the payment to
 		}

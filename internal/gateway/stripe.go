@@ -371,6 +371,50 @@ func (g *StripeGateway) CreateOneTimeCheckout(email, refID, metaKey, priceID, su
 	return sess.URL, nil
 }
 
+// CreatePlatformCheckout opens a hosted Checkout Session (mode=payment) for a
+// one-time DIRECT platform charge (NOT Connect — the platform keeps all of it),
+// with an ad-hoc price so no dashboard Price ID is needed. refID is set as
+// client_reference_id AND metadata[metaKey] so the webhook can attribute it.
+func (g *StripeGateway) CreatePlatformCheckout(refID, metaKey string, amountCents int, currency, productName, email, successURL, cancelURL string) (string, error) {
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	cur := strings.ToLower(strings.TrimSpace(currency))
+	if cur == "" {
+		cur = "usd"
+	}
+	if strings.TrimSpace(productName) == "" {
+		productName = "PlanMyPickle"
+	}
+	params := &stripe.CheckoutSessionParams{
+		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
+		SuccessURL:        stripe.String(successURL),
+		CancelURL:         stripe.String(cancelURL),
+		ClientReferenceID: stripe.String(refID),
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{
+				Quantity: stripe.Int64(1),
+				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+					Currency:   stripe.String(cur),
+					UnitAmount: stripe.Int64(int64(amountCents)),
+					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+						Name: stripe.String(productName),
+					},
+				},
+			},
+		},
+	}
+	if email != "" {
+		params.CustomerEmail = stripe.String(email)
+	}
+	params.Context = ctx
+	params.AddMetadata(metaKey, refID)
+	sess, err := g.client.sessions.New(params)
+	if err != nil {
+		return "", err
+	}
+	return sess.URL, nil
+}
+
 // ---- webhooks ----
 
 // ErrUnhandledWebhook signals a verified-but-ignored event type, so the caller
@@ -392,6 +436,8 @@ type WebhookEvent struct {
 	EventPassID string
 	// checkout.session.completed (mode=payment) — a vendor booth fee.
 	VendorID string
+	// checkout.session.completed (mode=payment) — a paid Match Video Analysis.
+	AnalysisID string
 	// account.updated
 	AccountID      string
 	ChargesEnabled bool
@@ -456,6 +502,7 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			RegistrationID: sess.Metadata["registration_id"],
 			EventPassID:    sess.Metadata["event_pass_id"],
 			VendorID:       sess.Metadata["vendor_id"],
+			AnalysisID:     sess.Metadata["analysis_id"],
 			AmountCents:    int(sess.AmountTotal),
 			AddonTee:       sess.Metadata["addon_tee"] == "1",
 			AddonGrips:     sess.Metadata["addon_grips"] == "1",

@@ -74,6 +74,16 @@ func main() {
 		}
 		log.Printf("Payments: PayPal/Venmo configured (%s)", mode)
 	}
+	// PB Vision (paid Match Video Analysis) — env-gated + DORMANT until
+	// PBVISION_API_KEY is set. Base URL defaults to prod; PBVISION_BASE_URL
+	// overrides. The completion webhook is unsigned, so PBVISION_WEBHOOK_TOKEN is
+	// embedded in the registered callback URL and verified on receipt.
+	if pk := os.Getenv("PBVISION_API_KEY"); pk != "" {
+		svc.PBV = gateway.NewPBVision(pk, os.Getenv("PBVISION_BASE_URL"))
+		log.Printf("PB Vision: configured (Match Video Analysis)")
+	} else {
+		log.Printf("PB Vision: mock — set PBVISION_API_KEY to enable Match Video Analysis")
+	}
 	// Real transactional email (registration confirmations) only when Resend is
 	// configured; otherwise the mock records sends without delivering. The from
 	// address must be on a domain verified in the Resend dashboard.

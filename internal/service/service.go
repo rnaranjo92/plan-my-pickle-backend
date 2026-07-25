@@ -43,6 +43,9 @@ type Service struct {
 	Dupr   gateway.DuprGateway
 	Email  gateway.EmailGateway
 	Courts courts.Finder
+	// PBV is the PB Vision partner-API gateway for paid Match Video Analysis.
+	// nil unless PBVISION_API_KEY is set — the feature stays dormant until then.
+	PBV *gateway.PBVision
 	// Serializes DrainDuprPendingDeletes (reconciler tick vs post-wipe kick).
 	duprDeleteDrain sync.Mutex
 	// brandingMu/brandingCols cache whether add_email_branding.sql has been applied

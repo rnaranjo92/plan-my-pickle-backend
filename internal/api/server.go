@@ -122,6 +122,13 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/payments/self-test", requireAuth(s.paymentsSelfTest))
 	// Premium subscription (organizer pays PlanMyPickle): start Checkout, read
 	// status, open the billing portal.
+	// Paid PB Vision "Match Video Analysis" (à-la-carte). Dark until the migration
+	// runs + PBVISION_API_KEY is set; the service methods gate on both.
+	mux.HandleFunc("POST /me/analyses/checkout", requireAuth(s.analysisCheckout))
+	mux.HandleFunc("GET /me/analyses", requireAuth(s.listAnalyses))
+	mux.HandleFunc("GET /me/analyses/{id}", requireAuth(s.getAnalysis))
+	mux.HandleFunc("POST /me/pbvision/register-webhook", requireAuth(s.registerPBVisionWebhook))
+
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
 	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
@@ -210,6 +217,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// The handler reads the RAW request body (signature is computed over the exact
 	// bytes), so it must not pass through decode().
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
+	// PB Vision completion callback — authenticated by ?t=<PBVISION_WEBHOOK_TOKEN>.
+	mux.HandleFunc("POST /webhooks/pbvision", s.pbvisionWebhook)
 	// PayPal webhook (server-to-server): NO auth wrapper — verified inside via the
 	// PayPal signature + PAYPAL_WEBHOOK_ID against the raw body.
 	mux.HandleFunc("POST /webhooks/paypal", s.paypalWebhook)
@@ -3924,6 +3933,86 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// analysisCheckout opens a Stripe Checkout for one à-la-carte PB Vision Match
+// Video Analysis. The player has already uploaded the clip to the public
+// match-videos bucket and passes its URL; on payment the webhook submits it to
+// PB Vision. This is a direct platform charge (no Connect) — we keep the full fee.
+func (s *Server) analysisCheckout(w http.ResponseWriter, r *http.Request) {
+	var req model.AnalysisCheckoutRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("successUrl and cancelUrl are required"))
+		return
+	}
+	url, err := s.svc.StartAnalysisCheckout(userID(r), userEmail(r), req)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// listAnalyses returns the caller's Match Video Analyses, newest first.
+func (s *Server) listAnalyses(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ListAnalyses(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// getAnalysis returns one of the caller's analyses (for polling status → report).
+func (s *Server) getAnalysis(w http.ResponseWriter, r *http.Request) {
+	a, err := s.svc.GetAnalysis(userID(r), r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+// pbvisionWebhook receives PB Vision's completion callback. PB Vision signs
+// nothing, so we authenticate with a shared secret carried in the URL (?t=…).
+// Always 200 on a well-formed, authorized call so PB Vision doesn't retry.
+func (s *Server) pbvisionWebhook(w http.ResponseWriter, r *http.Request) {
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("could not read request body"))
+		return
+	}
+	if err := s.svc.HandlePBVisionWebhook(r.URL.Query().Get("t"), payload); err != nil {
+		if err.Error() == "unauthorized" {
+			writeErr(w, http.StatusUnauthorized, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// registerPBVisionWebhook points PB Vision's callback at our public endpoint.
+// QA-only, run once after the API key + webhook token are set in Railway.
+func (s *Server) registerPBVisionWebhook(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	if err := s.svc.RegisterPBVisionWebhook("https://api.planmypickle.com"); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "registered"})
 }
 
 // updateRegistrationDetails edits a registered player's name/rating (owner-only).

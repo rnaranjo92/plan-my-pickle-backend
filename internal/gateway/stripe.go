@@ -122,8 +122,22 @@ type ConnectAccount struct {
 func (g *StripeGateway) CreateConnectedAccount(email string) (string, error) {
 	ctx, cancel := stripeCtx()
 	defer cancel()
+	// Express accounts match the "you collect payments and pay recipients"
+	// (destination-charge) platform model this integration uses — the platform is
+	// the merchant of record, keeps an application fee, and pays out the organizer.
+	// Request both capabilities: transfers (to receive the destination-charge
+	// payout) and card_payments (so charges_enabled reflects payout-readiness for
+	// our connected check). Stripe runs KYC via the hosted onboarding link.
 	params := &stripe.AccountParams{
-		Type: stripe.String(string(stripe.AccountTypeStandard)),
+		Type: stripe.String(string(stripe.AccountTypeExpress)),
+		Capabilities: &stripe.AccountCapabilitiesParams{
+			CardPayments: &stripe.AccountCapabilitiesCardPaymentsParams{
+				Requested: stripe.Bool(true),
+			},
+			Transfers: &stripe.AccountCapabilitiesTransfersParams{
+				Requested: stripe.Bool(true),
+			},
+		},
 	}
 	params.Context = ctx
 	if email != "" {

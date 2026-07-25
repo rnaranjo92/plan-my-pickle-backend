@@ -3944,11 +3944,13 @@ func (s *Server) analysisCheckout(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+	// QA/comped accounts skip payment (analysis is submitted immediately, free).
+	comp := analysisComped(userEmail(r))
+	if !comp && (strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "") {
 		writeErr(w, http.StatusBadRequest, errors.New("successUrl and cancelUrl are required"))
 		return
 	}
-	url, err := s.svc.StartAnalysisCheckout(userID(r), userEmail(r), req)
+	url, err := s.svc.StartAnalysisCheckout(userID(r), userEmail(r), req, comp)
 	if errors.Is(err, service.ErrPaymentsNotConfigured) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
@@ -3957,7 +3959,18 @@ func (s *Server) analysisCheckout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if comp {
+		writeJSON(w, http.StatusOK, map[string]any{"comped": true})
+		return
+	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// analysisComped reports whether an email gets Match Video Analysis for free
+// (QA/testing). Mirrors the frontend allowlist; widen when comping more accounts.
+func analysisComped(email string) bool {
+	e := strings.ToLower(strings.TrimSpace(email))
+	return e == "rolando.naranjo0420@gmail.com" || e == "krizhia_roxas29@yahoo.com"
 }
 
 // listAnalyses returns the caller's Match Video Analyses, newest first.

@@ -28,13 +28,21 @@ func (s *Service) analysisAvailable() bool {
 // URL. On payment, the checkout.session.completed webhook routes to
 // markAnalysisPaid (via the analysis_id metadata) which submits the video to PB
 // Vision. This is a direct platform charge — PlanMyPickle keeps the full fee.
-func (s *Service) StartAnalysisCheckout(userID, email string, req model.AnalysisCheckoutRequest) (string, error) {
+//
+// When comp is true (QA/comped accounts), payment is skipped entirely: the row
+// is created at $0 and submitted to PB Vision immediately. The returned URL is
+// empty in that case — the handler tells the client it was comped.
+func (s *Service) StartAnalysisCheckout(userID, email string, req model.AnalysisCheckoutRequest, comp bool) (string, error) {
 	if !s.analysisAvailable() {
 		return "", errors.New("match video analysis isn't available yet")
 	}
-	gw, ok := s.stripeGW()
-	if !ok {
-		return "", ErrPaymentsNotConfigured
+	var gw *gateway.StripeGateway
+	if !comp {
+		var ok bool
+		gw, ok = s.stripeGW()
+		if !ok {
+			return "", ErrPaymentsNotConfigured
+		}
 	}
 	videoURL := strings.TrimSpace(req.VideoURL)
 	if videoURL == "" {
@@ -59,6 +67,10 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 		addEmail(e)
 	}
 
+	amount := analysisPriceCents
+	if comp {
+		amount = 0
+	}
 	ins, err := s.sb.Insert("video_analyses", map[string]any{
 		"user_id":        userID,
 		"video_url":      videoURL,
@@ -66,7 +78,7 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 		"court":          orNull(strings.TrimSpace(req.Court)),
 		"partner_emails": emails,
 		"status":         "pending_payment",
-		"amount_cents":   analysisPriceCents,
+		"amount_cents":   amount,
 		"currency":       "usd",
 	})
 	if err != nil {
@@ -76,6 +88,14 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 		return "", errors.New("could not start the analysis")
 	}
 	id := asStr(ins[0], "id")
+
+	// Comped: no Stripe — submit straight to PB Vision (reuses the paid path).
+	if comp {
+		if err := s.markAnalysisPaid(id); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
 
 	url, err := gw.CreatePlatformCheckout(id, "analysis_id", analysisPriceCents, "usd",
 		"PlanMyPickle — Match Video Analysis", email, req.SuccessURL, req.CancelURL)

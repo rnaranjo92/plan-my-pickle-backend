@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
@@ -36,11 +37,74 @@ func platformFeeCents(feeCents int) int {
 	return fee
 }
 
+// Processing-fee pass-through: when enabled, the PLAYER covers Stripe's per-charge
+// processing fee so the platform's application fee (its 5%) settles CLEAN instead
+// of being eroded by Stripe's ~2.9%+30¢. The organizer's net is unchanged; the
+// surcharge shows as its own "Card processing fee" line at Checkout. Rates are
+// estimates (Stripe's real fee varies by card/country) — slight over/under-
+// recovery is acceptable. Env knobs:
+//
+//	PASS_PROCESSING_FEE=false   → disable (platform absorbs Stripe's fee; old behavior)
+//	STRIPE_FEE_BPS=290          → percent rate, basis points (default 2.9%)
+//	STRIPE_FEE_FIXED_CENTS=30   → fixed per-charge cents (default $0.30)
+func passProcessingFee() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PASS_PROCESSING_FEE"))) {
+	case "false", "0", "off", "no":
+		return false
+	}
+	return true // default ON
+}
+
+func stripeFeeBPS() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("STRIPE_FEE_BPS"))); err == nil && n > 0 && n < 2000 {
+		return n
+	}
+	return 290
+}
+
+func stripeFeeFixedCents() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("STRIPE_FEE_FIXED_CENTS"))); err == nil && n >= 0 && n < 500 {
+		return n
+	}
+	return 30
+}
+
+// processingSurchargeCents is the amount to ADD to a charge so that, after
+// Stripe's fee on the grossed-up total, the platform recovers that fee exactly —
+// leaving its 5% clean. surcharge = ceil((p·amount + f) / (1 − p)), integer cents.
+// 0 when pass-through is disabled or the amount is non-positive.
+func processingSurchargeCents(amountCents int) int {
+	if amountCents <= 0 || !passProcessingFee() {
+		return 0
+	}
+	bps := stripeFeeBPS()
+	denom := 10000 - bps
+	if denom <= 0 {
+		return 0
+	}
+	num := bps*amountCents + stripeFeeFixedCents()*10000
+	return (num + denom - 1) / denom // ceil(num/denom)
+}
+
 // stripeGW returns the StripeGateway if the live Stripe processor is wired up,
 // else (nil, false). Stripe Connect endpoints require it.
 func (s *Service) stripeGW() (*gateway.StripeGateway, bool) {
 	gw, ok := s.Pay.(*gateway.StripeGateway)
 	return gw, ok
+}
+
+// PaymentsConfigured reports whether real Stripe payments are wired
+// (STRIPE_SECRET_KEY set). Surfaced on /healthz.
+func (s *Service) PaymentsConfigured() bool {
+	_, ok := s.stripeGW()
+	return ok
+}
+
+// WebhookConfigured reports whether the Stripe webhook signing secret is set —
+// required to mark registrations paid. False when payments aren't configured.
+func (s *Service) WebhookConfigured() bool {
+	gw, ok := s.stripeGW()
+	return ok && gw.WebhookReady()
 }
 
 // ErrPaymentsNotConfigured means online payments (Stripe) aren't wired up on the
@@ -213,13 +277,18 @@ func (s *Service) CreateCheckoutSession(registrationID, successURL, cancelURL st
 		name = name + " — entry fee"
 	}
 
+	// Pass Stripe's processing fee to the player (when enabled) so our 5% settles
+	// clean. The surcharge rides as its own Checkout line item and is added to the
+	// application fee, so the organizer's net (fee − platform 5%) is unchanged.
+	surcharge := processingSurchargeCents(fee)
 	return gw.CreateCheckoutSession(gateway.CheckoutParams{
 		RegistrationID:      registrationID,
 		AmountCents:         fee,
 		Currency:            currency,
 		ProductName:         name,
 		DestinationAccount:  accountID,
-		ApplicationFeeCents: platformFeeCents(fee),
+		ApplicationFeeCents: platformFeeCents(fee) + surcharge,
+		ServiceFeeCents:     surcharge,
 		AddonTee:            teeSel,
 		AddonGrips:          gripsSel,
 		SuccessURL:          successURL,

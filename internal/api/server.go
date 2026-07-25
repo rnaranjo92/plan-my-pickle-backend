@@ -59,9 +59,14 @@ func NewServer(svc *service.Service) http.Handler {
 		// Echo the deployed commit (Railway injects RAILWAY_GIT_COMMIT_SHA) so a
 		// deploy can be VERIFIED — a 200 alone doesn't prove the new build is live
 		// (a failed build keeps serving the old one). Empty off-Railway.
-		writeJSON(w, http.StatusOK, map[string]string{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "ok",
 			"commit": os.Getenv("RAILWAY_GIT_COMMIT_SHA"),
+			// Payments readiness (so a missing key/secret is caught without a test
+			// charge): payments = Stripe wired; webhook = signing secret set (needed
+			// to mark registrations paid).
+			"payments": s.svc.PaymentsConfigured(),
+			"webhook":  s.svc.WebhookConfigured(),
 		})
 	})
 	// --- Public: spectator/shareable reads + the on-site self-service flows

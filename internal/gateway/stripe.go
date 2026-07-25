@@ -64,6 +64,11 @@ func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 // Live reports that this is a real payment processor.
 func (g *StripeGateway) Live() bool { return true }
 
+// WebhookReady reports whether the webhook signing secret is set. Without it,
+// incoming Stripe webhooks are rejected — so paid registrations would never get
+// marked paid. Surfaced on /healthz so a missing secret is caught immediately.
+func (g *StripeGateway) WebhookReady() bool { return g.webhookSecret != "" }
+
 // HostedCheckout: Stripe money moves only via CreateCheckoutSession + the
 // webhook (CollectPaidFromStripe). Charge() below is a no-op, so the public
 // /pay path must record PENDING, never mark the registration paid.
@@ -163,6 +168,10 @@ type CheckoutParams struct {
 	ProductName         string
 	DestinationAccount  string
 	ApplicationFeeCents int
+	// ServiceFeeCents, when > 0, adds a separate "Card processing fee" line item
+	// so the pass-through surcharge is transparent to the player. It's part of the
+	// charge total; recovering it is handled via ApplicationFeeCents.
+	ServiceFeeCents int
 	// Add-on cart snapshot at checkout creation — stamped into metadata so the
 	// webhook grants EXACTLY what was paid for, immune to later cart edits.
 	AddonTee   bool
@@ -191,22 +200,37 @@ func (g *StripeGateway) CreateCheckoutSession(p CheckoutParams) (string, error) 
 		name = "Tournament entry fee"
 	}
 
+	lineItems := []*stripe.CheckoutSessionLineItemParams{
+		{
+			Quantity: stripe.Int64(1),
+			PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+				Currency:   stripe.String(currency),
+				UnitAmount: stripe.Int64(int64(p.AmountCents)),
+				ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+					Name: stripe.String(name),
+				},
+			},
+		},
+	}
+	// Transparent pass-through: the processing surcharge is its own line so the
+	// player sees exactly what they're paying on top of the entry fee.
+	if p.ServiceFeeCents > 0 {
+		lineItems = append(lineItems, &stripe.CheckoutSessionLineItemParams{
+			Quantity: stripe.Int64(1),
+			PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+				Currency:   stripe.String(currency),
+				UnitAmount: stripe.Int64(int64(p.ServiceFeeCents)),
+				ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+					Name: stripe.String("Card processing fee"),
+				},
+			},
+		})
+	}
 	params := &stripe.CheckoutSessionParams{
 		Mode:       stripe.String(string(stripe.CheckoutSessionModePayment)),
 		SuccessURL: stripe.String(p.SuccessURL),
 		CancelURL:  stripe.String(p.CancelURL),
-		LineItems: []*stripe.CheckoutSessionLineItemParams{
-			{
-				Quantity: stripe.Int64(1),
-				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
-					Currency:   stripe.String(currency),
-					UnitAmount: stripe.Int64(int64(p.AmountCents)),
-					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
-						Name: stripe.String(name),
-					},
-				},
-			},
-		},
+		LineItems:  lineItems,
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
 			TransferData: &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
 				Destination: stripe.String(p.DestinationAccount),

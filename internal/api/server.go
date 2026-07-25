@@ -118,6 +118,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// the connected-account status. Scoped to the authenticated organizer.
 	mux.HandleFunc("POST /me/stripe/connect", requireAuth(s.stripeConnect))
 	mux.HandleFunc("GET /me/stripe/status", requireAuth(s.stripeStatus))
+	// QA one-tap end-to-end payment check (gated to QA accounts in the handler).
+	mux.HandleFunc("POST /me/payments/self-test", requireAuth(s.paymentsSelfTest))
 	// Premium subscription (organizer pays PlanMyPickle): start Checkout, read
 	// status, open the billing portal.
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
@@ -3746,6 +3748,30 @@ func (s *Server) stripeStatus(w http.ResponseWriter, r *http.Request) {
 		Connected:      st.Connected,
 		ChargesEnabled: st.ChargesEnabled,
 	})
+}
+
+// paymentsSelfTest runs a one-tap end-to-end payment check for a QA organizer:
+// find-or-create a hidden $1 event, add a dummy registrant, and return a real
+// Checkout URL. Gated to QA accounts (each call can be a real charge on live keys).
+func (s *Server) paymentsSelfTest(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	const base = "https://app.planmypickle.com/"
+	url, err := s.svc.PaymentsSelfTest(userID(r), base, base)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrOrganizerNotConnected),
+			errors.Is(err, service.ErrPaymentsNotConfigured):
+			writeErr(w, http.StatusBadRequest, err)
+		default:
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"checkoutUrl": url})
 }
 
 // checkout opens a Stripe Checkout Session for a registration's entry fee and

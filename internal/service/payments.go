@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
@@ -304,6 +305,82 @@ func (s *Service) CreateCheckoutSession(registrationID, successURL, cancelURL st
 		SuccessURL:          successURL,
 		CancelURL:           cancelURL,
 	})
+}
+
+// paymentsSelfTestName is the fixed name of the hidden, reusable event that backs
+// the QA one-tap payment check (find-or-create keyed on it).
+const paymentsSelfTestName = "Payments self-test"
+
+// PaymentsSelfTest gives a QA organizer a one-tap end-to-end payment check: it
+// finds-or-creates a hidden "Payments self-test" event they own (a $1 entry fee,
+// unlisted), clears any prior dummy registrations, adds a fresh one, and returns a
+// real Stripe Checkout URL for it. The organizer must have finished payout
+// onboarding. Handler-gated to QA accounts. On LIVE keys this is a real ~$1 charge
+// (refund it); on TEST keys it's free. Exercises the exact production path
+// (destination charge + processing-fee pass-through + the paid webhook).
+func (s *Service) PaymentsSelfTest(ownerID, successURL, cancelURL string) (string, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return "", errors.New("not signed in")
+	}
+	if _, ok := s.stripeGW(); !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	// The organizer must be connected (charges enabled) or Checkout can't route.
+	orow, err := s.organizerPaymentRow(ownerID)
+	if err != nil {
+		return "", err
+	}
+	if orow == nil || asStr(orow, "stripe_account_id") == "" || !asBool(orow, "charges_enabled") {
+		return "", ErrOrganizerNotConnected
+	}
+
+	// Find-or-create the hidden self-test event so runs don't pile up new events.
+	row, err := s.sb.SelectOne("events",
+		"owner_id=eq."+store.Q(ownerID)+"&name=eq."+store.Q(paymentsSelfTestName)+"&select=id&limit=1")
+	if err != nil {
+		return "", err
+	}
+	eventID := ""
+	if row != nil {
+		eventID = asStr(row, "id")
+	} else {
+		eventID, err = s.CreateEvent(model.CreateEventRequest{
+			Name:                 paymentsSelfTestName,
+			Format:               "doubles",
+			TournamentFormat:     "round_robin",
+			NumCourts:            1,
+			PointsToWin:          11,
+			WinBy:                2,
+			BestOf:               1,
+			RegistrationFeeCents: 100, // $1.00 — smallest sensible real charge
+			Currency:             "USD",
+			Brackets:             []model.BracketInput{{Name: "Open", DivisionType: "open"}},
+		}, ownerID)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Clear prior dummy registrations so this hidden event doesn't accumulate.
+	_ = s.sb.Delete("registrations", "event_id=eq."+store.Q(eventID))
+
+	// A trusted dummy registrant (skips the public phone/code/approval gates).
+	bracketID := ""
+	if bks, berr := s.GetBrackets(eventID); berr == nil && len(bks) > 0 {
+		bracketID = bks[0].ID
+	}
+	reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+		FullName:   "Self Test",
+		Phone:      "+15550100100",
+		BracketID:  bracketID,
+		TrustedAdd: true,
+	}, "")
+	if err != nil {
+		return "", err
+	}
+
+	return s.CreateCheckoutSession(reg.ID, successURL, cancelURL)
 }
 
 // HandleStripeWebhook verifies an incoming Stripe webhook and applies it:

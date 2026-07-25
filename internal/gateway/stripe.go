@@ -417,7 +417,12 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 	if g.webhookSecret == "" {
 		return WebhookEvent{}, errors.New("stripe webhook secret not configured")
 	}
-	event, err := webhook.ConstructEvent(payload, sigHeader, g.webhookSecret)
+	// IgnoreAPIVersionMismatch: the Stripe account's default API version (e.g.
+	// 2026-06-24.dahlia) is newer than what this stripe-go release pins, and plain
+	// ConstructEvent REJECTS a mismatched-version event. We only read stable fields
+	// (metadata, amount_total, payouts_enabled), so accept the event regardless.
+	event, err := webhook.ConstructEventWithOptions(payload, sigHeader, g.webhookSecret,
+		webhook.ConstructEventOptions{IgnoreAPIVersionMismatch: true})
 	if err != nil {
 		return WebhookEvent{}, fmt.Errorf("stripe webhook signature verification failed: %w", err)
 	}

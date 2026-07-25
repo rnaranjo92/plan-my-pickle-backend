@@ -783,7 +783,7 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 		// Best-effort: a count failure must not blank the whole dashboard, so on
 		// error we leave the counts at 0 and still return the events.
 		regs, err := s.sb.Select("registrations",
-			"event_id="+store.In(ids)+"&select=event_id")
+			"event_id="+store.In(ids)+s.approvedRegFilter()+"&select=event_id")
 		if err == nil {
 			counts := make(map[string]int, len(out))
 			for _, r := range regs {
@@ -868,7 +868,7 @@ func (s *Service) publicEventsSorted(limit int, county, sort string) ([]model.Pu
 			ids[i] = e.ID
 		}
 		if regs, err := s.sb.Select("registrations",
-			"event_id="+store.In(ids)+"&select=event_id"); err == nil {
+			"event_id="+store.In(ids)+s.approvedRegFilter()+"&select=event_id"); err == nil {
 			counts := make(map[string]int, len(events))
 			for _, r := range regs {
 				counts[asStr(r, "event_id")]++
@@ -1096,7 +1096,8 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	// event-detail header shows the real numbers; a count failure must not fail
 	// the read — single reads otherwise leave the counts at 0.
 	if regs, rerr := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(id)+"&select=checked_in,player_id"); rerr == nil {
+		"event_id=eq."+store.Q(id)+s.approvedRegFilter()+
+			"&select=checked_in,player_id"); rerr == nil {
 		ev.RegisteredCount = len(regs)
 		seen := make(map[string]bool, len(regs))
 		for _, r := range regs {
@@ -1827,6 +1828,7 @@ func (s *Service) registerDemoPlayers(eventID string, perDiv int) error {
 	idx := 0
 	reg := func(name string, skill float64) error {
 		_, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+			TrustedAdd:      true, // organizer/QA seed — skip public gates
 			FullName:        name,
 			Phone:           fmt.Sprintf("+1555%07d", 1000000+idx),
 			SkillLevel:      ratingPtr(skill),
@@ -1885,6 +1887,7 @@ func (s *Service) seedDuprDemo(ownerID string) (string, error) {
 	names := []string{"UAT Player 1", "UAT Player 2", "UAT Player 3", "UAT Player 4"}
 	for i, n := range names {
 		if _, err := s.RegisterPlayer(eid, model.RegisterRequest{
+			TrustedAdd: true, // QA UAT seed — skip public gates
 			FullName:   n,
 			Phone:      fmt.Sprintf("+1555%07d", 2000000+i),
 			SkillLevel: ratingPtr(3.6 + float64(i)*0.1),
@@ -2796,6 +2799,7 @@ func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 	regOne := func(bracketID string, rating float64) error {
 		rt := ratingPtr(rating)
 		reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+			TrustedAdd: true, // organizer placeholder/demo fill — skip public gates
 			// Append the running player number so demo names stay unique: the
 			// name arrays wrap at len(first)/len(last), so without this, player
 			// #1 in one division and #31 in another collide on the same name and
@@ -3741,6 +3745,9 @@ func (s *Service) PromoteWaitlist(eventID, wid string) (model.Registration, erro
 		SkillLevel: asFloatPtr(row, "skill_level"),
 		SmsConsent: asBool(row, "sms_consent"),
 		Self:       false, // organizer promotion — bypasses the cap
+		// Trusted organizer action: skip the public phone/invite-code/approval gates
+		// (the entry may have no phone; a promoted player shouldn't land pending).
+		TrustedAdd: true,
 	}
 	reg, err := s.RegisterPlayer(eventID, req, asStr(row, "user_id"))
 	if err != nil {
@@ -3776,6 +3783,17 @@ func (s *Service) eventRequiresApproval(eventID string) bool {
 		return false
 	}
 	return asBool(row, "require_approval")
+}
+
+// approvedRegFilter returns the PostgREST clause that excludes pending
+// (not-yet-approved) registrations, or "" on a pre-migration DB (no column) so
+// the query is unchanged. Use it on every count/notify/roster read that should
+// see only confirmed entrants.
+func (s *Service) approvedRegFilter() string {
+	if s.columnReady("registrations", "approved") {
+		return "&approved=is.true"
+	}
+	return ""
 }
 
 // eventMaxPlayers reads the event's player cap; nil = unlimited. Best-effort so a
@@ -4076,6 +4094,10 @@ func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partn
 			Phone:     partnerPhone,
 			BracketID: bracketID,
 			Self:      false,
+			// The named partner rides along with the registrant we just created —
+			// don't re-apply the public phone/code/approval gates to the partner
+			// (partnerPhone may be blank; the gate already ran for the registrant).
+			TrustedAdd: true,
 		}, "")
 		if e != nil {
 			return
@@ -4142,7 +4164,7 @@ func (s *Service) RegisterDuprTestAccounts(eventID string) (DuprTestSummary, err
 			name = email
 		}
 		_, err = s.RegisterPlayer(eventID,
-			model.RegisterRequest{FullName: name, Email: email}, uid)
+			model.RegisterRequest{FullName: name, Email: email, TrustedAdd: true}, uid)
 		switch {
 		case err == nil:
 			sum.Registered++
@@ -4533,10 +4555,11 @@ func (s *Service) ImportRoster(eventID string, req model.ImportRosterRequest) (m
 			continue
 		}
 		_, err := s.RegisterPlayer(eventID, model.RegisterRequest{
-			FullName:  name,
-			Phone:     strings.TrimSpace(p.Phone),
-			Email:     strings.TrimSpace(p.Email),
-			BracketID: req.BracketID,
+			FullName:   name,
+			Phone:      strings.TrimSpace(p.Phone),
+			Email:      strings.TrimSpace(p.Email),
+			BracketID:  req.BracketID,
+			TrustedAdd: true, // organizer roster import — skip public gates
 		}, "")
 		switch {
 		case err == nil:
@@ -4590,6 +4613,7 @@ func (s *Service) ImportDuprClubToEvent(eventID, bracketID, duprClubID string) (
 			DuprID:     m.DuprID,
 			DuprRating: rating,
 			BracketID:  bracketID,
+			TrustedAdd: true, // organizer DUPR-club import — skip public gates
 		}, "")
 		switch {
 		case err == nil:
@@ -9673,7 +9697,7 @@ func (s *Service) notifyEventPlayers(eventID, text string) {
 	// doesn't silently miss players past the first page — same reason the
 	// schedule email uses it.
 	rows, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(eventID)+
+		"event_id=eq."+store.Q(eventID)+s.approvedRegFilter()+
 			"&select=player:players!player_id(user_id)")
 	if err != nil {
 		return
@@ -9996,7 +10020,8 @@ func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) 
 		return "", "", errors.New("enter the full phone number you registered with")
 	}
 	rows, err := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(eventID)+"&select=id,player:players!player_id(full_name,phone)")
+		"event_id=eq."+store.Q(eventID)+s.approvedRegFilter()+
+			"&select=id,player:players!player_id(full_name,phone)")
 	if err != nil {
 		return "", "", err
 	}
@@ -11386,7 +11411,7 @@ func (s *Service) RosterCSV(eventID string) ([]byte, error) {
 		divName[b.ID] = b.Name
 	}
 
-	base := "event_id=eq." + store.Q(eventID) +
+	base := "event_id=eq." + store.Q(eventID) + s.approvedRegFilter() +
 		"&select=payment_status,checked_in,bracket_id,addon_tee,addon_grips,%s" +
 		"player:players!player_id(full_name,phone,email,dupr_id)," +
 		"partner:players!partner_id(full_name)"
@@ -12659,9 +12684,10 @@ func (s *Service) seedScoreConfirm(ownerID string) (string, error) {
 			phone = "+16504573848"
 		}
 		if _, err := s.RegisterPlayer(eventID, model.RegisterRequest{
-			FullName:  n,
-			BracketID: bracketID,
-			Phone:     phone,
+			FullName:   n,
+			BracketID:  bracketID,
+			Phone:      phone,
+			TrustedAdd: true, // organizer/QA seed — skip public gates
 		}, ""); err != nil {
 			return eventID, err
 		}

@@ -28,6 +28,12 @@ type Event struct {
 	// Paid add-ons a registrant can buy with their entry (0 = not offered).
 	AddonTeeCents   int     `json:"addonTeeCents"`
 	AddonGripsCents int     `json:"addonGripsCents"`
+	// Event-tee presale (custom merch): a name, up to two design images
+	// (front/back), and the sizes the organizer offers. Priced by AddonTeeCents.
+	AddonTeeName     string   `json:"addonTeeName,omitempty"`
+	AddonTeeFrontURL string   `json:"addonTeeFrontUrl,omitempty"`
+	AddonTeeBackURL  string   `json:"addonTeeBackUrl,omitempty"`
+	AddonTeeSizes    []string `json:"addonTeeSizes,omitempty"`
 	Currency        string  `json:"currency"`
 	ZelleHandle     *string `json:"zelleHandle,omitempty"`
 	VenmoHandle     *string `json:"venmoHandle,omitempty"`
@@ -1063,6 +1069,11 @@ type CreateEventRequest struct {
 	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`
 	AddonTeeCents              int    `json:"addonTeeCents,omitempty"`
 	AddonGripsCents            int    `json:"addonGripsCents,omitempty"`
+	// Event-tee presale (custom merch) config.
+	AddonTeeName     string   `json:"addonTeeName,omitempty"`
+	AddonTeeFrontURL string   `json:"addonTeeFrontUrl,omitempty"`
+	AddonTeeBackURL  string   `json:"addonTeeBackUrl,omitempty"`
+	AddonTeeSizes    []string `json:"addonTeeSizes,omitempty"`
 	ZelleHandle                string `json:"zelleHandle,omitempty"`
 	VenmoHandle                string `json:"venmoHandle,omitempty"`
 	GcashHandle                string `json:"gcashHandle,omitempty"`
@@ -1396,9 +1407,31 @@ type ShirtOrder struct {
 
 // AddonsRequest sets a registrant's paid add-on choices (token- or owner-gated).
 type AddonsRequest struct {
-	Token string `json:"token"`
-	Tee   bool   `json:"tee"`
-	Grips bool   `json:"grips"`
+	Token   string `json:"token"`
+	Tee     bool   `json:"tee"`
+	Grips   bool   `json:"grips"`
+	TeeSize string `json:"teeSize,omitempty"` // required when Tee and the event offers sizes
+}
+
+// TeeOrder is one registrant's event-tee purchase (organizer fulfillment list).
+type TeeOrder struct {
+	RegistrationID string `json:"registrationId"`
+	PlayerName     string `json:"playerName"`
+	Size           string `json:"size"`
+	Paid           bool   `json:"paid"`
+}
+
+// TeeOrdersSummary rolls up an event's tee orders for the printer: the design,
+// a size→count breakdown, and the per-registrant list.
+type TeeOrdersSummary struct {
+	Name       string         `json:"name"`
+	PriceCents int            `json:"priceCents"`
+	Currency   string         `json:"currency"`
+	FrontURL   string         `json:"frontUrl,omitempty"`
+	BackURL    string         `json:"backUrl,omitempty"`
+	Total      int            `json:"total"`
+	SizeCounts map[string]int `json:"sizeCounts"`
+	Orders     []TeeOrder     `json:"orders"`
 }
 
 type ShirtRequest struct {

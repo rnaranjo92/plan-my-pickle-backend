@@ -553,6 +553,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		"additional_division_fee_cents": max(req.AdditionalDivisionFeeCents, 0),
 		"addon_tee_cents":               req.AddonTeeCents,
 		"addon_grips_cents":             req.AddonGripsCents,
+		"addon_tee_name":                orNull(strings.TrimSpace(req.AddonTeeName)),
+		"addon_tee_front_url":           orNull(strings.TrimSpace(req.AddonTeeFrontURL)),
+		"addon_tee_back_url":            orNull(strings.TrimSpace(req.AddonTeeBackURL)),
+		"addon_tee_sizes":               normTeeSizes(req.AddonTeeSizes),
 		"currency":                      normalizeCurrency(req.Currency),
 		"location":                      orNull(req.Location),
 		"contact_phone":                 orNull(req.ContactPhone),
@@ -1524,6 +1528,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		"additional_division_fee_cents": max(req.AdditionalDivisionFeeCents, 0),
 		"addon_tee_cents":               req.AddonTeeCents,
 		"addon_grips_cents":             req.AddonGripsCents,
+		"addon_tee_name":                orNull(strings.TrimSpace(req.AddonTeeName)),
+		"addon_tee_front_url":           orNull(strings.TrimSpace(req.AddonTeeFrontURL)),
+		"addon_tee_back_url":            orNull(strings.TrimSpace(req.AddonTeeBackURL)),
+		"addon_tee_sizes":               normTeeSizes(req.AddonTeeSizes),
 		"location":                      orNull(req.Location),
 		"dupr_sanctioned":               sanctioned,
 		"dupr_min_entitlement":          orNull(minEnt),
@@ -1717,6 +1725,19 @@ func (s *Service) SetStartTime(eventID, startsAt string) error {
 func (s *Service) SetEventPoster(eventID, posterURL string) error {
 	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
 		map[string]any{"poster_url": orNull(posterURL)})
+	return err
+}
+
+// SetEventTeeImages sets (or clears, when empty) the event-tee presale design
+// URLs — the public Storage URLs the client uploaded to. Kept separate from
+// updateEvent so a metadata edit never touches the uploaded designs (mirrors
+// SetEventPoster, since the images need the event id for their Storage path).
+func (s *Service) SetEventTeeImages(eventID, frontURL, backURL string) error {
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{
+			"addon_tee_front_url": orNull(frontURL),
+			"addon_tee_back_url":  orNull(backURL),
+		})
 	return err
 }
 

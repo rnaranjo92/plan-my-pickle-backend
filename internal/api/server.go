@@ -166,6 +166,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /city-autocomplete", requireAuth(s.cityAutocomplete))
 	mux.HandleFunc("POST /events/{id}/register", optionalAuth(s.register))
 	mux.HandleFunc("POST /events/{id}/waitlist", optionalAuth(s.waitlistJoin))
+	mux.HandleFunc("GET /events/{id}/tee-orders", s.ownerOnly("event", "id", s.teeOrders))
 	mux.HandleFunc("GET /events/{id}/waitlist", s.ownerOnly("event", "id", s.waitlistList))
 	mux.HandleFunc("POST /events/{id}/waitlist/{wid}/promote", s.ownerOnly("event", "id", s.waitlistPromote))
 	mux.HandleFunc("DELETE /events/{id}/waitlist/{wid}", s.ownerOnly("event", "id", s.waitlistRemove))
@@ -397,6 +398,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/divisions", s.ownerOnly("event", "id", s.syncDivisions))
 	mux.HandleFunc("POST /events/{id}/division-order", s.ownerOnly("event", "id", s.setDivisionOrder))
 	mux.HandleFunc("POST /events/{id}/poster", s.ownerOnly("event", "id", s.setEventPoster))
+	mux.HandleFunc("POST /events/{id}/tee-images", s.ownerOnly("event", "id", s.setEventTeeImages))
 	mux.HandleFunc("POST /events/{id}/email-logo", s.ownerOnly("event", "id", s.uploadEmailLogo))
 	mux.HandleFunc("DELETE /events/{id}/email-logo", s.ownerOnly("event", "id", s.clearEmailLogo))
 	mux.HandleFunc("POST /events/{id}/sponsor-watermark", s.ownerOnly("event", "id", s.setSponsorWatermarkImage))
@@ -1507,6 +1509,23 @@ func (s *Server) setEventPoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetEventPoster(r.PathValue("id"), req.PosterURL); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "set"})
+}
+
+// setEventTeeImages sets (or clears) the event-tee presale design URLs. Owner-only;
+// kept separate from updateEvent so a metadata edit never touches the designs.
+func (s *Server) setEventTeeImages(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FrontURL string `json:"frontUrl"`
+		BackURL  string `json:"backUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetEventTeeImages(r.PathValue("id"), req.FrontURL, req.BackURL); err != nil {
 		status(w, err)
 		return
 	}
@@ -4204,11 +4223,22 @@ func (s *Server) setAddons(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRegistration(w, r, req.Token) {
 		return
 	}
-	if err := s.svc.SetRegistrationAddons(r.PathValue("id"), req.Tee, req.Grips); err != nil {
+	if err := s.svc.SetRegistrationAddons(r.PathValue("id"), req.Tee, req.Grips, req.TeeSize); err != nil {
 		status(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// teeOrders returns the event's event-tee presale orders + a size breakdown for
+// the organizer's printer (owner-only; the route's ownerOnly wrapper gates it).
+func (s *Server) teeOrders(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.svc.TeeOrders(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
 }
 
 func (s *Server) saveShirt(w http.ResponseWriter, r *http.Request) {

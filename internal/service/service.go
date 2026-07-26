@@ -982,6 +982,7 @@ func (s *Service) attachActivity(events []model.Event) {
 // the "what is mine" rule is defined in exactly one place.
 func (s *Service) playerIDsForUser(userID, email string) ([]string, error) {
 	playerIDs := map[string]bool{}
+	var phone, name string
 	if userID != "" {
 		pl, err := s.sb.SelectOne("players",
 			"user_id=eq."+store.Q(userID)+"&select=id")
@@ -990,6 +991,13 @@ func (s *Service) playerIDsForUser(userID, email string) ([]string, error) {
 		}
 		if pl != nil {
 			playerIDs[asStr(pl, "id")] = true
+		}
+		// The account's phone + name, for the conservative phone+name guest match
+		// below (surfaces registrations made by phone with no email on file).
+		if pr, _ := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(userID)+"&select=full_name,phone"); pr != nil {
+			phone = strings.TrimSpace(asStr(pr, "phone"))
+			name = strings.TrimSpace(asStr(pr, "full_name"))
 		}
 	}
 	if email != "" {
@@ -1002,6 +1010,19 @@ func (s *Service) playerIDsForUser(userID, email string) ([]string, error) {
 		}
 		for _, p := range pls {
 			playerIDs[asStr(p, "id")] = true
+		}
+	}
+	// Also include GUEST registrations made by phone (no email): match rows on
+	// phone AND name (name required — a bare phone can be a shared household
+	// number). Mirrors LinkRegistrationsToAccount's conservative rule. Read-only:
+	// this surfaces the events without mutating any player/registration rows.
+	if phone != "" && name != "" {
+		if pls, err := s.sb.Select("players",
+			"phone=eq."+store.Q(phone)+"&full_name=ilike."+store.Q(escapeLike(name))+
+				"&select=id"); err == nil {
+			for _, p := range pls {
+				playerIDs[asStr(p, "id")] = true
+			}
 		}
 	}
 	out := make([]string, 0, len(playerIDs))

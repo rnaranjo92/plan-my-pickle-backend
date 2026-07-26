@@ -8880,11 +8880,15 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		ids = append(ids, id)
 	}
 	inList := store.In(ids)
-	// Event id -> name, for the context label on each item.
+	// Event id -> name / current poster, for the context label + card image. The
+	// live poster is read here (not the one snapshotted into the post's meta at
+	// creation) so a poster added/changed after the post exists still shows.
 	names := map[string]string{}
-	if rows, err := s.sb.Select("events", "id="+inList+"&select=id,name"); err == nil {
+	posters := map[string]string{}
+	if rows, err := s.sb.Select("events", "id="+inList+"&select=id,name,poster_url"); err == nil {
 		for _, r := range rows {
 			names[asStr(r, "id")] = asStr(r, "name")
+			posters[asStr(r, "id")] = asStr(r, "poster_url")
 		}
 	}
 	rows, err := s.sb.Select("feed_items",
@@ -8952,9 +8956,10 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 					fids = append(fids, id)
 				}
 				fIn := store.In(fids)
-				if rows, err := s.sb.Select("events", "id="+fIn+"&select=id,name"); err == nil {
+				if rows, err := s.sb.Select("events", "id="+fIn+"&select=id,name,poster_url"); err == nil {
 					for _, r := range rows {
 						names[asStr(r, "id")] = asStr(r, "name")
+						posters[asStr(r, "id")] = asStr(r, "poster_url")
 					}
 				}
 				if frows, err := s.sb.Select("feed_items",
@@ -8996,6 +9001,14 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	for _, fi := range out {
 		if isTestFeedItem(fi, names) {
 			continue
+		}
+		// Refresh the card image from the event's CURRENT poster (the meta copy is
+		// snapshotted at post-creation and goes stale when the organizer adds/swaps
+		// a poster later), so the feed card matches the Organize card.
+		if fi.Type == "event" {
+			if p := posters[fi.EventID]; p != "" {
+				fi.PosterURL = &p
+			}
 		}
 		filtered = append(filtered, fi)
 	}

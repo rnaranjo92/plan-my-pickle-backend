@@ -6,6 +6,22 @@
 alter table pmp_profiles
   add column if not exists phone_verified boolean not null default false;
 
+-- GRANDFATHER existing accounts: everyone who already signed up is trusted, so
+-- turning the gate on must NOT lock them out. Only NEW rows (future sign-ups)
+-- default to false and must verify. This runs once at migration time.
+update pmp_profiles set phone_verified = true where phone_verified = false;
+
+-- pmp_profiles rows are created LAZILY (no signup trigger) — a long-time
+-- organizer who never edited their profile has NO row, and the UPDATE above can't
+-- reach them. Create a verified row for every existing auth user that lacks one,
+-- so the gate never locks out a pre-existing account. (If this INSERT errors on a
+-- NOT-NULL column, add that column to the select list.)
+insert into pmp_profiles (user_id, phone_verified)
+select u.id, true
+from auth.users u
+where not exists (select 1 from pmp_profiles p where p.user_id = u.id)
+on conflict (user_id) do nothing;
+
 -- One pending code per user (upserted on resend). Codes are stored HASHED
 -- (sha256 of secret|user_id|code) — never plaintext.
 create table if not exists phone_otps (

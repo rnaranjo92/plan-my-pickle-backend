@@ -60,6 +60,17 @@ func genOtp() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+// PhoneOnFile reports whether the account has any phone number stored — used to
+// nudge phone-less accounts (e.g. social sign-in) to add one.
+func (s *Service) PhoneOnFile(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	row, _ := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone")
+	return row != nil && strings.TrimSpace(asStr(row, "phone")) != ""
+}
+
 // PhoneVerified reports whether the account has a verified phone.
 func (s *Service) PhoneVerified(userID string) bool {
 	if userID == "" {
@@ -77,16 +88,16 @@ func (s *Service) SendPhoneOtp(userID, phoneOverride string) error {
 	if s.Sms == nil {
 		return ErrOtpNoSms
 	}
-	phone := ""
-	if row, _ := s.sb.SelectOne("pmp_profiles",
-		"user_id=eq."+store.Q(userID)+"&select=phone"); row != nil {
-		phone = strings.TrimSpace(asStr(row, "phone"))
-	}
+	// Verify the number the user is confirming RIGHT NOW (typed in the flow); fall
+	// back to the profile phone only when they didn't provide one. The number is
+	// NOT written to the profile here — it's persisted only after a successful
+	// verify (VerifyPhoneOtp), so an unverified or someone-else's number can never
+	// overwrite the real profile phone, and a code always goes to the typed number.
+	phone := strings.TrimSpace(phoneOverride)
 	if phone == "" {
-		phone = strings.TrimSpace(phoneOverride)
-		if phone != "" {
-			_, _ = s.sb.Upsert("pmp_profiles", "user_id",
-				map[string]any{"user_id": userID, "phone": phone})
+		if row, _ := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(userID)+"&select=phone"); row != nil {
+			phone = strings.TrimSpace(asStr(row, "phone"))
 		}
 	}
 	if phone == "" || !gateway.SmsReachable(phone) {
@@ -128,7 +139,7 @@ func (s *Service) SendPhoneOtp(userID, phoneOverride string) error {
 func (s *Service) VerifyPhoneOtp(userID, code string) error {
 	code = strings.TrimSpace(code)
 	row, err := s.sb.SelectOne("phone_otps",
-		"user_id=eq."+store.Q(userID)+"&select=code_hash,expires_at,attempts")
+		"user_id=eq."+store.Q(userID)+"&select=phone,code_hash,expires_at,attempts")
 	if err != nil {
 		return err
 	}
@@ -147,8 +158,14 @@ func (s *Service) VerifyPhoneOtp(userID, code string) error {
 			map[string]any{"attempts": asInt(row, "attempts") + 1})
 		return ErrOtpWrong
 	}
-	if _, err := s.sb.Upsert("pmp_profiles", "user_id",
-		map[string]any{"user_id": userID, "phone_verified": true}); err != nil {
+	// Success → verified. Persist the number that was actually verified as the
+	// profile phone (keeps profile.phone in sync + only ever a VERIFIED number
+	// lands there).
+	prof := map[string]any{"user_id": userID, "phone_verified": true}
+	if p := strings.TrimSpace(asStr(row, "phone")); p != "" {
+		prof["phone"] = p
+	}
+	if _, err := s.sb.Upsert("pmp_profiles", "user_id", prof); err != nil {
 		return err
 	}
 	_ = s.sb.Delete("phone_otps", "user_id=eq."+store.Q(userID))

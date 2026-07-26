@@ -9607,11 +9607,20 @@ func (s *Service) SetMyBasicInfo(userID, fullName, phone string) error {
 	if r := []rune(phone); len(r) > 40 {
 		phone = string(r[:40])
 	}
-	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+	upd := map[string]any{
 		"user_id":   userID,
 		"full_name": fullName,
 		"phone":     phone,
-	})
+	}
+	// If the phone changed to a DIFFERENT number, it's no longer verified — force
+	// re-verification (compare digits-only so a reformat isn't treated as a change).
+	if cur, _ := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone"); cur != nil {
+		if digitsOnly(asStr(cur, "phone")) != digitsOnly(phone) {
+			upd["phone_verified"] = false
+		}
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", upd)
 	return err
 }
 

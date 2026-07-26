@@ -8,7 +8,10 @@ alter table pmp_profiles
 
 -- GRANDFATHER existing accounts: everyone who already signed up is trusted, so
 -- turning the gate on must NOT lock them out. Only NEW rows (future sign-ups)
--- default to false and must verify. This runs once at migration time.
+-- default to false and must verify.
+-- ⚠️ RUN ONCE ONLY — this has no time bound, so RE-RUNNING it would wrongly
+--    grandfather every account that signed up (unverified) since the first run.
+--    Already applied in prod 2026-07-26. Do NOT run again.
 update pmp_profiles set phone_verified = true where phone_verified = false;
 
 -- pmp_profiles rows are created LAZILY (no signup trigger) — a long-time

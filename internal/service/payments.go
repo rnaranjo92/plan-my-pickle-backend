@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
@@ -151,11 +152,48 @@ type CheckoutSessionSummary struct {
 	Paid        bool   `json:"paid"`
 }
 
+// sessionSummaryCache memoizes settled (paid) Checkout-session summaries. A
+// session's total is immutable once paid, so caching lets the whole venue's
+// post-payment confirmations (often behind one shared Wi-Fi IP) be served without
+// re-hitting Stripe — sparing both the Stripe API budget and the caller. Only
+// settled results are cached; pending ones can still change.
+var (
+	sessSumMu    sync.Mutex
+	sessSumCache = map[string]sessSumEntry{}
+)
+
+type sessSumEntry struct {
+	sum CheckoutSessionSummary
+	at  time.Time
+}
+
+const sessSumTTL = 30 * time.Minute
+
+// CachedCheckoutSummary returns a settled summary straight from the in-memory
+// cache WITHOUT contacting Stripe (ok=false on a miss). The handler uses this to
+// serve cache hits BEFORE charging the Stripe-budget rate limiter, so a venue's
+// repeat/refresh confirmations never get throttled.
+func (s *Service) CachedCheckoutSummary(sessionID string) (CheckoutSessionSummary, bool) {
+	sessSumMu.Lock()
+	defer sessSumMu.Unlock()
+	if e, ok := sessSumCache[sessionID]; ok && time.Since(e.at) < sessSumTTL {
+		return e.sum, true
+	}
+	return CheckoutSessionSummary{}, false
+}
+
 // GetCheckoutSessionSummary looks up a Stripe Checkout Session by id and returns
 // the exact amount captured. Safe to expose unauthenticated: session ids (cs_…)
 // are unguessable single-use tokens and we return only amount/currency/paid — no
-// customer, card, or payment-intent detail.
+// customer, card, or payment-intent detail. Settled results are cached.
 func (s *Service) GetCheckoutSessionSummary(sessionID string) (CheckoutSessionSummary, error) {
+	sessSumMu.Lock()
+	if e, ok := sessSumCache[sessionID]; ok && time.Since(e.at) < sessSumTTL {
+		sessSumMu.Unlock()
+		return e.sum, nil
+	}
+	sessSumMu.Unlock()
+
 	gw, ok := s.stripeGW()
 	if !ok {
 		return CheckoutSessionSummary{}, ErrPaymentsNotConfigured
@@ -164,11 +202,29 @@ func (s *Service) GetCheckoutSessionSummary(sessionID string) (CheckoutSessionSu
 	if err != nil {
 		return CheckoutSessionSummary{}, err
 	}
-	return CheckoutSessionSummary{
+	sum := CheckoutSessionSummary{
 		AmountCents: info.AmountTotalCents,
 		Currency:    info.Currency,
 		Paid:        info.PaymentStatus == "paid" || info.PaymentStatus == "no_payment_required",
-	}, nil
+	}
+	if sum.Paid {
+		sessSumMu.Lock()
+		// Bound memory: settled entries are read within the TTL; if the map grows
+		// large, drop expired entries (and, worst case, reset) before inserting.
+		if len(sessSumCache) > 10000 {
+			for k, e := range sessSumCache {
+				if time.Since(e.at) >= sessSumTTL {
+					delete(sessSumCache, k)
+				}
+			}
+			if len(sessSumCache) > 10000 {
+				sessSumCache = map[string]sessSumEntry{}
+			}
+		}
+		sessSumCache[sessionID] = sessSumEntry{sum, time.Now()}
+		sessSumMu.Unlock()
+	}
+	return sum, nil
 }
 
 // stripeGW returns the StripeGateway if the live Stripe processor is wired up,

@@ -37,6 +37,13 @@ type Server struct {
 	// socialLimiter throttles authenticated social writes (comments, reactions,
 	// music-queue adds) PER USER so one account can't flood every event's feed/queue.
 	socialLimiter *rateLimiter
+	// createLimiter throttles event/league CREATION per user — organizing is open to
+	// everyone at launch, so this caps scripted event/league spam (DB + discovery).
+	createLimiter *rateLimiter
+	// sessionLimiter is a GLOBAL cap on PUBLIC checkout-session lookups that MISS
+	// the service cache — bounds Stripe-budget burn from junk-id floods without
+	// per-IP keying (a venue shares one NAT IP; XFF is spoofable).
+	sessionLimiter *rateLimiter
 	// captcha verifies a Turnstile token on PUBLIC (anonymous) self-registration.
 	// Active only when TURNSTILE_SECRET is set; otherwise it skips (fail-open).
 	captcha *gateway.Captcha
@@ -51,6 +58,8 @@ func NewServer(svc *service.Service) http.Handler {
 		regContactLimiter: newRateLimiter(5, 600), // 5 self-registrations / 10 min per phone|email
 		passcodeLimiter:   newRateLimiter(10, 60), // 10 passcode attempts/min per event
 		socialLimiter:     newRateLimiter(30, 60), // 30 social writes/min per user
+		createLimiter:     newRateLimiter(20, 60), // 20 event/league creates/min per user
+		sessionLimiter:    newRateLimiter(600, 60), // 600 checkout-session Stripe lookups/min (global, cache-miss only)
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
@@ -821,6 +830,11 @@ func (s *Server) mayUsePremium(r *http.Request) bool {
 }
 
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
+	if !s.createLimiter.allow("create:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("you're creating events too quickly — try again shortly"))
+		return
+	}
 	if !organizerAllowed(userEmail(r)) {
 		writeErr(w, http.StatusForbidden,
 			errors.New("organizing is limited during early access"))
@@ -865,6 +879,11 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 
 // createLeague creates a league owned by the authenticated caller.
 func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
+	if !s.createLimiter.allow("create:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("you're creating leagues too quickly — try again shortly"))
+		return
+	}
 	if !organizerAllowed(userEmail(r)) {
 		writeErr(w, http.StatusForbidden,
 			errors.New("organizing is limited during early access"))
@@ -1344,8 +1363,12 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// SMS "both channels" is premium — non-premium callers can't enable it on edit.
-	if req.SmsNotifications && !s.mayUsePremium(r) {
+	// SMS "both channels" is premium — allow it when the caller is Premium OR this
+	// specific event is Premium-unlocked (a per-event $29 pass), so a pass-holder
+	// gets the SMS they paid for. (Create can't check the pass — the event doesn't
+	// exist yet — so SMS is enabled by editing after purchase.)
+	if req.SmsNotifications && !s.mayUsePremium(r) &&
+		!s.svc.EventPremiumUnlocked(r.PathValue("id")) {
 		req.SmsNotifications = false
 	}
 	// On-deck SMS is a sub-option of the SMS add-on — off whenever SMS is off.
@@ -3902,6 +3925,20 @@ func (s *Server) checkoutSessionSummary(w http.ResponseWriter, r *http.Request) 
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" || !strings.HasPrefix(id, "cs_") {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid session id"))
+		return
+	}
+	// Serve settled lookups straight from the cache — these do NOT consume the
+	// limiter, so a whole venue's repeat/refresh confirmations (behind one NAT IP)
+	// are never throttled.
+	if sum, hit := s.svc.CachedCheckoutSummary(id); hit {
+		writeJSON(w, http.StatusOK, sum)
+		return
+	}
+	// Cache MISS → charge a GLOBAL cap (not per-IP: a venue shares one NAT IP, and
+	// X-Forwarded-For is spoofable) before the Stripe round-trip, bounding budget
+	// burn from junk-id floods.
+	if !s.sessionLimiter.allow("checkout-session") {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
 		return
 	}
 	sum, err := s.svc.GetCheckoutSessionSummary(id)

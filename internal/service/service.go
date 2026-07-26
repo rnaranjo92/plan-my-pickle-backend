@@ -821,6 +821,23 @@ func (s *Service) ListEvents(ownerID string) ([]model.Event, error) {
 // false positive (an organizer with "demo" in a real event name can rename).
 var publicFeedTestName = regexp.MustCompile(`(?i)\b(test|demo|dbg|debug|authcheck)\b`)
 
+// isTestFeedItem reports whether a NewsFeed item belongs to a QA/test/demo event
+// and should be hidden. Checks the resolved event name (from `names`), the item's
+// stamped EventName, and — for event-type posts — the post text, so an event
+// leaks through NONE of MyFeed's append paths (own, followed, own-authored).
+func isTestFeedItem(fi model.FeedItem, names map[string]string) bool {
+	if fi.EventID != "" && publicFeedTestName.MatchString(names[fi.EventID]) {
+		return true
+	}
+	if fi.EventName != "" && publicFeedTestName.MatchString(fi.EventName) {
+		return true
+	}
+	if fi.Type == "event" && publicFeedTestName.MatchString(fi.Text) {
+		return true
+	}
+	return false
+}
+
 // PublicEvents returns up to `limit` publicly-listed events (listed=eq.true),
 // ordered by scheduled start, mapped to the SAFE public projection for the
 // planmypickle.com marketing feed. No owner scoping, no PII — anyone may read it.
@@ -8972,6 +8989,17 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 			out = append(out, fi)
 		}
 	}
+	// Final guarantee: drop any QA/test/demo event post no matter which append
+	// path added it (own, followed, or own-authored). Block 1 filters early for
+	// efficiency; this is the single chokepoint so nothing test-named slips out.
+	filtered := out[:0]
+	for _, fi := range out {
+		if isTestFeedItem(fi, names) {
+			continue
+		}
+		filtered = append(filtered, fi)
+	}
+	out = filtered
 	// Newest first across events + community posts (created_at is ISO → sorts lexically).
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	if len(out) > 60 {

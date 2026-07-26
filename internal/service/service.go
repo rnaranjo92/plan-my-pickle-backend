@@ -9447,22 +9447,45 @@ func (s *Service) LinkRegistrationsToAccount(userID, email, tokenPhone, tokenNam
 		}
 		_, _ = s.sb.Upsert("pmp_profiles", "user_id", prof)
 	}
+	// The account has ONE canonical player row (unique idx_players_user allows one
+	// non-null user_id, many null guests). Promote a SINGLE matching guest row to
+	// the account when it has no player yet. We must NOT stamp user_id onto
+	// multiple guest rows at once, or onto a guest when the account already has a
+	// player — either violates the unique constraint. The old bulk UPDATE did
+	// exactly that and 409'd (linking nothing). Extra guest rows from separate
+	// anonymous registrations stay guests; merging them means re-pointing player_id
+	// across registrations/matches/ladders (a separate migration-grade job).
+	hasCanonical := false
+	if p, _ := s.sb.SelectOne("players",
+		"user_id=eq."+store.Q(userID)+"&select=id"); p != nil {
+		hasCanonical = true
+	}
 	linked := 0
-	stamp := func(filter string) {
-		rows, err := s.sb.Update("players",
-			filter+"&user_id=is.null", map[string]any{"user_id": userID})
-		if err == nil {
+	promote := func(filter string) {
+		if hasCanonical {
+			return
+		}
+		ids, err := s.sb.Select("players", filter+"&user_id=is.null&select=id&limit=1")
+		if err != nil || len(ids) == 0 {
+			return
+		}
+		// id-scoped single-row claim → can never collide with another guest row.
+		rows, uerr := s.sb.Update("players",
+			"id=eq."+store.Q(asStr(ids[0], "id"))+"&user_id=is.null",
+			map[string]any{"user_id": userID})
+		if uerr == nil && len(rows) > 0 {
+			hasCanonical = true
 			linked += len(rows)
 		}
 	}
 	if e := strings.TrimSpace(email); e != "" {
-		stamp("email=ilike." + store.Q(escapeLike(e)))
+		promote("email=ilike." + store.Q(escapeLike(e)))
 	}
 	if phone != "" && name != "" {
-		stamp("phone=eq." + store.Q(phone) + "&full_name=ilike." + store.Q(escapeLike(name)))
+		promote("phone=eq." + store.Q(phone) + "&full_name=ilike." + store.Q(escapeLike(name)))
 	}
 	if linked > 0 {
-		log.Printf("link: tied %d guest registration(s) to account %s", linked, userID)
+		log.Printf("link: promoted a guest player to account %s", userID)
 	}
 	return linked
 }

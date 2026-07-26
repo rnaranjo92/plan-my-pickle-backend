@@ -856,7 +856,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	// Anti-abuse: a fully-registered (phone-verified) account is required to
 	// organize once SIGNUP_OTP_REQUIRED is on. No-op while the flag is off.
-	if service.SignupOtpRequired() && !s.svc.PhoneVerified(userID(r)) {
+	if service.SignupOtpRequired() && !s.svc.FullyRegistered(userID(r)) {
 		writeErr(w, http.StatusForbidden, service.ErrPhoneVerificationRequired)
 		return
 	}
@@ -898,7 +898,7 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 			errors.New("you're creating leagues too quickly — try again shortly"))
 		return
 	}
-	if service.SignupOtpRequired() && !s.svc.PhoneVerified(userID(r)) {
+	if service.SignupOtpRequired() && !s.svc.FullyRegistered(userID(r)) {
 		writeErr(w, http.StatusForbidden, service.ErrPhoneVerificationRequired)
 		return
 	}

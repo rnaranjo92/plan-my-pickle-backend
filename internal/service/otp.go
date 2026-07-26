@@ -71,6 +71,23 @@ func (s *Service) PhoneOnFile(userID string) bool {
 	return row != nil && strings.TrimSpace(asStr(row, "phone")) != ""
 }
 
+// FullyRegistered reports whether the account may organize under the OTP gate: a
+// verified phone that is ALSO actually on file. Grandfathered accounts are
+// verified but may have no phone — requiring a number on file makes them add one
+// (via the verify flow, which collects + verifies it) before they can organize.
+func (s *Service) FullyRegistered(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone,phone_verified")
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "phone_verified") &&
+		strings.TrimSpace(asStr(row, "phone")) != ""
+}
+
 // PhoneVerified reports whether the account has a verified phone.
 func (s *Service) PhoneVerified(userID string) bool {
 	if userID == "" {

@@ -1189,6 +1189,11 @@ type VideoAnalysis struct {
 	AmountCents int    `json:"amountCents"`
 	Currency    string `json:"currency,omitempty"`
 	CreatedAt   string `json:"createdAt,omitempty"`
+	// Insights/Stats are PB Vision's full analysis JSON — only populated by
+	// GetAnalysis (the detail fetch), so the list stays light. The client renders
+	// a summary from these; the hosted report (ReportURL) is the full display.
+	Insights any `json:"insights,omitempty"`
+	Stats    any `json:"stats,omitempty"`
 }
 
 // AnalysisCheckoutRequest starts a paid analysis: the uploaded video's public URL

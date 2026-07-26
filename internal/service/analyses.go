@@ -273,14 +273,17 @@ func (s *Service) GetAnalysis(userID, id string) (model.VideoAnalysis, error) {
 	}
 	row, err := s.sb.SelectOne("video_analyses",
 		"id=eq."+store.Q(id)+"&user_id=eq."+store.Q(userID)+
-			"&select=id,status,name,court,report_url,error,amount_cents,currency,created_at")
+			"&select=id,status,name,court,report_url,error,amount_cents,currency,created_at,insights,stats")
 	if err != nil {
 		return model.VideoAnalysis{}, err
 	}
 	if row == nil {
 		return model.VideoAnalysis{}, ErrNotFound
 	}
-	return mapVideoAnalysis(row), nil
+	a := mapVideoAnalysis(row)
+	a.Insights = row["insights"] // PB Vision's full JSON — only on the detail fetch
+	a.Stats = row["stats"]
+	return a, nil
 }
 
 // RegisterPBVisionWebhook points PB Vision's completion callback at our public

@@ -477,11 +477,8 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	// plus the gated tier), so normalize it up front.
 	minEnt := normalizeDuprEntitlement(req.DuprMinEntitlement)
 	sanctioned := req.DuprSanctioned || minEnt != ""
-	// DUPR sanctioning is a Premium feature — enforce server-side so the UI lock
-	// can't be bypassed.
-	if sanctioned && !s.IsPremium(ownerID) {
-		return "", ErrPremiumRequired
-	}
+	// DUPR-connected/sanctioned events are FREE (2026-07-25 tier revision) — any
+	// organizer can run rated/sanctioned play; no Premium gate.
 	format := req.Format
 	if format == "" {
 		format = "doubles"
@@ -1491,11 +1488,7 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// A premium/verified DUPR tier implies a sanctioned event.
 	minEnt := normalizeDuprEntitlement(req.DuprMinEntitlement)
 	sanctioned := req.DuprSanctioned || minEnt != ""
-	// DUPR sanctioning is Premium — allowed if the owner subscribes OR a one-time
-	// per-event pass was bought for this event.
-	if sanctioned && !s.eventPremiumUnlocked(ev) {
-		return ErrPremiumRequired
-	}
+	// DUPR-connected/sanctioned events are FREE (2026-07-25 tier revision).
 
 	ptw := req.PointsToWin
 	if ptw <= 0 {

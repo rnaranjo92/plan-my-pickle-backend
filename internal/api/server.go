@@ -69,6 +69,10 @@ func NewServer(svc *service.Service) http.Handler {
 			"webhook":  s.svc.WebhookConfigured(),
 			// "live" | "test" | "off" — which Stripe environment prod points at.
 			"paymentsMode": s.svc.PaymentsMode(),
+			// The paid-Premium master switch (SUBSCRIPTIONS_ENABLED). false = every
+			// feature is free-for-all (IsPremium short-circuits true); true = the
+			// paid plan is live and Premium features are really gated.
+			"subscriptions": service.SubscriptionsEnabled(),
 		})
 	})
 	// --- Public: spectator/shareable reads + the on-site self-service flows

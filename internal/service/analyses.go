@@ -101,6 +101,20 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 
 	// Comped: no Stripe — submit straight to PB Vision (reuses the paid path).
 	if comp {
+		// Close the read-then-insert race on a fixed free quota: now that this row
+		// exists, re-count comped rows. If a concurrent request pushed us past the
+		// allowance, void this one rather than granting a free overage. (Unlimited
+		// QA allowance is < 0 and skips this.)
+		if allowance > 0 {
+			used, cerr := s.compedAnalysisCount(userID) // now includes this row
+			if cerr != nil {
+				return "", false, cerr
+			}
+			if used > allowance {
+				_ = s.sb.Delete("video_analyses", "id=eq."+store.Q(id))
+				return "", false, errors.New("that was your last free analysis — please try again")
+			}
+		}
 		if err := s.markAnalysisPaid(id); err != nil {
 			return "", false, err
 		}
@@ -132,17 +146,22 @@ func (s *Service) compedAnalysisCount(userID string) (int, error) {
 // succeeded, so a PB Vision submit failure marks the row failed but still acks
 // the Stripe webhook (returns nil) — we resolve those manually (retry/refund).
 func (s *Service) markAnalysisPaid(analysisID string) error {
-	row, err := s.sb.SelectOne("video_analyses",
-		"id=eq."+store.Q(analysisID)+"&select=id,status,video_url,name,court,partner_emails")
+	// Atomically CLAIM the row: flip pending_payment → processing in a single
+	// conditional update. Only one caller wins the flip (PostgREST returns just the
+	// rows it actually changed), so a Stripe webhook redelivered concurrently can't
+	// double-submit the video to PB Vision (a real per-video vendor cost). Losers
+	// get 0 rows back and ack without side effects. The returned row carries all
+	// columns (return=representation), so no separate read is needed.
+	claimed, err := s.sb.Update("video_analyses",
+		"id=eq."+store.Q(analysisID)+"&status=eq.pending_payment",
+		map[string]any{"status": "processing", "updated_at": now()})
 	if err != nil {
 		return err
 	}
-	if row == nil {
-		return nil // row deleted — nothing to do, ack the webhook
+	if len(claimed) == 0 {
+		return nil // row missing, or already claimed/processed — idempotent ack
 	}
-	if asStr(row, "status") != "pending_payment" {
-		return nil // idempotent: a retried webhook, already processed
-	}
+	row := claimed[0]
 
 	if s.PBV == nil || !s.PBV.Configured() {
 		s.failAnalysis(analysisID, "analysis service not configured")
@@ -217,6 +236,7 @@ func (s *Service) HandlePBVisionWebhook(token string, payload []byte) error {
 	}
 	id := asStr(row, "id")
 	userID := asStr(row, "user_id")
+	wasReady := asStr(row, "status") == "ready"
 
 	upd := map[string]any{"updated_at": now()}
 	ready := false
@@ -240,7 +260,10 @@ func (s *Service) HandlePBVisionWebhook(token string, payload []byte) error {
 		return err
 	}
 
-	if ready {
+	// Notify only on the FIRST transition into ready. PB Vision may redeliver the
+	// completion callback (or send augmented follow-ups); re-firing would spam the
+	// user with duplicate "analysis is ready" notifications.
+	if ready && !wasReady {
 		s.notifyUser(userID, "analysis_ready", "", "",
 			"Your match video analysis is ready", "analysis:"+id)
 	}

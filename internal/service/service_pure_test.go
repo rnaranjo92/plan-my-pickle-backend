@@ -86,20 +86,25 @@ func TestValidateManualSides(t *testing.T) {
 }
 
 func TestPlatformFeeCents(t *testing.T) {
-	if platformFeeCents(0) != 0 || platformFeeCents(-5) != 0 {
+	if platformFeeCents(0, "usd") != 0 || platformFeeCents(-5, "usd") != 0 {
 		t.Error("non-positive fee → 0")
 	}
 	// Below the cap: a $20 entry → 5% = $1.00 (uncapped).
-	if got := platformFeeCents(2000); got != 100 {
+	if got := platformFeeCents(2000, "usd"); got != 100 {
 		t.Errorf("$20 entry → want 100, got %d", got)
 	}
 	// At the cap boundary: a $100 entry → 5% = $5.00 = the cap exactly.
-	if got := platformFeeCents(10000); got != platformFeeCapCents {
+	if got := platformFeeCents(10000, "usd"); got != platformFeeCapCents {
 		t.Errorf("$100 entry → want %d (cap), got %d", platformFeeCapCents, got)
 	}
 	// Above the cap: a $300 entry → 5% = $15 but is clamped to the $5 cap.
-	if got := platformFeeCents(30000); got != platformFeeCapCents {
+	if got := platformFeeCents(30000, "usd"); got != platformFeeCapCents {
 		t.Errorf("$300 entry → want %d (capped), got %d", platformFeeCapCents, got)
+	}
+	// Currency-aware cap: a ₱6,000 entry (5% = ₱300) is NOT clamped to ₱5 — the
+	// PHP cap is ~₱280, so it clamps there, not to the USD 500-centavo figure.
+	if got := platformFeeCents(600000, "php"); got != platformFeeCapCentsFor("php") {
+		t.Errorf("₱6,000 entry → want %d (PHP cap), got %d", platformFeeCapCentsFor("php"), got)
 	}
 }
 

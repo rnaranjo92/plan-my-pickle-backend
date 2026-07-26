@@ -24,18 +24,50 @@ const platformFeeBPS = 500
 // band that capped-fee rivals use (RegFox ~$4.99, PickleballTournaments ~$10
 // per 2 events) instead of looking expensive on a $150+ sanctioned entry. The
 // cap only bites above feeCents where 5% exceeds it ($100 entry = $5 = the cap;
-// anything pricier is capped). Set to 0 to disable. 500 = $5.00.
+// anything pricier is capped). Set to 0 to disable. 500 = $5.00. This is the USD
+// figure; platformFeeCapCentsFor scales it to the charge currency's minor units.
 const platformFeeCapCents = 500
 
+// platformFeeCapCentsFor returns the per-registration fee cap in the CHARGE
+// CURRENCY's minor units (~$5 USD equivalent). Expressed per-currency so a
+// ₱-priced entry isn't capped at ₱5 (= 500 centavos) — which would gut the
+// platform's cut on every non-USD charge. All supportedCurrencies are 2-decimal,
+// so "minor units" == cents throughout. Unknown → the USD figure (safe: prod is
+// USD-only; new currencies get a row here as they go live).
+func platformFeeCapCentsFor(currency string) int {
+	switch strings.ToLower(strings.TrimSpace(currency)) {
+	case "php":
+		return 28000 // ~₱280
+	case "inr":
+		return 42000 // ~₹420
+	case "mxn":
+		return 9000 // ~MX$90
+	case "aed":
+		return 1800 // ~د.إ18
+	case "nzd":
+		return 800 // ~NZ$8
+	case "aud", "sgd":
+		return 700 // ~A$7 / S$7
+	case "cad":
+		return 700 // ~C$7
+	case "eur":
+		return 460 // ~€4.60
+	case "gbp":
+		return 400 // ~£4
+	default: // usd + anything not yet tuned
+		return platformFeeCapCents
+	}
+}
+
 // platformFeeCents computes the platform's cut (rounded down) for an entry fee:
-// platformFeeBPS of the fee, capped at platformFeeCapCents.
-func platformFeeCents(feeCents int) int {
+// platformFeeBPS of the fee, capped at the charge currency's cap.
+func platformFeeCents(feeCents int, currency string) int {
 	if feeCents <= 0 {
 		return 0
 	}
 	fee := feeCents * platformFeeBPS / 10000
-	if platformFeeCapCents > 0 && fee > platformFeeCapCents {
-		return platformFeeCapCents
+	if cap := platformFeeCapCentsFor(currency); cap > 0 && fee > cap {
+		return cap
 	}
 	return fee
 }
@@ -65,18 +97,40 @@ func stripeFeeBPS() int {
 	return 290
 }
 
-func stripeFeeFixedCents() int {
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("STRIPE_FEE_FIXED_CENTS"))); err == nil && n >= 0 && n < 500 {
+// stripeFeeFixedCentsFor is Stripe's per-charge FIXED fee in the charge
+// currency's minor units. An env override (STRIPE_FEE_FIXED_CENTS) wins across
+// currencies for manual tuning; otherwise a per-currency default (Stripe's real
+// figure varies by region — e.g. $0.30 US vs ₱15 PH). Unknown → the US $0.30.
+func stripeFeeFixedCentsFor(currency string) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("STRIPE_FEE_FIXED_CENTS"))); err == nil && n >= 0 && n < 5000 {
 		return n
 	}
-	return 30
+	switch strings.ToLower(strings.TrimSpace(currency)) {
+	case "php":
+		return 1500 // ~₱15
+	case "inr":
+		return 300 // ~₹3
+	case "mxn":
+		return 300 // ~MX$3
+	case "aed":
+		return 100 // ~د.إ1
+	case "gbp":
+		return 20 // ~£0.20
+	case "eur":
+		return 25 // ~€0.25
+	case "sgd":
+		return 50 // ~S$0.50
+	default: // usd/cad/aud/nzd + anything not yet tuned
+		return 30
+	}
 }
 
 // processingSurchargeCents is the amount to ADD to a charge so that, after
 // Stripe's fee on the grossed-up total, the platform recovers that fee exactly —
-// leaving its 5% clean. surcharge = ceil((p·amount + f) / (1 − p)), integer cents.
-// 0 when pass-through is disabled or the amount is non-positive.
-func processingSurchargeCents(amountCents int) int {
+// leaving its 5% clean. surcharge = ceil((p·amount + f) / (1 − p)), integer minor
+// units. The fixed fee f is taken in the charge currency. 0 when pass-through is
+// disabled or the amount is non-positive.
+func processingSurchargeCents(amountCents int, currency string) int {
 	if amountCents <= 0 || !passProcessingFee() {
 		return 0
 	}
@@ -85,7 +139,7 @@ func processingSurchargeCents(amountCents int) int {
 	if denom <= 0 {
 		return 0
 	}
-	num := bps*amountCents + stripeFeeFixedCents()*10000
+	num := bps*amountCents + stripeFeeFixedCentsFor(currency)*10000
 	return (num + denom - 1) / denom // ceil(num/denom)
 }
 
@@ -293,14 +347,14 @@ func (s *Service) CreateCheckoutSession(registrationID, successURL, cancelURL st
 	// Pass Stripe's processing fee to the player (when enabled) so our 5% settles
 	// clean. The surcharge rides as its own Checkout line item and is added to the
 	// application fee, so the organizer's net (fee − platform 5%) is unchanged.
-	surcharge := processingSurchargeCents(fee)
+	surcharge := processingSurchargeCents(fee, currency)
 	return gw.CreateCheckoutSession(gateway.CheckoutParams{
 		RegistrationID:      registrationID,
 		AmountCents:         fee,
 		Currency:            currency,
 		ProductName:         name,
 		DestinationAccount:  accountID,
-		ApplicationFeeCents: platformFeeCents(fee) + surcharge,
+		ApplicationFeeCents: platformFeeCents(fee, currency) + surcharge,
 		ServiceFeeCents:     surcharge,
 		AddonTee:            teeSel,
 		AddonGrips:          gripsSel,

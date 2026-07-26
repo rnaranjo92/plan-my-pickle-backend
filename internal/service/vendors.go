@@ -369,7 +369,7 @@ func (s *Service) CreateVendorCheckoutSession(vendorID, successURL, cancelURL st
 			if vendor.IsSponsor {
 				return vendor.FeeCents / 10
 			}
-			return platformFeeCents(vendor.FeeCents)
+			return platformFeeCents(vendor.FeeCents, currency)
 		}(),
 		SuccessURL: successURL,
 		CancelURL:  cancelURL,

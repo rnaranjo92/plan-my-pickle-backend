@@ -4587,7 +4587,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	// (not organizer-adds, imports, or partner links, which pass Self=false), and
 	// never about the organizer registering themselves. Off the request path.
 	if req.Self {
-		go s.notifyOrganizerNewRegistration(eventID, req.FullName, linkUserID)
+		go s.notifyOrganizerNewRegistration(eventID, req.FullName, linkUserID, needsApproval)
 	}
 	return model.Registration{
 		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
@@ -5145,16 +5145,36 @@ func (s *Service) PendingRegistrations(eventID string) ([]model.Registration, er
 // just DeleteRegistration.
 func (s *Service) ApproveRegistration(regID string) error {
 	reg, err := s.sb.SelectOne("registrations",
-		"id=eq."+store.Q(regID)+"&select=id")
+		"id=eq."+store.Q(regID)+"&select=id,event_id,full_name,email,bracket_id,approved")
 	if err != nil {
 		return err
 	}
 	if reg == nil {
 		return ErrNotFound
 	}
-	_, err = s.sb.Update("registrations", "id=eq."+store.Q(regID),
-		map[string]any{"approved": true})
-	return err
+	// Idempotent: if it was already approved, don't flip again or re-fire the
+	// welcome (approve is safe to double-tap / retry).
+	if asBool(reg, "approved") {
+		return nil
+	}
+	if _, err = s.sb.Update("registrations", "id=eq."+store.Q(regID),
+		map[string]any{"approved": true}); err != nil {
+		return err
+	}
+	// Now that the entry is real, fire the same "you're in" side effects the
+	// register handler runs for an approved-on-insert sign-up: the public
+	// "registered" feed post + the branded confirmation email (best-effort, off
+	// the request path — a mail hiccup never fails the approval).
+	eventID := asStr(reg, "event_id")
+	name := strings.TrimSpace(asStr(reg, "full_name"))
+	if eventID != "" && name != "" {
+		s.AddFeedItem(eventID, "registered", name+" registered", regID)
+	}
+	if email := strings.TrimSpace(asStr(reg, "email")); email != "" && eventID != "" {
+		bracketID := asStr(reg, "bracket_id")
+		go s.SendRegistrationEmail(eventID, email, name, bracketID)
+	}
+	return nil
 }
 
 // BusyCourts returns the distinct court numbers that currently have an
@@ -9872,7 +9892,7 @@ func (s *Service) notifyEventPlayers(eventID, text string) {
 // signed up (OneSignal external_id = the owner's auth user id, same as any push).
 // Best-effort, off the request path. Skips when there's no owner or the registrant
 // IS the owner (an organizer registering themselves shouldn't ping themselves).
-func (s *Service) notifyOrganizerNewRegistration(eventID, playerName, registrantUserID string) {
+func (s *Service) notifyOrganizerNewRegistration(eventID, playerName, registrantUserID string, pending bool) {
 	ev, err := s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+"&select=name,owner_id")
 	if err != nil || ev == nil {
@@ -9890,10 +9910,15 @@ func (s *Service) notifyOrganizerNewRegistration(eventID, playerName, registrant
 	if who == "" {
 		who = "A player"
 	}
+	// Word it for the flow: a pending sign-up needs the organizer to act (approve
+	// or decline), so don't imply it's already done. tapping opens the event.
+	body := who + " registered for " + name
+	if pending {
+		body = who + " requested to join " + name + " — approve or decline"
+	}
 	// In-app bell entry — tapping opens the event. notifyUser also fires the push
 	// (external_id = owner's user id), so we don't send a separate one here.
-	s.notifyUser(owner, "registration", registrantUserID, who,
-		who+" registered for "+name, "event:"+eventID)
+	s.notifyUser(owner, "registration", registrantUserID, who, body, "event:"+eventID)
 }
 
 func (s *Service) DeleteFeedItem(id string) error {

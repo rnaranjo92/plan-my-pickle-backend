@@ -790,9 +790,11 @@ const ladderOnlyGrants = "michellecruzsd@gmail.com"
 const organizerGrants = "motofreak26@hotmail.com"
 
 func organizerAllowed(email string) bool {
-	// Everyone who can reach Organize at all: full organizers + ladder-only comps.
-	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"),
-		qaAllowlist+","+ladderOnlyGrants+","+organizerGrants)
+	// Organizing is FREE and OPEN to everyone at full launch (2026-07-25) — the
+	// default is "*" (all signed-in users; POST /events + /leagues are requireAuth,
+	// so there's no anonymous path). Set ORGANIZER_ALLOWLIST to a comma-separated
+	// list to re-restrict to early access.
+	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), "*")
 }
 
 // ladderOnly reports whether the account may create ONLY ladder leagues. Such

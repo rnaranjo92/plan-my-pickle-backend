@@ -869,6 +869,11 @@ func (s *Service) publicEventsSorted(limit int, county, sort string) ([]model.Pu
 		if publicFeedTestName.MatchString(e.Name) {
 			continue
 		}
+		// An ended tournament isn't "new" or joinable — keep the discovery rails to
+		// upcoming/undated events only (same rule Nearby uses).
+		if eventEnded(e, time.Now()) {
+			continue
+		}
 		createdByID[e.ID] = asStr(r, "created_at")
 		events = append(events, e)
 		if len(events) == limit {
@@ -8874,6 +8879,12 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	itemIDs := make([]string, 0, len(rows))
 	for _, r := range rows {
 		fi := mapFeedItem(r)
+		// Keep obviously-QA/test events (Demo/Test/dbg…) out of the NewsFeed — even
+		// your own — so demo/seed runs don't clutter it. Word-boundary match, so a
+		// real name like "SoCal Contest" still shows.
+		if publicFeedTestName.MatchString(names[fi.EventID]) {
+			continue
+		}
 		fi.ReactionCounts = map[string]int{}
 		fi.MyReactions = []string{}
 		fi.EventName = names[fi.EventID]

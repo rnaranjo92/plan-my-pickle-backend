@@ -44,6 +44,9 @@ type Server struct {
 	// the service cache — bounds Stripe-budget burn from junk-id floods without
 	// per-IP keying (a venue shares one NAT IP; XFF is spoofable).
 	sessionLimiter *rateLimiter
+	// otpLimiter throttles phone-OTP SMS sends per user so nobody can burn the
+	// Twilio budget by spamming "resend" (the service adds a 30s resend gap too).
+	otpLimiter *rateLimiter
 	// captcha verifies a Turnstile token on PUBLIC (anonymous) self-registration.
 	// Active only when TURNSTILE_SECRET is set; otherwise it skips (fail-open).
 	captcha *gateway.Captcha
@@ -60,6 +63,7 @@ func NewServer(svc *service.Service) http.Handler {
 		socialLimiter:     newRateLimiter(30, 60), // 30 social writes/min per user
 		createLimiter:     newRateLimiter(20, 60), // 20 event/league creates/min per user
 		sessionLimiter:    newRateLimiter(600, 60), // 600 checkout-session Stripe lookups/min (global, cache-miss only)
+		otpLimiter:        newRateLimiter(5, 600),  // 5 OTP sends / 10 min per user
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
@@ -143,6 +147,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/analyses/{id}", requireAuth(s.getAnalysis))
 	mux.HandleFunc("POST /me/pbvision/register-webhook", requireAuth(s.registerPBVisionWebhook))
 
+	// Phone OTP verification (SMS): request a code, verify it, and check status.
+	mux.HandleFunc("POST /me/otp/send", requireAuth(s.sendOtp))
+	mux.HandleFunc("POST /me/otp/verify", requireAuth(s.verifyOtp))
+	mux.HandleFunc("GET /me/verification", requireAuth(s.verificationStatus))
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
 	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
@@ -846,6 +854,12 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 			errors.New("your account can only create ladders"))
 		return
 	}
+	// Anti-abuse: a fully-registered (phone-verified) account is required to
+	// organize once SIGNUP_OTP_REQUIRED is on. No-op while the flag is off.
+	if service.SignupOtpRequired() && !s.svc.PhoneVerified(userID(r)) {
+		writeErr(w, http.StatusForbidden, service.ErrPhoneVerificationRequired)
+		return
+	}
 	var req model.CreateEventRequest
 	if !decode(w, r, &req) {
 		return
@@ -882,6 +896,10 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 	if !s.createLimiter.allow("create:" + userID(r)) {
 		writeErr(w, http.StatusTooManyRequests,
 			errors.New("you're creating leagues too quickly — try again shortly"))
+		return
+	}
+	if service.SignupOtpRequired() && !s.svc.PhoneVerified(userID(r)) {
+		writeErr(w, http.StatusForbidden, service.ErrPhoneVerificationRequired)
 		return
 	}
 	if !organizerAllowed(userEmail(r)) {
@@ -3952,6 +3970,55 @@ func (s *Server) checkoutSessionSummary(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, sum)
+}
+
+// sendOtp texts a fresh SMS verification code to the caller's phone (or the phone
+// in the body when the profile has none yet). Rate-limited per user.
+func (s *Server) sendOtp(w http.ResponseWriter, r *http.Request) {
+	if !s.otpLimiter.allow("otp:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("too many code requests — try again shortly"))
+		return
+	}
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SendPhoneOtp(userID(r), req.Phone); err != nil {
+		if errors.Is(err, service.ErrOtpResendSoon) {
+			writeErr(w, http.StatusTooManyRequests, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": true})
+}
+
+// verifyOtp checks a code and marks the caller phone-verified on success.
+func (s *Server) verifyOtp(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.VerifyPhoneOtp(userID(r), req.Code); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"verified": true})
+}
+
+// verificationStatus reports whether the caller has a verified phone and whether
+// verification is currently required (the SIGNUP_OTP_REQUIRED gate).
+func (s *Server) verificationStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"phoneVerified": s.svc.PhoneVerified(userID(r)),
+		"otpRequired":   service.SignupOtpRequired(),
+	})
 }
 
 // paypalCheckout starts a PayPal/Venmo order for a registration's entry fee and

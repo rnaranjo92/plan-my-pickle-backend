@@ -237,9 +237,11 @@ func (s *Service) TeeOrders(eventID string) (model.TeeOrdersSummary, error) {
 		SizeCounts: map[string]int{},
 		Orders:     []model.TeeOrder{},
 	}
+	// The registrant's entered name lives on registrations.name (players.full_name
+	// is the account-profile name, a different column) — select/order by "name".
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+"&addon_tee=eq.true"+
-			"&select=id,full_name,addon_tee_size,payment_status&order=full_name.asc")
+			"&select=id,name,addon_tee_size,payment_status&order=name.asc")
 	if err != nil {
 		return model.TeeOrdersSummary{}, err
 	}
@@ -247,7 +249,7 @@ func (s *Service) TeeOrders(eventID string) (model.TeeOrdersSummary, error) {
 		size := asStr(r, "addon_tee_size")
 		sum.Orders = append(sum.Orders, model.TeeOrder{
 			RegistrationID: asStr(r, "id"),
-			PlayerName:     asStr(r, "full_name"),
+			PlayerName:     asStr(r, "name"),
 			Size:           size,
 			Paid:           asStr(r, "payment_status") == "paid",
 		})

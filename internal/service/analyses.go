@@ -29,24 +29,34 @@ func (s *Service) analysisAvailable() bool {
 // markAnalysisPaid (via the analysis_id metadata) which submits the video to PB
 // Vision. This is a direct platform charge — PlanMyPickle keeps the full fee.
 //
-// When comp is true (QA/comped accounts), payment is skipped entirely: the row
-// is created at $0 and submitted to PB Vision immediately. The returned URL is
-// empty in that case — the handler tells the client it was comped.
-func (s *Service) StartAnalysisCheckout(userID, email string, req model.AnalysisCheckoutRequest, comp bool) (string, error) {
+// allowance controls free analyses: <0 = unlimited (QA), N>0 = a fixed free
+// quota (comped while the user is still under it), 0 = pays each time. When
+// comped, the row is created at $0 and submitted to PB Vision immediately, and
+// the returned bool is true with an empty URL; otherwise a Checkout URL.
+func (s *Service) StartAnalysisCheckout(userID, email string, req model.AnalysisCheckoutRequest, allowance int) (string, bool, error) {
 	if !s.analysisAvailable() {
-		return "", errors.New("match video analysis isn't available yet")
+		return "", false, errors.New("match video analysis isn't available yet")
+	}
+	// Comp (free) when unlimited, or while still under a fixed free quota.
+	comp := allowance < 0
+	if !comp && allowance > 0 {
+		used, err := s.compedAnalysisCount(userID)
+		if err != nil {
+			return "", false, err
+		}
+		comp = used < allowance
 	}
 	var gw *gateway.StripeGateway
 	if !comp {
 		var ok bool
 		gw, ok = s.stripeGW()
 		if !ok {
-			return "", ErrPaymentsNotConfigured
+			return "", false, ErrPaymentsNotConfigured
 		}
 	}
 	videoURL := strings.TrimSpace(req.VideoURL)
 	if videoURL == "" {
-		return "", errors.New("a video is required")
+		return "", false, errors.New("a video is required")
 	}
 
 	// PB Vision shares the hosted report with the emails we pass (up to 4). Always
@@ -82,27 +92,38 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 		"currency":       "usd",
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(ins) == 0 {
-		return "", errors.New("could not start the analysis")
+		return "", false, errors.New("could not start the analysis")
 	}
 	id := asStr(ins[0], "id")
 
 	// Comped: no Stripe — submit straight to PB Vision (reuses the paid path).
 	if comp {
 		if err := s.markAnalysisPaid(id); err != nil {
-			return "", err
+			return "", false, err
 		}
-		return "", nil
+		return "", true, nil
 	}
 
 	url, err := gw.CreatePlatformCheckout(id, "analysis_id", analysisPriceCents, "usd",
 		"PlanMyPickle — Match Video Analysis", email, req.SuccessURL, req.CancelURL)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return url, nil
+	return url, false, nil
+}
+
+// compedAnalysisCount returns how many comped ($0) analyses a user has that
+// didn't fail — used to enforce a fixed free-analysis quota.
+func (s *Service) compedAnalysisCount(userID string) (int, error) {
+	rows, err := s.sb.Select("video_analyses",
+		"user_id=eq."+store.Q(userID)+"&amount_cents=eq.0&status=neq.failed&select=id")
+	if err != nil {
+		return 0, err
+	}
+	return len(rows), nil
 }
 
 // markAnalysisPaid runs when the Stripe checkout for an analysis completes. It

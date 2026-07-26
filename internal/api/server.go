@@ -775,9 +775,15 @@ const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 // subscriptions launch (SUBSCRIPTIONS_ENABLED). Overridden by LADDER_ONLY_ALLOWLIST.
 const ladderOnlyGrants = "michellecruzsd@gmail.com"
 
+// organizerGrants: individually comped FULL-organizer accounts (Organize tab +
+// create tournaments/leagues), beyond QA. TEMPORARY — revisit at subscription
+// launch. Also add these emails to the frontend _organizerEmails set.
+const organizerGrants = "motofreak26@hotmail.com"
+
 func organizerAllowed(email string) bool {
 	// Everyone who can reach Organize at all: full organizers + ladder-only comps.
-	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"), qaAllowlist+","+ladderOnlyGrants)
+	return emailInAllowlist(email, os.Getenv("ORGANIZER_ALLOWLIST"),
+		qaAllowlist+","+ladderOnlyGrants+","+organizerGrants)
 }
 
 // ladderOnly reports whether the account may create ONLY ladder leagues. Such
@@ -3981,13 +3987,14 @@ func (s *Server) analysisCheckout(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// QA/comped accounts skip payment (analysis is submitted immediately, free).
-	comp := analysisComped(userEmail(r))
-	if !comp && (strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "") {
+	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("successUrl and cancelUrl are required"))
 		return
 	}
-	url, err := s.svc.StartAnalysisCheckout(userID(r), userEmail(r), req, comp)
+	// The service decides comp-vs-pay from this email's free-analysis allowance
+	// and how many free analyses they've already used.
+	url, comped, err := s.svc.StartAnalysisCheckout(
+		userID(r), userEmail(r), req, analysisCompAllowance(userEmail(r)))
 	if errors.Is(err, service.ErrPaymentsNotConfigured) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
@@ -3996,18 +4003,24 @@ func (s *Server) analysisCheckout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if comp {
+	if comped {
 		writeJSON(w, http.StatusOK, map[string]any{"comped": true})
 		return
 	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
 }
 
-// analysisComped reports whether an email gets Match Video Analysis for free
-// (QA/testing). Mirrors the frontend allowlist; widen when comping more accounts.
-func analysisComped(email string) bool {
-	e := strings.ToLower(strings.TrimSpace(email))
-	return e == "rolando.naranjo0420@gmail.com" || e == "krizhia_roxas29@yahoo.com"
+// analysisCompAllowance returns how many Match Video Analyses an email gets free:
+// -1 = unlimited (QA), N>0 = a fixed comped quota, 0 = none (pays each time).
+// Mirrors the frontend allowlists; widen as more accounts are comped.
+func analysisCompAllowance(email string) int {
+	switch strings.ToLower(strings.TrimSpace(email)) {
+	case "rolando.naranjo0420@gmail.com", "krizhia_roxas29@yahoo.com":
+		return -1 // unlimited
+	case "motofreak26@hotmail.com":
+		return 1 // one free analysis to test + give feedback
+	}
+	return 0
 }
 
 // listAnalyses returns the caller's Match Video Analyses, newest first.

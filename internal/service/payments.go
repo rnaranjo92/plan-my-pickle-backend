@@ -143,6 +143,34 @@ func processingSurchargeCents(amountCents int, currency string) int {
 	return (num + denom - 1) / denom // ceil(num/denom)
 }
 
+// CheckoutSessionSummary is a payer-facing confirmation of a completed Checkout
+// (amount actually captured), for the post-redirect "you paid $X" message.
+type CheckoutSessionSummary struct {
+	AmountCents int    `json:"amountCents"`
+	Currency    string `json:"currency"`
+	Paid        bool   `json:"paid"`
+}
+
+// GetCheckoutSessionSummary looks up a Stripe Checkout Session by id and returns
+// the exact amount captured. Safe to expose unauthenticated: session ids (cs_…)
+// are unguessable single-use tokens and we return only amount/currency/paid — no
+// customer, card, or payment-intent detail.
+func (s *Service) GetCheckoutSessionSummary(sessionID string) (CheckoutSessionSummary, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return CheckoutSessionSummary{}, ErrPaymentsNotConfigured
+	}
+	info, err := gw.RetrieveCheckoutSession(sessionID)
+	if err != nil {
+		return CheckoutSessionSummary{}, err
+	}
+	return CheckoutSessionSummary{
+		AmountCents: info.AmountTotalCents,
+		Currency:    info.Currency,
+		Paid:        info.PaymentStatus == "paid" || info.PaymentStatus == "no_payment_required",
+	}, nil
+}
+
 // stripeGW returns the StripeGateway if the live Stripe processor is wired up,
 // else (nil, false). Stripe Connect endpoints require it.
 func (s *Service) stripeGW() (*gateway.StripeGateway, bool) {

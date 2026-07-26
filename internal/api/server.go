@@ -137,6 +137,11 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
 	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
+	// Public: confirm a just-completed Checkout by session id (from the success
+	// redirect's {CHECKOUT_SESSION_ID}) → exact amount captured, for the in-app
+	// "you paid $X" message. Anonymous because a player paying an entry fee needn't
+	// be signed in; session ids are unguessable single-use tokens.
+	mux.HandleFunc("GET /checkout/session/{id}", s.checkoutSessionSummary)
 	mux.HandleFunc("GET /events/{id}", s.getEvent)
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
@@ -3875,6 +3880,29 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// checkoutSessionSummary confirms a completed Checkout by session id and returns
+// the exact amount captured (for the post-redirect "you paid $X" message). Public
+// — session ids (cs_…) are unguessable single-use tokens and only amount/currency/
+// paid are returned.
+func (s *Server) checkoutSessionSummary(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" || !strings.HasPrefix(id, "cs_") {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid session id"))
+		return
+	}
+	sum, err := s.svc.GetCheckoutSessionSummary(id)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		// A bad/expired session id → 404 rather than leaking the upstream error.
+		writeErr(w, http.StatusNotFound, errors.New("session not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
 }
 
 // paypalCheckout starts a PayPal/Venmo order for a registration's entry fee and

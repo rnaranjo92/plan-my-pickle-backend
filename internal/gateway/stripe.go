@@ -184,6 +184,35 @@ func (g *StripeGateway) RetrieveAccount(accountID string) (ConnectAccount, error
 	return ConnectAccount{AccountID: acct.ID, ChargesEnabled: acct.PayoutsEnabled}, nil
 }
 
+// CheckoutSessionInfo is a minimal, payer-safe summary of a Checkout Session,
+// used to confirm the exact amount captured after a redirect back to the app.
+type CheckoutSessionInfo struct {
+	AmountTotalCents int
+	Currency         string // ISO code, uppercased
+	PaymentStatus    string // "paid" | "unpaid" | "no_payment_required"
+	Status           string // "complete" | "open" | "expired"
+}
+
+// RetrieveCheckoutSession fetches a Checkout Session by id (cs_…) so we can show
+// the payer the exact amount they were charged. All our sessions are created on
+// the platform account (destination charges included), so a plain Get works.
+func (g *StripeGateway) RetrieveCheckoutSession(sessionID string) (CheckoutSessionInfo, error) {
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.CheckoutSessionParams{}
+	params.Context = ctx
+	sess, err := g.client.sessions.Get(sessionID, params)
+	if err != nil {
+		return CheckoutSessionInfo{}, err
+	}
+	return CheckoutSessionInfo{
+		AmountTotalCents: int(sess.AmountTotal),
+		Currency:         strings.ToUpper(string(sess.Currency)),
+		PaymentStatus:    string(sess.PaymentStatus),
+		Status:           string(sess.Status),
+	}, nil
+}
+
 // CheckoutParams describes a destination-charge Checkout Session for an entry
 // fee: AmountCents is the entry fee, DestinationAccount is the organizer's
 // connected account, ApplicationFeeCents is the platform's cut.

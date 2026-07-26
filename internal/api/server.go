@@ -809,6 +809,15 @@ func premiumAllowed(email string) bool {
 	return emailInAllowlist(email, os.Getenv("PREMIUM_ALLOWLIST"), qaAllowlist)
 }
 
+// mayUsePremium reports whether the caller may use Premium-gated add-ons (e.g. the
+// SMS "both channels" court-call add-on). True when EITHER the early-access
+// allowlist grants it (PREMIUM_ALLOWLIST / founders) OR the account holds an
+// active Premium subscription — so a real paying subscriber, not just allowlisted
+// emails, actually gets the feature they paid for.
+func (s *Server) mayUsePremium(r *http.Request) bool {
+	return premiumAllowed(userEmail(r)) || s.svc.IsPremium(userID(r))
+}
+
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !organizerAllowed(userEmail(r)) {
 		writeErr(w, http.StatusForbidden,
@@ -826,8 +835,8 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// SMS "both channels" is a premium add-on — non-premium organizers can't turn
-	// it on (they stay push-first). Enforced here where the caller's email is known.
-	if req.SmsNotifications && !premiumAllowed(userEmail(r)) {
+	// it on (they stay push-first). Enforced here where the caller is known.
+	if req.SmsNotifications && !s.mayUsePremium(r) {
 		req.SmsNotifications = false
 	}
 	// On-deck SMS is a sub-option of the SMS add-on — meaningless (and never fires)
@@ -836,9 +845,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		req.OnDeckSms = false
 	}
 	// Organizing is FREE — anyone can create + run a tournament (the engine is
-	// never paywalled). Premium gates only specific features: CreateEvent itself
-	// returns ErrPremiumRequired for a DUPR-sanctioned event, and advanced draws /
-	// remove-branding / clubs are gated elsewhere.
+	// never paywalled). DUPR-sanctioned events are FREE (2026-07-25). Premium gates
+	// only specific features: advanced draws (Compass) return ErrPremiumRequired
+	// from CreateEvent; remove-branding / sponsor watermark / scoreboard theme are
+	// gated on their own endpoints; SMS is gated above via mayUsePremium.
 	id, err := s.svc.CreateEvent(req, userID(r))
 	if err != nil {
 		if errors.Is(err, service.ErrPremiumRequired) {
@@ -1333,7 +1343,7 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// SMS "both channels" is premium — non-premium callers can't enable it on edit.
-	if req.SmsNotifications && !premiumAllowed(userEmail(r)) {
+	if req.SmsNotifications && !s.mayUsePremium(r) {
 		req.SmsNotifications = false
 	}
 	// On-deck SMS is a sub-option of the SMS add-on — off whenever SMS is off.

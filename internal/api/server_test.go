@@ -477,12 +477,12 @@ func TestCreateEventMalformedBody(t *testing.T) {
 	}
 }
 
-// A non-Premium organizer creating a DUPR-SANCTIONED event must be blocked with
-// 402 — sanctioning is the Premium gate (basic event creation itself is free).
-// The premium check runs before any DB work, so this is deterministic under the
-// mock. (Previously this test asserted that *all* event creation was Premium,
-// which no longer matches the model: the tournament engine is free.)
-func TestCreateEventSanctionedNonPremiumIs402(t *testing.T) {
+// A non-Premium organizer creating an ADVANCED DRAW (Compass) must be blocked
+// with 402 — advanced draws are the Premium gate (basic event creation, and now
+// DUPR sanctioning too, are free). The premium check runs before any DB work, so
+// this is deterministic under the mock. (DUPR sanctioning was Premium until
+// 2026-07-25 when it became a free growth lever.)
+func TestCreateEventAdvancedDrawNonPremiumIs402(t *testing.T) {
 	// The premium gate only applies when the paid plan is ON; while subscriptions
 	// are off everyone is premium (all features free), so enable it for this test.
 	t.Setenv("SUBSCRIPTIONS_ENABLED", "true")
@@ -492,11 +492,28 @@ func TestCreateEventSanctionedNonPremiumIs402(t *testing.T) {
 	h := newTestServer(t, m)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/events",
-		strings.NewReader(`{"name":"Test Open","format":"singles","duprSanctioned":true}`))
+		strings.NewReader(`{"name":"Test Compass","format":"doubles","tournamentFormat":"compass"}`))
 	req.Header.Set("Authorization", "Bearer "+authToken(t, "owner-1"))
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPaymentRequired {
-		t.Fatalf("status = %d, want 402 (premium required) for a non-premium creator of a DUPR-sanctioned event", rec.Code)
+		t.Fatalf("status = %d, want 402 (premium required) for a non-premium creator of a Compass advanced draw", rec.Code)
+	}
+}
+
+// A non-Premium organizer creating a DUPR-SANCTIONED event must SUCCEED — DUPR
+// sanctioning became free on 2026-07-25 (a growth lever), so it must not 402.
+func TestCreateEventSanctionedNonPremiumIsFree(t *testing.T) {
+	t.Setenv("SUBSCRIPTIONS_ENABLED", "true")
+	t.Setenv("ORGANIZER_ALLOWLIST", "*")
+	m := newMockSupabase(t)
+	h := newTestServer(t, m)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/events",
+		strings.NewReader(`{"name":"Test Open","format":"singles","duprSanctioned":true}`))
+	req.Header.Set("Authorization", "Bearer "+authToken(t, "owner-1"))
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusPaymentRequired {
+		t.Fatalf("status = 402, but a DUPR-sanctioned event must be FREE for a non-premium organizer")
 	}
 }
 

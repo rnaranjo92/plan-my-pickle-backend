@@ -457,6 +457,12 @@ func (s *Service) brandingReady() bool {
 
 // CreateEvent inserts an event owned by ownerID (the authenticated organizer).
 // ownerID may be empty for internal/demo seeding, leaving the event unowned.
+// premiumTournamentFormat reports whether a draw type is a Premium-gated advanced
+// draw (mirrors the frontend _premiumFormats set — currently Compass).
+func premiumTournamentFormat(tf string) bool {
+	return strings.EqualFold(strings.TrimSpace(tf), "compass")
+}
+
 func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")
@@ -492,6 +498,12 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	tf := req.TournamentFormat
 	if tf == "" {
 		tf = "round_robin"
+	}
+	// Advanced draws (Compass) are Premium — gate at CREATE, mirroring the frontend
+	// lock, so a free organizer can't bypass the UI via a direct API call. Only new
+	// events are checked; existing ones aren't re-gated on edit.
+	if premiumTournamentFormat(tf) && !s.IsPremium(ownerID) {
+		return "", ErrPremiumRequired
 	}
 	scoring := req.ScoringMode
 	if scoring == "" {

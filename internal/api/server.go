@@ -1542,6 +1542,10 @@ func (s *Server) setEventTeeImages(w http.ResponseWriter, r *http.Request) {
 // setSponsorWatermarkImage uploads the event's sponsor watermark image (owner-only
 // via the path id). JPEG/PNG up to ~5 MB; returns the stored URL.
 func (s *Server) setSponsorWatermarkImage(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.EventPremiumUnlocked(r.PathValue("id")) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6<<20))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -1584,6 +1588,10 @@ func (s *Server) clearEmailLogo(w http.ResponseWriter, r *http.Request) {
 
 // setSponsorWatermarkSettings saves the watermark placement (opacity/scale/position).
 func (s *Server) setSponsorWatermarkSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.EventPremiumUnlocked(r.PathValue("id")) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	var req struct {
 		URL      string  `json:"url"`
 		Opacity  float64 `json:"opacity"`
@@ -1612,6 +1620,10 @@ func (s *Server) clearSponsorWatermark(w http.ResponseWriter, r *http.Request) {
 
 // setScoreboardTheme saves the per-event live-board look (colors + font).
 func (s *Server) setScoreboardTheme(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.EventPremiumUnlocked(r.PathValue("id")) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	var req struct {
 		Theme map[string]any `json:"theme"`
 	}

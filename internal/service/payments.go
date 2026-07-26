@@ -507,6 +507,19 @@ func (s *Service) eventPremiumUnlocked(ev map[string]any) bool {
 	return s.IsPremium(asStr(ev, "owner_id")) || asBool(ev, "premium_pass")
 }
 
+// EventPremiumUnlocked loads an event and reports whether its Premium features
+// are unlocked (owner subscribed OR a per-event pass was purchased). Used to
+// server-side gate Premium-only per-event features (sponsor watermark, scoreboard
+// theme) so a UI-only lock can't be bypassed via a direct API call.
+func (s *Service) EventPremiumUnlocked(eventID string) bool {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=owner_id,premium_pass")
+	if err != nil || row == nil {
+		return false
+	}
+	return s.eventPremiumUnlocked(row)
+}
+
 // grantEventPass marks an event Premium-unlocked after its one-time pass is paid.
 func (s *Service) grantEventPass(eventID string) error {
 	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),

@@ -31,7 +31,9 @@ var (
 	ErrOtpNoSms      = errors.New("SMS verification isn't available right now")
 	// ErrPhoneVerificationRequired is returned by gated actions (e.g. creating an
 	// event) when SIGNUP_OTP_REQUIRED is on and the account hasn't verified.
-	ErrPhoneVerificationRequired = errors.New("verify your phone number to start organizing")
+	// Points at the web so users on an OLD mobile build (no OTP screen) still have
+	// a path — verifying there flips the account fully-registered everywhere.
+	ErrPhoneVerificationRequired = errors.New("verify your phone at app.planmypickle.com to start organizing")
 )
 
 const (

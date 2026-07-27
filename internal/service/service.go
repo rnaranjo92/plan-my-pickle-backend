@@ -1529,6 +1529,16 @@ func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 	return 2 * r * math.Asin(math.Sqrt(a))
 }
 
+// SetAutoStartNext flips ONLY the auto_start_next flag on an event (owner-gated
+// at the handler) without touching any other setting — a lightweight live
+// toggle for the "auto-start the next game" control. Uses a partial update so
+// nothing else is clobbered.
+func (s *Service) SetAutoStartNext(eventID string, on bool) error {
+	_, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"auto_start_next": on})
+	return err
+}
+
 func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// select=* (not a column list) so this read stays valid before migration 0044
 	// adds premium_pass — until then eventPremiumUnlocked simply sees it as false.

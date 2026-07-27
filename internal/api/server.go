@@ -460,6 +460,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/music/queue", optionalAuth(s.musicQueue))
 	mux.HandleFunc("POST /events/{id}/music/queue", requireAuth(s.addToQueue))
 	mux.HandleFunc("POST /events/{id}/music/settings", s.ownerOnly("event", "id", s.setMusicSettings))
+	mux.HandleFunc("POST /events/{id}/auto-start-next", s.ownerOnly("event", "id", s.setAutoStartNext))
 	mux.HandleFunc("POST /events/{id}/music/clear", s.ownerOnly("event", "id", s.clearQueue))
 	mux.HandleFunc("DELETE /music/{trackId}", requireAuth(s.removeTrack))
 	mux.HandleFunc("POST /music/{trackId}/approve", s.ownerOnly("music_track", "trackId", s.approveTrack))
@@ -3139,6 +3140,23 @@ func (s *Server) addToQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 // setMusicSettings toggles the jukebox on/off + approval requirement (owner).
+// setAutoStartNext flips the event's auto-start-next-game flag (owner-gated). A
+// lightweight live toggle so an organizer can turn the hands-off flow on/off
+// mid-event without a full edit.
+func (s *Server) setAutoStartNext(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		On bool `json:"on"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetAutoStartNext(r.PathValue("id"), req.On); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) setMusicSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Enabled         bool `json:"enabled"`

@@ -11441,7 +11441,13 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 					if a.PointDiff != b.PointDiff {
 						return a.PointDiff > b.PointDiff
 					}
-					return a.PointsFor > b.PointsFor
+					if a.PointsFor != b.PointsFor {
+						return a.PointsFor > b.PointsFor
+					}
+					// Deterministic final tiebreak: without this, fully-tied
+					// players fall back to the RPC's unordered rows and swap
+					// places on every poll ("results keep changing").
+					return a.PlayerID < b.PlayerID
 				})
 			}
 			i = j
@@ -11463,7 +11469,9 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 		if c := h2hCmp(a, b); c != 0 {
 			return c > 0
 		}
-		return false
+		// Deterministic final tiebreak so a fully-tied pair doesn't reshuffle
+		// between polls (the RPC returns rows unordered).
+		return a.PlayerID < b.PlayerID
 	})
 	return out, nil
 }

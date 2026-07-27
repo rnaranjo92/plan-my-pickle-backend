@@ -2857,11 +2857,15 @@ func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 		"Wren", "Reed", "Sage", "Beau", "Lena", "Tate", "Cleo", "Maya",
 		"Rhys", "Iris", "Knox", "Vera", "Dane", "Faye",
 	}
+	// NOTE: len(last)==31 is intentionally coprime with len(first)==30 so that
+	// (k%len(first), k%len(last)) never repeats a full name until 30*31=930
+	// players AND both parts advance every step (varied, natural names). This is
+	// what lets demo names stay unique WITHOUT a trailing number.
 	last := []string{
 		"Hill", "Ford", "Vance", "Pope", "Lane", "Cross", "Wells", "Dean",
 		"Boyd", "Reyes", "Knox", "Page", "Frye", "Sosa", "Hale", "Nash",
 		"Banks", "Cobb", "Diaz", "Estes", "Fox", "Gold", "Pratt", "Quill",
-		"Roth", "Sims", "True", "Vega", "Webb", "York",
+		"Roth", "Sims", "True", "Vega", "Webb", "York", "Marsh",
 	}
 
 	const perDiv = 16
@@ -2872,11 +2876,10 @@ func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 		rt := ratingPtr(rating)
 		reg, err := s.RegisterPlayer(eventID, model.RegisterRequest{
 			TrustedAdd: true, // organizer placeholder/demo fill — skip public gates
-			// Append the running player number so demo names stay unique: the
-			// name arrays wrap at len(first)/len(last), so without this, player
-			// #1 in one division and #31 in another collide on the same name and
-			// look like one player appearing in two divisions.
-			FullName:        first[(base+idx)%len(first)] + " " + last[(base*3+idx*7)%len(last)] + " " + fmt.Sprintf("%d", base+idx+1),
+			// Unique, natural full name with NO trailing number: first/last array
+			// lengths are coprime (30 & 31), so this (first,last) pair is distinct
+			// for every player index until 930 players — well past any demo.
+			FullName:        first[(base+idx)%len(first)] + " " + last[(base+idx)%len(last)],
 			Phone:           fmt.Sprintf("+1555%07d", 3000000+base+idx),
 			SkillLevel:      rt,
 			DuprID:          fmt.Sprintf("DUPR-%05d", 30000+base+idx),

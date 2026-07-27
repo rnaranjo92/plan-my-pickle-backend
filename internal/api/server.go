@@ -5124,6 +5124,11 @@ func (s *Server) verifyAdmin(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	// A correct unlock shouldn't eat into the brute-force budget shared with the
+	// score-write path — only wrong attempts should.
+	if ok {
+		s.passcodeLimiter.refund("passcode:" + eventID)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": ok})
 }
 
@@ -5376,6 +5381,10 @@ func (s *Server) ownerOrPasscode(kind, idParam string, next http.HandlerFunc) ht
 			writeErr(w, http.StatusForbidden, errForbidden)
 			return
 		}
+		// Correct passcode → don't count this write against the brute-force
+		// budget, so a volunteer recording a full court's worth of scores in a
+		// minute is never throttled (only wrong-code attempts are).
+		s.passcodeLimiter.refund("passcode:" + eventID)
 		next(w, r)
 	})
 }
@@ -5484,6 +5493,28 @@ func (rl *rateLimiter) allow(key string) bool {
 	}
 	rl.hits[key] = append(kept, nowTs)
 	return true
+}
+
+// refund removes one recorded attempt for key — used to NOT charge a SUCCESSFUL
+// passcode check against the per-event brute-force budget. A legitimate
+// scorekeeper (correct passcode) can then record many scores a minute without
+// being throttled, while WRONG-code attempts still consume the budget and get
+// capped. Best-effort: drops the newest timestamp (the one the just-passed
+// allow() added); a no-op if the key is empty.
+func (rl *rateLimiter) refund(key string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	ts := rl.hits[key]
+	if len(ts) == 0 {
+		return
+	}
+	maxi := 0
+	for i, t := range ts {
+		if t >= ts[maxi] {
+			maxi = i
+		}
+	}
+	rl.hits[key] = append(ts[:maxi], ts[maxi+1:]...)
 }
 
 // corsAllowedOrigins are the first-party browser origins that read this API:

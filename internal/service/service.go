@@ -2939,6 +2939,36 @@ func (s *Service) FillRandomPlayers(eventID, bracketID string) (int, error) {
 			}
 		}
 	}
+	// Fixed-partner doubles needs locked pairs, but the fill registers SOLO
+	// players. Pair consecutive demo players per division (mutual partner_id — a
+	// player id), mirroring the seed tournaments, so GenerateSchedule builds real
+	// teams instead of leaving everyone unpaired.
+	if ev, e := s.GetEvent(eventID); e == nil &&
+		strings.EqualFold(ev.Format, "doubles") &&
+		strings.EqualFold(ev.PartnerMode, "fixed") {
+		if regs, e := s.Registrations(eventID); e == nil {
+			byBracket := map[string][]model.Registration{}
+			for _, r := range regs {
+				if r.PartnerID != nil && *r.PartnerID != "" {
+					continue // already paired — leave it
+				}
+				bid := ""
+				if r.BracketID != nil {
+					bid = *r.BracketID
+				}
+				byBracket[bid] = append(byBracket[bid], r)
+			}
+			for _, list := range byBracket {
+				for k := 0; k+1 < len(list); k += 2 {
+					a, b := list[k], list[k+1]
+					_, _ = s.sb.Update("registrations", "id=eq."+store.Q(a.ID),
+						map[string]any{"partner_id": b.PlayerID})
+					_, _ = s.sb.Update("registrations", "id=eq."+store.Q(b.ID),
+						map[string]any{"partner_id": a.PlayerID})
+				}
+			}
+		}
+	}
 	if added == 0 && firstErr != nil {
 		return 0, firstErr
 	}

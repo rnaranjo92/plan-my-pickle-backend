@@ -358,6 +358,32 @@ func (c *Client) DeleteAuthUser(uid string) error {
 	return nil
 }
 
+// SignInPassword signs a user in via the GoTrue password grant and returns the
+// raw session JSON (access_token, refresh_token, user, …). Used by the sales-demo
+// passcode flow to establish the fixed demo owner's session server-side so the
+// console needs only the passcode — no separate account login. apikey (not a
+// Bearer service token) is what the token endpoint gates on.
+func (c *Client) SignInPassword(email, password string) ([]byte, error) {
+	b, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	req, err := http.NewRequest(http.MethodPost,
+		c.baseURL+"/auth/v1/token?grant_type=password", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", c.serviceKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, dbError("sign-in", "auth", resp.StatusCode, body)
+	}
+	return body, nil
+}
+
 // RPC calls a Postgres function at /rest/v1/rpc/<fn> and returns the raw JSON
 // result. Aggregations (standings) and multi-step atomic writes (schedule +
 // bracket generation, winner advancement) are implemented as plpgsql functions

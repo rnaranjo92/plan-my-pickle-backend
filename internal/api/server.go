@@ -526,6 +526,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Authenticated (any organizer) — no QA allowlist — since it only creates one
 	// event the caller owns (same capability as normal event creation).
 	mux.HandleFunc("POST /demo/mlp", requireAuth(s.demoMlp))
+	// Passcode → demo-owner session, so the demo console needs only the passcode
+	// (no separate account login). Public: the passcode itself is the gate.
+	mux.HandleFunc("POST /demo/session", s.demoSession)
 	// Demo helper: enroll the fixed DUPR UAT test accounts into a sanctioned event.
 	mux.HandleFunc("POST /events/{id}/register-dupr-testers", s.ownerOnly("event", "id", s.registerDuprTesters))
 	// Reverse an event's submitted results on DUPR (the delete leg of the round-trip).
@@ -5010,6 +5013,35 @@ func (s *Server) demoAutoplay(w http.ResponseWriter, r *http.Request) {
 // by the caller — the sales demo's MLP showcase. Authenticated only (no QA
 // allowlist): it creates a single event the caller owns, the same capability as
 // normal event creation.
+// demoSession trades the demo passcode for a session on the fixed demo-owner
+// account, so the demo console needs only the passcode (no account login) and
+// every demo event is owned by that account. Passes the raw GoTrue session JSON
+// through to the client, which sets it as its Supabase session.
+func (s *Server) demoSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Passcode string `json:"passcode"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	sess, err := s.svc.DemoSession(req.Passcode)
+	if errors.Is(err, service.ErrDemoNotConfigured) {
+		writeErr(w, http.StatusNotImplemented, err)
+		return
+	}
+	if errors.Is(err, service.ErrDemoWrongPasscode) {
+		writeErr(w, http.StatusUnauthorized, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(sess)
+}
+
 func (s *Server) demoMlp(w http.ResponseWriter, r *http.Request) {
 	// Throttle against the same per-user create budget as normal event creation —
 	// seeding a full MLP event is heavy, so this stops a script from spamming it.

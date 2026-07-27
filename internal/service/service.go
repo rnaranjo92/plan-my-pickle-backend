@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/rand"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1527,6 +1528,33 @@ func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
 			math.Sin(dLng/2)*math.Sin(dLng/2)
 	return 2 * r * math.Asin(math.Sqrt(a))
+}
+
+// Demo passcode → session errors.
+var (
+	// ErrDemoNotConfigured means the DEMO_* env vars aren't set, so the demo
+	// passcode can't mint the demo-owner session yet.
+	ErrDemoNotConfigured = errors.New("demo login is not configured")
+	ErrDemoWrongPasscode = errors.New("wrong demo passcode")
+)
+
+// DemoSession trades the sales-demo passcode for a session on the fixed demo
+// owner account (env DEMO_ACCOUNT_EMAIL/PASSWORD), verifying the passcode against
+// env DEMO_PASSCODE server-side. The demo console sets the returned session so it
+// needs ONLY the passcode (no separate account login) and every demo event is
+// owned by that one account. Returns the raw GoTrue session JSON.
+func (s *Service) DemoSession(passcode string) ([]byte, error) {
+	want := strings.TrimSpace(os.Getenv("DEMO_PASSCODE"))
+	email := strings.TrimSpace(os.Getenv("DEMO_ACCOUNT_EMAIL"))
+	pass := os.Getenv("DEMO_ACCOUNT_PASSWORD")
+	if want == "" || email == "" || pass == "" {
+		return nil, ErrDemoNotConfigured
+	}
+	if subtle.ConstantTimeCompare(
+		[]byte(strings.TrimSpace(passcode)), []byte(want)) != 1 {
+		return nil, ErrDemoWrongPasscode
+	}
+	return s.sb.SignInPassword(email, pass)
 }
 
 // SetAutoStartNext flips ONLY the auto_start_next flag on an event (owner-gated

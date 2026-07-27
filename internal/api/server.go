@@ -5011,6 +5011,13 @@ func (s *Server) demoAutoplay(w http.ResponseWriter, r *http.Request) {
 // allowlist): it creates a single event the caller owns, the same capability as
 // normal event creation.
 func (s *Server) demoMlp(w http.ResponseWriter, r *http.Request) {
+	// Throttle against the same per-user create budget as normal event creation —
+	// seeding a full MLP event is heavy, so this stops a script from spamming it.
+	if !s.createLimiter.allow("create:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("you're creating events too quickly — try again shortly"))
+		return
+	}
 	id, err := s.svc.SeedTestTournament(userID(r), "mlpchamp")
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)

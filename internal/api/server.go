@@ -522,6 +522,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/clear-demo-players", s.ownerOnly("event", "id", s.clearDemoPlayers))
 	// Live sales demo: random-score every remaining game (the "Skip to results" button).
 	mux.HandleFunc("POST /events/{id}/demo-autoplay", s.ownerOnly("event", "id", s.demoAutoplay))
+	// Sales-demo MLP showcase: seed a completed team event owned by the caller.
+	// Authenticated (any organizer) — no QA allowlist — since it only creates one
+	// event the caller owns (same capability as normal event creation).
+	mux.HandleFunc("POST /demo/mlp", requireAuth(s.demoMlp))
 	// Demo helper: enroll the fixed DUPR UAT test accounts into a sanctioned event.
 	mux.HandleFunc("POST /events/{id}/register-dupr-testers", s.ownerOnly("event", "id", s.registerDuprTesters))
 	// Reverse an event's submitted results on DUPR (the delete leg of the round-trip).
@@ -4992,17 +4996,27 @@ func (s *Server) clearDemoPlayers(w http.ResponseWriter, r *http.Request) {
 // QA-gated: it instantly falsifies results, so it must never be reachable on a
 // real organizer's event.
 func (s *Server) demoAutoplay(w http.ResponseWriter, r *http.Request) {
-	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
-	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
-		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
-		return
-	}
+	// No email allowlist needed: the route is already ownerOnly-gated, so a
+	// caller can only autoplay an event they own — safe for any demo presenter.
 	n, err := s.svc.AutoPlayRemaining(r.PathValue("id"))
 	if err != nil {
 		status(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"played": n})
+}
+
+// demoMlp seeds a COMPLETE MLP team event (played to a champion, unlisted) owned
+// by the caller — the sales demo's MLP showcase. Authenticated only (no QA
+// allowlist): it creates a single event the caller owns, the same capability as
+// normal event creation.
+func (s *Server) demoMlp(w http.ResponseWriter, r *http.Request) {
+	id, err := s.svc.SeedTestTournament(userID(r), "mlpchamp")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
 }
 
 // registerDuprTesters enrolls the fixed DUPR UAT test accounts into the event

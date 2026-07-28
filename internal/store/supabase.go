@@ -358,6 +358,28 @@ func (c *Client) DeleteAuthUser(uid string) error {
 	return nil
 }
 
+// GetAuthUser fetches a Supabase auth user (id, email, user_metadata, …) via the
+// GoTrue Admin API. Used to resolve a display name for accounts that have no
+// players row (organizers / social-only / fresh signups) so notifications show
+// the person's signup name instead of a generic fallback. Best-effort.
+func (c *Client) GetAuthUser(uid string) (map[string]any, error) {
+	resp, err := c.do(http.MethodGet,
+		fmt.Sprintf("%s/auth/v1/admin/users/%s", c.baseURL, url.PathEscape(uid)), nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, dbError("auth-get", "users", resp.StatusCode, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, dbDecodeError("auth-get", "users", body)
+	}
+	return out, nil
+}
+
 // SignInPassword signs a user in via the GoTrue password grant and returns the
 // raw session JSON (access_token, refresh_token, user, …). Used by the sales-demo
 // passcode flow to establish the fixed demo owner's session server-side so the

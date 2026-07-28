@@ -9472,6 +9472,24 @@ func (s *Service) resolveDisplayName(userID, email string) string {
 			return n
 		}
 	}
+	// No players row (organizer / social-only / fresh signup) — fall back to the
+	// account's signup name from auth metadata, then the email local-part, before
+	// the generic "Player". Without this, reactions/follows (which pass an empty
+	// email) showed "Player reacted to your post" instead of the person's name.
+	if userID != "" {
+		if u, err := s.sb.GetAuthUser(userID); err == nil && u != nil {
+			if md, ok := u["user_metadata"].(map[string]any); ok {
+				for _, k := range []string{"full_name", "name"} {
+					if n := strings.TrimSpace(asStr(md, k)); n != "" {
+						return n
+					}
+				}
+			}
+			if email == "" {
+				email = strings.TrimSpace(asStr(u, "email"))
+			}
+		}
+	}
 	if i := strings.IndexByte(email, '@'); i > 0 {
 		return email[:i]
 	}

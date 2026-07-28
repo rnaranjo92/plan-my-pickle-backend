@@ -150,6 +150,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Phone OTP verification (SMS): request a code, verify it, and check status.
 	mux.HandleFunc("POST /me/otp/send", requireAuth(s.sendOtp))
 	mux.HandleFunc("POST /me/otp/verify", requireAuth(s.verifyOtp))
+	mux.HandleFunc("POST /me/phone/save-unverified", requireAuth(s.savePhoneUnverified))
 	mux.HandleFunc("GET /me/verification", requireAuth(s.verificationStatus))
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
@@ -4046,6 +4047,24 @@ func (s *Server) verifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true})
+}
+
+// savePhoneUnverified stores a phone WITHOUT a code — the escape hatch for the
+// hard phone-gate so a player in an SMS-unreachable country isn't locked out.
+// The service rejects textable numbers (they must use the code), so this can't
+// be used by a US/Canada account to skip verification.
+func (s *Server) savePhoneUnverified(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SavePhoneUnverified(userID(r), req.Phone); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"saved": true})
 }
 
 // verificationStatus reports whether the caller has a verified phone and whether

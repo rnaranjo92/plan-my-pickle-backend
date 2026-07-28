@@ -100,6 +100,32 @@ func (s *Service) PhoneVerified(userID string) bool {
 	return err == nil && row != nil && asBool(row, "phone_verified")
 }
 
+// ErrPhoneIsTextable is returned by SavePhoneUnverified when the number CAN
+// receive SMS — such a number must be verified with a code, not saved unverified.
+var ErrPhoneIsTextable = errors.New("that number can receive a text — please verify it with the code instead")
+
+// SavePhoneUnverified stores a phone number WITHOUT OTP verification — the
+// escape hatch for the hard phone-gate so a legitimate player in a country the
+// SMS gateway can't reach isn't locked out of the app. It ONLY accepts numbers
+// that are genuinely un-textable (SmsReachable == false); a textable number is
+// rejected so a US/Canada user can't skip verification. Sets phone (not
+// phone_verified), so the account satisfies the "phone on file" app-use gate but
+// still can't organize (which requires a VERIFIED phone).
+func (s *Service) SavePhoneUnverified(userID, phone string) error {
+	phone = strings.TrimSpace(phone)
+	if userID == "" || phone == "" {
+		return errors.New("enter a phone number")
+	}
+	if gateway.SmsReachable(phone) {
+		return ErrPhoneIsTextable
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+		"user_id": userID,
+		"phone":   phone,
+	})
+	return err
+}
+
 // SendPhoneOtp texts a fresh 6-digit code to the account's phone (or phoneOverride
 // when the profile has none yet, persisting it), storing it hashed. Rate-limited:
 // no resend within otpResendGap.

@@ -178,8 +178,13 @@ func (s *Service) ListTeams(eventID string) ([]model.EventTeam, error) {
 	if len(ids) == 0 {
 		return teams, nil
 	}
+	// SECURITY: GET /events/{id}/teams is a public (unauthenticated) read, so it
+	// must NOT expose participant contact PII. Only the rating is surfaced (the
+	// owner team screen + scorekeeper show name/gender/rating; nothing displays
+	// phone or DUPR id). Pulling phone/dupr_id here previously let anyone harvest
+	// every team-event participant's phone number. Keep it name/rating-only.
 	mrows, err := s.sb.Select("event_team_members",
-		"team_id="+store.In(ids)+"&select=*,player:players!player_id(phone,dupr_id,dupr_rating)&order=gender,full_name")
+		"team_id="+store.In(ids)+"&select=*,player:players!player_id(dupr_rating)&order=gender,full_name")
 	if err != nil {
 		return nil, err
 	}

@@ -1732,3 +1732,20 @@ type VendorRequest struct {
 type VendorNotifyRequest struct {
 	Message string `json:"message"`
 }
+
+// BlockedContact is one entry on the platform denylist — a phone (normalized
+// digits) and/or email blocked from registering anywhere on PlanMyPickle.
+type BlockedContact struct {
+	ID        string `json:"id"`
+	Phone     string `json:"phone,omitempty"`
+	Email     string `json:"email,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// BlockContactRequest is the owner's add-to-denylist payload (phone and/or email).
+type BlockContactRequest struct {
+	Phone  string `json:"phone"`
+	Email  string `json:"email"`
+	Reason string `json:"reason"`
+}

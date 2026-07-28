@@ -3777,6 +3777,11 @@ var ErrEventFull = errors.New("this event is full")
 // number (required to keep out dummy entries). Owner-adds are exempt.
 var ErrPhoneRequired = errors.New("a phone number is required to register")
 
+// ErrBlockedContact is returned when a registration's phone/email is on the
+// platform denylist (blocked_contacts). The HTTP layer maps it to a neutral
+// message so a blocked person isn't told WHY they can't register.
+var ErrBlockedContact = errors.New("this contact is blocked from registering")
+
 // ErrBadRegistrationCode is returned when the event has an invite code set and a
 // self-registrant supplies a wrong/blank one.
 var ErrBadRegistrationCode = errors.New("that invite code isn't right — check with the organizer")
@@ -4344,9 +4349,94 @@ func (s *Service) eventDuprGate(eventID string) (sanctioned bool, minEnt string)
 	return asBool(ev, "dupr_sanctioned") || minEnt != "", minEnt
 }
 
+// ---- Platform denylist (blocked_contacts) ---------------------------------
+
+// isBlockedContact reports whether a phone or email is on the platform denylist.
+// Phone matches on normalized digits; email is lowercased. Best-effort and FAILS
+// OPEN (a lookup error returns false) — a denylist hiccup must never block a
+// legitimate registration, and the approval queue still backstops abuse.
+func (s *Service) isBlockedContact(phone, email string) bool {
+	if p := normPhone(phone); p != "" {
+		if rows, err := s.sb.Select("blocked_contacts",
+			"phone=eq."+store.Q(p)+"&select=id&limit=1"); err == nil && len(rows) > 0 {
+			return true
+		}
+	}
+	if e := strings.ToLower(strings.TrimSpace(email)); e != "" {
+		if rows, err := s.sb.Select("blocked_contacts",
+			"email=eq."+store.Q(e)+"&select=id&limit=1"); err == nil && len(rows) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ListBlockedContacts returns the platform denylist, newest first.
+func (s *Service) ListBlockedContacts() ([]model.BlockedContact, error) {
+	rows, err := s.sb.Select("blocked_contacts", "select=*&order=created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.BlockedContact, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapBlockedContact(r))
+	}
+	return out, nil
+}
+
+// AddBlockedContact adds a phone and/or email to the denylist (phone normalized
+// to digits, email lowercased). At least one of phone/email must be provided.
+func (s *Service) AddBlockedContact(phone, email, reason string) (model.BlockedContact, error) {
+	p := normPhone(phone)
+	e := strings.ToLower(strings.TrimSpace(email))
+	if p == "" && e == "" {
+		return model.BlockedContact{}, errors.New("provide a phone number or email to block")
+	}
+	row := map[string]any{"reason": orNull(strings.TrimSpace(reason))}
+	if p != "" {
+		row["phone"] = p
+	}
+	if e != "" {
+		row["email"] = e
+	}
+	ins, err := s.sb.Insert("blocked_contacts", row)
+	if err != nil {
+		return model.BlockedContact{}, err
+	}
+	if len(ins) == 0 {
+		return model.BlockedContact{}, errors.New("insert returned no row")
+	}
+	return mapBlockedContact(ins[0]), nil
+}
+
+// RemoveBlockedContact deletes a denylist entry by id.
+func (s *Service) RemoveBlockedContact(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("id is required")
+	}
+	return s.sb.Delete("blocked_contacts", "id=eq."+store.Q(id))
+}
+
+func mapBlockedContact(m map[string]any) model.BlockedContact {
+	return model.BlockedContact{
+		ID:        asStr(m, "id"),
+		Phone:     asStr(m, "phone"),
+		Email:     asStr(m, "email"),
+		Reason:    asStr(m, "reason"),
+		CreatedAt: asStr(m, "created_at"),
+	}
+}
+
 func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
+	}
+	// Platform denylist: a phone/email the platform owner has blocked cannot
+	// register through ANY path — self OR organizer-add. Checked before the
+	// dummy-registration gates so a blocked contact never creates a player row or
+	// a pending request (it never even reaches the approval queue).
+	if s.isBlockedContact(req.Phone, req.Email) {
+		return model.Registration{}, ErrBlockedContact
 	}
 	// Anti-dummy-registration gates apply to PUBLIC / self registration only — an
 	// authenticated event owner adding a player (TrustedAdd, set server-side) is

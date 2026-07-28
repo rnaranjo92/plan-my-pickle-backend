@@ -603,6 +603,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /dev/backfill-county", requireAuth(s.backfillCounty))
 	// QA: fire a diagnostic push to the caller's own device(s).
 	mux.HandleFunc("POST /dev/test-push", requireAuth(s.testPush))
+	// Platform denylist (owner-only): block/unblock phones & emails everywhere.
+	mux.HandleFunc("GET /admin/blocked-contacts", s.ownerEmailOnly(s.listBlockedContacts))
+	mux.HandleFunc("POST /admin/blocked-contacts", s.ownerEmailOnly(s.addBlockedContact))
+	mux.HandleFunc("DELETE /admin/blocked-contacts/{id}", s.ownerEmailOnly(s.removeBlockedContact))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -2029,6 +2033,13 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		// Rating-Integrity Guard: DUPR outside the division band + enforcement=block.
 		if errors.Is(err, service.ErrRatingOutOfBand) {
 			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		// Denylisted contact: a NEUTRAL message on purpose — a blocked person
+		// shouldn't be told they're blocked (that just invites another alias).
+		if errors.Is(err, service.ErrBlockedContact) {
+			writeErr(w, http.StatusForbidden,
+				errors.New("we're unable to process this registration"))
 			return
 		}
 		writeErr(w, http.StatusBadRequest, err)
@@ -5157,6 +5168,53 @@ func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.Han
 		}
 		next(w, r)
 	})
+}
+
+// ownerEmailOnly gates a handler to the PLATFORM owner accounts (the same two
+// hardcoded emails the dev/diagnostic endpoints use). For admin-only surfaces
+// like the registration denylist that aren't tied to a specific event resource.
+func (s *Server) ownerEmailOnly(next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+		if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+			writeErr(w, http.StatusForbidden, errForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// listBlockedContacts / addBlockedContact / removeBlockedContact back the
+// owner-only platform denylist (blocked_contacts). A blocked phone/email can't
+// register anywhere on PlanMyPickle (checked in RegisterPlayer).
+func (s *Server) listBlockedContacts(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListBlockedContacts()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addBlockedContact(w http.ResponseWriter, r *http.Request) {
+	var req model.BlockContactRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	bc, err := s.svc.AddBlockedContact(req.Phone, req.Email, req.Reason)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, bc)
+}
+
+func (s *Server) removeBlockedContact(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveBlockedContact(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // leagueViewer guards a league READ handler keyed on a league path id so it's

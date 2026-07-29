@@ -932,9 +932,9 @@ func (s *Service) SetStudentLevel(threadID, coachID, level string) error {
 // OUTSIDE the coaching-videos bucket, so signCoachingVideos can't sign them and
 // falls back to the URL as-is — which plays fine in the player.
 var seedVideoURLs = []string{
-	"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-	"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
-	"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4",
+	"https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4",
+	"https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4",
+	"https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4",
 }
 
 const seedEmailDomain = "@coachdemo.test"

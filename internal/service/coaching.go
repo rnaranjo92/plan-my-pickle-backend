@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -1013,11 +1014,13 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 	}
 
 	count := 0
+	var alexID, taylorID string
 
 	// 1) Alex — two clips, coach + student feedback, a per-clip note.
 	if t := addStudent("Alex Cruz", "alex.cruz"+seedEmailDomain, "",
 		"Working on his third-shot drop — improving, but still pops it up under pressure. Try the drop-and-freeze drill next session.", "3.5"); t != "" {
 		count++
+		alexID = t
 		v1 := addClip(t, seedVideoURLs[0], "Third-shot drop reps")
 		addFeedback(t, v1, "coach", "Good contact point, but you're swinging up too hard — soften the paddle face and let it float.")
 		addFeedback(t, v1, "student", "Got it — should I still step in after the drop?")
@@ -1042,8 +1045,45 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 	if t := addStudent("Taylor Kim", "taylor.kim"+seedEmailDomain, "",
 		"Great hands at the net. Push her on footwork and resets.", "4.0"); t != "" {
 		count++
+		taylorID = t
 		v := addClip(t, seedVideoURLs[0], "Hands battle at the net")
 		addFeedback(t, v, "coach", "Love the quick hands. Reset when it's above the net — don't counter everything.")
+	}
+
+	// Sample schedule entries (booked sessions + open + a day off). Re-runnable:
+	// clears prior demo entries first (tagged with a "Demo:" note prefix).
+	if s.scheduleReady() {
+		_ = s.sb.Delete("coaching_schedule",
+			"coach_id=eq."+store.Q(coachID)+"&notes=like."+store.Q("Demo:")+"*")
+		now := time.Now().UTC()
+		day := func(offset, hour int) time.Time {
+			d := now.AddDate(0, 0, offset)
+			return time.Date(d.Year(), d.Month(), d.Day(), hour, 0, 0, 0, time.UTC)
+		}
+		addSched := func(kind, studentID, label string, start time.Time, durMins int, allDay bool, end time.Time, location, note string) {
+			row := map[string]any{
+				"coach_id":  coachID,
+				"kind":      kind,
+				"starts_at": start.Format(time.RFC3339),
+				"all_day":   allDay,
+				"location":  orNull(location),
+				"notes":     "Demo: " + note,
+			}
+			if studentID != "" {
+				row["coach_student_id"] = studentID
+				row["student_label"] = label
+			}
+			if kind == "session" {
+				row["ends_at"] = start.Add(time.Duration(durMins) * time.Minute).Format(time.RFC3339)
+			} else if !end.IsZero() {
+				row["ends_at"] = end.Format(time.RFC3339)
+			}
+			_, _ = s.sb.Insert("coaching_schedule", row)
+		}
+		addSched("session", alexID, "Alex Cruz", day(1, 22), 60, false, time.Time{}, "Community courts", "3rd-shot drop work")
+		addSched("session", taylorID, "Taylor Kim", day(3, 23), 60, false, time.Time{}, "Community courts", "net game + resets")
+		addSched("open", "", "", day(2, 16), 0, false, day(2, 19), "", "open for lessons")
+		addSched("blocked", "", "", day(5, 0), 0, true, time.Time{}, "", "day off")
 	}
 
 	return count, nil

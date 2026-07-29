@@ -6,11 +6,26 @@ import (
 	"html"
 	"log"
 	"net/url"
+	"sort"
 	"strings"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
+
+// phoneOf returns the account's stored phone (raw), or "".
+func (s *Service) phoneOf(userID string) string {
+	if userID == "" {
+		return ""
+	}
+	row, _ := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone")
+	if row == nil {
+		return ""
+	}
+	return asStr(row, "phone")
+}
 
 // Instructor Mode — Phase 1: coach↔student video feedback.
 //
@@ -128,6 +143,7 @@ func mapCoachStudent(row map[string]any) model.CoachStudent {
 		ID:             asStr(row, "id"),
 		CoachID:        asStr(row, "coach_id"),
 		StudentEmail:   asStr(row, "student_email"),
+		StudentPhone:   asStr(row, "student_phone"),
 		StudentName:    asStr(row, "student_name"),
 		StudentID:      asStr(row, "student_id"),
 		CreatedAt:      asStr(row, "created_at"),
@@ -214,26 +230,45 @@ func (s *Service) applyUnread(userID string, rows []model.CoachStudent) {
 // AddCoachStudent adds a student to a coach's roster by email. Idempotent-ish: a
 // duplicate (same coach + email) is rejected by the unique index, surfaced as a
 // friendly error.
-func (s *Service) AddCoachStudent(coachID, email, name string) (model.CoachStudent, error) {
+func (s *Service) AddCoachStudent(coachID, email, phone, name string) (model.CoachStudent, error) {
 	if !s.coachingReady() {
 		return model.CoachStudent{}, ErrCoachingUnavailable
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	name = strings.TrimSpace(name)
-	if email == "" || !strings.Contains(email, "@") {
+	rawPhone := strings.TrimSpace(phone)
+	np := normPhone(rawPhone)
+	if email != "" && !strings.Contains(email, "@") {
 		return model.CoachStudent{}, errors.New("enter a valid student email")
 	}
-	// Already on this coach's roster?
-	if existing, _ := s.sb.SelectOne("coach_students",
-		"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id"); existing != nil {
-		return model.CoachStudent{}, errors.New("that student is already on your roster")
+	if email == "" && len(np) < 10 {
+		return model.CoachStudent{}, errors.New("enter the student's email or phone")
+	}
+	// Already on this coach's roster (by email or phone)?
+	if email != "" {
+		if existing, _ := s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id"); existing != nil {
+			return model.CoachStudent{}, errors.New("that student is already on your roster")
+		}
+	}
+	if np != "" {
+		if existing, _ := s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_phone=eq."+store.Q(np)+"&select=id"); existing != nil {
+			return model.CoachStudent{}, errors.New("that student is already on your roster")
+		}
 	}
 	row := map[string]any{
 		"coach_id":      coachID,
-		"student_email": email,
+		"student_email": orNull(email),
+		"student_phone": orNull(np),
 		"student_name":  orNull(name),
 	}
+	// Resolve to an existing account (by email, else phone) so a registered
+	// student links immediately and we skip the invite.
 	resolved := s.userIDByEmail(email)
+	if resolved == "" && np != "" {
+		resolved = s.userIDByPhone(np)
+	}
 	if resolved != "" {
 		row["student_id"] = resolved
 	}
@@ -244,12 +279,57 @@ func (s *Service) AddCoachStudent(coachID, email, name string) (model.CoachStude
 	if len(ins) == 0 {
 		return model.CoachStudent{}, errors.New("could not add that student")
 	}
-	// Not on PlanMyPickle yet → email them an invite to join (with that email so
-	// they auto-link on signup). Best-effort, off the request path.
+	// Not on PlanMyPickle yet → invite via whatever channels were given (they'll
+	// auto-link when they sign up with that email/phone). Best-effort, off-path.
 	if resolved == "" {
-		go s.sendCoachInvite(coachID, email, name)
+		if email != "" {
+			go s.sendCoachInvite(coachID, email, name)
+		}
+		if rawPhone != "" {
+			go s.sendCoachInviteSMS(coachID, rawPhone)
+		}
 	}
 	return mapCoachStudent(ins[0]), nil
+}
+
+// userIDByPhone resolves an account-linked player by normalized phone (last-10),
+// or "" if none. players.phone is compared on its last-10 digits.
+func (s *Service) userIDByPhone(np string) string {
+	if len(np) < 10 {
+		return ""
+	}
+	// PostgREST can't normalize server-side, so fetch account-linked players whose
+	// phone ends with these 10 digits (a like filter) and confirm in Go.
+	rows, err := s.sb.Select("players",
+		"phone=like.*"+store.Q(np)+"&user_id=not.is.null&select=user_id,phone&limit=20")
+	if err != nil {
+		return ""
+	}
+	for _, r := range rows {
+		if normPhone(asStr(r, "phone")) == np {
+			return asStr(r, "user_id")
+		}
+	}
+	return ""
+}
+
+// sendCoachInviteSMS texts a not-yet-registered student a link to join. They must
+// sign up with this phone so the roster row auto-links. No-op if SMS isn't set up
+// or the number isn't textable.
+func (s *Service) sendCoachInviteSMS(coachID, phone string) {
+	if s.Sms == nil || !gateway.SmsReachable(phone) {
+		return
+	}
+	coach := s.resolveDisplayName(coachID, "")
+	if strings.TrimSpace(coach) == "" {
+		coach = "Your coach"
+	}
+	body := fmt.Sprintf(
+		"%s invited you to PlanMyPickle to share pickleball clips & feedback. Sign up with this number to see them: https://app.planmypickle.com",
+		coach)
+	if r, err := s.Sms.Send(phone, body); err != nil || !r.OK {
+		log.Printf("coaching: invite SMS to %s failed: %v", phone, err)
+	}
 }
 
 // sendCoachInvite emails a not-yet-registered student a link to join
@@ -340,13 +420,32 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		return []model.CoachStudent{}, nil
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" {
+	np := normPhone(s.phoneOf(studentID))
+	if email == "" && np == "" {
 		return []model.CoachStudent{}, nil
 	}
-	rows, err := s.sb.Select("coach_students",
-		"student_email=eq."+store.Q(email)+"&order=created_at.desc")
-	if err != nil {
-		return nil, err
+	// Threads addressed to this student by email OR phone. Two queries + dedup
+	// avoids fiddly PostgREST or() escaping.
+	byID := map[string]map[string]any{}
+	if email != "" {
+		if rows, e := s.sb.Select("coach_students",
+			"student_email=eq."+store.Q(email)+"&order=created_at.desc"); e == nil {
+			for _, r := range rows {
+				byID[asStr(r, "id")] = r
+			}
+		}
+	}
+	if np != "" {
+		if rows, e := s.sb.Select("coach_students",
+			"student_phone=eq."+store.Q(np)+"&order=created_at.desc"); e == nil {
+			for _, r := range rows {
+				byID[asStr(r, "id")] = r
+			}
+		}
+	}
+	rows := make([]map[string]any, 0, len(byID))
+	for _, r := range byID {
+		rows = append(rows, r)
 	}
 	out := make([]model.CoachStudent, 0, len(rows))
 	for _, r := range rows {
@@ -363,6 +462,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		cs.CoachNote = "" // the coach's private note about the student is never sent to them
 		out = append(out, cs)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	s.applyUnread(studentID, out)
 	return out, nil
 }
@@ -389,11 +489,16 @@ func (s *Service) threadMembership(threadID, userID, email string) (model.CoachS
 	}
 	cs := mapCoachStudent(row)
 	email = strings.ToLower(strings.TrimSpace(email))
-	switch {
-	case userID != "" && cs.CoachID == userID:
+	if userID != "" && cs.CoachID == userID {
 		return cs, "coach", nil
-	case email != "" && strings.EqualFold(cs.StudentEmail, email):
-		// Backfill the student link opportunistically.
+	}
+	// Student match: by email, or by phone (the account's phone == the invited one).
+	studentMatch := email != "" && strings.EqualFold(cs.StudentEmail, email)
+	if !studentMatch && cs.StudentPhone != "" && userID != "" {
+		studentMatch = normPhone(s.phoneOf(userID)) == cs.StudentPhone
+	}
+	if studentMatch {
+		// Backfill the account link opportunistically.
 		if cs.StudentID == "" && userID != "" {
 			if _, uerr := s.sb.Update("coach_students", "id=eq."+store.Q(cs.ID),
 				map[string]any{"student_id": userID}); uerr == nil {
@@ -401,9 +506,8 @@ func (s *Service) threadMembership(threadID, userID, email string) (model.CoachS
 			}
 		}
 		return cs, "student", nil
-	default:
-		return model.CoachStudent{}, "", ErrForbidden
 	}
+	return model.CoachStudent{}, "", ErrForbidden
 }
 
 // coachingVideoPath extracts the object path within the coaching-videos bucket
@@ -766,8 +870,11 @@ func (s *Service) notifyCoachingCounterpart(cs model.CoachStudent, actorRole, ac
 	var recipient string
 	if actorRole == "coach" {
 		recipient = cs.StudentID
-		if recipient == "" {
+		if recipient == "" && cs.StudentEmail != "" {
 			recipient = s.userIDByEmail(cs.StudentEmail)
+		}
+		if recipient == "" && cs.StudentPhone != "" {
+			recipient = s.userIDByPhone(cs.StudentPhone)
 		}
 	} else {
 		recipient = cs.CoachID

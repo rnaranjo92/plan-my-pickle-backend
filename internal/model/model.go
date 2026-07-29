@@ -1217,7 +1217,8 @@ type CoachStudent struct {
 	ID             string `json:"id"`
 	CoachID        string `json:"coachId,omitempty"`
 	CoachName      string `json:"coachName,omitempty"`
-	StudentEmail   string `json:"studentEmail"`
+	StudentEmail   string `json:"studentEmail,omitempty"`
+	StudentPhone   string `json:"studentPhone,omitempty"`
 	StudentName    string `json:"studentName,omitempty"`
 	StudentID      string `json:"studentId,omitempty"`
 	VideoCount     int    `json:"videoCount"`
@@ -1263,9 +1264,12 @@ type CoachingThread struct {
 	Videos  []CoachingVideo `json:"videos"`
 }
 
-// AddCoachStudentRequest adds someone to a coach's roster by email.
+// AddCoachStudentRequest adds someone to a coach's roster by email and/or phone
+// (at least one). The coach can start immediately; the student links when they
+// sign up with that email or phone.
 type AddCoachStudentRequest struct {
 	Email string `json:"email"`
+	Phone string `json:"phone"`
 	Name  string `json:"name"`
 }
 

@@ -613,6 +613,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
 	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
+	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
@@ -5381,6 +5382,18 @@ func (s *Server) setClipNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetClipNote(r.PathValue("id"), userID(r), userEmail(r), req.Body); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) setStudentNote(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingFeedbackRequest // reuses {body}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetStudentNote(r.PathValue("id"), userID(r), req.Body); err != nil {
 		status(w, err)
 		return
 	}

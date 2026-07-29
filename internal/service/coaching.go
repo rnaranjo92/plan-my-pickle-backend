@@ -55,6 +55,7 @@ func mapCoachStudent(row map[string]any) model.CoachStudent {
 		StudentID:      asStr(row, "student_id"),
 		CreatedAt:      asStr(row, "created_at"),
 		LastActivityAt: asStr(row, "last_activity_at"),
+		CoachNote:      asStr(row, "coach_note"),
 	}
 }
 
@@ -282,6 +283,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		}
 		cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
 		cs.VideoCount = s.threadVideoCount(cs.ID)
+		cs.CoachNote = "" // the coach's private note about the student is never sent to them
 		out = append(out, cs)
 	}
 	s.applyUnread(studentID, out)
@@ -337,6 +339,9 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 		return model.CoachingThread{}, err
 	}
 	cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
+	if role != "coach" {
+		cs.CoachNote = "" // students never see the coach's private note about them
+	}
 	// Opening a thread marks it read for the viewer.
 	s.markThreadRead(userID, threadID)
 
@@ -601,6 +606,28 @@ func (s *Service) SetClipNote(videoID, userID, email, body string) error {
 		"body":             body,
 		"updated_at":       now(),
 	})
+	return err
+}
+
+// SetStudentNote sets (or clears) the coach's private running note about a
+// student. Only the thread's coach may set it.
+func (s *Service) SetStudentNote(threadID, coachID, body string) error {
+	if !s.columnReady("coach_students", "coach_note") {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coach_students",
+		"id=eq."+store.Q(threadID)+"&select=coach_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	_, err = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		map[string]any{"coach_note": orNull(strings.TrimSpace(body))})
 	return err
 }
 

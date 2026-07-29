@@ -1224,6 +1224,9 @@ type CoachStudent struct {
 	HasUnread      bool   `json:"hasUnread"`
 	CreatedAt      string `json:"createdAt,omitempty"`
 	LastActivityAt string `json:"-"` // internal: drives HasUnread, not sent raw
+	// CoachNote is the coach's private running note about the student — only
+	// populated for the coach's own views, redacted from the student's view.
+	CoachNote string `json:"coachNote,omitempty"`
 }
 
 // CoachingVideo is a clip in a thread, with its feedback nested for the detail view.

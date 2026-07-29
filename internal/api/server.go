@@ -638,6 +638,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaching/threads/{id}/assignments", requireAuth(s.threadAssignments))
 	mux.HandleFunc("POST /coaching/assignments/{id}/complete", requireAuth(s.completeAssignment))
 	mux.HandleFunc("DELETE /coaching/assignments/{id}", requireAuth(s.deleteAssignment))
+	mux.HandleFunc("GET /coaching/threads/{id}/skills", requireAuth(s.threadSkills))
+	mux.HandleFunc("POST /coach/students/{id}/skills", s.instructorOnly(s.setSkillRating))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5554,6 +5556,30 @@ func (s *Server) deleteAssignment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// Per-skill ratings (the coach's rubric assessment).
+func (s *Server) threadSkills(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListSkillRatings(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) setSkillRating(w http.ResponseWriter, r *http.Request) {
+	var req model.SetSkillRatingRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	rating, err := s.svc.SetSkillRating(
+		r.PathValue("id"), userID(r), userEmail(r), req.Skill, req.Rating)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rating)
 }
 
 // coachingRole tells the app whether the signed-in user gets the coach view (the

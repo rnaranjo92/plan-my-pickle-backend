@@ -1349,6 +1349,20 @@ type CompleteAssignmentRequest struct {
 	Done bool `json:"done"`
 }
 
+// CoachingSkillRating is the coach's 1-5 assessment of one skill for a student.
+type CoachingSkillRating struct {
+	Skill       string  `json:"skill"` // serve|return|dinks|drops|volleys|strategy
+	Rating      float64 `json:"rating"`
+	FirstRating float64 `json:"firstRating,omitempty"`
+	UpdatedAt   string  `json:"updatedAt,omitempty"`
+}
+
+// SetSkillRatingRequest sets one skill's rating (0 clears/leaves it unset).
+type SetSkillRatingRequest struct {
+	Skill  string  `json:"skill"`
+	Rating float64 `json:"rating"`
+}
+
 // AddCoachStudentRequest adds someone to a coach's roster by email and/or phone
 // (at least one). The coach can start immediately; the student links when they
 // sign up with that email or phone.

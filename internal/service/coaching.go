@@ -1457,6 +1457,103 @@ func (s *Service) DeleteAssignment(assignmentID, userID, email string) error {
 	return s.sb.Delete("coaching_assignments", "id=eq."+store.Q(assignmentID))
 }
 
+// --- Per-skill ratings (the coach's rubric assessment) ---
+
+// coachingSkills is the canonical 6-skill rubric (USAP matrix + PB Vision axes).
+var coachingSkills = []string{"serve", "return", "dinks", "drops", "volleys", "strategy"}
+
+func validSkill(skill string) bool {
+	for _, s := range coachingSkills {
+		if s == skill {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) skillsReady() bool {
+	return s.columnReady("coaching_skill_ratings", "id")
+}
+
+func mapSkillRating(row map[string]any) model.CoachingSkillRating {
+	return model.CoachingSkillRating{
+		Skill:       asStr(row, "skill"),
+		Rating:      asFloatOr(row, "rating", 0),
+		FirstRating: asFloatOr(row, "first_rating", 0),
+		UpdatedAt:   asStr(row, "updated_at"),
+	}
+}
+
+// ListSkillRatings returns a thread's per-skill ratings, for a member.
+func (s *Service) ListSkillRatings(threadID, userID, email string) ([]model.CoachingSkillRating, error) {
+	if !s.skillsReady() {
+		return []model.CoachingSkillRating{}, nil
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return nil, err
+	}
+	rows, err := s.sb.Select("coaching_skill_ratings",
+		"coach_student_id=eq."+store.Q(threadID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingSkillRating, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapSkillRating(r))
+	}
+	return out, nil
+}
+
+// SetSkillRating sets one skill's 1-5 rating for a student (coach-only). Captures
+// first_rating on the first set so Progress can show "since you started".
+func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating float64) (model.CoachingSkillRating, error) {
+	if !s.skillsReady() {
+		return model.CoachingSkillRating{}, ErrCoachingUnavailable
+	}
+	if _, role, err := s.threadMembership(threadID, coachID, email); err != nil {
+		return model.CoachingSkillRating{}, err
+	} else if role != "coach" {
+		return model.CoachingSkillRating{}, ErrForbidden
+	}
+	skill = strings.ToLower(strings.TrimSpace(skill))
+	if !validSkill(skill) {
+		return model.CoachingSkillRating{}, errors.New("unknown skill")
+	}
+	if rating < 0 || rating > 5 {
+		return model.CoachingSkillRating{}, errors.New("rating must be 0-5")
+	}
+	filter := "coach_student_id=eq." + store.Q(threadID) + "&skill=eq." + store.Q(skill)
+	existing, _ := s.sb.SelectOne("coaching_skill_ratings", filter)
+	if existing != nil {
+		out, err := s.sb.Update("coaching_skill_ratings",
+			"id=eq."+store.Q(asStr(existing, "id")),
+			map[string]any{"rating": rating, "updated_at": now()})
+		if err != nil {
+			return model.CoachingSkillRating{}, err
+		}
+		s.bumpThreadActivity(threadID)
+		if len(out) > 0 {
+			return mapSkillRating(out[0]), nil
+		}
+		return mapSkillRating(existing), nil
+	}
+	ins, err := s.sb.Insert("coaching_skill_ratings", map[string]any{
+		"coach_student_id": threadID,
+		"skill":            skill,
+		"rating":           rating,
+		"first_rating":     rating,
+		"updated_at":       now(),
+	})
+	if err != nil {
+		return model.CoachingSkillRating{}, err
+	}
+	if len(ins) == 0 {
+		return model.CoachingSkillRating{}, errors.New("could not save that rating")
+	}
+	s.bumpThreadActivity(threadID)
+	return mapSkillRating(ins[0]), nil
+}
+
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.

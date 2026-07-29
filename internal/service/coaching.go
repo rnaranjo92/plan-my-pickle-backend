@@ -19,12 +19,28 @@ func (s *Service) phoneOf(userID string) string {
 	if userID == "" {
 		return ""
 	}
-	row, _ := s.sb.SelectOne("pmp_profiles",
-		"user_id=eq."+store.Q(userID)+"&select=phone")
-	if row == nil {
-		return ""
+	if row, _ := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone"); row != nil {
+		if p := strings.TrimSpace(asStr(row, "phone")); p != "" {
+			return p
+		}
 	}
-	return asStr(row, "phone")
+	// Fall back to the phone captured at sign-up (auth user_metadata) and persist
+	// it to the profile, so a student's number is tied to their data immediately —
+	// before they've verified it — and a coach's text invite links right away.
+	if u, err := s.sb.GetAuthUser(userID); err == nil && u != nil {
+		if um, ok := u["user_metadata"].(map[string]any); ok {
+			p := strings.TrimSpace(asStr(um, "phone"))
+			if p != "" {
+				_, _ = s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+					"user_id": userID,
+					"phone":   p,
+				})
+				return p
+			}
+		}
+	}
+	return ""
 }
 
 // Instructor Mode — Phase 1: coach↔student video feedback.

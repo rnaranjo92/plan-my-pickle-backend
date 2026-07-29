@@ -954,6 +954,155 @@ func (s *Service) SetSharedNote(threadID, coachID, body string) error {
 	return nil
 }
 
+// --- Shared notes list (titled, dated; editable within 24h) ---
+
+func (s *Service) sharedNotesReady() bool {
+	return s.columnReady("coaching_shared_notes", "id")
+}
+
+// editableWithin24h reports whether a note posted at createdAt can still be
+// edited/deleted (within 24h). Fails open (editable) on an unparseable stamp.
+func editableWithin24h(createdAt string) bool {
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return true
+		}
+	}
+	return time.Since(t) < 24*time.Hour
+}
+
+func mapSharedNote(row map[string]any) model.CoachingSharedNote {
+	created := asStr(row, "created_at")
+	return model.CoachingSharedNote{
+		ID:        asStr(row, "id"),
+		Title:     asStr(row, "title"),
+		Body:      asStr(row, "body"),
+		CreatedAt: created,
+		UpdatedAt: asStr(row, "updated_at"),
+		Editable:  editableWithin24h(created),
+	}
+}
+
+// ListSharedNotes returns a thread's shared notes (newest first), for a member.
+func (s *Service) ListSharedNotes(threadID, userID, email string) ([]model.CoachingSharedNote, error) {
+	if !s.sharedNotesReady() {
+		return []model.CoachingSharedNote{}, nil
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return nil, err
+	}
+	rows, err := s.sb.Select("coaching_shared_notes",
+		"coach_student_id=eq."+store.Q(threadID)+"&order=created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingSharedNote, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapSharedNote(r))
+	}
+	return out, nil
+}
+
+// AddSharedNote posts a new shared note (coach-only); pings the student.
+func (s *Service) AddSharedNote(threadID, coachID, email, title, body string) (model.CoachingSharedNote, error) {
+	if !s.sharedNotesReady() {
+		return model.CoachingSharedNote{}, ErrCoachingUnavailable
+	}
+	cs, role, err := s.threadMembership(threadID, coachID, email)
+	if err != nil {
+		return model.CoachingSharedNote{}, err
+	}
+	if role != "coach" {
+		return model.CoachingSharedNote{}, ErrForbidden
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return model.CoachingSharedNote{}, errors.New("write something in the note")
+	}
+	ins, err := s.sb.Insert("coaching_shared_notes", map[string]any{
+		"coach_student_id": threadID,
+		"title":            orNull(strings.TrimSpace(title)),
+		"body":             body,
+		"created_at":       now(),
+		"updated_at":       now(),
+	})
+	if err != nil {
+		return model.CoachingSharedNote{}, err
+	}
+	if len(ins) == 0 {
+		return model.CoachingSharedNote{}, errors.New("could not save that note")
+	}
+	s.bumpThreadActivity(threadID)
+	s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(coachID),
+		"Your coach shared a note")
+	return mapSharedNote(ins[0]), nil
+}
+
+// sharedNoteCoachGuard loads a shared note + its thread and verifies the caller
+// is the coach and the note is still within its 24h edit window.
+func (s *Service) sharedNoteCoachGuard(noteID, coachID, email string) (map[string]any, error) {
+	row, err := s.sb.SelectOne("coaching_shared_notes", "id=eq."+store.Q(noteID))
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, ErrNotFound
+	}
+	_, role, err := s.threadMembership(asStr(row, "coach_student_id"), coachID, email)
+	if err != nil {
+		return nil, err
+	}
+	if role != "coach" {
+		return nil, ErrForbidden
+	}
+	if !editableWithin24h(asStr(row, "created_at")) {
+		return nil, ErrForbidden
+	}
+	return row, nil
+}
+
+// EditSharedNote edits a shared note (coach-only, within 24h of posting).
+func (s *Service) EditSharedNote(noteID, coachID, email, title, body string) (model.CoachingSharedNote, error) {
+	if !s.sharedNotesReady() {
+		return model.CoachingSharedNote{}, ErrCoachingUnavailable
+	}
+	row, err := s.sharedNoteCoachGuard(noteID, coachID, email)
+	if err != nil {
+		return model.CoachingSharedNote{}, err
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return model.CoachingSharedNote{}, errors.New("write something in the note")
+	}
+	out, err := s.sb.Update("coaching_shared_notes", "id=eq."+store.Q(noteID),
+		map[string]any{
+			"title":      orNull(strings.TrimSpace(title)),
+			"body":       body,
+			"updated_at": now(),
+		})
+	if err != nil {
+		return model.CoachingSharedNote{}, err
+	}
+	s.bumpThreadActivity(asStr(row, "coach_student_id"))
+	if len(out) > 0 {
+		return mapSharedNote(out[0]), nil
+	}
+	return mapSharedNote(row), nil
+}
+
+// DeleteSharedNote removes a shared note (coach-only, within 24h of posting).
+func (s *Service) DeleteSharedNote(noteID, coachID, email string) error {
+	if !s.sharedNotesReady() {
+		return ErrCoachingUnavailable
+	}
+	if _, err := s.sharedNoteCoachGuard(noteID, coachID, email); err != nil {
+		return err
+	}
+	return s.sb.Delete("coaching_shared_notes", "id=eq."+store.Q(noteID))
+}
+
 // SetStudentLevel sets (or clears) the coach's skill-level assessment of a
 // student. Only the thread's coach may set it.
 func (s *Service) SetStudentLevel(threadID, coachID, level string) error {

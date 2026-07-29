@@ -616,6 +616,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
 	mux.HandleFunc("POST /coach/students/{id}/shared-note", s.instructorOnly(s.setSharedNote))
+	mux.HandleFunc("GET /coaching/threads/{id}/shared-notes", requireAuth(s.sharedNotes))
+	mux.HandleFunc("POST /coach/students/{id}/shared-notes", s.instructorOnly(s.addSharedNote))
+	mux.HandleFunc("POST /coaching/shared-notes/{id}", s.instructorOnly(s.editSharedNote))
+	mux.HandleFunc("DELETE /coaching/shared-notes/{id}", s.instructorOnly(s.deleteSharedNote))
 	mux.HandleFunc("POST /coach/students/{id}/level", s.instructorOnly(s.setStudentLevel))
 	mux.HandleFunc("GET /coach/schedule", s.instructorOnly(s.coachSchedule))
 	mux.HandleFunc("POST /coach/schedule", s.instructorOnly(s.addCoachSchedule))
@@ -5448,6 +5452,53 @@ func (s *Server) setSharedNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetSharedNote(r.PathValue("id"), userID(r), req.Body); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// Shared notes list (titled, dated; editable within 24h).
+func (s *Server) sharedNotes(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListSharedNotes(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addSharedNote(w http.ResponseWriter, r *http.Request) {
+	var req model.SharedNoteRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.AddSharedNote(
+		r.PathValue("id"), userID(r), userEmail(r), req.Title, req.Body)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, n)
+}
+
+func (s *Server) editSharedNote(w http.ResponseWriter, r *http.Request) {
+	var req model.SharedNoteRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.EditSharedNote(
+		r.PathValue("id"), userID(r), userEmail(r), req.Title, req.Body)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+func (s *Server) deleteSharedNote(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteSharedNote(
+		r.PathValue("id"), userID(r), userEmail(r)); err != nil {
 		status(w, err)
 		return
 	}

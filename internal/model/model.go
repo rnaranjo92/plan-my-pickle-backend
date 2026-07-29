@@ -1230,7 +1230,25 @@ type CoachStudent struct {
 	// populated for the coach's own views, redacted from the student's view.
 	CoachNote string `json:"coachNote,omitempty"`
 	// SharedNote is a note the coach writes FOR the student to see (not redacted).
+	// Deprecated by CoachingSharedNote (the titled/dated list); kept for back-compat.
 	SharedNote string `json:"sharedNote,omitempty"`
+}
+
+// CoachingSharedNote is one titled, dated note the coach posts for a student to
+// see. Editable is true only within 24h of posting (server-authoritative).
+type CoachingSharedNote struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"createdAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+	Editable  bool   `json:"editable"`
+}
+
+// SharedNoteRequest creates/edits a shared note.
+type SharedNoteRequest struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 // CoachingVideo is a clip in a thread, with its feedback nested for the detail view.

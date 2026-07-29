@@ -332,7 +332,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 	if !s.coachingReady() {
 		return model.CoachingThread{}, ErrCoachingUnavailable
 	}
-	cs, _, err := s.threadMembership(threadID, userID, email)
+	cs, role, err := s.threadMembership(threadID, userID, email)
 	if err != nil {
 		return model.CoachingThread{}, err
 	}
@@ -387,6 +387,17 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 			Feedback:       byVideo[asStr(v, "id")],
 		}
 		out.Videos = append(out.Videos, vid)
+	}
+	// Private coach notes — attached ONLY for the coach, never sent to a student.
+	if role == "coach" && len(out.Videos) > 0 {
+		ids := make([]string, len(out.Videos))
+		for i, v := range out.Videos {
+			ids[i] = v.ID
+		}
+		notes := s.clipNotes(ids)
+		for i := range out.Videos {
+			out.Videos[i].CoachNote = notes[out.Videos[i].ID]
+		}
 	}
 	return out, nil
 }
@@ -533,6 +544,64 @@ func (s *Service) DeleteCoachingFeedback(feedbackID, userID, email string) error
 		return ErrForbidden
 	}
 	return s.sb.Delete("coaching_feedback", "id=eq."+store.Q(feedbackID))
+}
+
+// notesReady gates the coach private-notes feature on add_coaching_notes.sql.
+func (s *Service) notesReady() bool {
+	return s.columnReady("coaching_notes", "id")
+}
+
+// clipNotes returns a video_id → note body map for the given clips (empty if the
+// feature isn't migrated). Coach-only data — callers must check role first.
+func (s *Service) clipNotes(videoIDs []string) map[string]string {
+	out := map[string]string{}
+	if !s.notesReady() || len(videoIDs) == 0 {
+		return out
+	}
+	rows, err := s.sb.Select("coaching_notes",
+		"video_id=in.("+strings.Join(videoIDs, ",")+")&select=video_id,body")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[asStr(r, "video_id")] = asStr(r, "body")
+	}
+	return out
+}
+
+// SetClipNote upserts (or clears, when body is empty) the coach's private note on
+// a clip. Only the thread's coach may set it.
+func (s *Service) SetClipNote(videoID, userID, email, body string) error {
+	if !s.notesReady() {
+		return ErrCoachingUnavailable
+	}
+	vrow, err := s.sb.SelectOne("coaching_videos",
+		"id=eq."+store.Q(videoID)+"&select=id,coach_student_id")
+	if err != nil {
+		return err
+	}
+	if vrow == nil {
+		return ErrNotFound
+	}
+	threadID := asStr(vrow, "coach_student_id")
+	_, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return err
+	}
+	if role != "coach" {
+		return ErrForbidden
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return s.sb.Delete("coaching_notes", "video_id=eq."+store.Q(videoID))
+	}
+	_, err = s.sb.Upsert("coaching_notes", "video_id", map[string]any{
+		"coach_student_id": threadID,
+		"video_id":         videoID,
+		"body":             body,
+		"updated_at":       now(),
+	})
+	return err
 }
 
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.

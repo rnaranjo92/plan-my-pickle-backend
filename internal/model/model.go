@@ -1237,6 +1237,9 @@ type CoachingVideo struct {
 	Title          string             `json:"title,omitempty"`
 	CreatedAt      string             `json:"createdAt,omitempty"`
 	Feedback       []CoachingFeedback `json:"feedback,omitempty"`
+	// CoachNote is the coach's PRIVATE note on this clip — only populated when the
+	// viewer is the coach; never sent to the student.
+	CoachNote string `json:"coachNote,omitempty"`
 }
 
 // CoachingFeedback is one text comment, authored by the coach or the student.

@@ -90,6 +90,30 @@ func (s *Service) FullyRegistered(userID string) bool {
 		strings.TrimSpace(asStr(row, "phone")) != ""
 }
 
+// VerificationStatus reads the account's phone state in ONE query and, crucially,
+// PROPAGATES any DB error. The /me/verification handler uses this so a transient
+// Supabase read failure returns HTTP 5xx (and the client's fail-open kicks in)
+// instead of falsely reporting hasPhone:false — which, under the hard gate, would
+// shove the ENTIRE userbase (verified users included) behind the mandatory
+// verify screen. PhoneOnFile/PhoneVerified below stay error-swallowing because
+// their callers (organize gate) want to fail CLOSED; the status endpoint must
+// fail OPEN, so it needs the error.
+func (s *Service) VerificationStatus(userID string) (verified, hasPhone bool, err error) {
+	if userID == "" {
+		return false, false, nil
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=phone,phone_verified")
+	if err != nil {
+		return false, false, err
+	}
+	if row == nil {
+		return false, false, nil
+	}
+	return asBool(row, "phone_verified"),
+		strings.TrimSpace(asStr(row, "phone")) != "", nil
+}
+
 // PhoneVerified reports whether the account has a verified phone.
 func (s *Service) PhoneVerified(userID string) bool {
 	if userID == "" {

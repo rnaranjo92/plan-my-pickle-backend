@@ -4070,10 +4070,18 @@ func (s *Server) savePhoneUnverified(w http.ResponseWriter, r *http.Request) {
 // verificationStatus reports whether the caller has a verified phone and whether
 // verification is currently required (the SIGNUP_OTP_REQUIRED gate).
 func (s *Server) verificationStatus(w http.ResponseWriter, r *http.Request) {
+	// Use the error-PROPAGATING read: on a DB failure we must return 5xx so the
+	// client fails OPEN (no gate), never 200 {hasPhone:false} which would mass-
+	// gate the userbase during a transient Supabase hiccup.
+	verified, hasPhone, err := s.svc.VerificationStatus(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"phoneVerified": s.svc.PhoneVerified(userID(r)),
+		"phoneVerified": verified,
 		"otpRequired":   service.SignupOtpRequired(),
-		"hasPhone":      s.svc.PhoneOnFile(userID(r)),
+		"hasPhone":      hasPhone,
 	})
 }
 

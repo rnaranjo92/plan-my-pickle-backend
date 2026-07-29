@@ -329,6 +329,49 @@ func (s *Service) threadMembership(threadID, userID, email string) (model.CoachS
 	}
 }
 
+// coachingVideoPath extracts the object path within the coaching-videos bucket
+// from a stored value — whether it's a bare path (new uploads) or a legacy public
+// URL (…/object/public/coaching-videos/<path>?…). Lets us sign both uniformly.
+func coachingVideoPath(stored string) string {
+	stored = strings.TrimSpace(stored)
+	const marker = "/coaching-videos/"
+	if i := strings.Index(stored, marker); i >= 0 {
+		p := stored[i+len(marker):]
+		if q := strings.IndexByte(p, '?'); q >= 0 {
+			p = p[:q]
+		}
+		return p
+	}
+	return stored
+}
+
+// signCoachingVideos rewrites each clip's VideoURL to a short-lived SIGNED URL
+// (the bucket is private). Best-effort: on any failure the stored value is left
+// as-is, so a signing blip degrades gracefully rather than hiding clips.
+func (s *Service) signCoachingVideos(vids []model.CoachingVideo) {
+	if len(vids) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	paths := make([]string, 0, len(vids))
+	for _, v := range vids {
+		p := coachingVideoPath(v.VideoURL)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	signed, err := s.sb.SignedURLs("coaching-videos", paths, 6*60*60) // 6h
+	if err != nil || len(signed) == 0 {
+		return
+	}
+	for i := range vids {
+		if u, ok := signed[coachingVideoPath(vids[i].VideoURL)]; ok {
+			vids[i].VideoURL = u
+		}
+	}
+}
+
 // GetThread returns a thread's clips (each with nested feedback), for a member.
 func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThread, error) {
 	if !s.coachingReady() {
@@ -404,6 +447,8 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 			out.Videos[i].CoachNote = notes[out.Videos[i].ID]
 		}
 	}
+	// Private bucket → hand out short-lived signed playback URLs.
+	s.signCoachingVideos(out.Videos)
 	return out, nil
 }
 
@@ -442,6 +487,12 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 		VideoURL:       url,
 		Title:          asStr(ins[0], "title"),
 		CreatedAt:      asStr(ins[0], "created_at"),
+	}
+	if m, err := s.sb.SignedURLs("coaching-videos",
+		[]string{coachingVideoPath(url)}, 6*60*60); err == nil {
+		if u, ok := m[coachingVideoPath(url)]; ok {
+			vid.VideoURL = u
+		}
 	}
 	// Stamp thread activity + mark the uploader themselves read (so their own
 	// upload never shows as unread to them; the counterpart's list flags it).

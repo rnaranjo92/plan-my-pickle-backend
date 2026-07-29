@@ -157,6 +157,45 @@ func (c *Client) StorageUpload(bucket, path, contentType string, data []byte) (s
 		c.baseURL, bucket, path), nil
 }
 
+// SignedURLs creates time-limited signed download URLs for objects in a PRIVATE
+// bucket, in one batch request, using the service key (bypasses bucket RLS).
+// Returns a map of object path -> full signed URL; paths that fail to sign are
+// omitted (callers fall back to the stored value).
+func (c *Client) SignedURLs(bucket string, paths []string, expiresIn int) (map[string]string, error) {
+	out := map[string]string{}
+	if len(paths) == 0 {
+		return out, nil
+	}
+	body, err := json.Marshal(map[string]any{"expiresIn": expiresIn, "paths": paths})
+	if err != nil {
+		return out, err
+	}
+	resp, err := c.do(http.MethodPost,
+		fmt.Sprintf("%s/storage/v1/object/sign/%s", c.baseURL, bucket), body, "")
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		log.Printf("storage sign %s: status=%d body=%s", bucket, resp.StatusCode, raw)
+		return out, fmt.Errorf("storage sign failed (%d)", resp.StatusCode)
+	}
+	var arr []struct {
+		Path      string `json:"path"`
+		SignedURL string `json:"signedURL"`
+	}
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return out, dbDecodeError("sign", bucket, raw)
+	}
+	for _, e := range arr {
+		if e.SignedURL != "" {
+			out[e.Path] = c.baseURL + "/storage/v1" + e.SignedURL
+		}
+	}
+	return out, nil
+}
+
 // Select returns rows from a table matching a raw PostgREST query string, e.g.
 // "event_id=eq.<id>&order=round_number.asc".
 func (c *Client) Select(table, query string) ([]map[string]any, error) {

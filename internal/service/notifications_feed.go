@@ -93,6 +93,8 @@ func notifPushURL(link string) string {
 		return base + "/?event=" + strings.TrimPrefix(link, "event:")
 	case strings.HasPrefix(link, "playevent:"):
 		return base + "/?event=" + strings.TrimPrefix(link, "playevent:")
+	case strings.HasPrefix(link, "coaching:"):
+		return base + "/?coaching=" + strings.TrimPrefix(link, "coaching:")
 	default:
 		return base
 	}

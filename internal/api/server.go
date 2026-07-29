@@ -608,6 +608,15 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /admin/blocked-contacts", s.ownerEmailOnly(s.listBlockedContacts))
 	mux.HandleFunc("POST /admin/blocked-contacts", s.ownerEmailOnly(s.addBlockedContact))
 	mux.HandleFunc("DELETE /admin/blocked-contacts/{id}", s.ownerEmailOnly(s.removeBlockedContact))
+	// Instructor Mode / Coaching (Phase 1). Coach-side = instructor-gated; thread
+	// reads/writes = any authed user, membership-checked in the service.
+	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
+	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
+	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
+	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
+	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
+	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
+	mux.HandleFunc("POST /coaching/videos/{id}/feedback", requireAuth(s.addCoachingFeedback))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5211,6 +5220,30 @@ func (s *Server) ownerEmailOnly(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// instructorEmails gates the coach-side (roster + upload-to-any-student) surfaces
+// of Instructor Mode. For Phase 1 these are the two owner accounts; when the
+// "instructor access needs our approval" flow lands, resolve membership from a
+// table here instead of this hardcoded set.
+var instructorEmails = map[string]bool{
+	"rolando.naranjo0420@gmail.com": true,
+	"krizhia_roxas29@yahoo.com":     true,
+}
+
+func isInstructorEmail(email string) bool {
+	return instructorEmails[strings.ToLower(strings.TrimSpace(email))]
+}
+
+// instructorOnly gates coach-side coaching endpoints to instructor accounts.
+func (s *Server) instructorOnly(next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if !isInstructorEmail(userEmail(r)) {
+			writeErr(w, http.StatusForbidden, errForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
 // listBlockedContacts / addBlockedContact / removeBlockedContact back the
 // owner-only platform denylist (blocked_contacts). A blocked phone/email can't
 // register anywhere on PlanMyPickle (checked in RegisterPlayer).
@@ -5242,6 +5275,85 @@ func (s *Server) removeBlockedContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- Instructor Mode / Coaching (Phase 1) ---
+// Coach-side handlers are instructor-gated; thread handlers are open to any
+// authenticated user and check membership (coach OR the addressed student) in the
+// service layer.
+
+func (s *Server) coachStudents(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachStudents(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
+	var req model.AddCoachStudentRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	cs, err := s.svc.AddCoachStudent(userID(r), req.Email, req.Name)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, cs)
+}
+
+func (s *Server) removeCoachStudent(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveCoachStudent(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) myCoaching(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListStudentThreads(userID(r), userEmail(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) coachingThread(w http.ResponseWriter, r *http.Request) {
+	thread, err := s.svc.GetThread(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *Server) addCoachingVideo(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingVideoRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	vid, err := s.svc.AddThreadVideo(r.PathValue("id"), userID(r), userEmail(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, vid)
+}
+
+func (s *Server) addCoachingFeedback(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingFeedbackRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	fb, err := s.svc.AddVideoFeedback(r.PathValue("id"), userID(r), userEmail(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, fb)
 }
 
 // leagueViewer guards a league READ handler keyed on a league path id so it's

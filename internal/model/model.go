@@ -1207,6 +1207,72 @@ type AnalysisCheckoutRequest struct {
 	CancelURL     string   `json:"cancelUrl"`
 }
 
+// --- Instructor Mode / Coaching (Phase 1) ---
+
+// CoachStudent is one coach↔student relationship (the roster row). Its ID doubles
+// as the thread id that videos + feedback hang off of. StudentID is the resolved
+// account id (may be empty until the student logs in). VideoCount is a convenience
+// count returned on list views.
+type CoachStudent struct {
+	ID           string `json:"id"`
+	CoachID      string `json:"coachId,omitempty"`
+	CoachName    string `json:"coachName,omitempty"`
+	StudentEmail string `json:"studentEmail"`
+	StudentName  string `json:"studentName,omitempty"`
+	StudentID    string `json:"studentId,omitempty"`
+	VideoCount   int    `json:"videoCount"`
+	CreatedAt    string `json:"createdAt,omitempty"`
+}
+
+// CoachingVideo is a clip in a thread, with its feedback nested for the detail view.
+type CoachingVideo struct {
+	ID             string             `json:"id"`
+	CoachStudentID string             `json:"coachStudentId,omitempty"`
+	UploadedBy     string             `json:"uploadedBy,omitempty"`
+	UploaderRole   string             `json:"uploaderRole,omitempty"`
+	UploaderName   string             `json:"uploaderName,omitempty"`
+	VideoURL       string             `json:"videoUrl"`
+	Title          string             `json:"title,omitempty"`
+	CreatedAt      string             `json:"createdAt,omitempty"`
+	Feedback       []CoachingFeedback `json:"feedback,omitempty"`
+}
+
+// CoachingFeedback is one text comment, authored by the coach or the student.
+type CoachingFeedback struct {
+	ID             string `json:"id"`
+	CoachStudentID string `json:"coachStudentId,omitempty"`
+	VideoID        string `json:"videoId,omitempty"`
+	AuthorID       string `json:"authorId,omitempty"`
+	AuthorRole     string `json:"authorRole,omitempty"`
+	AuthorName     string `json:"authorName,omitempty"`
+	Body           string `json:"body"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+}
+
+// CoachingThread is a roster row plus its clips (each with nested feedback).
+type CoachingThread struct {
+	Student CoachStudent    `json:"student"`
+	Videos  []CoachingVideo `json:"videos"`
+}
+
+// AddCoachStudentRequest adds someone to a coach's roster by email.
+type AddCoachStudentRequest struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+// CoachingVideoRequest records an already-uploaded clip (client uploads the file
+// directly to the coaching-videos bucket, then posts the resulting public URL).
+type CoachingVideoRequest struct {
+	VideoURL string `json:"videoUrl"`
+	Title    string `json:"title"`
+}
+
+// CoachingFeedbackRequest is a text comment on a clip.
+type CoachingFeedbackRequest struct {
+	Body string `json:"body"`
+}
+
 // WaitlistEntry is one person on an event's waitlist (used when the event is at
 // its MaxPlayers cap). Kept separate from registrations so it never touches
 // standings/scheduling/counts until an organizer promotes it.

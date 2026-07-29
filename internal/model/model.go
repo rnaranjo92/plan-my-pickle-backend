@@ -1265,6 +1265,32 @@ type CoachingThread struct {
 	Videos  []CoachingVideo `json:"videos"`
 }
 
+// CoachingScheduleItem is one entry on the coach's schedule: a booked lesson
+// ("session"), offered availability ("open"), or unavailable time ("blocked").
+type CoachingScheduleItem struct {
+	ID             string `json:"id"`
+	Kind           string `json:"kind"` // session | open | blocked
+	CoachStudentID string `json:"coachStudentId,omitempty"`
+	StudentLabel   string `json:"studentLabel,omitempty"`
+	StartsAt       string `json:"startsAt"`
+	EndsAt         string `json:"endsAt,omitempty"`
+	AllDay         bool   `json:"allDay"`
+	Location       string `json:"location,omitempty"`
+	Notes          string `json:"notes,omitempty"`
+}
+
+// CoachingScheduleRequest books/opens/blocks a schedule entry.
+type CoachingScheduleRequest struct {
+	Kind           string `json:"kind"`
+	CoachStudentID string `json:"coachStudentId"`
+	StudentLabel   string `json:"studentLabel"`
+	StartsAt       string `json:"startsAt"`
+	EndsAt         string `json:"endsAt"`
+	AllDay         bool   `json:"allDay"`
+	Location       string `json:"location"`
+	Notes          string `json:"notes"`
+}
+
 // AddCoachStudentRequest adds someone to a coach's roster by email and/or phone
 // (at least one). The coach can start immediately; the student links when they
 // sign up with that email or phone.

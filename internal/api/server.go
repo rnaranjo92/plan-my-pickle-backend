@@ -616,6 +616,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
 	mux.HandleFunc("POST /coach/students/{id}/level", s.instructorOnly(s.setStudentLevel))
+	mux.HandleFunc("GET /coach/schedule", s.instructorOnly(s.coachSchedule))
+	mux.HandleFunc("POST /coach/schedule", s.instructorOnly(s.addCoachSchedule))
+	mux.HandleFunc("DELETE /coach/schedule/{id}", s.instructorOnly(s.deleteCoachSchedule))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
 	mux.HandleFunc("GET /admin/instructors", s.ownerEmailOnly(s.listInstructors))
@@ -5434,6 +5437,37 @@ func (s *Server) setStudentLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetStudentLevel(r.PathValue("id"), userID(r), req.Body); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// Coach schedule: booked sessions, open availability, blocked time.
+func (s *Server) coachSchedule(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachSchedule(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addCoachSchedule(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingScheduleRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.AddCoachScheduleItem(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) deleteCoachSchedule(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteCoachScheduleItem(userID(r), r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}

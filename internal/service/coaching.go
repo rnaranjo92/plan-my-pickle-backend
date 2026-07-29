@@ -1049,6 +1049,109 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 	return count, nil
 }
 
+// --- Coach schedule: booked sessions, open availability, blocked time ---
+
+func (s *Service) scheduleReady() bool {
+	return s.columnReady("coaching_schedule", "id")
+}
+
+func mapScheduleItem(row map[string]any) model.CoachingScheduleItem {
+	return model.CoachingScheduleItem{
+		ID:             asStr(row, "id"),
+		Kind:           asStr(row, "kind"),
+		CoachStudentID: asStr(row, "coach_student_id"),
+		StudentLabel:   asStr(row, "student_label"),
+		StartsAt:       asStr(row, "starts_at"),
+		EndsAt:         asStr(row, "ends_at"),
+		AllDay:         asBool(row, "all_day"),
+		Location:       asStr(row, "location"),
+		Notes:          asStr(row, "notes"),
+	}
+}
+
+// ListCoachSchedule returns the coach's schedule, earliest first.
+func (s *Service) ListCoachSchedule(coachID string) ([]model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() {
+		return []model.CoachingScheduleItem{}, nil
+	}
+	rows, err := s.sb.Select("coaching_schedule",
+		"coach_id=eq."+store.Q(coachID)+"&order=starts_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingScheduleItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapScheduleItem(r))
+	}
+	return out, nil
+}
+
+// AddCoachScheduleItem books a session / opens availability / blocks time.
+func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingScheduleRequest) (model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() {
+		return model.CoachingScheduleItem{}, ErrCoachingUnavailable
+	}
+	kind := strings.TrimSpace(req.Kind)
+	if kind != "session" && kind != "open" && kind != "blocked" {
+		return model.CoachingScheduleItem{}, errors.New("invalid schedule kind")
+	}
+	if strings.TrimSpace(req.StartsAt) == "" {
+		return model.CoachingScheduleItem{}, errors.New("pick a date and time")
+	}
+	label := strings.TrimSpace(req.StudentLabel)
+	row := map[string]any{
+		"coach_id":  coachID,
+		"kind":      kind,
+		"starts_at": req.StartsAt,
+		"all_day":   req.AllDay,
+		"ends_at":   orNull(strings.TrimSpace(req.EndsAt)),
+		"location":  orNull(strings.TrimSpace(req.Location)),
+		"notes":     orNull(strings.TrimSpace(req.Notes)),
+	}
+	if kind == "session" && strings.TrimSpace(req.CoachStudentID) != "" {
+		row["coach_student_id"] = req.CoachStudentID
+		if label == "" {
+			if r, _ := s.sb.SelectOne("coach_students",
+				"id=eq."+store.Q(req.CoachStudentID)+"&select=student_name,student_email"); r != nil {
+				label = asStr(r, "student_name")
+				if label == "" {
+					label = asStr(r, "student_email")
+				}
+			}
+		}
+	}
+	if label != "" {
+		row["student_label"] = label
+	}
+	ins, err := s.sb.Insert("coaching_schedule", row)
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	if len(ins) == 0 {
+		return model.CoachingScheduleItem{}, errors.New("could not save that")
+	}
+	return mapScheduleItem(ins[0]), nil
+}
+
+// DeleteCoachScheduleItem removes a schedule entry the coach owns.
+func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
+	if !s.scheduleReady() {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_schedule",
+		"id=eq."+store.Q(id)+"&select=coach_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(id))
+}
+
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.

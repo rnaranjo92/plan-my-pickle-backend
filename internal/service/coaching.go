@@ -78,6 +78,23 @@ func (s *Service) userIDByEmail(email string) string {
 	return asStr(row, "user_id")
 }
 
+// coachingName resolves a display name for coaching, preferring the account's
+// PROFILE name (pmp_profiles.full_name — what they set in "Basic info") over an
+// old per-event registration name. Falls back to the shared resolver (auth
+// metadata / players / email) when there's no profile name.
+func (s *Service) coachingName(userID string) string {
+	if userID == "" {
+		return ""
+	}
+	if row, _ := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=full_name"); row != nil {
+		if n := strings.TrimSpace(asStr(row, "full_name")); n != "" {
+			return n
+		}
+	}
+	return s.resolveDisplayName(userID, "")
+}
+
 // --- Instructor (coach) allowlist ---
 
 // IsInstructor reports whether an account email is on the coach allowlist
@@ -355,7 +372,7 @@ func (s *Service) sendCoachInviteSMS(coachID, phone string) {
 	if s.Sms == nil || !gateway.SmsReachable(phone) {
 		return
 	}
-	coach := s.resolveDisplayName(coachID, "")
+	coach := s.coachingName(coachID)
 	if strings.TrimSpace(coach) == "" {
 		coach = "Your coach"
 	}
@@ -375,7 +392,7 @@ func (s *Service) sendCoachInvite(coachID, studentEmail, studentName string) {
 	if s.Email == nil || !s.Email.Live() {
 		return
 	}
-	coach := s.resolveDisplayName(coachID, "")
+	coach := s.coachingName(coachID)
 	if strings.TrimSpace(coach) == "" {
 		coach = "Your coach"
 	}
@@ -498,7 +515,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 				cs.StudentID = studentID
 			}
 		}
-		cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
+		cs.CoachName = s.coachingName(cs.CoachID)
 		cs.VideoCount = s.threadVideoCount(cs.ID)
 		cs.CoachNote = "" // the coach's private note about the student is never sent to them
 		cs.SkillLevel = "" // coach's assessment — coach-only
@@ -604,7 +621,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 	if err != nil {
 		return model.CoachingThread{}, err
 	}
-	cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
+	cs.CoachName = s.coachingName(cs.CoachID)
 	if role != "coach" {
 		cs.CoachNote = "" // students never see the coach's private note about them
 		cs.SkillLevel = "" // nor the coach's skill assessment
@@ -629,7 +646,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 		if n, ok := nameCache[uid]; ok {
 			return n
 		}
-		n := s.resolveDisplayName(uid, "")
+		n := s.coachingName(uid)
 		nameCache[uid] = n
 		return n
 	}
@@ -707,7 +724,7 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 		CoachStudentID: threadID,
 		UploadedBy:     userID,
 		UploaderRole:   role,
-		UploaderName:   s.resolveDisplayName(userID, email),
+		UploaderName:   s.coachingName(userID),
 		VideoURL:       url,
 		Title:          asStr(ins[0], "title"),
 		CreatedAt:      asStr(ins[0], "created_at"),
@@ -762,7 +779,7 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 	if len(ins) == 0 {
 		return model.CoachingFeedback{}, errors.New("could not save your feedback")
 	}
-	name := s.resolveDisplayName(userID, email)
+	name := s.coachingName(userID)
 	fb := model.CoachingFeedback{
 		ID:             asStr(ins[0], "id"),
 		CoachStudentID: threadID,

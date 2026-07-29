@@ -1221,6 +1221,7 @@ type CoachStudent struct {
 	StudentPhone   string `json:"studentPhone,omitempty"`
 	StudentName    string `json:"studentName,omitempty"`
 	StudentID      string `json:"studentId,omitempty"`
+	SkillLevel     string `json:"skillLevel,omitempty"`
 	VideoCount     int    `json:"videoCount"`
 	HasUnread      bool   `json:"hasUnread"`
 	CreatedAt      string `json:"createdAt,omitempty"`
@@ -1271,6 +1272,7 @@ type AddCoachStudentRequest struct {
 	Email string `json:"email"`
 	Phone string `json:"phone"`
 	Name  string `json:"name"`
+	Level string `json:"level"`
 }
 
 // Instructor is one coach on the allowlist (owner-managed).

@@ -615,6 +615,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/seed-demo", requireAuth(s.seedCoachingDemo))
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
+	mux.HandleFunc("POST /coach/students/{id}/level", s.instructorOnly(s.setStudentLevel))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
 	mux.HandleFunc("GET /admin/instructors", s.ownerEmailOnly(s.listInstructors))
@@ -5312,7 +5313,7 @@ func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	cs, err := s.svc.AddCoachStudent(userID(r), req.Email, req.Phone, req.Name)
+	cs, err := s.svc.AddCoachStudent(userID(r), req.Email, req.Phone, req.Name, req.Level)
 	if err != nil {
 		status(w, err)
 		return
@@ -5421,6 +5422,18 @@ func (s *Server) setStudentNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetStudentNote(r.PathValue("id"), userID(r), req.Body); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) setStudentLevel(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingFeedbackRequest // reuses {body} as the level string
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetStudentLevel(r.PathValue("id"), userID(r), req.Body); err != nil {
 		status(w, err)
 		return
 	}

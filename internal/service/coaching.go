@@ -146,6 +146,7 @@ func mapCoachStudent(row map[string]any) model.CoachStudent {
 		StudentPhone:   asStr(row, "student_phone"),
 		StudentName:    asStr(row, "student_name"),
 		StudentID:      asStr(row, "student_id"),
+		SkillLevel:     asStr(row, "skill_level"),
 		CreatedAt:      asStr(row, "created_at"),
 		LastActivityAt: asStr(row, "last_activity_at"),
 		CoachNote:      asStr(row, "coach_note"),
@@ -230,12 +231,13 @@ func (s *Service) applyUnread(userID string, rows []model.CoachStudent) {
 // AddCoachStudent adds a student to a coach's roster by email. Idempotent-ish: a
 // duplicate (same coach + email) is rejected by the unique index, surfaced as a
 // friendly error.
-func (s *Service) AddCoachStudent(coachID, email, phone, name string) (model.CoachStudent, error) {
+func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (model.CoachStudent, error) {
 	if !s.coachingReady() {
 		return model.CoachStudent{}, ErrCoachingUnavailable
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	name = strings.TrimSpace(name)
+	level = strings.TrimSpace(level)
 	rawPhone := strings.TrimSpace(phone)
 	np := normPhone(rawPhone)
 	// Phone invites need add_coach_student_phone.sql (student_phone column +
@@ -275,6 +277,9 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name string) (model.Coa
 	}
 	if phoneReady {
 		row["student_phone"] = orNull(np)
+	}
+	if level != "" && s.columnReady("coach_students", "skill_level") {
+		row["skill_level"] = level
 	}
 	// Resolve to an existing account (by email, else phone) so a registered
 	// student links immediately and we skip the invite.
@@ -392,8 +397,14 @@ func (s *Service) ListCoachStudents(coachID string) ([]model.CoachStudent, error
 	if !s.coachingReady() {
 		return []model.CoachStudent{}, nil
 	}
+	// Newest-activity-first when the activity column exists (from add_coaching_reads),
+	// otherwise newest-added-first.
+	order := "created_at.desc"
+	if s.readsReady() {
+		order = "last_activity_at.desc"
+	}
 	rows, err := s.sb.Select("coach_students",
-		"coach_id=eq."+store.Q(coachID)+"&order=created_at.desc")
+		"coach_id=eq."+store.Q(coachID)+"&order="+order)
 	if err != nil {
 		return nil, err
 	}
@@ -473,6 +484,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
 		cs.VideoCount = s.threadVideoCount(cs.ID)
 		cs.CoachNote = "" // the coach's private note about the student is never sent to them
+		cs.SkillLevel = "" // coach's assessment — coach-only
 		out = append(out, cs)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
@@ -578,6 +590,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 	cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
 	if role != "coach" {
 		cs.CoachNote = "" // students never see the coach's private note about them
+		cs.SkillLevel = "" // nor the coach's skill assessment
 	}
 	// Opening a thread marks it read for the viewer.
 	s.markThreadRead(userID, threadID)
@@ -876,6 +889,28 @@ func (s *Service) SetStudentNote(threadID, coachID, body string) error {
 	return err
 }
 
+// SetStudentLevel sets (or clears) the coach's skill-level assessment of a
+// student. Only the thread's coach may set it.
+func (s *Service) SetStudentLevel(threadID, coachID, level string) error {
+	if !s.columnReady("coach_students", "skill_level") {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coach_students",
+		"id=eq."+store.Q(threadID)+"&select=coach_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	_, err = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		map[string]any{"skill_level": orNull(strings.TrimSpace(level))})
+	return err
+}
+
 // seedVideoURLs are stable public sample clips used for demo data. They live
 // OUTSIDE the coaching-videos bucket, so signCoachingVideos can't sign them and
 // falls back to the URL as-is — which plays fine in the player.
@@ -903,8 +938,9 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 
 	notesOK := s.notesReady()
 	studentNoteOK := s.columnReady("coach_students", "coach_note")
+	levelOK := s.columnReady("coach_students", "skill_level")
 
-	addStudent := func(name, email, phone, note string) string {
+	addStudent := func(name, email, phone, note, level string) string {
 		row := map[string]any{
 			"coach_id":      coachID,
 			"student_email": email,
@@ -913,6 +949,9 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 		}
 		if studentNoteOK && note != "" {
 			row["coach_note"] = note
+		}
+		if levelOK && level != "" {
+			row["skill_level"] = level
 		}
 		ins, err := s.sb.Insert("coach_students", row)
 		if err != nil || len(ins) == 0 {
@@ -961,7 +1000,7 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 
 	// 1) Alex — two clips, coach + student feedback, a per-clip note.
 	if t := addStudent("Alex Cruz", "alex.cruz"+seedEmailDomain, "",
-		"Working on his third-shot drop — improving, but still pops it up under pressure. Try the drop-and-freeze drill next session."); t != "" {
+		"Working on his third-shot drop — improving, but still pops it up under pressure. Try the drop-and-freeze drill next session.", "3.5"); t != "" {
 		count++
 		v1 := addClip(t, seedVideoURLs[0], "Third-shot drop reps")
 		addFeedback(t, v1, "coach", "Good contact point, but you're swinging up too hard — soften the paddle face and let it float.")
@@ -972,20 +1011,20 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 	}
 
 	// 2) Jordan — one clip, one comment.
-	if t := addStudent("Jordan Lee", "jordan.lee"+seedEmailDomain, "", ""); t != "" {
+	if t := addStudent("Jordan Lee", "jordan.lee"+seedEmailDomain, "", "", "3.0"); t != "" {
 		count++
 		v := addClip(t, seedVideoURLs[2], "Serve mechanics")
 		addFeedback(t, v, "coach", "Toss is a little low — get more lift and you'll add depth.")
 	}
 
 	// 3) Sam — text-invited, still pending, no clips yet.
-	if addStudent("Sam Rivera", "sam.rivera"+seedEmailDomain, "6265550142", "") != "" {
+	if addStudent("Sam Rivera", "sam.rivera"+seedEmailDomain, "6265550142", "", "") != "" {
 		count++
 	}
 
 	// 4) Taylor — one clip + a per-student note.
 	if t := addStudent("Taylor Kim", "taylor.kim"+seedEmailDomain, "",
-		"Great hands at the net. Push her on footwork and resets."); t != "" {
+		"Great hands at the net. Push her on footwork and resets.", "4.0"); t != "" {
 		count++
 		v := addClip(t, seedVideoURLs[0], "Hands battle at the net")
 		addFeedback(t, v, "coach", "Love the quick hands. Reset when it's above the net — don't counter everything.")

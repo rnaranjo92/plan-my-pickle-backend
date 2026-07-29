@@ -184,6 +184,7 @@ func mapCoachStudent(row map[string]any) model.CoachStudent {
 		CreatedAt:      asStr(row, "created_at"),
 		LastActivityAt: asStr(row, "last_activity_at"),
 		CoachNote:      asStr(row, "coach_note"),
+		SharedNote:     asStr(row, "shared_note"),
 	}
 }
 
@@ -921,6 +922,36 @@ func (s *Service) SetStudentNote(threadID, coachID, body string) error {
 	_, err = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
 		map[string]any{"coach_note": orNull(strings.TrimSpace(body))})
 	return err
+}
+
+// SetSharedNote sets (or clears) the SHARED note — visible to the student. Only
+// the thread's coach may set it; the student is pinged when it's added.
+func (s *Service) SetSharedNote(threadID, coachID, body string) error {
+	if !s.columnReady("coach_students", "shared_note") {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID))
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	cs := mapCoachStudent(row)
+	if cs.CoachID != coachID {
+		return ErrForbidden
+	}
+	body = strings.TrimSpace(body)
+	if _, err = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		map[string]any{"shared_note": orNull(body)}); err != nil {
+		return err
+	}
+	s.bumpThreadActivity(threadID)
+	if body != "" {
+		s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(coachID),
+			"Your coach shared a note")
+	}
+	return nil
 }
 
 // SetStudentLevel sets (or clears) the coach's skill-level assessment of a

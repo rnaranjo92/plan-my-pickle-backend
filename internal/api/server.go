@@ -615,6 +615,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/seed-demo", requireAuth(s.seedCoachingDemo))
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
+	mux.HandleFunc("POST /coach/students/{id}/shared-note", s.instructorOnly(s.setSharedNote))
 	mux.HandleFunc("POST /coach/students/{id}/level", s.instructorOnly(s.setStudentLevel))
 	mux.HandleFunc("GET /coach/schedule", s.instructorOnly(s.coachSchedule))
 	mux.HandleFunc("POST /coach/schedule", s.instructorOnly(s.addCoachSchedule))
@@ -5435,6 +5436,18 @@ func (s *Server) setStudentNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetStudentNote(r.PathValue("id"), userID(r), req.Body); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) setSharedNote(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingFeedbackRequest // reuses {body}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetSharedNote(r.PathValue("id"), userID(r), req.Body); err != nil {
 		status(w, err)
 		return
 	}

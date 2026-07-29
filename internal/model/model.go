@@ -1229,6 +1229,8 @@ type CoachStudent struct {
 	// CoachNote is the coach's private running note about the student — only
 	// populated for the coach's own views, redacted from the student's view.
 	CoachNote string `json:"coachNote,omitempty"`
+	// SharedNote is a note the coach writes FOR the student to see (not redacted).
+	SharedNote string `json:"sharedNote,omitempty"`
 }
 
 // CoachingVideo is a clip in a thread, with its feedback nested for the detail view.

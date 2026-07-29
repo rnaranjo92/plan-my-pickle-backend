@@ -2,6 +2,10 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"html"
+	"log"
+	"net/url"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -75,8 +79,9 @@ func (s *Service) AddCoachStudent(coachID, email, name string) (model.CoachStude
 		"student_email": email,
 		"student_name":  orNull(name),
 	}
-	if sid := s.userIDByEmail(email); sid != "" {
-		row["student_id"] = sid
+	resolved := s.userIDByEmail(email)
+	if resolved != "" {
+		row["student_id"] = resolved
 	}
 	ins, err := s.sb.Insert("coach_students", row)
 	if err != nil {
@@ -85,7 +90,54 @@ func (s *Service) AddCoachStudent(coachID, email, name string) (model.CoachStude
 	if len(ins) == 0 {
 		return model.CoachStudent{}, errors.New("could not add that student")
 	}
+	// Not on PlanMyPickle yet → email them an invite to join (with that email so
+	// they auto-link on signup). Best-effort, off the request path.
+	if resolved == "" {
+		go s.sendCoachInvite(coachID, email, name)
+	}
 	return mapCoachStudent(ins[0]), nil
+}
+
+// sendCoachInvite emails a not-yet-registered student a link to join
+// PlanMyPickle. They must sign up with the SAME email the coach used so the
+// roster row auto-links (backfilled on their first coaching view). No-op if the
+// email gateway isn't configured.
+func (s *Service) sendCoachInvite(coachID, studentEmail, studentName string) {
+	if s.Email == nil || !s.Email.Live() {
+		return
+	}
+	coach := s.resolveDisplayName(coachID, "")
+	if strings.TrimSpace(coach) == "" {
+		coach = "Your coach"
+	}
+	joinURL := "https://app.planmypickle.com/?invite=coaching&email=" +
+		url.QueryEscape(studentEmail)
+	esc := html.EscapeString
+	hi := ""
+	if strings.TrimSpace(studentName) != "" {
+		hi = " " + esc(strings.TrimSpace(studentName))
+	}
+	subject := coach + " wants to coach you on PlanMyPickle"
+	htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    <div style="background:#16245c;padding:22px 26px">
+      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">COACHING INVITE</p>
+      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s wants to coach you</h1>
+    </div>
+    <div style="padding:24px 26px">
+      <p style="margin:0 0 10px;color:#16203a;font-size:15px">Hi%s — <b>%s</b> wants to share video clips and personalized feedback with you on PlanMyPickle.</p>
+      <p style="margin:0 0 4px;color:#16203a;font-size:15px">Join with <b>%s</b> so your clips and feedback link up automatically.</p>
+      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Join PlanMyPickle</a>
+      <p style="margin:10px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">Free to join. Then open <b>You &rsaquo; My Coaching</b> to see your feedback.</p>
+    </div>
+  </div>
+  <p style="margin:26px 0 0;font-size:12px;color:#8a96bd;text-align:center">Powered by <a href="https://planmypickle.com" style="color:#4f8b3b;text-decoration:none;font-weight:700">PlanMyPickle</a></p>
+</div>`, esc(coach), hi, esc(coach), esc(studentEmail), joinURL)
+	text := fmt.Sprintf("%s wants to coach you on PlanMyPickle.\n\nJoin with %s so your clips and feedback link up automatically:\n%s\n\nThen open You > My Coaching to see your feedback.",
+		coach, studentEmail, joinURL)
+	if err := s.Email.SendEmail(studentEmail, subject, htmlBody, text); err != nil {
+		log.Printf("coaching: invite email to %s failed: %v", studentEmail, err)
+	}
 }
 
 // ListCoachStudents returns a coach's roster, newest first, each with its clip count.

@@ -630,6 +630,14 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coaching/videos/{id}", requireAuth(s.deleteCoachingVideo))
 	mux.HandleFunc("DELETE /coaching/feedback/{id}", requireAuth(s.deleteCoachingFeedback))
 	mux.HandleFunc("POST /coaching/videos/{id}/note", requireAuth(s.setClipNote))
+	// Drill library (coach-gated) + assignments = a student's game plan.
+	mux.HandleFunc("GET /coach/drills", s.instructorOnly(s.coachDrills))
+	mux.HandleFunc("POST /coach/drills", s.instructorOnly(s.createDrill))
+	mux.HandleFunc("DELETE /coach/drills/{id}", s.instructorOnly(s.deleteDrill))
+	mux.HandleFunc("POST /coach/students/{id}/assignments", s.instructorOnly(s.assignDrill))
+	mux.HandleFunc("GET /coaching/threads/{id}/assignments", requireAuth(s.threadAssignments))
+	mux.HandleFunc("POST /coaching/assignments/{id}/complete", requireAuth(s.completeAssignment))
+	mux.HandleFunc("DELETE /coaching/assignments/{id}", requireAuth(s.deleteAssignment))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5468,6 +5476,80 @@ func (s *Server) addCoachSchedule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteCoachSchedule(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.DeleteCoachScheduleItem(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// Coach drill library + assignments (a student's game plan).
+func (s *Server) coachDrills(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListDrills(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) createDrill(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingDrillRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	d, err := s.svc.CreateDrill(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, d)
+}
+
+func (s *Server) deleteDrill(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteDrill(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) assignDrill(w http.ResponseWriter, r *http.Request) {
+	var req model.AssignDrillRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	a, err := s.svc.AssignDrill(r.PathValue("id"), userID(r), userEmail(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, a)
+}
+
+func (s *Server) threadAssignments(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListAssignments(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) completeAssignment(w http.ResponseWriter, r *http.Request) {
+	var req model.CompleteAssignmentRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	a, err := s.svc.SetAssignmentDone(r.PathValue("id"), userID(r), userEmail(r), req.Done)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+func (s *Server) deleteAssignment(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteAssignment(r.PathValue("id"), userID(r), userEmail(r)); err != nil {
 		status(w, err)
 		return
 	}

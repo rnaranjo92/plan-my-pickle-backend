@@ -1209,6 +1209,254 @@ func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
 	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(id))
 }
 
+// --- Drill library + assignments (a student's game plan) ---
+
+func (s *Service) drillsReady() bool {
+	return s.columnReady("coaching_drills", "id")
+}
+
+func (s *Service) assignmentsReady() bool {
+	return s.columnReady("coaching_assignments", "id")
+}
+
+func mapDrill(row map[string]any) model.CoachingDrill {
+	return model.CoachingDrill{
+		ID:            asStr(row, "id"),
+		CoachID:       asStr(row, "coach_id"),
+		Title:         asStr(row, "title"),
+		SkillCategory: asStr(row, "skill_category"),
+		LevelBand:     asStr(row, "level_band"),
+		Format:        asStr(row, "format"),
+		Goal:          asStr(row, "goal"),
+		Description:   asStr(row, "description"),
+		VideoURL:      asStr(row, "video_url"),
+		IsStarter:     asBool(row, "is_starter"),
+		CreatedAt:     asStr(row, "created_at"),
+	}
+}
+
+func mapAssignment(row map[string]any) model.CoachingAssignment {
+	return model.CoachingAssignment{
+		ID:             asStr(row, "id"),
+		CoachStudentID: asStr(row, "coach_student_id"),
+		DrillID:        asStr(row, "drill_id"),
+		Title:          asStr(row, "title"),
+		SkillCategory:  asStr(row, "skill_category"),
+		Goal:           asStr(row, "goal"),
+		Status:         asStr(row, "status"),
+		DueAt:          asStr(row, "due_at"),
+		CompletedAt:    asStr(row, "completed_at"),
+		CompletedBy:    asStr(row, "completed_by"),
+		CreatedAt:      asStr(row, "created_at"),
+	}
+}
+
+// ListDrills returns the shared starter drills plus the coach's own, own first.
+func (s *Service) ListDrills(coachID string) ([]model.CoachingDrill, error) {
+	if !s.drillsReady() {
+		return []model.CoachingDrill{}, nil
+	}
+	rows, err := s.sb.Select("coaching_drills",
+		"or=(coach_id.eq."+coachID+",is_starter.is.true)&order=is_starter.asc,created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingDrill, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapDrill(r))
+	}
+	return out, nil
+}
+
+// CreateDrill adds a coach's own custom drill to their library.
+func (s *Service) CreateDrill(coachID string, req model.CoachingDrillRequest) (model.CoachingDrill, error) {
+	if !s.drillsReady() {
+		return model.CoachingDrill{}, ErrCoachingUnavailable
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.CoachingDrill{}, errors.New("give the drill a title")
+	}
+	row := map[string]any{
+		"coach_id":       coachID,
+		"title":          title,
+		"skill_category": orNull(strings.TrimSpace(req.SkillCategory)),
+		"level_band":     orNull(strings.TrimSpace(req.LevelBand)),
+		"format":         orNull(strings.TrimSpace(req.Format)),
+		"goal":           orNull(strings.TrimSpace(req.Goal)),
+		"description":    orNull(strings.TrimSpace(req.Description)),
+		"video_url":      orNull(strings.TrimSpace(req.VideoURL)),
+		"is_starter":     false,
+	}
+	ins, err := s.sb.Insert("coaching_drills", row)
+	if err != nil {
+		return model.CoachingDrill{}, err
+	}
+	if len(ins) == 0 {
+		return model.CoachingDrill{}, errors.New("could not save that drill")
+	}
+	return mapDrill(ins[0]), nil
+}
+
+// DeleteDrill removes one of the coach's OWN drills (never a shared starter).
+func (s *Service) DeleteDrill(coachID, id string) error {
+	if !s.drillsReady() {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_drills",
+		"id=eq."+store.Q(id)+"&select=coach_id,is_starter")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asBool(row, "is_starter") || asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_drills", "id=eq."+store.Q(id))
+}
+
+// ListAssignments returns a thread's assignments (goals), newest first, for a member.
+func (s *Service) ListAssignments(threadID, userID, email string) ([]model.CoachingAssignment, error) {
+	if !s.assignmentsReady() {
+		return []model.CoachingAssignment{}, nil
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return nil, err
+	}
+	rows, err := s.sb.Select("coaching_assignments",
+		"coach_student_id=eq."+store.Q(threadID)+"&order=created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingAssignment, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapAssignment(r))
+	}
+	return out, nil
+}
+
+// AssignDrill assigns a drill (by id, snapshotting its fields) or an ad-hoc goal
+// to a roster student. Coach-only; pings the student.
+func (s *Service) AssignDrill(threadID, coachID, email string, req model.AssignDrillRequest) (model.CoachingAssignment, error) {
+	if !s.assignmentsReady() {
+		return model.CoachingAssignment{}, ErrCoachingUnavailable
+	}
+	cs, role, err := s.threadMembership(threadID, coachID, email)
+	if err != nil {
+		return model.CoachingAssignment{}, err
+	}
+	if role != "coach" {
+		return model.CoachingAssignment{}, ErrForbidden
+	}
+	title := strings.TrimSpace(req.Title)
+	skill := strings.TrimSpace(req.SkillCategory)
+	goal := strings.TrimSpace(req.Goal)
+	drillID := strings.TrimSpace(req.DrillID)
+	if drillID != "" && s.drillsReady() {
+		if d, _ := s.sb.SelectOne("coaching_drills", "id=eq."+store.Q(drillID)); d != nil {
+			if title == "" {
+				title = asStr(d, "title")
+			}
+			if skill == "" {
+				skill = asStr(d, "skill_category")
+			}
+			if goal == "" {
+				goal = asStr(d, "goal")
+			}
+		}
+	}
+	if title == "" {
+		return model.CoachingAssignment{}, errors.New("pick a drill or name a goal")
+	}
+	row := map[string]any{
+		"coach_student_id": threadID,
+		"drill_id":         orNull(drillID),
+		"title":            title,
+		"skill_category":   orNull(skill),
+		"goal":             orNull(goal),
+		"status":           "assigned",
+		"due_at":           orNull(strings.TrimSpace(req.DueAt)),
+		"assigned_by":      coachID,
+	}
+	ins, err := s.sb.Insert("coaching_assignments", row)
+	if err != nil {
+		return model.CoachingAssignment{}, err
+	}
+	if len(ins) == 0 {
+		return model.CoachingAssignment{}, errors.New("could not save that")
+	}
+	s.bumpThreadActivity(threadID)
+	s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(coachID), "New drill assigned: "+title)
+	return mapAssignment(ins[0]), nil
+}
+
+// SetAssignmentDone marks an assignment done (or reopens it). Either the coach or
+// the addressed student may do it (self-check); records who. Pings the counterpart.
+func (s *Service) SetAssignmentDone(assignmentID, userID, email string, done bool) (model.CoachingAssignment, error) {
+	if !s.assignmentsReady() {
+		return model.CoachingAssignment{}, ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_assignments", "id=eq."+store.Q(assignmentID))
+	if err != nil {
+		return model.CoachingAssignment{}, err
+	}
+	if row == nil {
+		return model.CoachingAssignment{}, ErrNotFound
+	}
+	threadID := asStr(row, "coach_student_id")
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return model.CoachingAssignment{}, err
+	}
+	upd := map[string]any{}
+	if done {
+		upd["status"] = "done"
+		upd["completed_at"] = now()
+		upd["completed_by"] = role
+	} else {
+		upd["status"] = "assigned"
+		upd["completed_at"] = nil
+		upd["completed_by"] = nil
+	}
+	out, err := s.sb.Update("coaching_assignments", "id=eq."+store.Q(assignmentID), upd)
+	if err != nil {
+		return model.CoachingAssignment{}, err
+	}
+	s.bumpThreadActivity(threadID)
+	if done {
+		s.notifyCoachingCounterpart(cs, role, userID, s.coachingName(userID), "Completed: "+asStr(row, "title"))
+	}
+	if len(out) == 0 {
+		return mapAssignment(row), nil
+	}
+	return mapAssignment(out[0]), nil
+}
+
+// DeleteAssignment removes an assignment from a student's plan (coach-only).
+func (s *Service) DeleteAssignment(assignmentID, userID, email string) error {
+	if !s.assignmentsReady() {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_assignments",
+		"id=eq."+store.Q(assignmentID)+"&select=coach_student_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	_, role, merr := s.threadMembership(asStr(row, "coach_student_id"), userID, email)
+	if merr != nil {
+		return merr
+	}
+	if role != "coach" {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_assignments", "id=eq."+store.Q(assignmentID))
+}
+
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.

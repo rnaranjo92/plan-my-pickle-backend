@@ -1291,6 +1291,64 @@ type CoachingScheduleRequest struct {
 	Notes          string `json:"notes"`
 }
 
+// CoachingDrill is one drill in a coach's library — either a shared starter drill
+// (IsStarter, no CoachID) or the coach's own custom drill.
+type CoachingDrill struct {
+	ID            string `json:"id"`
+	CoachID       string `json:"coachId,omitempty"`
+	Title         string `json:"title"`
+	SkillCategory string `json:"skillCategory,omitempty"`
+	LevelBand     string `json:"levelBand,omitempty"`
+	Format        string `json:"format,omitempty"`
+	Goal          string `json:"goal,omitempty"`
+	Description   string `json:"description,omitempty"`
+	VideoURL      string `json:"videoUrl,omitempty"`
+	IsStarter     bool   `json:"isStarter"`
+	CreatedAt     string `json:"createdAt,omitempty"`
+}
+
+// CoachingDrillRequest creates a coach's custom drill.
+type CoachingDrillRequest struct {
+	Title         string `json:"title"`
+	SkillCategory string `json:"skillCategory"`
+	LevelBand     string `json:"levelBand"`
+	Format        string `json:"format"`
+	Goal          string `json:"goal"`
+	Description   string `json:"description"`
+	VideoURL      string `json:"videoUrl"`
+}
+
+// CoachingAssignment is a drill assigned to a roster student — a goal on their
+// game plan. Drill fields are snapshotted so the source drill can change freely.
+type CoachingAssignment struct {
+	ID             string `json:"id"`
+	CoachStudentID string `json:"coachStudentId,omitempty"`
+	DrillID        string `json:"drillId,omitempty"`
+	Title          string `json:"title"`
+	SkillCategory  string `json:"skillCategory,omitempty"`
+	Goal           string `json:"goal,omitempty"`
+	Status         string `json:"status"` // assigned | in_progress | done
+	DueAt          string `json:"dueAt,omitempty"`
+	CompletedAt    string `json:"completedAt,omitempty"`
+	CompletedBy    string `json:"completedBy,omitempty"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+}
+
+// AssignDrillRequest assigns a drill (by id) or an ad-hoc goal (title/goal) to a
+// roster student.
+type AssignDrillRequest struct {
+	DrillID       string `json:"drillId"`
+	Title         string `json:"title"`
+	SkillCategory string `json:"skillCategory"`
+	Goal          string `json:"goal"`
+	DueAt         string `json:"dueAt"`
+}
+
+// CompleteAssignmentRequest marks an assignment done (or reopens it).
+type CompleteAssignmentRequest struct {
+	Done bool `json:"done"`
+}
+
 // AddCoachStudentRequest adds someone to a coach's roster by email and/or phone
 // (at least one). The coach can start immediately; the student links when they
 // sign up with that email or phone.

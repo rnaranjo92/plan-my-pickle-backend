@@ -48,12 +48,88 @@ func (s *Service) userIDByEmail(email string) string {
 
 func mapCoachStudent(row map[string]any) model.CoachStudent {
 	return model.CoachStudent{
-		ID:           asStr(row, "id"),
-		CoachID:      asStr(row, "coach_id"),
-		StudentEmail: asStr(row, "student_email"),
-		StudentName:  asStr(row, "student_name"),
-		StudentID:    asStr(row, "student_id"),
-		CreatedAt:    asStr(row, "created_at"),
+		ID:             asStr(row, "id"),
+		CoachID:        asStr(row, "coach_id"),
+		StudentEmail:   asStr(row, "student_email"),
+		StudentName:    asStr(row, "student_name"),
+		StudentID:      asStr(row, "student_id"),
+		CreatedAt:      asStr(row, "created_at"),
+		LastActivityAt: asStr(row, "last_activity_at"),
+	}
+}
+
+// readsReady gates the read-receipt/unread feature on add_coaching_reads.sql.
+func (s *Service) readsReady() bool {
+	return s.columnReady("coaching_reads", "id") &&
+		s.columnReady("coach_students", "last_activity_at")
+}
+
+// markThreadRead records that a viewer has seen a thread up to now. Best-effort;
+// unread is a nicety, never a correctness concern.
+func (s *Service) markThreadRead(userID, threadID string) {
+	if !s.readsReady() || userID == "" || threadID == "" {
+		return
+	}
+	if _, err := s.sb.Upsert("coaching_reads", "user_id,coach_student_id", map[string]any{
+		"user_id":          userID,
+		"coach_student_id": threadID,
+		"last_seen_at":     now(),
+	}); err != nil {
+		log.Printf("coaching: markThreadRead(%s): %v", threadID, err)
+	}
+}
+
+// bumpThreadActivity stamps a thread's last_activity_at so the counterpart's list
+// can flag it as unread.
+func (s *Service) bumpThreadActivity(threadID string) {
+	if !s.readsReady() || threadID == "" {
+		return
+	}
+	if _, err := s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		map[string]any{"last_activity_at": now()}); err != nil {
+		log.Printf("coaching: bumpThreadActivity(%s): %v", threadID, err)
+	}
+}
+
+// fetchReads returns userID's last_seen_at per thread (RFC3339 string), for the
+// given thread ids. Empty map if the feature isn't migrated yet.
+func (s *Service) fetchReads(userID string, threadIDs []string) map[string]string {
+	out := map[string]string{}
+	if !s.readsReady() || userID == "" || len(threadIDs) == 0 {
+		return out
+	}
+	rows, err := s.sb.Select("coaching_reads",
+		"user_id=eq."+store.Q(userID)+"&coach_student_id=in.("+
+			strings.Join(threadIDs, ",")+")&select=coach_student_id,last_seen_at")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[asStr(r, "coach_student_id")] = asStr(r, "last_seen_at")
+	}
+	return out
+}
+
+// applyUnread sets HasUnread on each row for viewer userID: a thread is unread
+// when its last_activity_at is newer than the viewer's last_seen_at (or the
+// viewer has never opened it). Threads with no activity timestamp are never
+// unread.
+func (s *Service) applyUnread(userID string, rows []model.CoachStudent) {
+	if !s.readsReady() || len(rows) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	reads := s.fetchReads(userID, ids)
+	for i := range rows {
+		act := strings.TrimSpace(rows[i].LastActivityAt)
+		if act == "" {
+			continue
+		}
+		seen, ok := reads[rows[i].ID]
+		rows[i].HasUnread = !ok || act > seen // ISO-8601 strings sort chronologically
 	}
 }
 
@@ -156,6 +232,7 @@ func (s *Service) ListCoachStudents(coachID string) ([]model.CoachStudent, error
 		cs.VideoCount = s.threadVideoCount(cs.ID)
 		out = append(out, cs)
 	}
+	s.applyUnread(coachID, out)
 	return out, nil
 }
 
@@ -207,6 +284,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		cs.VideoCount = s.threadVideoCount(cs.ID)
 		out = append(out, cs)
 	}
+	s.applyUnread(studentID, out)
 	return out, nil
 }
 
@@ -259,6 +337,8 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 		return model.CoachingThread{}, err
 	}
 	cs.CoachName = s.resolveDisplayName(cs.CoachID, "")
+	// Opening a thread marks it read for the viewer.
+	s.markThreadRead(userID, threadID)
 
 	vids, err := s.sb.Select("coaching_videos",
 		"coach_student_id=eq."+store.Q(threadID)+"&order=created_at.desc")
@@ -347,6 +427,10 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 		Title:          asStr(ins[0], "title"),
 		CreatedAt:      asStr(ins[0], "created_at"),
 	}
+	// Stamp thread activity + mark the uploader themselves read (so their own
+	// upload never shows as unread to them; the counterpart's list flags it).
+	s.bumpThreadActivity(threadID)
+	s.markThreadRead(userID, threadID)
 	s.notifyCoachingCounterpart(cs, role, userID, vid.UploaderName,
 		vid.UploaderName+" shared a new coaching clip")
 	return vid, nil
@@ -398,8 +482,57 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 		Body:           body,
 		CreatedAt:      asStr(ins[0], "created_at"),
 	}
+	s.bumpThreadActivity(threadID)
+	s.markThreadRead(userID, threadID)
 	s.notifyCoachingCounterpart(cs, role, userID, name, name+": "+truncate(body, 120))
 	return fb, nil
+}
+
+// DeleteCoachingVideo removes a clip (and its feedback via cascade). Allowed for
+// the uploader or the thread's coach.
+func (s *Service) DeleteCoachingVideo(videoID, userID, email string) error {
+	if !s.coachingReady() {
+		return ErrCoachingUnavailable
+	}
+	vrow, err := s.sb.SelectOne("coaching_videos",
+		"id=eq."+store.Q(videoID)+"&select=id,coach_student_id,uploaded_by")
+	if err != nil {
+		return err
+	}
+	if vrow == nil {
+		return ErrNotFound
+	}
+	_, role, err := s.threadMembership(asStr(vrow, "coach_student_id"), userID, email)
+	if err != nil {
+		return err
+	}
+	if role != "coach" && asStr(vrow, "uploaded_by") != userID {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_videos", "id=eq."+store.Q(videoID))
+}
+
+// DeleteCoachingFeedback removes a comment. Allowed for the author or the coach.
+func (s *Service) DeleteCoachingFeedback(feedbackID, userID, email string) error {
+	if !s.coachingReady() {
+		return ErrCoachingUnavailable
+	}
+	frow, err := s.sb.SelectOne("coaching_feedback",
+		"id=eq."+store.Q(feedbackID)+"&select=id,coach_student_id,author_id")
+	if err != nil {
+		return err
+	}
+	if frow == nil {
+		return ErrNotFound
+	}
+	_, role, err := s.threadMembership(asStr(frow, "coach_student_id"), userID, email)
+	if err != nil {
+		return err
+	}
+	if role != "coach" && asStr(frow, "author_id") != userID {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_feedback", "id=eq."+store.Q(feedbackID))
 }
 
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.

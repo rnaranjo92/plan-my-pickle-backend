@@ -1214,14 +1214,16 @@ type AnalysisCheckoutRequest struct {
 // account id (may be empty until the student logs in). VideoCount is a convenience
 // count returned on list views.
 type CoachStudent struct {
-	ID           string `json:"id"`
-	CoachID      string `json:"coachId,omitempty"`
-	CoachName    string `json:"coachName,omitempty"`
-	StudentEmail string `json:"studentEmail"`
-	StudentName  string `json:"studentName,omitempty"`
-	StudentID    string `json:"studentId,omitempty"`
-	VideoCount   int    `json:"videoCount"`
-	CreatedAt    string `json:"createdAt,omitempty"`
+	ID             string `json:"id"`
+	CoachID        string `json:"coachId,omitempty"`
+	CoachName      string `json:"coachName,omitempty"`
+	StudentEmail   string `json:"studentEmail"`
+	StudentName    string `json:"studentName,omitempty"`
+	StudentID      string `json:"studentId,omitempty"`
+	VideoCount     int    `json:"videoCount"`
+	HasUnread      bool   `json:"hasUnread"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+	LastActivityAt string `json:"-"` // internal: drives HasUnread, not sent raw
 }
 
 // CoachingVideo is a clip in a thread, with its feedback nested for the detail view.

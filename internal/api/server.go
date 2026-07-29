@@ -617,6 +617,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
 	mux.HandleFunc("POST /coaching/videos/{id}/feedback", requireAuth(s.addCoachingFeedback))
+	mux.HandleFunc("DELETE /coaching/videos/{id}", requireAuth(s.deleteCoachingVideo))
+	mux.HandleFunc("DELETE /coaching/feedback/{id}", requireAuth(s.deleteCoachingFeedback))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5354,6 +5356,22 @@ func (s *Server) addCoachingFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, fb)
+}
+
+func (s *Server) deleteCoachingVideo(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteCoachingVideo(r.PathValue("id"), userID(r), userEmail(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) deleteCoachingFeedback(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteCoachingFeedback(r.PathValue("id"), userID(r), userEmail(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // leagueViewer guards a league READ handler keyed on a league path id so it's

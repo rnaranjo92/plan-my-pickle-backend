@@ -876,6 +876,124 @@ func (s *Service) SetStudentNote(threadID, coachID, body string) error {
 	return err
 }
 
+// seedVideoURLs are stable public sample clips used for demo data. They live
+// OUTSIDE the coaching-videos bucket, so signCoachingVideos can't sign them and
+// falls back to the URL as-is — which plays fine in the player.
+var seedVideoURLs = []string{
+	"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+	"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
+	"https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4",
+}
+
+const seedEmailDomain = "@coachdemo.test"
+const seedStudentAuthor = "00000000-0000-0000-0000-000000000000"
+
+// SeedCoachingTestData populates a coach's Instructor pages with realistic dummy
+// data — a few students (some with clips + coach/student feedback + private
+// notes, one text-invited & pending) — so the pages can be demoed/tested. It
+// first clears any prior seed for this coach (students whose email is @coachdemo.test),
+// so the button is safely re-runnable. Returns the number of students created.
+func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
+	if !s.coachingReady() {
+		return 0, ErrCoachingUnavailable
+	}
+	// Clear prior seed (cascade removes their clips/feedback/notes).
+	_ = s.sb.Delete("coach_students",
+		"coach_id=eq."+store.Q(coachID)+"&student_email=like.*"+store.Q(seedEmailDomain))
+
+	notesOK := s.notesReady()
+	studentNoteOK := s.columnReady("coach_students", "coach_note")
+
+	addStudent := func(name, email, phone, note string) string {
+		row := map[string]any{
+			"coach_id":      coachID,
+			"student_email": email,
+			"student_name":  name,
+			"student_phone": orNull(normPhone(phone)),
+		}
+		if studentNoteOK && note != "" {
+			row["coach_note"] = note
+		}
+		ins, err := s.sb.Insert("coach_students", row)
+		if err != nil || len(ins) == 0 {
+			return ""
+		}
+		return asStr(ins[0], "id")
+	}
+	addClip := func(threadID, url, title string) string {
+		ins, err := s.sb.Insert("coaching_videos", map[string]any{
+			"coach_student_id": threadID,
+			"uploaded_by":      coachID,
+			"uploader_role":    "coach",
+			"video_url":        url,
+			"title":            title,
+		})
+		if err != nil || len(ins) == 0 {
+			return ""
+		}
+		return asStr(ins[0], "id")
+	}
+	addFeedback := func(threadID, videoID, role, body string) {
+		author := coachID
+		if role == "student" {
+			author = seedStudentAuthor
+		}
+		_, _ = s.sb.Insert("coaching_feedback", map[string]any{
+			"coach_student_id": threadID,
+			"video_id":         videoID,
+			"author_id":        author,
+			"author_role":      role,
+			"body":             body,
+		})
+	}
+	addClipNote := func(threadID, videoID, body string) {
+		if !notesOK || body == "" {
+			return
+		}
+		_, _ = s.sb.Upsert("coaching_notes", "video_id", map[string]any{
+			"coach_student_id": threadID,
+			"video_id":         videoID,
+			"body":             body,
+		})
+	}
+
+	count := 0
+
+	// 1) Alex — two clips, coach + student feedback, a per-clip note.
+	if t := addStudent("Alex Cruz", "alex.cruz"+seedEmailDomain, "",
+		"Working on his third-shot drop — improving, but still pops it up under pressure. Try the drop-and-freeze drill next session."); t != "" {
+		count++
+		v1 := addClip(t, seedVideoURLs[0], "Third-shot drop reps")
+		addFeedback(t, v1, "coach", "Good contact point, but you're swinging up too hard — soften the paddle face and let it float.")
+		addFeedback(t, v1, "student", "Got it — should I still step in after the drop?")
+		addClipNote(t, v1, "Remind him about the freeze after the drop — he's rushing to the kitchen.")
+		v2 := addClip(t, seedVideoURLs[1], "Dinking cross-court")
+		addFeedback(t, v2, "coach", "Much better patience here. Keep the paddle up between dinks.")
+	}
+
+	// 2) Jordan — one clip, one comment.
+	if t := addStudent("Jordan Lee", "jordan.lee"+seedEmailDomain, "", ""); t != "" {
+		count++
+		v := addClip(t, seedVideoURLs[2], "Serve mechanics")
+		addFeedback(t, v, "coach", "Toss is a little low — get more lift and you'll add depth.")
+	}
+
+	// 3) Sam — text-invited, still pending, no clips yet.
+	if addStudent("Sam Rivera", "sam.rivera"+seedEmailDomain, "6265550142", "") != "" {
+		count++
+	}
+
+	// 4) Taylor — one clip + a per-student note.
+	if t := addStudent("Taylor Kim", "taylor.kim"+seedEmailDomain, "",
+		"Great hands at the net. Push her on footwork and resets."); t != "" {
+		count++
+		v := addClip(t, seedVideoURLs[0], "Hands battle at the net")
+		addFeedback(t, v, "coach", "Love the quick hands. Reset when it's above the net — don't counter everything.")
+	}
+
+	return count, nil
+}
+
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.

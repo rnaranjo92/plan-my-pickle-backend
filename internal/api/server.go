@@ -612,6 +612,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// reads/writes = any authed user, membership-checked in the service.
 	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
 	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
+	mux.HandleFunc("POST /coach/seed-demo", requireAuth(s.seedCoachingDemo))
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
@@ -5317,6 +5318,21 @@ func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, cs)
+}
+
+// seedCoachingDemo populates the caller's Instructor pages with dummy data.
+// Restricted to a single demo account by request.
+func (s *Server) seedCoachingDemo(w http.ResponseWriter, r *http.Request) {
+	if strings.ToLower(strings.TrimSpace(userEmail(r))) != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return
+	}
+	n, err := s.svc.SeedCoachingTestData(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n})
 }
 
 func (s *Server) removeCoachStudent(w http.ResponseWriter, r *http.Request) {

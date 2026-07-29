@@ -238,10 +238,21 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name string) (model.Coa
 	name = strings.TrimSpace(name)
 	rawPhone := strings.TrimSpace(phone)
 	np := normPhone(rawPhone)
+	// Phone invites need add_coach_student_phone.sql (student_phone column +
+	// nullable email). Until it runs, degrade to email-only so Add Student never
+	// breaks.
+	phoneReady := s.columnReady("coach_students", "student_phone")
+	if !phoneReady {
+		np = ""
+		rawPhone = ""
+	}
 	if email != "" && !strings.Contains(email, "@") {
 		return model.CoachStudent{}, errors.New("enter a valid student email")
 	}
-	if email == "" && len(np) < 10 {
+	if email == "" && (!phoneReady || len(np) < 10) {
+		if !phoneReady {
+			return model.CoachStudent{}, errors.New("enter a valid student email")
+		}
 		return model.CoachStudent{}, errors.New("enter the student's email or phone")
 	}
 	// Already on this coach's roster (by email or phone)?
@@ -260,8 +271,10 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name string) (model.Coa
 	row := map[string]any{
 		"coach_id":      coachID,
 		"student_email": orNull(email),
-		"student_phone": orNull(np),
 		"student_name":  orNull(name),
+	}
+	if phoneReady {
+		row["student_phone"] = orNull(np)
 	}
 	// Resolve to an existing account (by email, else phone) so a registered
 	// student links immediately and we skip the invite.

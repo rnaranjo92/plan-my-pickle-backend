@@ -614,7 +614,11 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
+	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
+	mux.HandleFunc("GET /admin/instructors", s.ownerEmailOnly(s.listInstructors))
+	mux.HandleFunc("POST /admin/instructors", s.ownerEmailOnly(s.addInstructor))
+	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
 	mux.HandleFunc("POST /coaching/videos/{id}/feedback", requireAuth(s.addCoachingFeedback))
@@ -5224,23 +5228,30 @@ func (s *Server) ownerEmailOnly(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-// instructorEmails gates the coach-side (roster + upload-to-any-student) surfaces
-// of Instructor Mode. For Phase 1 these are the two owner accounts; when the
-// "instructor access needs our approval" flow lands, resolve membership from a
-// table here instead of this hardcoded set.
-var instructorEmails = map[string]bool{
+// ownerInstructorEmails are the two founding-owner accounts — ALWAYS coaches,
+// independent of the DB allowlist. Every other coach is granted via the
+// instructors table (owner-managed). This is also the owner set for admin gates.
+var ownerInstructorEmails = map[string]bool{
 	"rolando.naranjo0420@gmail.com": true,
 	"krizhia_roxas29@yahoo.com":     true,
 }
 
-func isInstructorEmail(email string) bool {
-	return instructorEmails[strings.ToLower(strings.TrimSpace(email))]
+func isOwnerInstructor(email string) bool {
+	return ownerInstructorEmails[strings.ToLower(strings.TrimSpace(email))]
 }
 
-// instructorOnly gates coach-side coaching endpoints to instructor accounts.
+// isCoach reports whether the request's account is a coach — a founding owner OR
+// on the instructors allowlist.
+func (s *Server) isCoach(r *http.Request) bool {
+	return isOwnerInstructor(userEmail(r)) ||
+		s.svc.IsInstructor(userID(r), userEmail(r))
+}
+
+// instructorOnly gates coach-side coaching endpoints to coaches (owners + the
+// DB allowlist).
 func (s *Server) instructorOnly(next http.HandlerFunc) http.HandlerFunc {
 	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if !isInstructorEmail(userEmail(r)) {
+		if !s.isCoach(r) {
 			writeErr(w, http.StatusForbidden, errForbidden)
 			return
 		}
@@ -5394,6 +5405,47 @@ func (s *Server) setStudentNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetStudentNote(r.PathValue("id"), userID(r), req.Body); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// coachingRole tells the app whether the signed-in user gets the coach view (the
+// "Coach" tab) — an owner or on the instructors allowlist.
+func (s *Server) coachingRole(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"coach": s.isCoach(r),
+		"owner": isOwnerInstructor(userEmail(r)),
+	})
+}
+
+// listInstructors / addInstructor / removeInstructor back the owner-only coach
+// allowlist management ("Manage coaches").
+func (s *Server) listInstructors(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListInstructors()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addInstructor(w http.ResponseWriter, r *http.Request) {
+	var req model.AddInstructorRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	ins, err := s.svc.AddInstructor(req.Email, req.Name)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ins)
+}
+
+func (s *Server) removeInstructor(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveInstructor(r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}

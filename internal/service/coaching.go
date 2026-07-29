@@ -46,6 +46,83 @@ func (s *Service) userIDByEmail(email string) string {
 	return asStr(row, "user_id")
 }
 
+// --- Instructor (coach) allowlist ---
+
+// IsInstructor reports whether an account email is on the coach allowlist
+// (instructors table). The two founding-owner emails are handled by the caller
+// (they're always coaches); this only checks the DB table. Safe before the
+// migration runs (returns false → owners-only).
+func (s *Service) IsInstructor(userID, email string) bool {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || !s.columnReady("instructors", "id") {
+		return false
+	}
+	row, err := s.sb.SelectOne("instructors",
+		"email=eq."+store.Q(email)+"&select=id")
+	return err == nil && row != nil
+}
+
+func mapInstructor(row map[string]any) model.Instructor {
+	return model.Instructor{
+		ID:        asStr(row, "id"),
+		Email:     asStr(row, "email"),
+		Name:      asStr(row, "name"),
+		CreatedAt: asStr(row, "created_at"),
+	}
+}
+
+// ListInstructors returns the coach allowlist, newest first (owner-only surface).
+func (s *Service) ListInstructors() ([]model.Instructor, error) {
+	if !s.columnReady("instructors", "id") {
+		return []model.Instructor{}, nil
+	}
+	rows, err := s.sb.Select("instructors", "order=created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Instructor, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapInstructor(r))
+	}
+	return out, nil
+}
+
+// AddInstructor grants coach access to an email (idempotent on the email).
+func (s *Service) AddInstructor(email, name string) (model.Instructor, error) {
+	if !s.columnReady("instructors", "id") {
+		return model.Instructor{}, ErrCoachingUnavailable
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	name = strings.TrimSpace(name)
+	if email == "" || !strings.Contains(email, "@") {
+		return model.Instructor{}, errors.New("enter a valid email")
+	}
+	if existing, _ := s.sb.SelectOne("instructors",
+		"email=eq."+store.Q(email)+"&select=id"); existing != nil {
+		return mapInstructor(existing), nil // already a coach
+	}
+	row := map[string]any{"email": email, "name": orNull(name)}
+	if uid := s.userIDByEmail(email); uid != "" {
+		row["user_id"] = uid
+	}
+	ins, err := s.sb.Insert("instructors", row)
+	if err != nil {
+		return model.Instructor{}, err
+	}
+	if len(ins) == 0 {
+		return model.Instructor{}, errors.New("could not add that coach")
+	}
+	return mapInstructor(ins[0]), nil
+}
+
+// RemoveInstructor revokes coach access.
+func (s *Service) RemoveInstructor(id string) error {
+	if !s.columnReady("instructors", "id") {
+		return ErrCoachingUnavailable
+	}
+	return s.sb.Delete("instructors", "id=eq."+store.Q(id))
+}
+
 func mapCoachStudent(row map[string]any) model.CoachStudent {
 	return model.CoachStudent{
 		ID:             asStr(row, "id"),

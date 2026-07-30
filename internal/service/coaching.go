@@ -2095,6 +2095,83 @@ func (s *Service) DeleteCoachReview(authorID, reviewID string) error {
 		"id=eq."+store.Q(reviewID)+"&author_id=eq."+store.Q(authorID))
 }
 
+// --- Thread chat (free-form messaging, distinct from clip feedback) ---
+
+func (s *Service) messagesReady() bool {
+	return s.columnReady("coaching_messages", "id")
+}
+
+func mapCoachingMessage(row map[string]any) model.CoachingMessage {
+	return model.CoachingMessage{
+		ID:         asStr(row, "id"),
+		SenderID:   asStr(row, "sender_id"),
+		SenderRole: asStr(row, "sender_role"),
+		Body:       asStr(row, "body"),
+		CreatedAt:  asStr(row, "created_at"),
+	}
+}
+
+// ListThreadMessages returns a thread's chat history (member-gated) and marks it
+// read for the viewer.
+func (s *Service) ListThreadMessages(threadID, userID, email string) ([]model.CoachingMessage, error) {
+	if !s.coachingReady() {
+		return nil, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return nil, err
+	}
+	if !s.messagesReady() {
+		return []model.CoachingMessage{}, nil
+	}
+	rows, err := s.sb.Select("coaching_messages",
+		"coach_student_id=eq."+store.Q(threadID)+"&order=created_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingMessage, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapCoachingMessage(r))
+	}
+	s.markThreadRead(userID, threadID)
+	return out, nil
+}
+
+// SendThreadMessage posts a chat message on a thread and notifies the other party.
+func (s *Service) SendThreadMessage(threadID, userID, email, name string, req model.CoachingMessageRequest) (model.CoachingMessage, error) {
+	if !s.coachingReady() {
+		return model.CoachingMessage{}, ErrCoachingUnavailable
+	}
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return model.CoachingMessage{}, err
+	}
+	if !s.messagesReady() {
+		return model.CoachingMessage{}, ErrCoachingUnavailable
+	}
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		return model.CoachingMessage{}, errors.New("message is empty")
+	}
+	if r := []rune(body); len(r) > 4000 {
+		body = string(r[:4000])
+	}
+	ins, err := s.sb.Insert("coaching_messages", map[string]any{
+		"coach_student_id": threadID,
+		"sender_id":        userID,
+		"sender_role":      role,
+		"body":             body,
+	})
+	if err != nil || len(ins) == 0 {
+		if err == nil {
+			err = errors.New("could not send message")
+		}
+		return model.CoachingMessage{}, err
+	}
+	s.bumpThreadActivity(threadID)
+	s.notifyCoachingCounterpart(cs, role, userID, name, body)
+	return mapCoachingMessage(ins[0]), nil
+}
+
 // --- 1:1 session booking (player books a coach's open availability) ---
 
 func parseSchedTime(s string) (time.Time, bool) {

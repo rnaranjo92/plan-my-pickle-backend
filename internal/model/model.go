@@ -1301,6 +1301,20 @@ type CoachingScheduleItem struct {
 	CoachName string `json:"coachName,omitempty"`
 }
 
+// CoachingMessage is one free-form chat message on a coaching thread.
+type CoachingMessage struct {
+	ID         string `json:"id"`
+	SenderID   string `json:"senderId"`
+	SenderRole string `json:"senderRole"` // coach | student
+	Body       string `json:"body"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+// CoachingMessageRequest sends a chat message on a thread.
+type CoachingMessageRequest struct {
+	Body string `json:"body"`
+}
+
 // CoachBookingRequest is a player booking a 1:1 session inside a coach's open
 // availability window.
 type CoachBookingRequest struct {

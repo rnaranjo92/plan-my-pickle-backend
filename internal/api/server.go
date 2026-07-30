@@ -634,6 +634,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision", requireAuth(s.coachingPBVision))
+	mux.HandleFunc("GET /coaching/threads/{id}/messages", requireAuth(s.threadMessages))
+	mux.HandleFunc("POST /coaching/threads/{id}/messages", requireAuth(s.sendThreadMessage))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
 	mux.HandleFunc("POST /coaching/videos/{id}/feedback", requireAuth(s.addCoachingFeedback))
 	mux.HandleFunc("DELETE /coaching/videos/{id}", requireAuth(s.deleteCoachingVideo))
@@ -5477,6 +5479,29 @@ func (s *Server) coachingPBVision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) threadMessages(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListThreadMessages(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) sendThreadMessage(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingMessageRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	msg, err := s.svc.SendThreadMessage(
+		r.PathValue("id"), userID(r), userEmail(r), userName(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, msg)
 }
 
 func (s *Server) addCoachingVideo(w http.ResponseWriter, r *http.Request) {

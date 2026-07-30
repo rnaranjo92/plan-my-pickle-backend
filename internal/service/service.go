@@ -5175,14 +5175,20 @@ func (s *Service) bracketDrawExists(bracketID string) (bool, error) {
 	return row != nil, nil
 }
 
-// bracketHasScoredMatch reports whether any match in the bracket is already
-// scored (status=completed). A cleared/rebuilt draw is safe only when false.
+// bracketHasScoredMatch reports whether any match in the bracket carries a REAL
+// recorded result — a completed match with a non-null score. Byes are also
+// status=completed but have no score (team1_score is null), so they're excluded:
+// clearing a freshly-generated draw whose only "completed" matches are byes is
+// safe. Forfeits/walkovers fabricate a score, so they correctly count.
 func (s *Service) bracketHasScoredMatch(bracketID string) (bool, error) {
 	if bracketID == "" {
 		return false, nil
 	}
+	// Matches DeleteRound's convention exactly: a recorded result is completed
+	// with BOTH scores set; a bye is completed with neither.
 	row, err := s.sb.SelectOne("matches",
-		"bracket_id=eq."+store.Q(bracketID)+"&status=eq.completed&select=id")
+		"bracket_id=eq."+store.Q(bracketID)+"&status=eq.completed"+
+			"&team1_score=not.is.null&team2_score=not.is.null&select=id")
 	if err != nil {
 		return false, err
 	}

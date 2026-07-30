@@ -660,6 +660,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coaching/classes/{id}/enroll", requireAuth(s.enrollClass))
 	mux.HandleFunc("POST /coaching/classes/{id}/unenroll", requireAuth(s.unenrollClass))
 	mux.HandleFunc("GET /me/classes", requireAuth(s.myEnrolledClasses))
+	mux.HandleFunc("POST /coaching/enrollments/{id}/pay", requireAuth(s.payEnrollment))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5822,6 +5823,20 @@ func (s *Server) myEnrolledClasses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) payEnrollment(w http.ResponseWriter, r *http.Request) {
+	var req model.EnrollPayRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.PayForEnrollment(
+		r.PathValue("id"), userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 // coachingRole tells the app whether the signed-in user gets the coach view (the

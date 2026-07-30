@@ -211,6 +211,19 @@ func main() {
 		}
 	}()
 
+	// Coaching classes: ~1h before a paid class, remind unpaid enrollees to pay &
+	// confirm their seat. 10-minute tick; reminds once per enrollment. Inert until
+	// coaching_enrollments exists.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.RemindDueClassPayments(); err != nil {
+				log.Printf("coaching: class-payment reminder pass failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

@@ -467,6 +467,8 @@ type WebhookEvent struct {
 	VendorID string
 	// checkout.session.completed (mode=payment) — a paid Match Video Analysis.
 	AnalysisID string
+	// checkout.session.completed (mode=payment) — a paid class enrollment.
+	EnrollmentID string
 	// account.updated
 	AccountID      string
 	ChargesEnabled bool
@@ -532,6 +534,7 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			EventPassID:    sess.Metadata["event_pass_id"],
 			VendorID:       sess.Metadata["vendor_id"],
 			AnalysisID:     sess.Metadata["analysis_id"],
+			EnrollmentID:   sess.Metadata["enrollment_id"],
 			AmountCents:    int(sess.AmountTotal),
 			AddonTee:       sess.Metadata["addon_tee"] == "1",
 			AddonGrips:     sess.Metadata["addon_grips"] == "1",

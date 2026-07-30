@@ -2192,6 +2192,83 @@ func (s *Service) MyEnrolledClasses(userID string) ([]model.CoachingEnrollment, 
 	return out, nil
 }
 
+// markEnrollmentPaid flips a paid class enrollment to paid (webhook path).
+func (s *Service) markEnrollmentPaid(enrollmentID string) error {
+	if !s.enrollmentsReady() {
+		return nil
+	}
+	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
+		map[string]any{"paid": true})
+	return err
+}
+
+// PayForEnrollment returns a hosted-checkout URL for an unpaid paid enrollment.
+// Only the enrollee may pay; free/already-paid returns "" (nothing to do).
+func (s *Service) PayForEnrollment(enrollmentID, userID, email, successURL, cancelURL string) (string, error) {
+	if !s.enrollmentsReady() {
+		return "", ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_enrollments", "id=eq."+store.Q(enrollmentID))
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", ErrNotFound
+	}
+	if asStr(row, "user_id") != userID {
+		return "", ErrForbidden
+	}
+	if asBool(row, "paid") || asInt(row, "amount_cents") <= 0 {
+		return "", nil // nothing to charge
+	}
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	title := "Class"
+	if c, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(asStr(row, "class_id"))+"&select=title"); c != nil {
+		if t := asStr(c, "title"); t != "" {
+			title = t
+		}
+	}
+	return gw.CreatePlatformCheckout(enrollmentID, "enrollment_id",
+		asInt(row, "amount_cents"), "usd", "PlanMyPickle — "+title, email,
+		successURL, cancelURL)
+}
+
+// RemindDueClassPayments notifies players ~1h before a paid class to pay & confirm
+// their seat (reconciler tick). Reminds once per enrollment (payment_ref sentinel).
+func (s *Service) RemindDueClassPayments() error {
+	if !s.enrollmentsReady() {
+		return nil
+	}
+	rows, err := s.sb.Select("coaching_enrollments",
+		"paid=is.false&status=eq.enrolled&charge_at=lte."+store.Q(now())+
+			"&payment_ref=is.null&select=id,user_id,class_id")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		uid := asStr(r, "user_id")
+		title := "your class"
+		if c, _ := s.sb.SelectOne("coaching_classes",
+			"id=eq."+store.Q(asStr(r, "class_id"))+"&select=title"); c != nil {
+			if t := asStr(c, "title"); t != "" {
+				title = t
+			}
+		}
+		if uid != "" {
+			s.notifyUser(uid, "coaching", "", "PlanMyPickle",
+				"“"+title+"” is coming up — open My classes to pay and confirm your seat.",
+				"myclasses")
+		}
+		_, _ = s.sb.Update("coaching_enrollments", "id=eq."+store.Q(asStr(r, "id")),
+			map[string]any{"payment_ref": "reminded"})
+	}
+	return nil
+}
+
 // parseTime parses a PostgREST timestamptz (RFC3339 / with nanos).
 func parseTime(s string) (time.Time, bool) {
 	if s == "" {

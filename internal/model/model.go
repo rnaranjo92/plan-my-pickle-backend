@@ -1435,6 +1435,12 @@ type CoachingEnrollment struct {
 	Location   string `json:"location,omitempty"`
 }
 
+// EnrollPayRequest carries the return URLs for a class-enrollment checkout.
+type EnrollPayRequest struct {
+	SuccessURL string `json:"successUrl"`
+	CancelURL  string `json:"cancelUrl"`
+}
+
 // CoachingClassRequest creates a class (coach only).
 type CoachingClassRequest struct {
 	Title       string `json:"title"`

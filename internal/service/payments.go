@@ -566,6 +566,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.AnalysisID != "" {
 			return s.markAnalysisPaid(evt.AnalysisID)
 		}
+		// A paid class enrollment — mark the seat paid.
+		if evt.EnrollmentID != "" {
+			return s.markEnrollmentPaid(evt.EnrollmentID)
+		}
 		if evt.RegistrationID == "" {
 			return nil // nothing to attribute the payment to
 		}

@@ -1462,6 +1462,26 @@ type PBVisionStats struct {
 	Stats        map[string]any `json:"stats,omitempty"`
 }
 
+// CoachingProgram is a multi-week training plan assigned to a student.
+type CoachingProgram struct {
+	ID        string                `json:"id"`
+	Title     string                `json:"title"`
+	Weeks     []CoachingProgramWeek `json:"weeks"`
+	CreatedAt string                `json:"createdAt,omitempty"`
+}
+
+// CoachingProgramWeek is one week's focus + completion.
+type CoachingProgramWeek struct {
+	Focus string `json:"focus"`
+	Done  bool   `json:"done"`
+}
+
+// CoachingProgramRequest creates a program (coach): title + per-week focuses.
+type CoachingProgramRequest struct {
+	Title string   `json:"title"`
+	Weeks []string `json:"weeks"`
+}
+
 // PBVisionReport is one historical PB Vision snapshot for a thread.
 type PBVisionReport struct {
 	ID       string         `json:"id"`

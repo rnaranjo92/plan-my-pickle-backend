@@ -635,6 +635,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision", requireAuth(s.coachingPBVision))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/history", requireAuth(s.coachingPBVisionHistory))
+	mux.HandleFunc("GET /coaching/threads/{id}/program", requireAuth(s.threadProgram))
+	mux.HandleFunc("POST /coach/students/{id}/program", requireAuth(s.createProgram))
+	mux.HandleFunc("POST /coaching/programs/{id}/toggle", requireAuth(s.toggleProgramWeek))
+	mux.HandleFunc("DELETE /coaching/programs/{id}", requireAuth(s.deleteProgram))
 	mux.HandleFunc("GET /coaching/threads/{id}/messages", requireAuth(s.threadMessages))
 	mux.HandleFunc("POST /coaching/threads/{id}/messages", requireAuth(s.sendThreadMessage))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
@@ -5504,6 +5508,51 @@ func (s *Server) coachingPBVisionHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) threadProgram(w http.ResponseWriter, r *http.Request) {
+	p, err := s.svc.GetThreadProgram(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) createProgram(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingProgramRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.CreateProgram(r.PathValue("id"), userID(r), userEmail(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) toggleProgramWeek(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Index int `json:"index"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.ToggleProgramWeek(r.PathValue("id"), req.Index, userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) deleteProgram(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteProgram(r.PathValue("id"), userID(r), userEmail(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) threadMessages(w http.ResponseWriter, r *http.Request) {

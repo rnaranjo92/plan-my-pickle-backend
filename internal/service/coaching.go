@@ -698,6 +698,149 @@ func (s *Service) seedPBVisionReport(threadID string, rating float64, syncedAt s
 	})
 }
 
+// --- Multi-week training programs ---
+
+func (s *Service) programsReady() bool {
+	return s.columnReady("coaching_programs", "id")
+}
+
+func mapProgram(row map[string]any) model.CoachingProgram {
+	p := model.CoachingProgram{
+		ID:        asStr(row, "id"),
+		Title:     asStr(row, "title"),
+		CreatedAt: asStr(row, "created_at"),
+		Weeks:     []model.CoachingProgramWeek{},
+	}
+	if arr, ok := row["weeks"].([]any); ok {
+		for _, w := range arr {
+			if m, ok := w.(map[string]any); ok {
+				p.Weeks = append(p.Weeks, model.CoachingProgramWeek{
+					Focus: asStr(m, "focus"),
+					Done:  asBool(m, "done"),
+				})
+			}
+		}
+	}
+	return p
+}
+
+// GetThreadProgram returns the thread's most recent active program (or empty).
+func (s *Service) GetThreadProgram(threadID, userID, email string) (model.CoachingProgram, error) {
+	if !s.coachingReady() {
+		return model.CoachingProgram{}, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return model.CoachingProgram{}, err
+	}
+	if !s.programsReady() {
+		return model.CoachingProgram{}, nil
+	}
+	row, err := s.sb.SelectOne("coaching_programs",
+		"coach_student_id=eq."+store.Q(threadID)+
+			"&active=is.true&order=created_at.desc&limit=1")
+	if err != nil || row == nil {
+		return model.CoachingProgram{}, err
+	}
+	return mapProgram(row), nil
+}
+
+// CreateProgram assigns a new multi-week program to a student (coach only).
+// Supersedes any prior active program on the thread.
+func (s *Service) CreateProgram(threadID, userID, email string, req model.CoachingProgramRequest) (model.CoachingProgram, error) {
+	if !s.programsReady() {
+		return model.CoachingProgram{}, ErrCoachingUnavailable
+	}
+	_, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return model.CoachingProgram{}, err
+	}
+	if role != "coach" {
+		return model.CoachingProgram{}, ErrForbidden
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.CoachingProgram{}, errors.New("give the program a title")
+	}
+	weeks := make([]map[string]any, 0, len(req.Weeks))
+	for _, f := range req.Weeks {
+		if f = strings.TrimSpace(f); f != "" {
+			weeks = append(weeks, map[string]any{"focus": f, "done": false})
+		}
+	}
+	if len(weeks) == 0 {
+		return model.CoachingProgram{}, errors.New("add at least one week")
+	}
+	// Retire prior active programs on this thread.
+	_, _ = s.sb.Update("coaching_programs",
+		"coach_student_id=eq."+store.Q(threadID)+"&active=is.true",
+		map[string]any{"active": false})
+	ins, err := s.sb.Insert("coaching_programs", map[string]any{
+		"coach_student_id": threadID,
+		"title":            title,
+		"weeks":            weeks,
+	})
+	if err != nil || len(ins) == 0 {
+		if err == nil {
+			err = errors.New("could not save the program")
+		}
+		return model.CoachingProgram{}, err
+	}
+	s.bumpThreadActivity(threadID)
+	return mapProgram(ins[0]), nil
+}
+
+// ToggleProgramWeek flips a week's done flag (coach or student).
+func (s *Service) ToggleProgramWeek(programID string, index int, userID, email string) (model.CoachingProgram, error) {
+	if !s.programsReady() {
+		return model.CoachingProgram{}, ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_programs", "id=eq."+store.Q(programID))
+	if err != nil || row == nil {
+		if err == nil {
+			err = ErrNotFound
+		}
+		return model.CoachingProgram{}, err
+	}
+	threadID := asStr(row, "coach_student_id")
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return model.CoachingProgram{}, err
+	}
+	weeks, _ := row["weeks"].([]any)
+	if index < 0 || index >= len(weeks) {
+		return model.CoachingProgram{}, errors.New("no such week")
+	}
+	if m, ok := weeks[index].(map[string]any); ok {
+		m["done"] = !asBool(m, "done")
+		weeks[index] = m
+	}
+	out, err := s.sb.Update("coaching_programs", "id=eq."+store.Q(programID),
+		map[string]any{"weeks": weeks, "updated_at": now()})
+	if err != nil {
+		return model.CoachingProgram{}, err
+	}
+	s.bumpThreadActivity(threadID)
+	if len(out) > 0 {
+		return mapProgram(out[0]), nil
+	}
+	return mapProgram(row), nil
+}
+
+// DeleteProgram removes a program (coach who owns the thread).
+func (s *Service) DeleteProgram(programID, userID, email string) error {
+	if !s.programsReady() {
+		return ErrCoachingUnavailable
+	}
+	row, _ := s.sb.SelectOne("coaching_programs",
+		"id=eq."+store.Q(programID)+"&select=coach_student_id")
+	if row == nil {
+		return ErrNotFound
+	}
+	if _, role, err := s.threadMembership(asStr(row, "coach_student_id"), userID, email); err != nil || role != "coach" {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_programs", "id=eq."+store.Q(programID))
+}
+
 // GetThread returns a thread's clips (each with nested feedback), for a member.
 func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThread, error) {
 	if !s.coachingReady() {
@@ -1398,6 +1541,18 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 					"goal":             "10 in a row landing in the kitchen, then freeze before advancing.",
 					"status":           "assigned",
 					"assigned_by":      coachID,
+				})
+			}
+			if s.programsReady() {
+				_, _ = s.sb.Insert("coaching_programs", map[string]any{
+					"coach_student_id": rid,
+					"title":            "4-week third-shot mastery",
+					"weeks": []map[string]any{
+						{"focus": "Week 1 · Drop mechanics — soft hands, contact point", "done": true},
+						{"focus": "Week 2 · Drop under light pressure + freeze", "done": true},
+						{"focus": "Week 3 · Transition zone footwork to the kitchen", "done": false},
+						{"focus": "Week 4 · Live points: drop → advance → reset", "done": false},
+					},
 				})
 			}
 			if s.pbVisionReady() {

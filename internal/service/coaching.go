@@ -1760,6 +1760,62 @@ func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
 	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(id))
 }
 
+// UpdateCoachScheduleItem edits a schedule entry the coach owns (its kind is
+// fixed; time/location/notes/student are editable).
+func (s *Service) UpdateCoachScheduleItem(coachID, id string, req model.CoachingScheduleRequest) (model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() {
+		return model.CoachingScheduleItem{}, ErrCoachingUnavailable
+	}
+	cur, err := s.sb.SelectOne("coaching_schedule",
+		"id=eq."+store.Q(id)+"&select=coach_id,kind")
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	if cur == nil {
+		return model.CoachingScheduleItem{}, ErrNotFound
+	}
+	if asStr(cur, "coach_id") != coachID {
+		return model.CoachingScheduleItem{}, ErrForbidden
+	}
+	if strings.TrimSpace(req.StartsAt) == "" {
+		return model.CoachingScheduleItem{}, errors.New("pick a date and time")
+	}
+	kind := asStr(cur, "kind")
+	upd := map[string]any{
+		"starts_at": req.StartsAt,
+		"all_day":   req.AllDay,
+		"ends_at":   orNull(strings.TrimSpace(req.EndsAt)),
+		"location":  orNull(strings.TrimSpace(req.Location)),
+		"notes":     orNull(strings.TrimSpace(req.Notes)),
+	}
+	if kind == "session" {
+		label := strings.TrimSpace(req.StudentLabel)
+		if id := strings.TrimSpace(req.CoachStudentID); id != "" {
+			upd["coach_student_id"] = id
+			if label == "" {
+				if r, _ := s.sb.SelectOne("coach_students",
+					"id=eq."+store.Q(id)+"&select=student_name,student_email"); r != nil {
+					label = asStr(r, "student_name")
+					if label == "" {
+						label = asStr(r, "student_email")
+					}
+				}
+			}
+		}
+		if label != "" {
+			upd["student_label"] = label
+		}
+	}
+	out, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(id), upd)
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	if len(out) > 0 {
+		return mapScheduleItem(out[0]), nil
+	}
+	return model.CoachingScheduleItem{}, errors.New("could not update that item")
+}
+
 // --- Drill library + assignments (a student's game plan) ---
 
 func (s *Service) drillsReady() bool {

@@ -555,8 +555,12 @@ func (s *Service) threadMembership(threadID, userID, email string) (model.CoachS
 	if userID != "" && cs.CoachID == userID {
 		return cs, "coach", nil
 	}
-	// Student match: by email, or by phone (the account's phone == the invited one).
-	studentMatch := email != "" && strings.EqualFold(cs.StudentEmail, email)
+	// Student match: by linked account ID (survives email drift once the
+	// account is connected), then by email, then by phone.
+	studentMatch := userID != "" && cs.StudentID == userID
+	if !studentMatch {
+		studentMatch = email != "" && strings.EqualFold(cs.StudentEmail, email)
+	}
 	if !studentMatch && cs.StudentPhone != "" && userID != "" {
 		studentMatch = normPhone(s.phoneOf(userID)) == cs.StudentPhone
 	}

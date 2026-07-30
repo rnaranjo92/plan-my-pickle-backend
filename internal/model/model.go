@@ -1471,11 +1471,24 @@ type PBVisionStats struct {
 // analyzed clip: the detected players (for the "which player are you?" picker)
 // plus which one the student tagged. Empty (Ready=false) when nothing's ready.
 type PBVisionAnalysis struct {
-	Ready     bool             `json:"ready"`
-	JobID     string           `json:"jobId,omitempty"`
-	ReportURL string           `json:"reportUrl,omitempty"`
-	TaggedID  *int             `json:"taggedAvatarId,omitempty"`
-	Players   []PBVisionPlayer `json:"players,omitempty"`
+	Ready     bool                `json:"ready"`
+	JobID     string              `json:"jobId,omitempty"`
+	ReportURL string              `json:"reportUrl,omitempty"`
+	TaggedID  *int                `json:"taggedAvatarId,omitempty"`
+	Players   []PBVisionPlayer    `json:"players,omitempty"`
+	// SourceVideoURL is a signed playback URL for the analyzed clip (so the
+	// highlights, which are time-ranges into it, can be played inline).
+	SourceVideoURL string             `json:"sourceVideoUrl,omitempty"`
+	Highlights     []PBVisionHighlight `json:"highlights,omitempty"`
+}
+
+// PBVisionHighlight is one notable moment PB Vision flagged: a time-range
+// (StartSeconds..EndSeconds) into the source clip, with a label.
+type PBVisionHighlight struct {
+	StartSeconds float64 `json:"startSeconds"`
+	EndSeconds   float64 `json:"endSeconds"`
+	Kind         string  `json:"kind,omitempty"`
+	Title        string  `json:"title,omitempty"`
 }
 
 // PBVisionPlayer is one detected on-court player. AvatarID is PB Vision's

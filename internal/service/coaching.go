@@ -675,6 +675,10 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 	if hasTag {
 		sel += ",tagged_avatar_id"
 	}
+	hasSrc := s.columnReady("coaching_pbvision_jobs", "source_video_id")
+	if hasSrc {
+		sel += ",source_video_id"
+	}
 	row, err := s.sb.SelectOne("coaching_pbvision_jobs", sel)
 	if err != nil {
 		return model.PBVisionAnalysis{}, err
@@ -683,15 +687,68 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 		return model.PBVisionAnalysis{Ready: false}, nil
 	}
 	out := model.PBVisionAnalysis{
-		Ready:     true,
-		JobID:     asStr(row, "id"),
-		ReportURL: asStr(row, "report_url"),
-		Players:   parsePBVisionPlayers(row["insights"]),
+		Ready:      true,
+		JobID:      asStr(row, "id"),
+		ReportURL:  asStr(row, "report_url"),
+		Players:    parsePBVisionPlayers(row["insights"]),
+		Highlights: parsePBVisionHighlights(row["insights"]),
 	}
 	if hasTag {
 		out.TaggedID = asIntPtr(row, "tagged_avatar_id")
 	}
+	// Sign the source clip so the highlights (time-ranges into it) can play.
+	if hasSrc && len(out.Highlights) > 0 {
+		if svid := asStr(row, "source_video_id"); svid != "" {
+			if vrow, _ := s.sb.SelectOne("coaching_videos",
+				"id=eq."+store.Q(svid)+"&select=video_url"); vrow != nil {
+				path := coachingVideoPath(asStr(vrow, "video_url"))
+				if signed, serr := s.sb.SignedURLs("coaching-videos",
+					[]string{path}, 6*60*60); serr == nil {
+					out.SourceVideoURL = signed[path]
+				}
+			}
+		}
+	}
 	return out, nil
+}
+
+// parsePBVisionHighlights pulls the flagged moments out of insights.highlights:
+// time-ranges (s..e seconds) into the source clip with a label.
+func parsePBVisionHighlights(insights any) []model.PBVisionHighlight {
+	m, ok := insights.(map[string]any)
+	if !ok {
+		return nil
+	}
+	arr, ok := m["highlights"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]model.PBVisionHighlight, 0, len(arr))
+	for _, item := range arr {
+		h, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		title := strings.TrimSpace(fmt.Sprint(orDefault(h["short_description"], "")))
+		if title == "" {
+			title = strings.TrimSpace(fmt.Sprint(orDefault(h["kind"], "Highlight")))
+		}
+		out = append(out, model.PBVisionHighlight{
+			StartSeconds: pbNum(h["s"]),
+			EndSeconds:   pbNum(h["e"]),
+			Kind:         fmt.Sprint(orDefault(h["kind"], "")),
+			Title:        title,
+		})
+	}
+	return out
+}
+
+// orDefault returns v if non-nil, else def.
+func orDefault(v, def any) any {
+	if v == nil {
+		return def
+	}
+	return v
 }
 
 // TagPBVisionPlayer records which detected player (avatar_id) is the student on

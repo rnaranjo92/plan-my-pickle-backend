@@ -5497,12 +5497,13 @@ func (s *Server) coachingThread(w http.ResponseWriter, r *http.Request) {
 func (s *Server) analyzeThreadVideo(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		VideoURL string `json:"videoUrl"`
+		VideoID  string `json:"videoId"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	vid, err := s.svc.AnalyzeThreadVideo(
-		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL)
+		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.VideoID)
 	if err != nil {
 		status(w, err)
 		return

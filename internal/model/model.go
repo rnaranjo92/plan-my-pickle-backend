@@ -1264,6 +1264,9 @@ type CoachingVideo struct {
 	Feedback       []CoachingFeedback `json:"feedback,omitempty"`
 	// Source is "upload" (coach/student) or "pbvision" (auto-imported highlight).
 	Source string `json:"source,omitempty"`
+	// PBVisionStatus is the state of a PB Vision analysis launched from this clip:
+	// "" (none), "processing", "ready", or "failed".
+	PBVisionStatus string `json:"pbVisionStatus,omitempty"`
 	// CoachNote is the coach's PRIVATE note on this clip — only populated when the
 	// viewer is the coach; never sent to the student.
 	CoachNote string `json:"coachNote,omitempty"`

@@ -857,7 +857,7 @@ func (s *Service) pbvisionJobsReady() bool {
 // (coach only). The student's email is passed so PB Vision attributes/shares the
 // report to them. On completion the webhook ingests highlights + stats. Returns
 // the PB Vision video id.
-func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL string) (string, error) {
+func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID string) (string, error) {
 	if !s.coachingReady() || !s.pbvisionJobsReady() {
 		return "", ErrCoachingUnavailable
 	}
@@ -890,12 +890,16 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL string) (
 	if err != nil {
 		return "", err
 	}
-	_, err = s.sb.Upsert("coaching_pbvision_jobs", "vid", map[string]any{
+	job := map[string]any{
 		"vid":              vid,
 		"coach_student_id": threadID,
 		"status":           "processing",
 		"updated_at":       now(),
-	})
+	}
+	if videoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		job["source_video_id"] = videoID
+	}
+	_, err = s.sb.Upsert("coaching_pbvision_jobs", "vid", job)
 	if err != nil {
 		return "", err
 	}
@@ -935,23 +939,28 @@ func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, 
 	}
 	_, _ = s.sb.Update("coaching_pbvision_jobs",
 		"id=eq."+store.Q(asStr(job, "id")), upd)
-	if strings.TrimSpace(errReason) != "" {
-		return
+	failed := strings.TrimSpace(errReason) != ""
+	if !failed {
+		// TODO(pbvision-parser): with a real insights/stats payload, parse here —
+		//   stats            -> coaching_pbvision (+ coaching_pbvision_reports)
+		//   insights.highlights -> coaching_videos (source='pbvision', external_ref,
+		//                          video_url=clip, title="Long Rally #1" etc.)
+		//   insights.players -> map to a student (coach_students.pbvision_player_id)
+		s.ingestPBVisionHighlights(threadID, insights)
 	}
-	// TODO(pbvision-parser): with a real insights/stats payload, parse here —
-	//   stats            -> coaching_pbvision (+ coaching_pbvision_reports)
-	//   insights.highlights -> coaching_videos (source='pbvision', external_ref,
-	//                          video_url=clip, title="Long Rally #1" etc.)
-	//   insights.players -> map to a student (coach_students.pbvision_player_id)
-	s.ingestPBVisionHighlights(threadID, insights)
 	s.bumpThreadActivity(threadID)
+	// Push + bell to BOTH the coach and the student, on success or failure.
+	coachBody, studentBody := "PB Vision analysis ready — review highlights",
+		"Your PB Vision highlights are ready"
+	if failed {
+		coachBody, studentBody = "PB Vision analysis failed — try a longer match clip",
+			"PB Vision couldn't analyze that clip — try a longer match video"
+	}
 	if cs, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID)); cs != nil {
 		coachID := asStr(cs, "coach_id")
-		s.notifyUser(coachID, "coaching", "", "",
-			"PB Vision analysis ready — review highlights", "coaching:"+threadID)
+		s.notifyUser(coachID, "coaching", "", "", coachBody, "coaching:"+threadID)
 		if sid := asStr(cs, "student_id"); sid != "" && sid != coachID {
-			s.notifyUser(sid, "coaching", "", "",
-				"Your PB Vision highlights are ready", "coaching:"+threadID)
+			s.notifyUser(sid, "coaching", "", "", studentBody, "coaching:"+threadID)
 		}
 	}
 }
@@ -1070,6 +1079,22 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 			Feedback:       byVideo[asStr(v, "id")],
 		}
 		out.Videos = append(out.Videos, vid)
+	}
+	// Attach PB Vision analysis status per source clip (processing/ready/failed).
+	if s.pbvisionJobsReady() && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		jobs, _ := s.sb.Select("coaching_pbvision_jobs",
+			"coach_student_id=eq."+store.Q(threadID)+
+				"&source_video_id=not.is.null&select=source_video_id,status&order=updated_at.desc")
+		statusByVideo := map[string]string{}
+		for _, j := range jobs {
+			svid := asStr(j, "source_video_id")
+			if svid != "" && statusByVideo[svid] == "" { // first = most recent
+				statusByVideo[svid] = asStr(j, "status")
+			}
+		}
+		for i := range out.Videos {
+			out.Videos[i].PBVisionStatus = statusByVideo[out.Videos[i].ID]
+		}
 	}
 	// Private coach notes — attached ONLY for the coach, never sent to a student.
 	if role == "coach" && len(out.Videos) > 0 {

@@ -1831,7 +1831,69 @@ func mapCoachProfile(row map[string]any) model.CoachProfile {
 		HourlyRateCents: asIntPtr(row, "hourly_rate_cents"),
 		Skills:          asStr(row, "skills"),
 		PhotoURL:        asStr(row, "photo_url"),
+		HasIntroVideo:   strings.TrimSpace(asStr(row, "intro_video_url")) != "",
 	}
+}
+
+func (s *Service) introVideoReady() bool {
+	return s.columnReady("coach_profiles", "intro_video_url")
+}
+
+// SetMyCoachIntroVideo saves the coach's intro-clip object path (already uploaded
+// to the coaching-videos bucket) on their profile.
+func (s *Service) SetMyCoachIntroVideo(userID, path string) error {
+	if userID == "" {
+		return errors.New("not signed in")
+	}
+	if !s.coachProfilesReady() || !s.introVideoReady() {
+		return ErrCoachingUnavailable
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("no video uploaded")
+	}
+	_, err := s.sb.Upsert("coach_profiles", "user_id", map[string]any{
+		"user_id":         userID,
+		"name":            s.coachingName(userID),
+		"intro_video_url": path,
+		"updated_at":      now(),
+	})
+	return err
+}
+
+// ClearMyCoachIntroVideo removes the coach's intro clip reference.
+func (s *Service) ClearMyCoachIntroVideo(userID string) error {
+	if !s.coachProfilesReady() || !s.introVideoReady() {
+		return ErrCoachingUnavailable
+	}
+	_, err := s.sb.Upsert("coach_profiles", "user_id", map[string]any{
+		"user_id":         userID,
+		"intro_video_url": nil,
+	})
+	return err
+}
+
+// CoachIntroVideoURL returns a short-lived SIGNED playback URL for a coach's
+// intro clip (any signed-in viewer). Empty string when none is set.
+func (s *Service) CoachIntroVideoURL(coachUserID string) (string, error) {
+	if !s.coachProfilesReady() || !s.introVideoReady() {
+		return "", nil
+	}
+	row, err := s.sb.SelectOne("coach_profiles",
+		"user_id=eq."+store.Q(coachUserID)+"&select=intro_video_url")
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(asStr(row, "intro_video_url"))
+	if path == "" {
+		return "", nil
+	}
+	m, err := s.sb.SignedURLs("coaching-videos",
+		[]string{coachingVideoPath(path)}, 6*60*60)
+	if err != nil {
+		return "", err
+	}
+	return m[coachingVideoPath(path)], nil
 }
 
 // GetMyCoachProfile returns the signed-in coach's discovery profile (a default,

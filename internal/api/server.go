@@ -655,6 +655,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coach/profile", s.instructorOnly(s.myCoachProfile))
 	mux.HandleFunc("POST /coach/profile", s.instructorOnly(s.upsertCoachProfile))
 	mux.HandleFunc("POST /coach/photo", s.instructorOnly(s.uploadCoachPhoto))
+	mux.HandleFunc("POST /coach/intro-video", s.instructorOnly(s.setCoachIntroVideo))
+	mux.HandleFunc("DELETE /coach/intro-video", s.instructorOnly(s.clearCoachIntroVideo))
+	mux.HandleFunc("GET /coaches/{userId}/intro-video", requireAuth(s.coachIntroVideo))
 	mux.HandleFunc("GET /coaches/nearby", requireAuth(s.coachesNearby))
 	mux.HandleFunc("GET /coaches/{userId}/reviews", requireAuth(s.coachReviews))
 	mux.HandleFunc("POST /coaches/{userId}/reviews", requireAuth(s.submitCoachReview))
@@ -5841,6 +5844,37 @@ func (s *Server) deleteCoachReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) setCoachIntroVideo(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetMyCoachIntroVideo(userID(r), req.Path); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+func (s *Server) clearCoachIntroVideo(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearMyCoachIntroVideo(userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
+}
+
+func (s *Server) coachIntroVideo(w http.ResponseWriter, r *http.Request) {
+	url, err := s.svc.CoachIntroVideoURL(r.PathValue("userId"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 func (s *Server) coachAvailability(w http.ResponseWriter, r *http.Request) {

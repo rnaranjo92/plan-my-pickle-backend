@@ -1412,6 +1412,9 @@ type CoachProfile struct {
 	DistanceKm      *float64 `json:"distanceKm,omitempty"`
 	RatingAvg       *float64 `json:"ratingAvg,omitempty"`
 	RatingCount     int      `json:"ratingCount"`
+	// HasIntroVideo is true when the coach has recorded an intro clip (the raw
+	// bucket path is never exposed — playback is via a signed-URL endpoint).
+	HasIntroVideo bool `json:"hasIntroVideo"`
 }
 
 // CoachReview is a player's star rating + comment for a coach. One per

@@ -1746,6 +1746,7 @@ func mapCoachProfile(row map[string]any) model.CoachProfile {
 		Name:            asStr(row, "name"),
 		Listed:          asBool(row, "listed"),
 		Bio:             asStr(row, "bio"),
+		YearsExperience: asIntPtr(row, "years_experience"),
 		City:            asStr(row, "city"),
 		Lat:             asFloatPtr(row, "lat"),
 		Lng:             asFloatPtr(row, "lng"),
@@ -1780,6 +1781,17 @@ func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileReques
 	if !s.coachProfilesReady() {
 		return model.CoachProfile{}, ErrCoachingUnavailable
 	}
+	yearsReady := s.columnReady("coach_profiles", "years_experience")
+	// Listing publicly requires a bio + years of experience so players see a
+	// real, vetted profile. (Years enforced once its column exists.)
+	if req.Listed {
+		if strings.TrimSpace(req.Bio) == "" {
+			return model.CoachProfile{}, errors.New("add a short bio before listing your profile")
+		}
+		if yearsReady && (req.YearsExperience == nil || *req.YearsExperience < 0) {
+			return model.CoachProfile{}, errors.New("add your years of experience before listing your profile")
+		}
+	}
 	row := map[string]any{
 		"user_id":           userID,
 		"name":              s.coachingName(userID),
@@ -1789,6 +1801,9 @@ func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileReques
 		"skills":            orNull(strings.TrimSpace(req.Skills)),
 		"hourly_rate_cents": req.HourlyRateCents,
 		"updated_at":        now(),
+	}
+	if yearsReady {
+		row["years_experience"] = req.YearsExperience
 	}
 	if city := strings.TrimSpace(req.City); city != "" {
 		if lat, lng := bestEffortGeocode(city); lat != nil && lng != nil {
@@ -1855,6 +1870,124 @@ func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachPr
 		return *di < *dj
 	})
 	return out, nil
+}
+
+// --- Coaching classes (marketplace Phase B) ---
+
+func (s *Service) classesReady() bool {
+	return s.columnReady("coaching_classes", "id")
+}
+
+func mapClass(row map[string]any) model.CoachingClass {
+	return model.CoachingClass{
+		ID:          asStr(row, "id"),
+		CoachID:     asStr(row, "coach_id"),
+		Title:       asStr(row, "title"),
+		Description: asStr(row, "description"),
+		StartsAt:    asStr(row, "starts_at"),
+		EndsAt:      asStr(row, "ends_at"),
+		Location:    asStr(row, "location"),
+		Capacity:    asInt(row, "capacity"),
+		PriceCents:  asInt(row, "price_cents"),
+		CreatedAt:   asStr(row, "created_at"),
+	}
+}
+
+// ListMyClasses returns the signed-in coach's own UPCOMING classes.
+func (s *Service) ListMyClasses(coachID string) ([]model.CoachingClass, error) {
+	if !s.classesReady() {
+		return []model.CoachingClass{}, nil
+	}
+	rows, err := s.sb.Select("coaching_classes",
+		"coach_id=eq."+store.Q(coachID)+"&starts_at=gte."+store.Q(now())+
+			"&order=starts_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingClass, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapClass(r))
+	}
+	return out, nil
+}
+
+// ListCoachClassesPublic returns a coach's UPCOMING classes (player view).
+func (s *Service) ListCoachClassesPublic(coachUserID string) ([]model.CoachingClass, error) {
+	if !s.classesReady() {
+		return []model.CoachingClass{}, nil
+	}
+	rows, err := s.sb.Select("coaching_classes",
+		"coach_id=eq."+store.Q(coachUserID)+"&starts_at=gte."+store.Q(now())+
+			"&order=starts_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	name := s.coachingName(coachUserID)
+	out := make([]model.CoachingClass, 0, len(rows))
+	for _, r := range rows {
+		c := mapClass(r)
+		c.CoachName = name
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// CreateClass adds a class for the signed-in coach.
+func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (model.CoachingClass, error) {
+	if !s.classesReady() {
+		return model.CoachingClass{}, ErrCoachingUnavailable
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.CoachingClass{}, errors.New("give the class a title")
+	}
+	if strings.TrimSpace(req.StartsAt) == "" {
+		return model.CoachingClass{}, errors.New("pick a date and time")
+	}
+	capacity := req.Capacity
+	if capacity < 0 {
+		capacity = 0
+	}
+	price := req.PriceCents
+	if price < 0 {
+		price = 0
+	}
+	ins, err := s.sb.Insert("coaching_classes", map[string]any{
+		"coach_id":    coachID,
+		"title":       title,
+		"description": orNull(strings.TrimSpace(req.Description)),
+		"starts_at":   req.StartsAt,
+		"ends_at":     orNull(strings.TrimSpace(req.EndsAt)),
+		"location":    orNull(strings.TrimSpace(req.Location)),
+		"capacity":    capacity,
+		"price_cents": price,
+	})
+	if err != nil {
+		return model.CoachingClass{}, err
+	}
+	if len(ins) == 0 {
+		return model.CoachingClass{}, errors.New("could not save that class")
+	}
+	return mapClass(ins[0]), nil
+}
+
+// DeleteClass removes a class the coach owns.
+func (s *Service) DeleteClass(coachID, id string) error {
+	if !s.classesReady() {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(id)+"&select=coach_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_classes", "id=eq."+store.Q(id))
 }
 
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.

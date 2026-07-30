@@ -1376,6 +1376,7 @@ type CoachProfile struct {
 	Name            string   `json:"name,omitempty"`
 	Listed          bool     `json:"listed"`
 	Bio             string   `json:"bio,omitempty"`
+	YearsExperience *int     `json:"yearsExperience,omitempty"`
 	City            string   `json:"city,omitempty"`
 	Lat             *float64 `json:"lat,omitempty"`
 	Lng             *float64 `json:"lng,omitempty"`
@@ -1386,13 +1387,42 @@ type CoachProfile struct {
 }
 
 // CoachProfileRequest upserts the signed-in coach's discovery profile. Location
-// is geocoded from City server-side.
+// is geocoded from City server-side. Listing requires a bio + years of
+// experience (enforced in UpsertCoachProfile).
 type CoachProfileRequest struct {
 	Listed          bool   `json:"listed"`
 	Bio             string `json:"bio"`
+	YearsExperience *int   `json:"yearsExperience"`
 	City            string `json:"city"`
 	HourlyRateCents *int   `json:"hourlyRateCents"`
 	Skills          string `json:"skills"`
+}
+
+// CoachingClass is a group class a coach offers that players can enroll in.
+type CoachingClass struct {
+	ID            string `json:"id"`
+	CoachID       string `json:"coachId,omitempty"`
+	CoachName     string `json:"coachName,omitempty"`
+	Title         string `json:"title"`
+	Description   string `json:"description,omitempty"`
+	StartsAt      string `json:"startsAt"`
+	EndsAt        string `json:"endsAt,omitempty"`
+	Location      string `json:"location,omitempty"`
+	Capacity      int    `json:"capacity"`
+	PriceCents    int    `json:"priceCents"`
+	EnrolledCount int    `json:"enrolledCount"`
+	CreatedAt     string `json:"createdAt,omitempty"`
+}
+
+// CoachingClassRequest creates a class (coach only).
+type CoachingClassRequest struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	StartsAt    string `json:"startsAt"`
+	EndsAt      string `json:"endsAt"`
+	Location    string `json:"location"`
+	Capacity    int    `json:"capacity"`
+	PriceCents  int    `json:"priceCents"`
 }
 
 // CoachingSkillRating is the coach's 1-5 assessment of one skill for a student.

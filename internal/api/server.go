@@ -649,6 +649,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coach/profile", s.instructorOnly(s.myCoachProfile))
 	mux.HandleFunc("POST /coach/profile", s.instructorOnly(s.upsertCoachProfile))
 	mux.HandleFunc("GET /coaches/nearby", requireAuth(s.coachesNearby))
+	mux.HandleFunc("GET /coach/classes", s.instructorOnly(s.myClasses))
+	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
+	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
+	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5696,6 +5700,46 @@ func (s *Server) coachesNearby(w http.ResponseWriter, r *http.Request) {
 	}
 	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radiusKm"), 64)
 	list, err := s.svc.ListCoachesNearby(lat, lng, radius)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// Coaching classes (marketplace Phase B).
+func (s *Server) myClasses(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListMyClasses(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) createClass(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingClassRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	c, err := s.svc.CreateClass(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+func (s *Server) deleteClass(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteClass(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) coachClasses(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachClassesPublic(r.PathValue("userId"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

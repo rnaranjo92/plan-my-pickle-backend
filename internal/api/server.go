@@ -5280,8 +5280,7 @@ func isOwnerInstructor(email string) bool {
 // both founding owners are coaches. Everyone else becomes a coach via the
 // instructors table.
 var founderCoachEmails = map[string]bool{
-	"rolando.naranjo0420@gmail.com": true,
-	"krizhia_roxas29@yahoo.com":     true,
+	"krizhia_roxas29@yahoo.com": true,
 }
 
 func isFounderCoach(email string) bool {

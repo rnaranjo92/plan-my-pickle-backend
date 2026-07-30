@@ -2904,7 +2904,16 @@ func (s *Service) SendThreadMessage(threadID, userID, email, name string, req mo
 		return model.CoachingMessage{}, err
 	}
 	s.bumpThreadActivity(threadID)
-	s.notifyCoachingCounterpart(cs, role, userID, name, body)
+	// Chat-specific notification: "<name> messaged you", deep-linked to the Chat tab.
+	sender := strings.TrimSpace(name)
+	if sender == "" {
+		sender = s.coachingName(userID)
+	}
+	if sender == "" {
+		sender = "Someone"
+	}
+	s.notifyCoachingCounterpartLink(cs, role, userID, name,
+		sender+" messaged you", "coaching:"+threadID+"?tab=chat")
 	return mapCoachingMessage(ins[0]), nil
 }
 
@@ -4065,6 +4074,12 @@ func (s *Service) RemoveDemoStudents(coachID string) (int, error) {
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.
 func (s *Service) notifyCoachingCounterpart(cs model.CoachStudent, actorRole, actorID, actorName, body string) {
+	s.notifyCoachingCounterpartLink(cs, actorRole, actorID, actorName, body, "coaching:"+cs.ID)
+}
+
+// notifyCoachingCounterpartLink is like notifyCoachingCounterpart but with a
+// custom deep link (e.g. open the Chat tab for a message).
+func (s *Service) notifyCoachingCounterpartLink(cs model.CoachStudent, actorRole, actorID, actorName, body, link string) {
 	var recipient string
 	if actorRole == "coach" {
 		recipient = cs.StudentID
@@ -4080,7 +4095,7 @@ func (s *Service) notifyCoachingCounterpart(cs model.CoachStudent, actorRole, ac
 	if recipient == "" || recipient == actorID {
 		return
 	}
-	s.notifyUser(recipient, "coaching", actorID, actorName, body, "coaching:"+cs.ID)
+	s.notifyUser(recipient, "coaching", actorID, actorName, body, link)
 }
 
 func truncate(s string, n int) string {

@@ -1467,6 +1467,27 @@ type PBVisionStats struct {
 	Stats        map[string]any `json:"stats,omitempty"`
 }
 
+// PBVisionAnalysis is a completed PB Vision analysis for a thread's latest
+// analyzed clip: the detected players (for the "which player are you?" picker)
+// plus which one the student tagged. Empty (Ready=false) when nothing's ready.
+type PBVisionAnalysis struct {
+	Ready     bool             `json:"ready"`
+	JobID     string           `json:"jobId,omitempty"`
+	ReportURL string           `json:"reportUrl,omitempty"`
+	TaggedID  *int             `json:"taggedAvatarId,omitempty"`
+	Players   []PBVisionPlayer `json:"players,omitempty"`
+}
+
+// PBVisionPlayer is one detected on-court player. AvatarID is PB Vision's
+// per-video 0..3 index; Label is a human hint ("Team A · left side") since the
+// payload carries no name or photo. Stats holds that player's metrics.
+type PBVisionPlayer struct {
+	AvatarID int            `json:"avatarId"`
+	Team     int            `json:"team"`
+	Label    string         `json:"label"`
+	Stats    map[string]any `json:"stats,omitempty"`
+}
+
 // CoachingProgram is a multi-week training plan assigned to a student.
 type CoachingProgram struct {
 	ID        string                `json:"id"`

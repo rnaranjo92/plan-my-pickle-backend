@@ -636,6 +636,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision", requireAuth(s.coachingPBVision))
 	mux.HandleFunc("POST /coaching/threads/{id}/analyze", requireAuth(s.analyzeThreadVideo))
+	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/analysis", requireAuth(s.coachingPBVisionAnalysis))
+	mux.HandleFunc("POST /coaching/threads/{id}/pbvision/tag", requireAuth(s.coachingPBVisionTag))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/history", requireAuth(s.coachingPBVisionHistory))
 	mux.HandleFunc("GET /coaching/threads/{id}/program", requireAuth(s.threadProgram))
 	mux.HandleFunc("POST /coach/students/{id}/program", requireAuth(s.createProgram))
@@ -5524,6 +5526,33 @@ func (s *Server) coachingPBVision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+// coachingPBVisionAnalysis returns the detected players + tag for the thread's
+// latest ready analysis (drives the "which player are you?" picker).
+func (s *Server) coachingPBVisionAnalysis(w http.ResponseWriter, r *http.Request) {
+	a, err := s.svc.GetThreadPBVisionAnalysis(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+// coachingPBVisionTag records which detected player is the student.
+func (s *Server) coachingPBVisionTag(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AvatarID int `json:"avatarId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.TagPBVisionPlayer(
+		r.PathValue("id"), userID(r), userEmail(r), req.AvatarID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "tagged"})
 }
 
 func (s *Server) coachingPBVisionHistory(w http.ResponseWriter, r *http.Request) {

@@ -656,6 +656,162 @@ func (s *Service) GetPBVision(threadID, userID, email string) (model.PBVisionSta
 	return out, nil
 }
 
+// GetThreadPBVisionAnalysis returns the detected players (for the "which player
+// are you?" picker) from a thread's latest READY analysis, plus which one the
+// student tagged. Ready=false when there's no completed analysis.
+func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (model.PBVisionAnalysis, error) {
+	if !s.coachingReady() {
+		return model.PBVisionAnalysis{}, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return model.PBVisionAnalysis{}, err
+	}
+	if !s.pbvisionJobsReady() {
+		return model.PBVisionAnalysis{Ready: false}, nil
+	}
+	sel := "coach_student_id=eq." + store.Q(threadID) +
+		"&status=eq.ready&order=updated_at.desc&limit=1&select=id,report_url,insights"
+	hasTag := s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id")
+	if hasTag {
+		sel += ",tagged_avatar_id"
+	}
+	row, err := s.sb.SelectOne("coaching_pbvision_jobs", sel)
+	if err != nil {
+		return model.PBVisionAnalysis{}, err
+	}
+	if row == nil {
+		return model.PBVisionAnalysis{Ready: false}, nil
+	}
+	out := model.PBVisionAnalysis{
+		Ready:     true,
+		JobID:     asStr(row, "id"),
+		ReportURL: asStr(row, "report_url"),
+		Players:   parsePBVisionPlayers(row["insights"]),
+	}
+	if hasTag {
+		out.TaggedID = asIntPtr(row, "tagged_avatar_id")
+	}
+	return out, nil
+}
+
+// TagPBVisionPlayer records which detected player (avatar_id) is the student on
+// the thread's latest ready analysis. Either member (coach or student) may tag.
+func (s *Service) TagPBVisionPlayer(threadID, userID, email string, avatarID int) error {
+	if !s.coachingReady() || !s.pbvisionJobsReady() {
+		return ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return err
+	}
+	if !s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id") {
+		return errors.New("player tagging isn't available yet")
+	}
+	row, err := s.sb.SelectOne("coaching_pbvision_jobs",
+		"coach_student_id=eq."+store.Q(threadID)+
+			"&status=eq.ready&order=updated_at.desc&limit=1&select=id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	_, err = s.sb.Update("coaching_pbvision_jobs",
+		"id=eq."+store.Q(asStr(row, "id")),
+		map[string]any{"tagged_avatar_id": avatarID, "updated_at": now()})
+	return err
+}
+
+// parsePBVisionPlayers pulls the detected players out of a raw insights blob:
+// each player's avatar_id (per-video 0..3 index), team, and per-player stats.
+// PB Vision gives no name/photo, so a label is derived from team + court side.
+func parsePBVisionPlayers(insights any) []model.PBVisionPlayer {
+	m, ok := insights.(map[string]any)
+	if !ok {
+		return nil
+	}
+	arr, ok := m["player_data"].([]any)
+	if !ok {
+		return nil
+	}
+	statKeys := []string{"shot_count", "court_coverage", "left_side_percentage",
+		"kitchen_arrival_percentage", "total_team_shot_percentage",
+		"team_kitchen_arrival"}
+	players := make([]model.PBVisionPlayer, 0, len(arr))
+	for _, item := range arr {
+		p, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		stats := map[string]any{}
+		for _, k := range statKeys {
+			if v, ok := p[k]; ok {
+				stats[k] = v
+			}
+		}
+		players = append(players, model.PBVisionPlayer{
+			AvatarID: int(pbNum(p["avatar_id"])),
+			Team:     int(pbNum(p["team"])),
+			Stats:    stats,
+		})
+	}
+	labelPBVisionPlayers(players)
+	return players
+}
+
+// labelPBVisionPlayers assigns "Team A · left side" style hints. Within a team
+// the two players are split by left_side_percentage (higher = the left player).
+func labelPBVisionPlayers(players []model.PBVisionPlayer) {
+	teamName := func(t int) string {
+		switch t {
+		case 0:
+			return "Team A"
+		case 1:
+			return "Team B"
+		default:
+			return fmt.Sprintf("Team %d", t+1)
+		}
+	}
+	byTeam := map[int][]int{}
+	for i, p := range players {
+		byTeam[p.Team] = append(byTeam[p.Team], i)
+	}
+	for _, idxs := range byTeam {
+		if len(idxs) == 2 {
+			a, b := idxs[0], idxs[1]
+			if pbNum(players[b].Stats["left_side_percentage"]) >
+				pbNum(players[a].Stats["left_side_percentage"]) {
+				a, b = b, a
+			}
+			players[a].Label = teamName(players[a].Team) + " · left side"
+			players[b].Label = teamName(players[b].Team) + " · right side"
+		} else {
+			for n, i := range idxs {
+				players[i].Label = fmt.Sprintf("%s · player %d",
+					teamName(players[i].Team), n+1)
+			}
+		}
+	}
+	for i := range players {
+		if players[i].Label == "" {
+			players[i].Label = fmt.Sprintf("Player %d", players[i].AvatarID+1)
+		}
+	}
+}
+
+// pbNum coerces a JSON value (float64/int/string) to a float64; 0 on failure.
+func pbNum(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	}
+	return 0
+}
+
 func (s *Service) pbVisionHistoryReady() bool {
 	return s.columnReady("coaching_pbvision_reports", "id")
 }

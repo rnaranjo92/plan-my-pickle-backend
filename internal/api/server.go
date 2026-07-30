@@ -678,6 +678,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
 	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
 	mux.HandleFunc("GET /coach/classes/{id}/enrollments", s.instructorOnly(s.classEnrollments))
+	mux.HandleFunc("POST /coach/enrollments/{id}/mark-paid", s.instructorOnly(s.markEnrollmentPaidByCoach))
+	mux.HandleFunc("DELETE /coach/enrollments/{id}", s.instructorOnly(s.removeEnrollmentByCoach))
 	mux.HandleFunc("POST /coaching/classes/{id}/enroll", requireAuth(s.enrollClass))
 	mux.HandleFunc("POST /coaching/classes/{id}/unenroll", requireAuth(s.unenrollClass))
 	mux.HandleFunc("GET /me/classes", requireAuth(s.myEnrolledClasses))
@@ -5954,6 +5956,22 @@ func (s *Server) buyPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+func (s *Server) markEnrollmentPaidByCoach(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CoachMarkEnrollmentPaid(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "paid"})
+}
+
+func (s *Server) removeEnrollmentByCoach(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CoachRemoveEnrollment(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 func (s *Server) coachAvailability(w http.ResponseWriter, r *http.Request) {

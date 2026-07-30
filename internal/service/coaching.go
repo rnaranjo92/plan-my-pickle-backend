@@ -3063,6 +3063,44 @@ func (s *Service) CancelClassEnrollment(classID, userID string) error {
 	return err
 }
 
+// coachOwnsEnrollment verifies an enrollment belongs to a class the coach owns.
+func (s *Service) coachOwnsEnrollment(coachID, enrollmentID string) bool {
+	row, _ := s.sb.SelectOne("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID)+"&select=class_id")
+	if row == nil {
+		return false
+	}
+	cls, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(asStr(row, "class_id"))+"&select=coach_id")
+	return cls != nil && asStr(cls, "coach_id") == coachID
+}
+
+// CoachMarkEnrollmentPaid lets the coach mark a seat paid (e.g. paid in cash).
+func (s *Service) CoachMarkEnrollmentPaid(coachID, enrollmentID string) error {
+	if !s.enrollmentsReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.coachOwnsEnrollment(coachID, enrollmentID) {
+		return ErrForbidden
+	}
+	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
+		map[string]any{"paid": true, "payment_ref": "manual"})
+	return err
+}
+
+// CoachRemoveEnrollment lets the coach drop a player from a class.
+func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
+	if !s.enrollmentsReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.coachOwnsEnrollment(coachID, enrollmentID) {
+		return ErrForbidden
+	}
+	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
+		map[string]any{"status": "canceled"})
+	return err
+}
+
 // ListClassEnrollments returns a class's enrolled players (coach-only).
 func (s *Service) ListClassEnrollments(classID, coachID string) ([]model.CoachingEnrollment, error) {
 	if !s.enrollmentsReady() {

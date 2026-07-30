@@ -1482,6 +1482,7 @@ type CoachingClass struct {
 	EnrolledCount int    `json:"enrolledCount"`
 	// Enrolled is set on player-facing lists: whether the caller is enrolled.
 	Enrolled  bool   `json:"enrolled"`
+	IsIntro   bool   `json:"isIntro"`
 	CreatedAt string `json:"createdAt,omitempty"`
 }
 
@@ -1519,6 +1520,7 @@ type CoachingClassRequest struct {
 	Location    string `json:"location"`
 	Capacity    int    `json:"capacity"`
 	PriceCents  int    `json:"priceCents"`
+	IsIntro     bool   `json:"isIntro"`
 }
 
 // CoachingSkillRating is the coach's 1-5 assessment of one skill for a student.

@@ -2484,6 +2484,7 @@ func mapClass(row map[string]any) model.CoachingClass {
 		Location:    asStr(row, "location"),
 		Capacity:    asInt(row, "capacity"),
 		PriceCents:  asInt(row, "price_cents"),
+		IsIntro:     asBool(row, "is_intro"),
 		CreatedAt:   asStr(row, "created_at"),
 	}
 }
@@ -2550,7 +2551,7 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 	if price < 0 {
 		price = 0
 	}
-	ins, err := s.sb.Insert("coaching_classes", map[string]any{
+	classRow := map[string]any{
 		"coach_id":    coachID,
 		"title":       title,
 		"description": orNull(strings.TrimSpace(req.Description)),
@@ -2559,7 +2560,11 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 		"location":    orNull(strings.TrimSpace(req.Location)),
 		"capacity":    capacity,
 		"price_cents": price,
-	})
+	}
+	if s.columnReady("coaching_classes", "is_intro") {
+		classRow["is_intro"] = req.IsIntro
+	}
+	ins, err := s.sb.Insert("coaching_classes", classRow)
 	if err != nil {
 		return model.CoachingClass{}, err
 	}

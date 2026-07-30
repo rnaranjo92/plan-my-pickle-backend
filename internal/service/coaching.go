@@ -1734,6 +1734,129 @@ func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating 
 	return mapSkillRating(ins[0]), nil
 }
 
+// --- Coaching marketplace: public coach profiles + nearby discovery ---
+
+func (s *Service) coachProfilesReady() bool {
+	return s.columnReady("coach_profiles", "user_id")
+}
+
+func mapCoachProfile(row map[string]any) model.CoachProfile {
+	return model.CoachProfile{
+		UserID:          asStr(row, "user_id"),
+		Name:            asStr(row, "name"),
+		Listed:          asBool(row, "listed"),
+		Bio:             asStr(row, "bio"),
+		City:            asStr(row, "city"),
+		Lat:             asFloatPtr(row, "lat"),
+		Lng:             asFloatPtr(row, "lng"),
+		HourlyRateCents: asIntPtr(row, "hourly_rate_cents"),
+		Skills:          asStr(row, "skills"),
+	}
+}
+
+// GetMyCoachProfile returns the signed-in coach's discovery profile (a default,
+// name-filled one if they haven't set it up yet).
+func (s *Service) GetMyCoachProfile(userID string) (model.CoachProfile, error) {
+	if !s.coachProfilesReady() {
+		return model.CoachProfile{Name: s.coachingName(userID)}, nil
+	}
+	row, err := s.sb.SelectOne("coach_profiles", "user_id=eq."+store.Q(userID))
+	if err != nil {
+		return model.CoachProfile{}, err
+	}
+	if row == nil {
+		return model.CoachProfile{Name: s.coachingName(userID)}, nil
+	}
+	p := mapCoachProfile(row)
+	if p.Name == "" {
+		p.Name = s.coachingName(userID)
+	}
+	return p, nil
+}
+
+// UpsertCoachProfile creates/updates the coach's discovery profile. City is
+// geocoded to lat/lng so players can rank coaches by distance.
+func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileRequest) (model.CoachProfile, error) {
+	if !s.coachProfilesReady() {
+		return model.CoachProfile{}, ErrCoachingUnavailable
+	}
+	row := map[string]any{
+		"user_id":           userID,
+		"name":              s.coachingName(userID),
+		"listed":            req.Listed,
+		"bio":               orNull(strings.TrimSpace(req.Bio)),
+		"city":              orNull(strings.TrimSpace(req.City)),
+		"skills":            orNull(strings.TrimSpace(req.Skills)),
+		"hourly_rate_cents": req.HourlyRateCents,
+		"updated_at":        now(),
+	}
+	if city := strings.TrimSpace(req.City); city != "" {
+		if lat, lng := bestEffortGeocode(city); lat != nil && lng != nil {
+			row["lat"] = *lat
+			row["lng"] = *lng
+		}
+	}
+	out, err := s.sb.Upsert("coach_profiles", "user_id", row)
+	if err != nil {
+		return model.CoachProfile{}, err
+	}
+	if len(out) > 0 {
+		p := mapCoachProfile(out[0])
+		if p.Name == "" {
+			p.Name = s.coachingName(userID)
+		}
+		return p, nil
+	}
+	return s.GetMyCoachProfile(userID)
+}
+
+// ListCoachesNearby returns listed coaches ranked by distance from (lat,lng).
+// Coaches without coordinates sort last; radiusKm<=0 means no radius cap.
+func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachProfile, error) {
+	if !s.coachProfilesReady() {
+		return []model.CoachProfile{}, nil
+	}
+	rows, err := s.sb.Select("coach_profiles", "listed=is.true")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachProfile, 0, len(rows))
+	uids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		p := mapCoachProfile(r)
+		if p.Name == "" {
+			p.Name = s.coachingName(p.UserID)
+		}
+		if p.Lat != nil && p.Lng != nil {
+			d := haversineKm(lat, lng, *p.Lat, *p.Lng)
+			if radiusKm > 0 && d > radiusKm {
+				continue
+			}
+			p.DistanceKm = &d
+		}
+		out = append(out, p)
+		uids = append(uids, p.UserID)
+	}
+	photos := s.photosByUser(uids)
+	for i := range out {
+		out[i].PhotoURL = photos[out[i].UserID]
+	}
+	sort.Slice(out, func(i, j int) bool {
+		di, dj := out[i].DistanceKm, out[j].DistanceKm
+		if di == nil && dj == nil {
+			return out[i].Name < out[j].Name
+		}
+		if di == nil {
+			return false
+		}
+		if dj == nil {
+			return true
+		}
+		return *di < *dj
+	})
+	return out, nil
+}
+
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.

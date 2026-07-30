@@ -645,6 +645,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coaching/assignments/{id}", requireAuth(s.deleteAssignment))
 	mux.HandleFunc("GET /coaching/threads/{id}/skills", requireAuth(s.threadSkills))
 	mux.HandleFunc("POST /coach/students/{id}/skills", s.instructorOnly(s.setSkillRating))
+	// Coaching marketplace: the coach's public discovery profile + player search.
+	mux.HandleFunc("GET /coach/profile", s.instructorOnly(s.myCoachProfile))
+	mux.HandleFunc("POST /coach/profile", s.instructorOnly(s.upsertCoachProfile))
+	mux.HandleFunc("GET /coaches/nearby", requireAuth(s.coachesNearby))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5658,6 +5662,45 @@ func (s *Server) setSkillRating(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rating)
+}
+
+// Coaching marketplace: the coach's public discovery profile + player search.
+func (s *Server) myCoachProfile(w http.ResponseWriter, r *http.Request) {
+	p, err := s.svc.GetMyCoachProfile(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) upsertCoachProfile(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachProfileRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.UpsertCoachProfile(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) coachesNearby(w http.ResponseWriter, r *http.Request) {
+	lat, err1 := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
+	lng, err2 := strconv.ParseFloat(r.URL.Query().Get("lng"), 64)
+	if err1 != nil || err2 != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("lat and lng query params are required"))
+		return
+	}
+	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radiusKm"), 64)
+	list, err := s.svc.ListCoachesNearby(lat, lng, radius)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 // coachingRole tells the app whether the signed-in user gets the coach view (the

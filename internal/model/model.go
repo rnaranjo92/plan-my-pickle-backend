@@ -1369,6 +1369,32 @@ type CompleteAssignmentRequest struct {
 	Done bool `json:"done"`
 }
 
+// CoachProfile is a coach's public discovery profile (marketplace). DistanceKm
+// is only populated on nearby-search results.
+type CoachProfile struct {
+	UserID          string   `json:"userId,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	Listed          bool     `json:"listed"`
+	Bio             string   `json:"bio,omitempty"`
+	City            string   `json:"city,omitempty"`
+	Lat             *float64 `json:"lat,omitempty"`
+	Lng             *float64 `json:"lng,omitempty"`
+	HourlyRateCents *int     `json:"hourlyRateCents,omitempty"`
+	Skills          string   `json:"skills,omitempty"`
+	PhotoURL        string   `json:"photoUrl,omitempty"`
+	DistanceKm      *float64 `json:"distanceKm,omitempty"`
+}
+
+// CoachProfileRequest upserts the signed-in coach's discovery profile. Location
+// is geocoded from City server-side.
+type CoachProfileRequest struct {
+	Listed          bool   `json:"listed"`
+	Bio             string `json:"bio"`
+	City            string `json:"city"`
+	HourlyRateCents *int   `json:"hourlyRateCents"`
+	Skills          string `json:"skills"`
+}
+
 // CoachingSkillRating is the coach's 1-5 assessment of one skill for a student.
 type CoachingSkillRating struct {
 	Skill       string  `json:"skill"` // serve|return|dinks|drops|volleys|strategy

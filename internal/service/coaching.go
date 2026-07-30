@@ -1833,7 +1833,43 @@ func mapCoachProfile(row map[string]any) model.CoachProfile {
 		Skills:          asStr(row, "skills"),
 		PhotoURL:        asStr(row, "photo_url"),
 		HasIntroVideo:   strings.TrimSpace(asStr(row, "intro_video_url")) != "",
+		CancelPolicy:    asStr(row, "cancel_policy"),
 	}
+}
+
+// cancelCutoffHours is how long before start a booking locks (no cancel).
+func cancelCutoffHours(policy string) int {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "strict":
+		return 72
+	case "moderate":
+		return 24
+	default:
+		return 0 // flexible — cancel anytime
+	}
+}
+
+// enforceCancelCutoff returns an error if it's too close to startsAt to cancel
+// under the coach's policy.
+func (s *Service) enforceCancelCutoff(coachUserID, startsAt string) error {
+	if coachUserID == "" || !s.coachProfilesReady() ||
+		!s.columnReady("coach_profiles", "cancel_policy") {
+		return nil
+	}
+	row, _ := s.sb.SelectOne("coach_profiles",
+		"user_id=eq."+store.Q(coachUserID)+"&select=cancel_policy")
+	hrs := cancelCutoffHours(asStr(row, "cancel_policy"))
+	if hrs <= 0 {
+		return nil
+	}
+	start, ok := parseSchedTime(startsAt)
+	if !ok {
+		return nil
+	}
+	if time.Until(start) < time.Duration(hrs)*time.Hour {
+		return fmt.Errorf("this coach's cancellation policy locks bookings %d hours before start", hrs)
+	}
+	return nil
 }
 
 func (s *Service) introVideoReady() bool {
@@ -1953,6 +1989,13 @@ func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileReques
 	}
 	if yearsReady {
 		row["years_experience"] = req.YearsExperience
+	}
+	if s.columnReady("coach_profiles", "cancel_policy") {
+		pol := strings.ToLower(strings.TrimSpace(req.CancelPolicy))
+		if pol != "moderate" && pol != "strict" {
+			pol = "flexible"
+		}
+		row["cancel_policy"] = pol
 	}
 	if city := strings.TrimSpace(req.City); city != "" {
 		if lat, lng := bestEffortGeocode(city); lat != nil && lng != nil {
@@ -2450,7 +2493,7 @@ func (s *Service) CancelMySession(playerID, email, sessionID string) error {
 		return ErrCoachingUnavailable
 	}
 	row, err := s.sb.SelectOne("coaching_schedule",
-		"id=eq."+store.Q(sessionID)+"&select=coach_student_id")
+		"id=eq."+store.Q(sessionID)+"&select=coach_student_id,starts_at")
 	if err != nil {
 		return err
 	}
@@ -2462,8 +2505,13 @@ func (s *Service) CancelMySession(playerID, email, sessionID string) error {
 		return ErrForbidden
 	}
 	// Verify the thread belongs to this player.
-	if _, role, err := s.threadMembership(threadID, playerID, email); err != nil || role != "student" {
+	cs, role, err := s.threadMembership(threadID, playerID, email)
+	if err != nil || role != "student" {
 		return ErrForbidden
+	}
+	// Honor the coach's cancellation cutoff.
+	if err := s.enforceCancelCutoff(cs.CoachID, asStr(row, "starts_at")); err != nil {
+		return err
 	}
 	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(sessionID))
 }
@@ -2901,6 +2949,14 @@ func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnr
 func (s *Service) CancelClassEnrollment(classID, userID string) error {
 	if !s.enrollmentsReady() {
 		return ErrCoachingUnavailable
+	}
+	// Honor the coach's cancellation cutoff.
+	if cls, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(classID)+"&select=coach_id,starts_at"); cls != nil {
+		if err := s.enforceCancelCutoff(asStr(cls, "coach_id"),
+			asStr(cls, "starts_at")); err != nil {
+			return err
+		}
 	}
 	_, err := s.sb.Update("coaching_enrollments",
 		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID),

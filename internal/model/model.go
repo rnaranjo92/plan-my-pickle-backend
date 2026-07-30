@@ -1415,6 +1415,8 @@ type CoachProfile struct {
 	// HasIntroVideo is true when the coach has recorded an intro clip (the raw
 	// bucket path is never exposed — playback is via a signed-URL endpoint).
 	HasIntroVideo bool `json:"hasIntroVideo"`
+	// CancelPolicy: flexible | moderate | strict.
+	CancelPolicy string `json:"cancelPolicy,omitempty"`
 }
 
 // CoachReview is a player's star rating + comment for a coach. One per
@@ -1465,6 +1467,7 @@ type CoachProfileRequest struct {
 	City            string `json:"city"`
 	HourlyRateCents *int   `json:"hourlyRateCents"`
 	Skills          string `json:"skills"`
+	CancelPolicy    string `json:"cancelPolicy"`
 }
 
 // CoachingClass is a group class a coach offers that players can enroll in.

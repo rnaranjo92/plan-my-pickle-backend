@@ -4662,6 +4662,25 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 				}
 			}
 		}
+		// Phone-based de-dupe: if someone with this phone is already a registrant
+		// in THIS event, reuse their player row instead of creating a second one.
+		// Covers a guest self-registering after being added as a partner, or
+		// re-registering under a slightly different name spelling.
+		if playerID == "" && strings.TrimSpace(req.Phone) != "" {
+			if pid, _, found, perr := s.RegistrantByPhone(eventID, req.Phone); perr == nil && found {
+				playerID = pid
+				// Already in THIS division → a true duplicate; block it. A different
+				// division → fall through and add a registration for this division,
+				// reusing the existing player row.
+				if dup, derr := s.sb.SelectOne("registrations",
+					"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+						bracketFilter(bracketID)+"&select=id"); derr != nil {
+					return model.Registration{}, derr
+				} else if dup != nil {
+					return model.Registration{}, ErrAlreadyRegistered
+				}
+			}
+		}
 		if playerID == "" {
 			pl, err := s.sb.Insert("players", fields)
 			if err != nil {

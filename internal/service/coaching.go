@@ -967,9 +967,10 @@ func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, 
 	}
 	if cs, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID)); cs != nil {
 		coachID := asStr(cs, "coach_id")
-		s.notifyUser(coachID, "coaching", "", "", coachBody, "coaching:"+threadID)
+		pbLink := "coaching:" + threadID + "?tab=pbvision"
+		s.notifyUser(coachID, "coaching", "", "", coachBody, pbLink)
 		if sid := asStr(cs, "student_id"); sid != "" && sid != coachID {
-			s.notifyUser(sid, "coaching", "", "", studentBody, "coaching:"+threadID)
+			s.notifyUser(sid, "coaching", "", "", studentBody, pbLink)
 		}
 	}
 }
@@ -1167,8 +1168,9 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 	// upload never shows as unread to them; the counterpart's list flags it).
 	s.bumpThreadActivity(threadID)
 	s.markThreadRead(userID, threadID)
-	s.notifyCoachingCounterpart(cs, role, userID, vid.UploaderName,
-		vid.UploaderName+" shared a new coaching clip")
+	s.notifyCoachingCounterpartLink(cs, role, userID, vid.UploaderName,
+		vid.UploaderName+" shared a new coaching clip",
+		"coaching:"+cs.ID+"?tab=videos")
 	return vid, nil
 }
 
@@ -1226,7 +1228,8 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 	fb.TimestampSeconds = asFloatPtr(ins[0], "timestamp_seconds")
 	s.bumpThreadActivity(threadID)
 	s.markThreadRead(userID, threadID)
-	s.notifyCoachingCounterpart(cs, role, userID, name, name+": "+truncate(body, 120))
+	s.notifyCoachingCounterpartLink(cs, role, userID, name,
+		name+": "+truncate(body, 120), "coaching:"+cs.ID+"?tab=videos")
 	return fb, nil
 }
 

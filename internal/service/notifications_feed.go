@@ -94,7 +94,16 @@ func notifPushURL(link string) string {
 	case strings.HasPrefix(link, "playevent:"):
 		return base + "/?event=" + strings.TrimPrefix(link, "playevent:")
 	case strings.HasPrefix(link, "coaching:"):
-		return base + "/?coaching=" + strings.TrimPrefix(link, "coaching:")
+		// coaching:<threadID>[?tab=<name>] -> /?coaching=<threadID>[&tab=<name>]
+		id := strings.TrimPrefix(link, "coaching:")
+		tab := ""
+		if i := strings.IndexByte(id, '?'); i >= 0 {
+			if q := id[i+1:]; strings.HasPrefix(q, "tab=") {
+				tab = "&" + q
+			}
+			id = id[:i]
+		}
+		return base + "/?coaching=" + id + tab
 	default:
 		return base
 	}

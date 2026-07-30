@@ -864,7 +864,9 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL string) (
 	if err != nil {
 		return "", err
 	}
-	if role != "coach" {
+	// Player-initiated: only the student may kick off their own PB Vision
+	// analysis, so the report attributes to their account.
+	if role != "student" {
 		return "", ErrForbidden
 	}
 	videoURL = strings.TrimSpace(videoURL)

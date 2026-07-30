@@ -3392,7 +3392,7 @@ func (s *Service) MyEnrolledClasses(userID string) ([]model.CoachingEnrollment, 
 		return []model.CoachingEnrollment{}, nil
 	}
 	rows, err := s.sb.Select("coaching_enrollments",
-		"user_id=eq."+store.Q(userID)+"&status=eq.enrolled"+
+		"user_id=eq."+store.Q(userID)+"&status=in.(enrolled,waitlisted)"+
 			"&select=*,class:coaching_classes(title,starts_at,location,coach_id,price_cents)")
 	if err != nil {
 		return nil, err

@@ -613,6 +613,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
 	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
 	mux.HandleFunc("POST /coach/seed-demo", requireAuth(s.seedCoachingDemo))
+	mux.HandleFunc("POST /coach/clear-demo-students", s.instructorOnly(s.clearDemoStudents))
+	mux.HandleFunc("POST /coach/seed-coaches", requireAuth(s.seedDemoCoaches))
+	mux.HandleFunc("POST /coach/remove-demo-coaches", requireAuth(s.removeDemoCoaches))
 	mux.HandleFunc("DELETE /coach/students/{id}", s.instructorOnly(s.removeCoachStudent))
 	mux.HandleFunc("POST /coach/students/{id}/note", s.instructorOnly(s.setStudentNote))
 	mux.HandleFunc("POST /coach/students/{id}/shared-note", s.instructorOnly(s.setSharedNote))
@@ -5364,7 +5367,7 @@ func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
 // seedCoachingDemo populates the caller's Instructor pages with dummy data.
 // Restricted to a single demo account by request.
 func (s *Server) seedCoachingDemo(w http.ResponseWriter, r *http.Request) {
-	if strings.ToLower(strings.TrimSpace(userEmail(r))) != "krizhia_roxas29@yahoo.com" {
+	if !isOwnerInstructor(userEmail(r)) {
 		writeErr(w, http.StatusForbidden, errForbidden)
 		return
 	}
@@ -5374,6 +5377,42 @@ func (s *Server) seedCoachingDemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"count": n})
+}
+
+// clearDemoStudents removes the calling coach's @coachdemo.test roster.
+func (s *Server) clearDemoStudents(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.RemoveDemoStudents(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n})
+}
+
+// seedDemoCoaches / removeDemoCoaches: owner-only marketplace demo data.
+func (s *Server) seedDemoCoaches(w http.ResponseWriter, r *http.Request) {
+	if !isOwnerInstructor(userEmail(r)) {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return
+	}
+	n, err := s.svc.SeedDemoCoaches()
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n})
+}
+
+func (s *Server) removeDemoCoaches(w http.ResponseWriter, r *http.Request) {
+	if !isOwnerInstructor(userEmail(r)) {
+		writeErr(w, http.StatusForbidden, errForbidden)
+		return
+	}
+	if err := s.svc.RemoveDemoCoaches(); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) removeCoachStudent(w http.ResponseWriter, r *http.Request) {

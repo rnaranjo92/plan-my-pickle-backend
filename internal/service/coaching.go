@@ -1990,6 +1990,82 @@ func (s *Service) DeleteClass(coachID, id string) error {
 	return s.sb.Delete("coaching_classes", "id=eq."+store.Q(id))
 }
 
+// --- Demo helpers (owner-only): seed/remove dummy coaches + clear dummy students ---
+
+const demoCoachBaseLat = 32.6401
+const demoCoachBaseLng = -117.0842
+
+var demoCoaches = []struct {
+	Name, City, Bio, Skills string
+	DLat, DLng              float64
+	Years, RateCents        int
+}{
+	{"Ana Reyes", "Chula Vista, CA", "Former college player; I love getting rec players comfortable at the kitchen line.", "Dinks, resets, shot selection", 0.012, 0.010, 8, 5000},
+	{"Marcus Lee", "Bonita, CA", "Patient, drill-focused coaching. We'll rebuild your third-shot drop from the ground up.", "Third-shot drops, transition game", 0.030, -0.022, 12, 6500},
+	{"Priya Nair", "Eastlake, CA", "New to pickleball? I specialize in fundamentals and building confidence.", "Fundamentals, serve & return", -0.020, 0.028, 5, 4000},
+	{"Diego Santos", "National City, CA", "Tournament-tested. I coach strategy, stacking, and high-level shot patterns.", "Advanced strategy, tournament prep", 0.050, 0.018, 15, 8000},
+	{"Kayla Brooks", "Otay Ranch, CA", "Footwork and consistency are everything — let's make your game repeatable.", "Footwork, consistency, dinking", -0.038, -0.030, 6, 5500},
+}
+
+// SeedDemoCoaches inserts a handful of listed dummy coaches near San Diego so the
+// "Find a coach" search has data to show. Idempotent (clears prior demo first).
+func (s *Service) SeedDemoCoaches() (int, error) {
+	if !s.coachProfilesReady() {
+		return 0, ErrCoachingUnavailable
+	}
+	_ = s.RemoveDemoCoaches()
+	yearsReady := s.columnReady("coach_profiles", "years_experience")
+	n := 0
+	for _, d := range demoCoaches {
+		row := map[string]any{
+			"user_id":           newID(),
+			"name":              d.Name,
+			"listed":            true,
+			"bio":               d.Bio,
+			"city":              d.City,
+			"lat":               demoCoachBaseLat + d.DLat,
+			"lng":               demoCoachBaseLng + d.DLng,
+			"hourly_rate_cents": d.RateCents,
+			"skills":            d.Skills,
+			"updated_at":        now(),
+		}
+		if yearsReady {
+			row["years_experience"] = d.Years
+		}
+		if _, err := s.sb.Insert("coach_profiles", row); err == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// RemoveDemoCoaches deletes the seeded dummy coaches (matched by name).
+func (s *Service) RemoveDemoCoaches() error {
+	if !s.coachProfilesReady() {
+		return nil
+	}
+	names := make([]string, len(demoCoaches))
+	for i, d := range demoCoaches {
+		names[i] = d.Name
+	}
+	return s.sb.Delete("coach_profiles", "name="+store.In(names))
+}
+
+// RemoveDemoStudents clears the calling coach's seeded dummy students (the
+// @coachdemo.test roster) — the counterpart to SeedCoachingTestData.
+func (s *Service) RemoveDemoStudents(coachID string) (int, error) {
+	if !s.coachingReady() {
+		return 0, nil
+	}
+	filter := "coach_id=eq." + store.Q(coachID) +
+		"&student_email=like.*" + store.Q(seedEmailDomain)
+	rows, _ := s.sb.Select("coach_students", filter+"&select=id")
+	if err := s.sb.Delete("coach_students", filter); err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
 // notifyCoachingCounterpart sends a bell + push to whichever party did NOT act.
 // If the actor is the coach, the student is notified (resolving their id live if
 // the roster row isn't linked yet); if the actor is the student, the coach is.

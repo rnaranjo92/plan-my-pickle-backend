@@ -790,9 +790,9 @@ func parsePBVisionPlayers(insights any) []model.PBVisionPlayer {
 	if !ok {
 		return nil
 	}
-	statKeys := []string{"shot_count", "court_coverage", "left_side_percentage",
-		"kitchen_arrival_percentage", "total_team_shot_percentage",
-		"team_kitchen_arrival"}
+	// These are flat 0-100 numbers in the payload; copied straight through.
+	scalarKeys := []string{"shot_count", "left_side_percentage",
+		"total_team_shot_percentage"}
 	players := make([]model.PBVisionPlayer, 0, len(arr))
 	for _, item := range arr {
 		p, ok := item.(map[string]any)
@@ -800,11 +800,19 @@ func parsePBVisionPlayers(insights any) []model.PBVisionPlayer {
 			continue
 		}
 		stats := map[string]any{}
-		for _, k := range statKeys {
+		for _, k := range scalarKeys {
 			if v, ok := p[k]; ok {
 				stats[k] = v
 			}
 		}
+		// kitchen_arrival_percentage is a nested numerator/denominator breakdown
+		// (serving/receiving × oneself/partner), NOT a scalar — derive the %.
+		// Omitted when the denominator is 0 (no data, e.g. a very short clip),
+		// so the UI can show "—" instead of a misleading 0%.
+		if num, den := pbSumNumDen(p["kitchen_arrival_percentage"]); den > 0 {
+			stats["kitchen_arrival_pct"] = num / den * 100
+		}
+		// court_coverage is a heat map (coordinates), not a %, so it's not shown.
 		players = append(players, model.PBVisionPlayer{
 			AvatarID: int(pbNum(p["avatar_id"])),
 			Team:     int(pbNum(p["team"])),
@@ -853,6 +861,36 @@ func labelPBVisionPlayers(players []model.PBVisionPlayer) {
 			players[i].Label = fmt.Sprintf("Player %d", players[i].AvatarID+1)
 		}
 	}
+}
+
+// pbSumNumDen recursively sums every {numerator, denominator} leaf in a nested
+// PB Vision breakdown object (e.g. kitchen_arrival_percentage's serving/receiving
+// × oneself/partner tree) so it can be collapsed to a single ratio.
+func pbSumNumDen(v any) (num, den float64) {
+	switch t := v.(type) {
+	case map[string]any:
+		if n, ok := t["numerator"]; ok {
+			num += pbNum(n)
+		}
+		if d, ok := t["denominator"]; ok {
+			den += pbNum(d)
+		}
+		for k, child := range t {
+			if k == "numerator" || k == "denominator" {
+				continue
+			}
+			cn, cd := pbSumNumDen(child)
+			num += cn
+			den += cd
+		}
+	case []any:
+		for _, child := range t {
+			cn, cd := pbSumNumDen(child)
+			num += cn
+			den += cd
+		}
+	}
+	return num, den
 }
 
 // pbNum coerces a JSON value (float64/int/string) to a float64; 0 on failure.

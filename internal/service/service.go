@@ -5189,13 +5189,17 @@ func (s *Service) bracketHasScoredMatch(bracketID string) (bool, error) {
 	return row != nil, nil
 }
 
-// clearBracketDraw deletes a division's generated matches so its draw can be
-// rebuilt. Caller MUST verify no match is scored first (bracketHasScoredMatch).
+// clearBracketDraw deletes a division's generated matches AND rounds so its draw
+// can be rebuilt cleanly (both are bracket-scoped; the full-event wipe removes
+// both too). Caller MUST verify no match is scored first (bracketHasScoredMatch).
 func (s *Service) clearBracketDraw(bracketID string) error {
 	if bracketID == "" {
 		return nil
 	}
-	return s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID))
+	if err := s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID)); err != nil {
+		return err
+	}
+	return s.sb.Delete("rounds", "bracket_id=eq."+store.Q(bracketID))
 }
 
 // MoveRegistrationDivision reassigns one registration — and its paired partner,

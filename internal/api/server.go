@@ -635,6 +635,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision", requireAuth(s.coachingPBVision))
+	mux.HandleFunc("POST /coaching/threads/{id}/analyze", requireAuth(s.analyzeThreadVideo))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/history", requireAuth(s.coachingPBVisionHistory))
 	mux.HandleFunc("GET /coaching/threads/{id}/program", requireAuth(s.threadProgram))
 	mux.HandleFunc("POST /coach/students/{id}/program", requireAuth(s.createProgram))
@@ -5491,6 +5492,22 @@ func (s *Server) coachingThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *Server) analyzeThreadVideo(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VideoURL string `json:"videoUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	vid, err := s.svc.AnalyzeThreadVideo(
+		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"vid": vid, "status": "processing"})
 }
 
 func (s *Server) coachingPBVision(w http.ResponseWriter, r *http.Request) {

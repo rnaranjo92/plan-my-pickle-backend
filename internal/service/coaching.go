@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -841,6 +843,161 @@ func (s *Service) DeleteProgram(programID, userID, email string) error {
 	return s.sb.Delete("coaching_programs", "id=eq."+store.Q(programID))
 }
 
+// --- PB Vision auto-import (highlights + stats into the coaching thread) ---
+
+func (s *Service) pbvisionJobsReady() bool {
+	return s.columnReady("coaching_pbvision_jobs", "id")
+}
+
+// AnalyzeThreadVideo submits a match video to PB Vision for a student's thread
+// (coach only). The student's email is passed so PB Vision attributes/shares the
+// report to them. On completion the webhook ingests highlights + stats. Returns
+// the PB Vision video id.
+func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL string) (string, error) {
+	if !s.coachingReady() || !s.pbvisionJobsReady() {
+		return "", ErrCoachingUnavailable
+	}
+	if s.PBV == nil || !s.PBV.Configured() {
+		return "", errors.New("PB Vision isn't configured yet")
+	}
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return "", err
+	}
+	if role != "coach" {
+		return "", ErrForbidden
+	}
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return "", errors.New("a video URL is required")
+	}
+	emails := []string{}
+	if cs.StudentEmail != "" {
+		emails = append(emails, cs.StudentEmail)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vid, err := s.PBV.AddVideoByURL(ctx, videoURL, gateway.PBVideoMeta{
+		Name:       "Coaching · " + cs.StudentName,
+		UserEmails: emails,
+	})
+	if err != nil {
+		return "", err
+	}
+	_, err = s.sb.Upsert("coaching_pbvision_jobs", "vid", map[string]any{
+		"vid":              vid,
+		"coach_student_id": threadID,
+		"status":           "processing",
+		"updated_at":       now(),
+	})
+	if err != nil {
+		return "", err
+	}
+	s.bumpThreadActivity(threadID)
+	return vid, nil
+}
+
+// handleCoachingPBVisionCallback ingests a PB Vision completion for a coaching
+// job — invoked from HandlePBVisionWebhook. Best-effort; a no-op when the vid
+// isn't one of ours. Stores the raw payloads now; the highlight/stats PARSER is
+// wired once the insights/stats field shapes are confirmed from a real payload.
+func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, stats json.RawMessage, errReason string) {
+	if !s.pbvisionJobsReady() {
+		return
+	}
+	job, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+		"vid=eq."+store.Q(vid)+"&select=id,coach_student_id")
+	if job == nil {
+		return
+	}
+	threadID := asStr(job, "coach_student_id")
+	upd := map[string]any{"updated_at": now()}
+	if strings.TrimSpace(errReason) != "" {
+		upd["status"] = "failed"
+		upd["error"] = errReason
+	} else {
+		upd["status"] = "ready"
+		if webpage != "" {
+			upd["report_url"] = webpage
+		}
+		if len(insights) > 0 {
+			upd["insights"] = insights
+		}
+		if len(stats) > 0 {
+			upd["stats"] = stats
+		}
+	}
+	_, _ = s.sb.Update("coaching_pbvision_jobs",
+		"id=eq."+store.Q(asStr(job, "id")), upd)
+	if strings.TrimSpace(errReason) != "" {
+		return
+	}
+	// TODO(pbvision-parser): with a real insights/stats payload, parse here —
+	//   stats            -> coaching_pbvision (+ coaching_pbvision_reports)
+	//   insights.highlights -> coaching_videos (source='pbvision', external_ref,
+	//                          video_url=clip, title="Long Rally #1" etc.)
+	//   insights.players -> map to a student (coach_students.pbvision_player_id)
+	s.ingestPBVisionHighlights(threadID, insights)
+	s.bumpThreadActivity(threadID)
+	if cs, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID)); cs != nil {
+		coachID := asStr(cs, "coach_id")
+		s.notifyUser(coachID, "coaching", "", "",
+			"PB Vision analysis ready — review highlights", "coaching:"+threadID)
+		if sid := asStr(cs, "student_id"); sid != "" && sid != coachID {
+			s.notifyUser(sid, "coaching", "", "",
+				"Your PB Vision highlights are ready", "coaching:"+threadID)
+		}
+	}
+}
+
+// ingestPBVisionHighlights turns PB Vision highlight clips into coaching_videos
+// rows (source='pbvision', deduped by external_ref). STUB until the insights
+// field shape is confirmed — deliberately parses defensively and no-ops on an
+// unrecognized shape so a live callback never errors before the parser lands.
+func (s *Service) ingestPBVisionHighlights(threadID string, insights json.RawMessage) {
+	if len(insights) == 0 || threadID == "" {
+		return
+	}
+	// Defensive best-guess shape; refined once we have a real payload:
+	//   {"highlights":[{"id","label","url","startSec","endSec","type"}]}
+	var p struct {
+		Highlights []struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+			Type  string `json:"type"`
+			URL   string `json:"url"`
+		} `json:"highlights"`
+	}
+	if err := json.Unmarshal(insights, &p); err != nil || len(p.Highlights) == 0 {
+		return // shape not yet known — leave raw payload on the job for reprocessing
+	}
+	for _, h := range p.Highlights {
+		if strings.TrimSpace(h.URL) == "" {
+			continue
+		}
+		title := strings.TrimSpace(h.Label)
+		if title == "" {
+			title = strings.TrimSpace(h.Type)
+		}
+		// Dedupe by external_ref so a re-delivered callback can't double-import.
+		if h.ID != "" {
+			if exist, _ := s.sb.SelectOne("coaching_videos",
+				"coach_student_id=eq."+store.Q(threadID)+"&external_ref=eq."+store.Q(h.ID)+"&select=id"); exist != nil {
+				continue
+			}
+		}
+		_, _ = s.sb.Insert("coaching_videos", map[string]any{
+			"coach_student_id": threadID,
+			"uploaded_by":      "00000000-0000-0000-0000-000000000000",
+			"uploader_role":    "coach",
+			"video_url":        h.URL,
+			"title":            orNull(title),
+			"source":           "pbvision",
+			"external_ref":     orNull(h.ID),
+		})
+	}
+}
+
 // GetThread returns a thread's clips (each with nested feedback), for a member.
 func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThread, error) {
 	if !s.coachingReady() {
@@ -903,6 +1060,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 			VideoURL:       asStr(v, "video_url"),
 			Title:          asStr(v, "title"),
 			CreatedAt:      asStr(v, "created_at"),
+			Source:         asStr(v, "source"),
 			Feedback:       byVideo[asStr(v, "id")],
 		}
 		out.Videos = append(out.Videos, vid)

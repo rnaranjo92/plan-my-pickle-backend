@@ -226,6 +226,14 @@ func (s *Service) HandlePBVisionWebhook(token string, payload []byte) error {
 		return nil // nothing to correlate — ack
 	}
 
+	// Also route the completion into coaching if this vid was a thread analysis
+	// (independent of the paid Match Video Analysis path below).
+	errReason := ""
+	if p.Error != nil {
+		errReason = strings.TrimSpace(p.Error.Reason)
+	}
+	s.handleCoachingPBVisionCallback(p.Vid, p.Webpage, p.Insights, p.Stats, errReason)
+
 	row, err := s.sb.SelectOne("video_analyses",
 		"pb_vid=eq."+store.Q(p.Vid)+"&select=id,user_id,status")
 	if err != nil {

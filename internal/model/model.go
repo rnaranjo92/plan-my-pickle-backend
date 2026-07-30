@@ -1493,10 +1493,12 @@ type CoachingClass struct {
 	Capacity      int    `json:"capacity"`
 	PriceCents    int    `json:"priceCents"`
 	EnrolledCount int    `json:"enrolledCount"`
-	// Enrolled is set on player-facing lists: whether the caller is enrolled.
-	Enrolled  bool   `json:"enrolled"`
-	IsIntro   bool   `json:"isIntro"`
-	CreatedAt string `json:"createdAt,omitempty"`
+	WaitlistCount int    `json:"waitlistCount"`
+	// Enrolled / Waitlisted reflect the caller's own status on player-facing lists.
+	Enrolled   bool   `json:"enrolled"`
+	Waitlisted bool   `json:"waitlisted"`
+	IsIntro    bool   `json:"isIntro"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 // CoachingEnrollment is a player's seat in a class.

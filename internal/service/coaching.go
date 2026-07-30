@@ -3080,13 +3080,93 @@ func (s *Service) enrichClasses(list []model.CoachingClass, viewerID string) {
 	}
 	for i := range list {
 		list[i].EnrolledCount = s.classEnrolledCount(list[i].ID)
+		list[i].WaitlistCount = s.classStatusCount(list[i].ID, "waitlisted")
 		if viewerID != "" {
 			r, _ := s.sb.SelectOne("coaching_enrollments",
 				"class_id=eq."+store.Q(list[i].ID)+"&user_id=eq."+store.Q(viewerID)+
-					"&status=eq.enrolled&select=id")
-			list[i].Enrolled = r != nil
+					"&status=in.(enrolled,waitlisted)&select=status")
+			list[i].Enrolled = asStr(r, "status") == "enrolled"
+			list[i].Waitlisted = asStr(r, "status") == "waitlisted"
 		}
 	}
+}
+
+func (s *Service) classStatusCount(classID, status string) int {
+	rows, err := s.sb.Select("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&status=eq."+status+"&select=id")
+	if err != nil {
+		return 0
+	}
+	return len(rows)
+}
+
+// CoachPromoteEnrollment moves a waitlisted player into an open seat.
+func (s *Service) CoachPromoteEnrollment(coachID, enrollmentID string) error {
+	if !s.enrollmentsReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.coachOwnsEnrollment(coachID, enrollmentID) {
+		return ErrForbidden
+	}
+	row, _ := s.sb.SelectOne("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID)+"&select=class_id,user_id")
+	if row == nil {
+		return ErrNotFound
+	}
+	classID := asStr(row, "class_id")
+	cls, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(classID)+"&select=capacity,starts_at,price_cents,title")
+	capacity := asInt(cls, "capacity")
+	if capacity > 0 && s.classEnrolledCount(classID) >= capacity {
+		return errors.New("no open seats — remove someone first")
+	}
+	upd := map[string]any{"status": "enrolled"}
+	if asInt(cls, "price_cents") > 0 {
+		if t, ok := parseTime(asStr(cls, "starts_at")); ok {
+			upd["charge_at"] = t.Add(-time.Hour).UTC().Format(time.RFC3339)
+		}
+	}
+	if _, err := s.sb.Update("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID), upd); err != nil {
+		return err
+	}
+	s.notifyUser(asStr(row, "user_id"), "coaching", coachID, s.coachingName(coachID),
+		"A seat opened up — you're in "+asStr(cls, "title"), "")
+	return nil
+}
+
+// promoteNextWaitlisted auto-fills a freed seat with the oldest waitlisted player.
+func (s *Service) promoteNextWaitlisted(classID string) {
+	if !s.enrollmentsReady() || classID == "" {
+		return
+	}
+	cls, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(classID)+"&select=capacity,starts_at,price_cents,title,coach_id")
+	if cls == nil {
+		return
+	}
+	capacity := asInt(cls, "capacity")
+	if capacity > 0 && s.classEnrolledCount(classID) >= capacity {
+		return // no free seat
+	}
+	next, _ := s.sb.SelectOne("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&status=eq.waitlisted&order=created_at.asc&limit=1&select=id,user_id")
+	if next == nil {
+		return
+	}
+	upd := map[string]any{"status": "enrolled"}
+	if asInt(cls, "price_cents") > 0 {
+		if t, ok := parseTime(asStr(cls, "starts_at")); ok {
+			upd["charge_at"] = t.Add(-time.Hour).UTC().Format(time.RFC3339)
+		}
+	}
+	if _, err := s.sb.Update("coaching_enrollments",
+		"id=eq."+store.Q(asStr(next, "id")), upd); err != nil {
+		return
+	}
+	s.notifyUser(asStr(next, "user_id"), "coaching", asStr(cls, "coach_id"),
+		s.coachingName(asStr(cls, "coach_id")),
+		"A seat opened up — you're now enrolled in "+asStr(cls, "title"), "")
 }
 
 // ensureCoachStudentLink adds a roster link (coach↔player) if one doesn't exist,
@@ -3134,14 +3214,43 @@ func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnr
 	}
 	existing, _ := s.sb.SelectOne("coaching_enrollments",
 		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID))
-	if existing != nil && asStr(existing, "status") == "enrolled" {
-		return mapEnrollment(existing), nil // idempotent
+	if existing != nil {
+		st := asStr(existing, "status")
+		if st == "enrolled" || st == "waitlisted" {
+			return mapEnrollment(existing), nil // idempotent
+		}
 	}
 	capacity := asInt(cls, "capacity")
-	if capacity > 0 && s.classEnrolledCount(classID) >= capacity {
-		return model.CoachingEnrollment{}, errors.New("this class is full")
-	}
+	full := capacity > 0 && s.classEnrolledCount(classID) >= capacity
 	price := asInt(cls, "price_cents")
+
+	// Full class → join the waitlist (no charge, no credit spent until promoted).
+	if full {
+		row := map[string]any{
+			"class_id":     classID,
+			"user_id":      userID,
+			"name":         orNull(strings.TrimSpace(name)),
+			"email":        orNull(strings.ToLower(strings.TrimSpace(email))),
+			"status":       "waitlisted",
+			"amount_cents": price,
+			"paid":         false,
+		}
+		var out []map[string]any
+		if existing != nil {
+			out, err = s.sb.Update("coaching_enrollments",
+				"id=eq."+store.Q(asStr(existing, "id")), row)
+		} else {
+			out, err = s.sb.Insert("coaching_enrollments", row)
+		}
+		if err != nil {
+			return model.CoachingEnrollment{}, err
+		}
+		if len(out) > 0 {
+			return mapEnrollment(out[0]), nil
+		}
+		return mapEnrollment(row), nil
+	}
+
 	// A paid class: if the player holds a class-credit with this coach, spend one
 	// and the seat is paid instantly — no per-class charge.
 	usedCredit := false
@@ -3197,6 +3306,11 @@ func (s *Service) CancelClassEnrollment(classID, userID string) error {
 	_, err := s.sb.Update("coaching_enrollments",
 		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID),
 		map[string]any{"status": "canceled"})
+	if err == nil {
+		// If that freed a seat, pull in the next waitlisted player (no-op when
+		// the canceler was themselves waitlisted — the class is still full).
+		s.promoteNextWaitlisted(classID)
+	}
 	return err
 }
 
@@ -3233,8 +3347,14 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 	if !s.coachOwnsEnrollment(coachID, enrollmentID) {
 		return ErrForbidden
 	}
+	row, _ := s.sb.SelectOne("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID)+"&select=class_id,status")
+	wasEnrolled := asStr(row, "status") == "enrolled"
 	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
 		map[string]any{"status": "canceled"})
+	if err == nil && wasEnrolled {
+		s.promoteNextWaitlisted(asStr(row, "class_id"))
+	}
 	return err
 }
 
@@ -3255,7 +3375,7 @@ func (s *Service) ListClassEnrollments(classID, coachID string) ([]model.Coachin
 		return nil, ErrForbidden
 	}
 	rows, err := s.sb.Select("coaching_enrollments",
-		"class_id=eq."+store.Q(classID)+"&status=eq.enrolled&order=created_at.asc")
+		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,waitlisted)&order=status.asc,created_at.asc")
 	if err != nil {
 		return nil, err
 	}

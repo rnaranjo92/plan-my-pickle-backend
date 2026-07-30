@@ -680,6 +680,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
 	mux.HandleFunc("GET /coach/classes/{id}/enrollments", s.instructorOnly(s.classEnrollments))
 	mux.HandleFunc("POST /coach/enrollments/{id}/mark-paid", s.instructorOnly(s.markEnrollmentPaidByCoach))
+	mux.HandleFunc("POST /coach/enrollments/{id}/promote", s.instructorOnly(s.promoteEnrollment))
 	mux.HandleFunc("DELETE /coach/enrollments/{id}", s.instructorOnly(s.removeEnrollmentByCoach))
 	mux.HandleFunc("POST /coaching/classes/{id}/enroll", requireAuth(s.enrollClass))
 	mux.HandleFunc("POST /coaching/classes/{id}/unenroll", requireAuth(s.unenrollClass))
@@ -5974,6 +5975,14 @@ func (s *Server) markEnrollmentPaidByCoach(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "paid"})
+}
+
+func (s *Server) promoteEnrollment(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CoachPromoteEnrollment(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "enrolled"})
 }
 
 func (s *Server) removeEnrollmentByCoach(w http.ResponseWriter, r *http.Request) {

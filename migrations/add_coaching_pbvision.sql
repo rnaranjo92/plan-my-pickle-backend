@@ -3,7 +3,7 @@
 -- Stored as a flexible jsonb blob since PB Vision's payload is rich/evolving; a
 -- top-level rating is denormalized for quick display. One row per thread.
 create table if not exists coaching_pbvision (
-  coach_student_id text primary key
+  coach_student_id uuid primary key
     references coach_students(id) on delete cascade,
   rating         numeric(3,2),
   stats          jsonb not null default '{}'::jsonb,

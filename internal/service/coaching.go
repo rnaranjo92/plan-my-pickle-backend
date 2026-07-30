@@ -650,6 +650,54 @@ func (s *Service) GetPBVision(threadID, userID, email string) (model.PBVisionSta
 	return out, nil
 }
 
+func (s *Service) pbVisionHistoryReady() bool {
+	return s.columnReady("coaching_pbvision_reports", "id")
+}
+
+// ListPBVisionHistory returns a thread's PB Vision report snapshots, newest first.
+func (s *Service) ListPBVisionHistory(threadID, userID, email string) ([]model.PBVisionReport, error) {
+	if !s.coachingReady() {
+		return nil, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return nil, err
+	}
+	if !s.pbVisionHistoryReady() {
+		return []model.PBVisionReport{}, nil
+	}
+	rows, err := s.sb.Select("coaching_pbvision_reports",
+		"coach_student_id=eq."+store.Q(threadID)+"&order=synced_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.PBVisionReport, 0, len(rows))
+	for _, r := range rows {
+		rep := model.PBVisionReport{
+			ID:       asStr(r, "id"),
+			Rating:   asFloatPtr(r, "rating"),
+			SyncedAt: asStr(r, "synced_at"),
+		}
+		if m, ok := r["stats"].(map[string]any); ok {
+			rep.Stats = m
+		}
+		out = append(out, rep)
+	}
+	return out, nil
+}
+
+// seedPBVisionReport appends a historical snapshot (best-effort, guarded).
+func (s *Service) seedPBVisionReport(threadID string, rating float64, syncedAt string, stats map[string]any) {
+	if !s.pbVisionHistoryReady() || threadID == "" {
+		return
+	}
+	_, _ = s.sb.Insert("coaching_pbvision_reports", map[string]any{
+		"coach_student_id": threadID,
+		"rating":           rating,
+		"synced_at":        syncedAt,
+		"stats":            stats,
+	})
+}
+
 // GetThread returns a thread's clips (each with nested feedback), for a member.
 func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThread, error) {
 	if !s.coachingReady() {
@@ -1353,15 +1401,12 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 				})
 			}
 			if s.pbVisionReady() {
-				_, _ = s.sb.Insert("coaching_pbvision", map[string]any{
-					"coach_student_id": rid,
-					"rating":           3.35,
-					"last_synced_at":   time.Now().UTC().Format(time.RFC3339),
-					"stats": map[string]any{
-						"matchesAnalyzed": 6, "shotQuality": 69,
+				rolStats := func(sq, third int, unforced float64) map[string]any {
+					return map[string]any{
+						"matchesAnalyzed": 6, "shotQuality": sq,
 						"serveInPct": 92, "returnInPct": 85, "kitchenArrivalPct": 58,
-						"thirdDropPct": 44, "dinkErrorPct": 14, "speedupWinPct": 52,
-						"winnersPerGame": 5.4, "unforcedPerGame": 9.1,
+						"thirdDropPct": third, "dinkErrorPct": 14, "speedupWinPct": 52,
+						"winnersPerGame": 5.4, "unforcedPerGame": unforced,
 						"avgShotSpeedMph": 29, "topShotSpeedMph": 54, "avgRallyLength": 6.8,
 						"shotMix": map[string]any{
 							"Dinks": 31, "Volleys": 16, "Serves": 15,
@@ -1369,8 +1414,20 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 						},
 						"strengths": []string{"Hands at the net", "Serve consistency"},
 						"improve":   []string{"3rd-shot drop under pressure", "Cut unforced errors"},
-					},
+					}
+				}
+				nowTS := time.Now().UTC()
+				latest := rolStats(69, 44, 9.1)
+				_, _ = s.sb.Insert("coaching_pbvision", map[string]any{
+					"coach_student_id": rid,
+					"rating":           3.35,
+					"last_synced_at":   nowTS.Format(time.RFC3339),
+					"stats":            latest,
 				})
+				// History showing progress over the last ~3 weeks.
+				s.seedPBVisionReport(rid, 3.05, nowTS.AddDate(0, 0, -21).Format(time.RFC3339), rolStats(61, 52, 12.0))
+				s.seedPBVisionReport(rid, 3.20, nowTS.AddDate(0, 0, -10).Format(time.RFC3339), rolStats(65, 48, 10.4))
+				s.seedPBVisionReport(rid, 3.35, nowTS.Format(time.RFC3339), latest)
 			}
 		}
 	}
@@ -1378,36 +1435,32 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 	// Sample PB Vision report for Taylor so the PB Vision tab has example stats.
 	// (Fresh thread row each run → no prior pbvision row to clear.)
 	if s.pbVisionReady() && taylorID != "" {
-		_, _ = s.sb.Insert("coaching_pbvision", map[string]any{
-			"coach_student_id": taylorID,
-			"rating":           3.42,
-			"last_synced_at":   time.Now().UTC().Format(time.RFC3339),
-			"stats": map[string]any{
-				"matchesAnalyzed":   8,
-				"shotQuality":       72,
-				"serveInPct":        94,
-				"returnInPct":       88,
-				"kitchenArrivalPct": 61,
-				"thirdDropPct":      47,
-				"dinkErrorPct":      12,
-				"speedupWinPct":     55,
-				"winnersPerGame":    6.2,
-				"unforcedPerGame":   8.4,
-				"avgShotSpeedMph":   31,
-				"topShotSpeedMph":   58,
-				"avgRallyLength":    7.3,
+		tayStats := func(sq, third int, unforced float64) map[string]any {
+			return map[string]any{
+				"matchesAnalyzed": 8, "shotQuality": sq,
+				"serveInPct": 94, "returnInPct": 88, "kitchenArrivalPct": 61,
+				"thirdDropPct": third, "dinkErrorPct": 12, "speedupWinPct": 55,
+				"winnersPerGame": 6.2, "unforcedPerGame": unforced,
+				"avgShotSpeedMph": 31, "topShotSpeedMph": 58, "avgRallyLength": 7.3,
 				"shotMix": map[string]any{
-					"Dinks":   34,
-					"Volleys": 15,
-					"Serves":  14,
-					"Returns": 13,
-					"Drives":  12,
-					"Drops":   12,
+					"Dinks": 34, "Volleys": 15, "Serves": 14,
+					"Returns": 13, "Drives": 12, "Drops": 12,
 				},
 				"strengths": []string{"Hands at the net", "Dink consistency", "Kitchen coverage"},
 				"improve":   []string{"3rd-shot drop under pressure", "Return depth", "Cut unforced errors"},
-			},
+			}
+		}
+		nowTS := time.Now().UTC()
+		latest := tayStats(72, 47, 8.4)
+		_, _ = s.sb.Insert("coaching_pbvision", map[string]any{
+			"coach_student_id": taylorID,
+			"rating":           3.42,
+			"last_synced_at":   nowTS.Format(time.RFC3339),
+			"stats":            latest,
 		})
+		s.seedPBVisionReport(taylorID, 3.18, nowTS.AddDate(0, 0, -24).Format(time.RFC3339), tayStats(64, 55, 10.6))
+		s.seedPBVisionReport(taylorID, 3.30, nowTS.AddDate(0, 0, -12).Format(time.RFC3339), tayStats(68, 51, 9.3))
+		s.seedPBVisionReport(taylorID, 3.42, nowTS.Format(time.RFC3339), latest)
 	}
 
 	// Sample schedule entries (booked sessions + open + a day off). Re-runnable:

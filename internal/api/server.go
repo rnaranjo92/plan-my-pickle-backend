@@ -634,6 +634,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision", requireAuth(s.coachingPBVision))
+	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/history", requireAuth(s.coachingPBVisionHistory))
 	mux.HandleFunc("GET /coaching/threads/{id}/messages", requireAuth(s.threadMessages))
 	mux.HandleFunc("POST /coaching/threads/{id}/messages", requireAuth(s.sendThreadMessage))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
@@ -5491,6 +5492,15 @@ func (s *Server) coachingPBVision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) coachingPBVisionHistory(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListPBVisionHistory(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *Server) threadMessages(w http.ResponseWriter, r *http.Request) {

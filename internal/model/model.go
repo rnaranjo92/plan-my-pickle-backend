@@ -1459,6 +1459,14 @@ type PBVisionStats struct {
 	Stats        map[string]any `json:"stats,omitempty"`
 }
 
+// PBVisionReport is one historical PB Vision snapshot for a thread.
+type PBVisionReport struct {
+	ID       string         `json:"id"`
+	Rating   *float64       `json:"rating,omitempty"`
+	SyncedAt string         `json:"syncedAt"`
+	Stats    map[string]any `json:"stats,omitempty"`
+}
+
 // CoachProfileRequest upserts the signed-in coach's discovery profile. Location
 // is geocoded from City server-side. Listing requires a bio + years of
 // experience (enforced in UpsertCoachProfile).

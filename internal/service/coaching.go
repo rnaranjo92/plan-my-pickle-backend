@@ -1934,9 +1934,15 @@ func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachPr
 	// Prefer the coach's dedicated instructor photo (already on the row); fall
 	// back to their account avatar only when they haven't set one.
 	photos := s.photosByUser(uids)
+	agg := s.reviewsAggregate(uids)
 	for i := range out {
 		if out[i].PhotoURL == "" {
 			out[i].PhotoURL = photos[out[i].UserID]
+		}
+		if a, ok := agg[out[i].UserID]; ok {
+			avg := a.avg
+			out[i].RatingAvg = &avg
+			out[i].RatingCount = a.count
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1953,6 +1959,140 @@ func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachPr
 		return *di < *dj
 	})
 	return out, nil
+}
+
+// --- Coach reviews (marketplace social proof) ---
+
+func (s *Service) coachReviewsReady() bool {
+	return s.columnReady("coach_reviews", "id")
+}
+
+func mapCoachReview(row map[string]any) model.CoachReview {
+	return model.CoachReview{
+		ID:          asStr(row, "id"),
+		CoachUserID: asStr(row, "coach_user_id"),
+		AuthorID:    asStr(row, "author_id"),
+		AuthorName:  asStr(row, "author_name"),
+		Rating:      asInt(row, "rating"),
+		Body:        asStr(row, "body"),
+		CreatedAt:   asStr(row, "created_at"),
+	}
+}
+
+type reviewAgg struct {
+	avg   float64
+	count int
+}
+
+// reviewsAggregate returns avg rating + count per coach user id (batched).
+func (s *Service) reviewsAggregate(coachUserIDs []string) map[string]reviewAgg {
+	out := map[string]reviewAgg{}
+	if !s.coachReviewsReady() || len(coachUserIDs) == 0 {
+		return out
+	}
+	rows, err := s.sb.Select("coach_reviews",
+		"coach_user_id="+store.In(coachUserIDs)+"&select=coach_user_id,rating")
+	if err != nil {
+		return out
+	}
+	sums := map[string]int{}
+	counts := map[string]int{}
+	for _, r := range rows {
+		id := asStr(r, "coach_user_id")
+		sums[id] += asInt(r, "rating")
+		counts[id]++
+	}
+	for id, c := range counts {
+		if c > 0 {
+			out[id] = reviewAgg{avg: float64(sums[id]) / float64(c), count: c}
+		}
+	}
+	return out
+}
+
+// canReviewCoach reports whether authorID has trained with coachUserID — i.e.
+// they're on the coach's roster (direct add OR auto-linked on class enrollment).
+func (s *Service) canReviewCoach(authorID, coachUserID string) bool {
+	if authorID == "" || coachUserID == "" || authorID == coachUserID {
+		return false
+	}
+	if !s.coachingReady() {
+		return false
+	}
+	row, _ := s.sb.SelectOne("coach_students",
+		"coach_id=eq."+store.Q(coachUserID)+"&student_id=eq."+store.Q(authorID)+"&select=id&limit=1")
+	return row != nil
+}
+
+// ListCoachReviews returns a coach's reviews + aggregate, and whether the viewer
+// may leave one (plus their existing review, if any).
+func (s *Service) ListCoachReviews(coachUserID, viewerID string) (model.CoachReviewsResponse, error) {
+	resp := model.CoachReviewsResponse{Reviews: []model.CoachReview{}}
+	if !s.coachReviewsReady() {
+		return resp, nil
+	}
+	rows, err := s.sb.Select("coach_reviews",
+		"coach_user_id=eq."+store.Q(coachUserID)+"&order=created_at.desc")
+	if err != nil {
+		return resp, err
+	}
+	sum := 0
+	for _, r := range rows {
+		rv := mapCoachReview(r)
+		resp.Reviews = append(resp.Reviews, rv)
+		sum += rv.Rating
+		if viewerID != "" && rv.AuthorID == viewerID {
+			mine := rv
+			resp.MyReview = &mine
+		}
+	}
+	resp.RatingCount = len(resp.Reviews)
+	if resp.RatingCount > 0 {
+		avg := float64(sum) / float64(resp.RatingCount)
+		resp.RatingAvg = &avg
+	}
+	resp.CanReview = s.canReviewCoach(viewerID, coachUserID)
+	return resp, nil
+}
+
+// SubmitCoachReview creates/updates the caller's review of a coach (eligibility
+// enforced). One review per (coach, author).
+func (s *Service) SubmitCoachReview(authorID, authorName, coachUserID string, req model.CoachReviewRequest) error {
+	if !s.coachReviewsReady() {
+		return ErrCoachingUnavailable
+	}
+	if req.Rating < 1 || req.Rating > 5 {
+		return errors.New("rating must be 1 to 5 stars")
+	}
+	if !s.canReviewCoach(authorID, coachUserID) {
+		return errors.New("only players who've trained with this coach can review them")
+	}
+	authorName = strings.TrimSpace(authorName)
+	if authorName == "" {
+		authorName = s.coachingName(authorID)
+	}
+	body := strings.TrimSpace(req.Body)
+	if r := []rune(body); len(r) > 1000 {
+		body = string(r[:1000])
+	}
+	_, err := s.sb.Upsert("coach_reviews", "coach_user_id,author_id", map[string]any{
+		"coach_user_id": coachUserID,
+		"author_id":     authorID,
+		"author_name":   orNull(strings.TrimSpace(authorName)),
+		"rating":        req.Rating,
+		"body":          orNull(body),
+		"updated_at":    now(),
+	})
+	return err
+}
+
+// DeleteCoachReview removes the caller's own review.
+func (s *Service) DeleteCoachReview(authorID, reviewID string) error {
+	if !s.coachReviewsReady() {
+		return ErrCoachingUnavailable
+	}
+	return s.sb.Delete("coach_reviews",
+		"id=eq."+store.Q(reviewID)+"&author_id=eq."+store.Q(authorID))
 }
 
 // --- Coaching classes (marketplace Phase B) ---
@@ -2390,11 +2530,15 @@ func (s *Service) SeedDemoCoaches() (int, error) {
 		return 0, ErrCoachingUnavailable
 	}
 	_ = s.RemoveDemoCoaches()
+	if s.coachReviewsReady() {
+		_ = s.sb.Delete("coach_reviews", "author_name="+store.In(demoReviewAuthors))
+	}
 	yearsReady := s.columnReady("coach_profiles", "years_experience")
 	n := 0
 	for _, d := range demoCoaches {
+		uid := newID()
 		row := map[string]any{
-			"user_id":           newID(),
+			"user_id":           uid,
 			"name":              d.Name,
 			"listed":            true,
 			"bio":               d.Bio,
@@ -2410,9 +2554,38 @@ func (s *Service) SeedDemoCoaches() (int, error) {
 		}
 		if _, err := s.sb.Insert("coach_profiles", row); err == nil {
 			n++
+			s.seedDemoReviews(uid)
 		}
 	}
 	return n, nil
+}
+
+var demoReviewAuthors = []string{"Jamie P.", "Chris M.", "Dana R."}
+
+// seedDemoReviews attaches a few sample reviews to a demo coach so the
+// marketplace shows star ratings + counts. No-op until reviews ship.
+func (s *Service) seedDemoReviews(coachUID string) {
+	if !s.coachReviewsReady() {
+		return
+	}
+	revs := []struct {
+		name   string
+		rating int
+		body   string
+	}{
+		{"Jamie P.", 5, "Huge help with my third-shot drop — saw results in two sessions."},
+		{"Chris M.", 5, "Patient, clear, and genuinely fun. My dinking is way more consistent now."},
+		{"Dana R.", 4, "Great tactical eye and easy to work with. Wish we'd had more court time."},
+	}
+	for _, r := range revs {
+		_, _ = s.sb.Insert("coach_reviews", map[string]any{
+			"coach_user_id": coachUID,
+			"author_id":     newID(),
+			"author_name":   r.name,
+			"rating":        r.rating,
+			"body":          r.body,
+		})
+	}
 }
 
 // RemoveDemoCoaches deletes the seeded dummy coaches (matched by name).

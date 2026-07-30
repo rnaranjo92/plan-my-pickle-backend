@@ -654,6 +654,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/profile", s.instructorOnly(s.upsertCoachProfile))
 	mux.HandleFunc("POST /coach/photo", s.instructorOnly(s.uploadCoachPhoto))
 	mux.HandleFunc("GET /coaches/nearby", requireAuth(s.coachesNearby))
+	mux.HandleFunc("GET /coaches/{userId}/reviews", requireAuth(s.coachReviews))
+	mux.HandleFunc("POST /coaches/{userId}/reviews", requireAuth(s.submitCoachReview))
+	mux.HandleFunc("DELETE /coach-reviews/{id}", requireAuth(s.deleteCoachReview))
 	mux.HandleFunc("GET /coach/classes", s.instructorOnly(s.myClasses))
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
@@ -5775,6 +5778,40 @@ func (s *Server) coachesNearby(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) coachReviews(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.svc.ListCoachReviews(r.PathValue("userId"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) submitCoachReview(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachReviewRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SubmitCoachReview(userID(r), userName(r), r.PathValue("userId"), req); err != nil {
+		status(w, err)
+		return
+	}
+	resp, err := s.svc.ListCoachReviews(r.PathValue("userId"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) deleteCoachReview(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteCoachReview(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // Coaching classes (marketplace Phase B).

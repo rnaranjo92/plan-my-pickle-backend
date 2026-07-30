@@ -1384,6 +1384,36 @@ type CoachProfile struct {
 	Skills          string   `json:"skills,omitempty"`
 	PhotoURL        string   `json:"photoUrl,omitempty"`
 	DistanceKm      *float64 `json:"distanceKm,omitempty"`
+	RatingAvg       *float64 `json:"ratingAvg,omitempty"`
+	RatingCount     int      `json:"ratingCount"`
+}
+
+// CoachReview is a player's star rating + comment for a coach. One per
+// (coach, author); eligibility (trained with the coach) is enforced server-side.
+type CoachReview struct {
+	ID          string `json:"id"`
+	CoachUserID string `json:"coachUserId"`
+	AuthorID    string `json:"authorId"`
+	AuthorName  string `json:"authorName"`
+	Rating      int    `json:"rating"`
+	Body        string `json:"body,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+}
+
+// CoachReviewRequest submits/updates the caller's review of a coach.
+type CoachReviewRequest struct {
+	Rating int    `json:"rating"`
+	Body   string `json:"body"`
+}
+
+// CoachReviewsResponse is the public reviews payload for a coach: the list, the
+// aggregate, and whether the caller may write one (+ their existing review).
+type CoachReviewsResponse struct {
+	Reviews     []CoachReview `json:"reviews"`
+	RatingAvg   *float64      `json:"ratingAvg,omitempty"`
+	RatingCount int           `json:"ratingCount"`
+	CanReview   bool          `json:"canReview"`
+	MyReview    *CoachReview  `json:"myReview,omitempty"`
 }
 
 // PBVisionStats is a student's PB Vision AI game-report analytics for a thread.

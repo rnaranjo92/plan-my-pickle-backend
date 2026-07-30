@@ -662,6 +662,11 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaches/{userId}/reviews", requireAuth(s.coachReviews))
 	mux.HandleFunc("POST /coaches/{userId}/reviews", requireAuth(s.submitCoachReview))
 	mux.HandleFunc("DELETE /coach-reviews/{id}", requireAuth(s.deleteCoachReview))
+	mux.HandleFunc("GET /coaches/{userId}/packs", requireAuth(s.coachPacks))
+	mux.HandleFunc("POST /coach/packs", s.instructorOnly(s.createPack))
+	mux.HandleFunc("DELETE /coach/packs/{id}", s.instructorOnly(s.deletePack))
+	mux.HandleFunc("GET /coaches/{userId}/credits", requireAuth(s.coachCredits))
+	mux.HandleFunc("POST /coaching/packs/{id}/buy", requireAuth(s.buyPack))
 	mux.HandleFunc("GET /coaches/{userId}/availability", requireAuth(s.coachAvailability))
 	mux.HandleFunc("POST /coaches/{userId}/book", requireAuth(s.bookCoachSession))
 	mux.HandleFunc("GET /me/sessions", requireAuth(s.mySessions))
@@ -5870,6 +5875,60 @@ func (s *Server) clearCoachIntroVideo(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) coachIntroVideo(w http.ResponseWriter, r *http.Request) {
 	url, err := s.svc.CoachIntroVideoURL(r.PathValue("userId"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+func (s *Server) coachPacks(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachPacks(r.PathValue("userId"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) createPack(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachPackRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.CreatePack(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) deletePack(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeletePack(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+func (s *Server) coachCredits(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.MyCoachCredits(r.PathValue("userId"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.CoachCredits{
+		CoachID: r.PathValue("userId"), CreditsRemaining: n})
+}
+
+func (s *Server) buyPack(w http.ResponseWriter, r *http.Request) {
+	var req model.EnrollPayRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.BuyPack(
+		r.PathValue("id"), userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
 	if err != nil {
 		status(w, err)
 		return

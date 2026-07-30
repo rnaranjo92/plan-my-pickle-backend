@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2467,6 +2468,171 @@ func (s *Service) CancelMySession(playerID, email, sessionID string) error {
 	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(sessionID))
 }
 
+// --- Class packs (buy N credits, spend one per paid enrollment) ---
+
+func (s *Service) packsReady() bool {
+	return s.columnReady("coach_packs", "id")
+}
+
+func (s *Service) creditsReady() bool {
+	return s.columnReady("coaching_credits", "id")
+}
+
+func mapPack(row map[string]any) model.CoachPack {
+	return model.CoachPack{
+		ID:         asStr(row, "id"),
+		CoachID:    asStr(row, "coach_id"),
+		Title:      asStr(row, "title"),
+		Credits:    asInt(row, "credits"),
+		PriceCents: asInt(row, "price_cents"),
+		Active:     asBool(row, "active"),
+		CreatedAt:  asStr(row, "created_at"),
+	}
+}
+
+// ListCoachPacks returns a coach's active packs (public / player-facing + coach).
+func (s *Service) ListCoachPacks(coachUserID string) ([]model.CoachPack, error) {
+	if !s.packsReady() {
+		return []model.CoachPack{}, nil
+	}
+	rows, err := s.sb.Select("coach_packs",
+		"coach_id=eq."+store.Q(coachUserID)+"&active=is.true&order=price_cents.asc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachPack, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapPack(r))
+	}
+	return out, nil
+}
+
+// CreatePack adds a pack the coach sells.
+func (s *Service) CreatePack(coachID string, req model.CoachPackRequest) (model.CoachPack, error) {
+	if !s.packsReady() {
+		return model.CoachPack{}, ErrCoachingUnavailable
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.CoachPack{}, errors.New("give the pack a title")
+	}
+	if req.Credits <= 0 {
+		return model.CoachPack{}, errors.New("credits must be at least 1")
+	}
+	price := req.PriceCents
+	if price < 0 {
+		price = 0
+	}
+	ins, err := s.sb.Insert("coach_packs", map[string]any{
+		"coach_id":    coachID,
+		"title":       title,
+		"credits":     req.Credits,
+		"price_cents": price,
+	})
+	if err != nil || len(ins) == 0 {
+		if err == nil {
+			err = errors.New("could not save that pack")
+		}
+		return model.CoachPack{}, err
+	}
+	return mapPack(ins[0]), nil
+}
+
+// DeletePack soft-inactivates a pack the coach owns (keeps history).
+func (s *Service) DeletePack(coachID, id string) error {
+	if !s.packsReady() {
+		return ErrCoachingUnavailable
+	}
+	_, err := s.sb.Update("coach_packs",
+		"id=eq."+store.Q(id)+"&coach_id=eq."+store.Q(coachID),
+		map[string]any{"active": false})
+	return err
+}
+
+// MyCoachCredits returns the caller's remaining credit balance with a coach.
+func (s *Service) MyCoachCredits(coachUserID, userID string) (int, error) {
+	if !s.creditsReady() || userID == "" {
+		return 0, nil
+	}
+	row, err := s.sb.SelectOne("coaching_credits",
+		"coach_id=eq."+store.Q(coachUserID)+"&user_id=eq."+store.Q(userID)+
+			"&select=credits_remaining")
+	if err != nil || row == nil {
+		return 0, err
+	}
+	return asInt(row, "credits_remaining"), nil
+}
+
+// BuyPack starts a hosted checkout for a class pack. On success the webhook
+// grants the credits (metaKey pack_purchase = "coachId:userId:credits").
+func (s *Service) BuyPack(packID, userID, email, successURL, cancelURL string) (string, error) {
+	if !s.packsReady() {
+		return "", ErrCoachingUnavailable
+	}
+	pack, err := s.sb.SelectOne("coach_packs", "id=eq."+store.Q(packID))
+	if err != nil {
+		return "", err
+	}
+	if pack == nil || !asBool(pack, "active") {
+		return "", ErrNotFound
+	}
+	coachID := asStr(pack, "coach_id")
+	credits := asInt(pack, "credits")
+	price := asInt(pack, "price_cents")
+	meta := coachID + ":" + userID + ":" + strconv.Itoa(credits)
+	// Free pack → grant immediately, no checkout.
+	if price <= 0 {
+		return "", s.grantPackCredits(meta)
+	}
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	return gw.CreatePlatformCheckout(meta, "pack_purchase", price, "usd",
+		"PlanMyPickle — "+asStr(pack, "title"), email, successURL, cancelURL)
+}
+
+// grantPackCredits credits a player's balance from a "coachId:userId:credits"
+// metadata string (idempotency is not enforced — Stripe delivers once normally).
+func (s *Service) grantPackCredits(meta string) error {
+	if !s.creditsReady() {
+		return nil
+	}
+	parts := strings.Split(meta, ":")
+	if len(parts) != 3 {
+		return nil
+	}
+	coachID, userID := parts[0], parts[1]
+	credits, _ := strconv.Atoi(parts[2])
+	if coachID == "" || userID == "" || credits <= 0 {
+		return nil
+	}
+	cur, _ := s.MyCoachCredits(coachID, userID)
+	_, err := s.sb.Upsert("coaching_credits", "coach_id,user_id", map[string]any{
+		"coach_id":          coachID,
+		"user_id":           userID,
+		"credits_remaining": cur + credits,
+		"updated_at":        now(),
+	})
+	return err
+}
+
+// consumeCredit spends one credit if the player has any (read-then-write; fine at
+// this scale). Returns true when a credit was spent.
+func (s *Service) consumeCredit(coachID, userID string) bool {
+	if !s.creditsReady() || coachID == "" || userID == "" {
+		return false
+	}
+	cur, _ := s.MyCoachCredits(coachID, userID)
+	if cur <= 0 {
+		return false
+	}
+	_, err := s.sb.Update("coaching_credits",
+		"coach_id=eq."+store.Q(coachID)+"&user_id=eq."+store.Q(userID),
+		map[string]any{"credits_remaining": cur - 1, "updated_at": now()})
+	return err == nil
+}
+
 // --- Coaching classes (marketplace Phase B) ---
 
 func (s *Service) classesReady() bool {
@@ -2692,6 +2858,12 @@ func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnr
 		return model.CoachingEnrollment{}, errors.New("this class is full")
 	}
 	price := asInt(cls, "price_cents")
+	// A paid class: if the player holds a class-credit with this coach, spend one
+	// and the seat is paid instantly — no per-class charge.
+	usedCredit := false
+	if price > 0 && s.consumeCredit(asStr(cls, "coach_id"), userID) {
+		usedCredit = true
+	}
 	row := map[string]any{
 		"class_id":     classID,
 		"user_id":      userID,
@@ -2699,9 +2871,11 @@ func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnr
 		"email":        orNull(strings.ToLower(strings.TrimSpace(email))),
 		"status":       "enrolled",
 		"amount_cents": price,
-		"paid":         price == 0,
+		"paid":         price == 0 || usedCredit,
 	}
-	if price > 0 {
+	if usedCredit {
+		row["payment_ref"] = "credit"
+	} else if price > 0 {
 		if t, ok := parseTime(asStr(cls, "starts_at")); ok {
 			row["charge_at"] = t.Add(-time.Hour).UTC().Format(time.RFC3339)
 		}

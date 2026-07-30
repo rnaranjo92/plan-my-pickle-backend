@@ -1523,6 +1523,30 @@ type CoachingClassRequest struct {
 	IsIntro     bool   `json:"isIntro"`
 }
 
+// CoachPack is a discounted bundle of class credits a coach sells.
+type CoachPack struct {
+	ID         string `json:"id"`
+	CoachID    string `json:"coachId,omitempty"`
+	Title      string `json:"title"`
+	Credits    int    `json:"credits"`
+	PriceCents int    `json:"priceCents"`
+	Active     bool   `json:"active"`
+	CreatedAt  string `json:"createdAt,omitempty"`
+}
+
+// CoachPackRequest creates a pack (coach only).
+type CoachPackRequest struct {
+	Title      string `json:"title"`
+	Credits    int    `json:"credits"`
+	PriceCents int    `json:"priceCents"`
+}
+
+// CoachCredits is a player's remaining class-credit balance with a coach.
+type CoachCredits struct {
+	CoachID          string `json:"coachId"`
+	CreditsRemaining int    `json:"creditsRemaining"`
+}
+
 // CoachingSkillRating is the coach's 1-5 assessment of one skill for a student.
 type CoachingSkillRating struct {
 	Skill       string  `json:"skill"` // serve|return|dinks|drops|volleys|strategy

@@ -1277,6 +1277,8 @@ type CoachingFeedback struct {
 	AuthorName     string `json:"authorName,omitempty"`
 	Body           string `json:"body"`
 	CreatedAt      string `json:"createdAt,omitempty"`
+	// TimestampSeconds pins the comment to a moment in the clip (nullable).
+	TimestampSeconds *float64 `json:"timestampSeconds,omitempty"`
 }
 
 // CoachingThread is a roster row plus its clips (each with nested feedback).
@@ -1561,9 +1563,11 @@ type CoachingVideoRequest struct {
 	Title    string `json:"title"`
 }
 
-// CoachingFeedbackRequest is a text comment on a clip.
+// CoachingFeedbackRequest is a text comment on a clip, optionally pinned to a
+// moment in the video (TimestampSeconds).
 type CoachingFeedbackRequest struct {
-	Body string `json:"body"`
+	Body             string   `json:"body"`
+	TimestampSeconds *float64 `json:"timestampSeconds"`
 }
 
 // WaitlistEntry is one person on an event's waitlist (used when the event is at

@@ -693,9 +693,10 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 			VideoID:    asStr(f, "video_id"),
 			AuthorID:   asStr(f, "author_id"),
 			AuthorRole: asStr(f, "author_role"),
-			AuthorName: nameOf(asStr(f, "author_id")),
-			Body:       asStr(f, "body"),
-			CreatedAt:  asStr(f, "created_at"),
+			AuthorName:       nameOf(asStr(f, "author_id")),
+			Body:             asStr(f, "body"),
+			CreatedAt:        asStr(f, "created_at"),
+			TimestampSeconds: asFloatPtr(f, "timestamp_seconds"),
 		}
 		byVideo[fb.VideoID] = append(byVideo[fb.VideoID], fb)
 	}
@@ -803,13 +804,18 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 	if err != nil {
 		return model.CoachingFeedback{}, err
 	}
-	ins, err := s.sb.Insert("coaching_feedback", map[string]any{
+	fbRow := map[string]any{
 		"coach_student_id": threadID,
 		"video_id":         videoID,
 		"author_id":        userID,
 		"author_role":      role,
 		"body":             body,
-	})
+	}
+	if req.TimestampSeconds != nil && *req.TimestampSeconds >= 0 &&
+		s.columnReady("coaching_feedback", "timestamp_seconds") {
+		fbRow["timestamp_seconds"] = *req.TimestampSeconds
+	}
+	ins, err := s.sb.Insert("coaching_feedback", fbRow)
 	if err != nil {
 		return model.CoachingFeedback{}, err
 	}
@@ -827,6 +833,7 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 		Body:           body,
 		CreatedAt:      asStr(ins[0], "created_at"),
 	}
+	fb.TimestampSeconds = asFloatPtr(ins[0], "timestamp_seconds")
 	s.bumpThreadActivity(threadID)
 	s.markThreadRead(userID, threadID)
 	s.notifyCoachingCounterpart(cs, role, userID, name, name+": "+truncate(body, 120))

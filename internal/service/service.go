@@ -3982,6 +3982,11 @@ func (s *Service) distinctPlayerCount(eventID string) (int, error) {
 // clear the draw first. The HTTP layer maps it to 409 Conflict.
 var ErrDrawExists = errors.New("the draw is already generated — clear it before moving players between divisions")
 
+// ErrDrawHasScores is returned when a forced move is attempted but a match in an
+// affected division already has a score — clearing the draw would lose results,
+// so the move is refused even with force. The HTTP layer maps it to 409.
+var ErrDrawHasScores = errors.New("a match in one of these divisions already has a score — can't move players without losing results")
+
 // registrationExistsByContact reports whether this event already has a
 // registration whose player shares the given phone or email. Used to block
 // silent duplicates from the organizer-add and anonymous self-register flows,
@@ -5170,13 +5175,36 @@ func (s *Service) bracketDrawExists(bracketID string) (bool, error) {
 	return row != nil, nil
 }
 
+// bracketHasScoredMatch reports whether any match in the bracket is already
+// scored (status=completed). A cleared/rebuilt draw is safe only when false.
+func (s *Service) bracketHasScoredMatch(bracketID string) (bool, error) {
+	if bracketID == "" {
+		return false, nil
+	}
+	row, err := s.sb.SelectOne("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&status=eq.completed&select=id")
+	if err != nil {
+		return false, err
+	}
+	return row != nil, nil
+}
+
+// clearBracketDraw deletes a division's generated matches so its draw can be
+// rebuilt. Caller MUST verify no match is scored first (bracketHasScoredMatch).
+func (s *Service) clearBracketDraw(bracketID string) error {
+	if bracketID == "" {
+		return nil
+	}
+	return s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID))
+}
+
 // MoveRegistrationDivision reassigns one registration — and its paired partner,
 // if any — to a different division in the same event, so a pair never straddles
 // two divisions. Blocked once either the source or target division has a
 // generated draw (ErrDrawExists). This is the per-player half of a Tournament
 // Director's Rule-12 discretion to place an entrant in another division before
 // play begins.
-func (s *Service) MoveRegistrationDivision(regID, targetBracketID string) error {
+func (s *Service) MoveRegistrationDivision(regID, targetBracketID string, force bool) error {
 	targetBracketID = strings.TrimSpace(targetBracketID)
 	if targetBracketID == "" {
 		return errors.New("a target division is required")
@@ -5197,14 +5225,37 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string) error 
 	if tgt == nil || asStr(tgt, "event_id") != reg.eventID {
 		return ErrNotFound
 	}
-	// Block if either side already has a draw — reassigning would orphan matches.
-	for _, b := range []string{reg.bracketID, targetBracketID} {
-		drawn, err := s.bracketDrawExists(b)
+	// A generated draw on either side would be orphaned by the move. Default:
+	// block (ErrDrawExists). With force: allow ONLY if no match is scored yet,
+	// clearing those divisions' draws so the organizer can rebuild.
+	affected := []string{reg.bracketID, targetBracketID}
+	drawn := make([]string, 0, 2)
+	for _, b := range affected {
+		exists, err := s.bracketDrawExists(b)
 		if err != nil {
 			return err
 		}
-		if drawn {
+		if exists {
+			drawn = append(drawn, b)
+		}
+	}
+	if len(drawn) > 0 {
+		if !force {
 			return ErrDrawExists
+		}
+		for _, b := range drawn {
+			scored, err := s.bracketHasScoredMatch(b)
+			if err != nil {
+				return err
+			}
+			if scored {
+				return ErrDrawHasScores
+			}
+		}
+		for _, b := range drawn {
+			if err := s.clearBracketDraw(b); err != nil {
+				return err
+			}
 		}
 	}
 	ids := []string{reg.id}

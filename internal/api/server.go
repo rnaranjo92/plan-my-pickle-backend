@@ -4425,11 +4425,14 @@ func (s *Server) updateRegistrationDetails(w http.ResponseWriter, r *http.Reques
 func (s *Server) moveRegistrationDivision(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetBracketID string `json:"targetBracketId"`
+		// Force clears the affected divisions' (unscored) draws so the move can
+		// proceed; the organizer then rebuilds. Blocked if any match is scored.
+		Force bool `json:"force"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.MoveRegistrationDivision(r.PathValue("id"), req.TargetBracketID); err != nil {
+	if err := s.svc.MoveRegistrationDivision(r.PathValue("id"), req.TargetBracketID, req.Force); err != nil {
 		status(w, err)
 		return
 	}
@@ -6539,7 +6542,7 @@ func status(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusPaymentRequired, err)
 		return
 	}
-	if errors.Is(err, service.ErrDrawExists) {
+	if errors.Is(err, service.ErrDrawExists) || errors.Is(err, service.ErrDrawHasScores) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}

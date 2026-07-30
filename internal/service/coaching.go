@@ -877,6 +877,15 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 	if videoURL == "" {
 		return "", errors.New("a video URL is required")
 	}
+	// Guard against an accidental double-submit of the SAME clip: if an analysis
+	// for this clip is already in flight, don't spend another PB Vision run.
+	if videoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		if prev, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+			"source_video_id=eq."+store.Q(videoID)+
+				"&status=eq.processing&select=id&limit=1"); prev != nil {
+			return "", errors.New("this clip is already being analyzed on PB Vision")
+		}
+	}
 	emails := []string{}
 	if cs.StudentEmail != "" {
 		emails = append(emails, cs.StudentEmail)

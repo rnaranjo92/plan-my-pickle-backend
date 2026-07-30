@@ -651,6 +651,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Coaching marketplace: the coach's public discovery profile + player search.
 	mux.HandleFunc("GET /coach/profile", s.instructorOnly(s.myCoachProfile))
 	mux.HandleFunc("POST /coach/profile", s.instructorOnly(s.upsertCoachProfile))
+	mux.HandleFunc("POST /coach/photo", s.instructorOnly(s.uploadCoachPhoto))
 	mux.HandleFunc("GET /coaches/nearby", requireAuth(s.coachesNearby))
 	mux.HandleFunc("GET /coach/classes", s.instructorOnly(s.myClasses))
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
@@ -723,6 +724,22 @@ func (s *Server) uploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	url, err := s.svc.SetMyPhoto(userID(r), r.Header.Get("Content-Type"), data)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"photoUrl": url})
+}
+
+// uploadCoachPhoto stores the caller's dedicated instructor photo (raw JPEG/PNG
+// body) on their coach profile and returns its public URL. Body capped at 6 MB.
+func (s *Server) uploadCoachPhoto(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	url, err := s.svc.SetMyCoachPhoto(userID(r), r.Header.Get("Content-Type"), data)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

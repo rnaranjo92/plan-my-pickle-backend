@@ -9994,6 +9994,48 @@ func (s *Service) SetMyPhoto(userID, contentType string, data []byte) (string, e
 	return url, nil
 }
 
+// SetMyCoachPhoto uploads the caller's dedicated instructor/discovery photo to
+// the "avatars" bucket under a coach/ prefix (so it never clobbers their round
+// account avatar) and stamps the URL on coach_profiles.photo_url. Returns the
+// cache-busted public URL. Guarded so it's a no-op until the column ships.
+func (s *Service) SetMyCoachPhoto(userID, contentType string, data []byte) (string, error) {
+	if userID == "" {
+		return "", errors.New("not signed in")
+	}
+	if !s.coachProfilesReady() || !s.columnReady("coach_profiles", "photo_url") {
+		return "", ErrCoachingUnavailable
+	}
+	var ext string
+	switch contentType {
+	case "image/jpeg", "image/jpg":
+		contentType, ext = "image/jpeg", "jpg"
+	case "image/png":
+		ext = "png"
+	default:
+		return "", errors.New("photo must be a JPEG or PNG")
+	}
+	if len(data) == 0 {
+		return "", errors.New("empty photo")
+	}
+	if len(data) > 5*1024*1024 {
+		return "", errors.New("photo too large (max 5 MB)")
+	}
+	url, err := s.sb.StorageUpload("avatars", "coach/"+userID+"."+ext, contentType, data)
+	if err != nil {
+		return "", err
+	}
+	url = fmt.Sprintf("%s?v=%08x", url, crc32.ChecksumIEEE(data))
+	if _, err := s.sb.Upsert("coach_profiles", "user_id", map[string]any{
+		"user_id":    userID,
+		"name":       s.coachingName(userID),
+		"photo_url":  url,
+		"updated_at": now(),
+	}); err != nil {
+		return "", err
+	}
+	return url, nil
+}
+
 // ClearMyPhoto removes the caller's uploaded avatar URL from their profile so
 // the app falls back to a chosen mascot / initials. The storage object is left
 // in place (a later re-upload overwrites it).

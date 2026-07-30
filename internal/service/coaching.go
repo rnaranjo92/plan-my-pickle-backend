@@ -1752,6 +1752,7 @@ func mapCoachProfile(row map[string]any) model.CoachProfile {
 		Lng:             asFloatPtr(row, "lng"),
 		HourlyRateCents: asIntPtr(row, "hourly_rate_cents"),
 		Skills:          asStr(row, "skills"),
+		PhotoURL:        asStr(row, "photo_url"),
 	}
 }
 
@@ -1771,6 +1772,13 @@ func (s *Service) GetMyCoachProfile(userID string) (model.CoachProfile, error) {
 	p := mapCoachProfile(row)
 	if p.Name == "" {
 		p.Name = s.coachingName(userID)
+	}
+	// No dedicated instructor photo yet → fall back to the account avatar so the
+	// editor preview + card aren't empty.
+	if p.PhotoURL == "" {
+		if ph := s.photosByUser([]string{userID}); ph[userID] != "" {
+			p.PhotoURL = ph[userID]
+		}
 	}
 	return p, nil
 }
@@ -1852,9 +1860,13 @@ func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachPr
 		out = append(out, p)
 		uids = append(uids, p.UserID)
 	}
+	// Prefer the coach's dedicated instructor photo (already on the row); fall
+	// back to their account avatar only when they haven't set one.
 	photos := s.photosByUser(uids)
 	for i := range out {
-		out[i].PhotoURL = photos[out[i].UserID]
+		if out[i].PhotoURL == "" {
+			out[i].PhotoURL = photos[out[i].UserID]
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		di, dj := out[i].DistanceKm, out[j].DistanceKm

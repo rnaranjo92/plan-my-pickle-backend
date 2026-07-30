@@ -677,6 +677,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /me/sessions/{id}", requireAuth(s.cancelMySession))
 	mux.HandleFunc("GET /coach/classes", s.instructorOnly(s.myClasses))
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
+	mux.HandleFunc("POST /coach/classes/{id}", s.instructorOnly(s.updateClass))
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
 	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
 	mux.HandleFunc("GET /coach/classes/{id}/enrollments", s.instructorOnly(s.classEnrollments))
@@ -6069,6 +6070,19 @@ func (s *Server) createClass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, c)
+}
+
+func (s *Server) updateClass(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingClassRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	c, err := s.svc.UpdateClass(userID(r), r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
 }
 
 func (s *Server) deleteClass(w http.ResponseWriter, r *http.Request) {

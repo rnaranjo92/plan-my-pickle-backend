@@ -3042,6 +3042,56 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 	return mapClass(ins[0]), nil
 }
 
+// UpdateClass edits a class the coach owns.
+func (s *Service) UpdateClass(coachID, id string, req model.CoachingClassRequest) (model.CoachingClass, error) {
+	if !s.classesReady() {
+		return model.CoachingClass{}, ErrCoachingUnavailable
+	}
+	cur, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(id)+"&select=coach_id")
+	if cur == nil {
+		return model.CoachingClass{}, ErrNotFound
+	}
+	if asStr(cur, "coach_id") != coachID {
+		return model.CoachingClass{}, ErrForbidden
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.CoachingClass{}, errors.New("give the class a title")
+	}
+	if strings.TrimSpace(req.StartsAt) == "" {
+		return model.CoachingClass{}, errors.New("pick a date and time")
+	}
+	capacity := req.Capacity
+	if capacity < 0 {
+		capacity = 0
+	}
+	price := req.PriceCents
+	if price < 0 {
+		price = 0
+	}
+	upd := map[string]any{
+		"title":       title,
+		"description": orNull(strings.TrimSpace(req.Description)),
+		"starts_at":   req.StartsAt,
+		"ends_at":     orNull(strings.TrimSpace(req.EndsAt)),
+		"location":    orNull(strings.TrimSpace(req.Location)),
+		"capacity":    capacity,
+		"price_cents": price,
+	}
+	if s.columnReady("coaching_classes", "is_intro") {
+		upd["is_intro"] = req.IsIntro
+	}
+	out, err := s.sb.Update("coaching_classes", "id=eq."+store.Q(id), upd)
+	if err != nil {
+		return model.CoachingClass{}, err
+	}
+	if len(out) > 0 {
+		return mapClass(out[0]), nil
+	}
+	return model.CoachingClass{}, errors.New("could not update that class")
+}
+
 // DeleteClass removes a class the coach owns.
 func (s *Service) DeleteClass(coachID, id string) error {
 	if !s.classesReady() {

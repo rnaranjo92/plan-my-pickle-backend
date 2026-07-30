@@ -656,48 +656,101 @@ func (s *Service) GetPBVision(threadID, userID, email string) (model.PBVisionSta
 	return out, nil
 }
 
-// GetThreadPBVisionAnalysis returns the detected players (for the "which player
-// are you?" picker) from a thread's latest READY analysis, plus which one the
-// student tagged. Ready=false when there's no completed analysis.
+// GetThreadPBVisionAnalysis returns the detected players from the analysis
+// relevant to this thread — one INITIATED here, or one where this thread's
+// student was ASSIGNED a player by the coach (so a single analysis covers up to
+// 4 students). A coach viewer also gets their roster + current assignments so
+// they can distribute the players; a student gets only their own tagged player.
 func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (model.PBVisionAnalysis, error) {
 	if !s.coachingReady() {
 		return model.PBVisionAnalysis{}, ErrCoachingUnavailable
 	}
-	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
 		return model.PBVisionAnalysis{}, err
 	}
 	if !s.pbvisionJobsReady() {
 		return model.PBVisionAnalysis{Ready: false}, nil
 	}
-	sel := "coach_student_id=eq." + store.Q(threadID) +
-		"&status=eq.ready&order=updated_at.desc&limit=1&select=id,report_url,insights"
-	hasTag := s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id")
-	if hasTag {
-		sel += ",tagged_avatar_id"
+	hasAssign := s.columnReady("coaching_pbvision_assignments", "id")
+	sel := func(id string) string {
+		q := "status=eq.ready&limit=1&select=id,report_url,insights"
+		if s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id") {
+			q += ",tagged_avatar_id"
+		}
+		if s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+			q += ",source_video_id"
+		}
+		return id + "&" + q
 	}
-	hasSrc := s.columnReady("coaching_pbvision_jobs", "source_video_id")
-	if hasSrc {
-		sel += ",source_video_id"
-	}
-	row, err := s.sb.SelectOne("coaching_pbvision_jobs", sel)
-	if err != nil {
-		return model.PBVisionAnalysis{}, err
+	// Prefer a job initiated in this thread; else one assigned to this thread.
+	row, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+		sel("coach_student_id=eq."+store.Q(threadID)+"&order=updated_at.desc"))
+	if row == nil && hasAssign {
+		if a, _ := s.sb.SelectOne("coaching_pbvision_assignments",
+			"coach_student_id=eq."+store.Q(threadID)+
+				"&order=created_at.desc&limit=1&select=job_id"); a != nil {
+			row, _ = s.sb.SelectOne("coaching_pbvision_jobs",
+				sel("id=eq."+store.Q(asStr(a, "job_id"))))
+		}
 	}
 	if row == nil {
 		return model.PBVisionAnalysis{Ready: false}, nil
 	}
+	jobID := asStr(row, "id")
 	out := model.PBVisionAnalysis{
 		Ready:      true,
-		JobID:      asStr(row, "id"),
+		JobID:      jobID,
 		ReportURL:  asStr(row, "report_url"),
 		Players:    parsePBVisionPlayers(row["insights"]),
 		Highlights: parsePBVisionHighlights(row["insights"]),
+		ViewerRole: role,
 	}
-	if hasTag {
+	// This thread's tagged player: an explicit assignment wins; else the legacy
+	// single tagged_avatar_id (only meaningful for a job initiated here).
+	if hasAssign {
+		if a, _ := s.sb.SelectOne("coaching_pbvision_assignments",
+			"job_id=eq."+store.Q(jobID)+"&coach_student_id=eq."+store.Q(threadID)+
+				"&select=avatar_id"); a != nil {
+			out.TaggedID = asIntPtr(a, "avatar_id")
+		}
+	}
+	if out.TaggedID == nil {
 		out.TaggedID = asIntPtr(row, "tagged_avatar_id")
 	}
+	// Coach view: roster (to assign) + this analysis's current assignments.
+	if role == "coach" {
+		nameByThread := map[string]string{}
+		if rosterRows, rerr := s.sb.Select("coach_students",
+			"coach_id=eq."+store.Q(cs.CoachID)+
+				"&select=id,student_name,student_email&order=created_at.desc"); rerr == nil {
+			for _, r := range rosterRows {
+				name := asStr(r, "student_name")
+				if name == "" {
+					name = asStr(r, "student_email")
+				}
+				tid := asStr(r, "id")
+				nameByThread[tid] = name
+				out.Roster = append(out.Roster,
+					model.CoachStudentBrief{ThreadID: tid, Name: name})
+			}
+		}
+		if hasAssign {
+			if asgRows, aerr := s.sb.Select("coaching_pbvision_assignments",
+				"job_id=eq."+store.Q(jobID)+"&select=avatar_id,coach_student_id"); aerr == nil {
+				for _, r := range asgRows {
+					tid := asStr(r, "coach_student_id")
+					out.Assignments = append(out.Assignments, model.PBVisionAssignment{
+						AvatarID:        asInt(r, "avatar_id"),
+						StudentThreadID: tid,
+						StudentName:     nameByThread[tid],
+					})
+				}
+			}
+		}
+	}
 	// Sign the source clip so the highlights (time-ranges into it) can play.
-	if hasSrc && len(out.Highlights) > 0 {
+	if len(out.Highlights) > 0 {
 		if svid := asStr(row, "source_video_id"); svid != "" {
 			if vrow, _ := s.sb.SelectOne("coaching_videos",
 				"id=eq."+store.Q(svid)+"&select=video_url"); vrow != nil {
@@ -710,6 +763,64 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 		}
 	}
 	return out, nil
+}
+
+// SetPBVisionAssignment maps a detected player (avatarID) to a student for one
+// analysis. A student may only assign THEMSELVES; a coach may assign any of
+// their students. avatarID < 0 clears the target's assignment. Both unique
+// constraints (one player↔one student) are honored by clearing conflicts first.
+func (s *Service) SetPBVisionAssignment(threadID, userID, email, jobID string, avatarID int, targetThreadID string) error {
+	if !s.coachingReady() || !s.pbvisionJobsReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.columnReady("coaching_pbvision_assignments", "id") {
+		return errors.New("player assignment isn't available yet")
+	}
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return err
+	}
+	job, err := s.sb.SelectOne("coaching_pbvision_jobs",
+		"id=eq."+store.Q(jobID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return ErrNotFound
+	}
+	targetThreadID = strings.TrimSpace(targetThreadID)
+	if role == "student" {
+		targetThreadID = threadID // a student can only tag themselves
+	} else if targetThreadID != "" {
+		tgt, _ := s.sb.SelectOne("coach_students",
+			"id=eq."+store.Q(targetThreadID)+"&select=coach_id")
+		if tgt == nil || asStr(tgt, "coach_id") != cs.CoachID {
+			return ErrForbidden // coaches can only assign their own students
+		}
+	}
+	jobF := "job_id=eq." + store.Q(jobID)
+	// Clear a PLAYER's assignment (dropdown set to "none"): avatar given, no target.
+	if avatarID >= 0 && targetThreadID == "" {
+		return s.sb.Delete("coaching_pbvision_assignments",
+			jobF+"&avatar_id=eq."+strconv.Itoa(avatarID))
+	}
+	// Clear a STUDENT's assignment: negative avatar with a target.
+	if avatarID < 0 {
+		if targetThreadID == "" {
+			return errors.New("nothing to unassign")
+		}
+		return s.sb.Delete("coaching_pbvision_assignments",
+			jobF+"&coach_student_id=eq."+store.Q(targetThreadID))
+	}
+	// Bind avatar -> student: free both sides of a prior mapping, then insert.
+	_ = s.sb.Delete("coaching_pbvision_assignments",
+		jobF+"&avatar_id=eq."+strconv.Itoa(avatarID))
+	_ = s.sb.Delete("coaching_pbvision_assignments",
+		jobF+"&coach_student_id=eq."+store.Q(targetThreadID))
+	_, err = s.sb.Insert("coaching_pbvision_assignments", map[string]any{
+		"job_id": jobID, "avatar_id": avatarID, "coach_student_id": targetThreadID,
+	})
+	return err
 }
 
 // parsePBVisionHighlights pulls the flagged moments out of insights.highlights:
@@ -751,17 +862,15 @@ func orDefault(v, def any) any {
 	return v
 }
 
-// TagPBVisionPlayer records which detected player (avatar_id) is the student on
-// the thread's latest ready analysis. Either member (coach or student) may tag.
+// TagPBVisionPlayer is a student self-tag on the thread's latest ready analysis
+// (kept for the existing "which player are you?" flow) — it assigns that player
+// to the caller's own thread.
 func (s *Service) TagPBVisionPlayer(threadID, userID, email string, avatarID int) error {
 	if !s.coachingReady() || !s.pbvisionJobsReady() {
 		return ErrCoachingUnavailable
 	}
 	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
 		return err
-	}
-	if !s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id") {
-		return errors.New("player tagging isn't available yet")
 	}
 	row, err := s.sb.SelectOne("coaching_pbvision_jobs",
 		"coach_student_id=eq."+store.Q(threadID)+
@@ -772,10 +881,8 @@ func (s *Service) TagPBVisionPlayer(threadID, userID, email string, avatarID int
 	if row == nil {
 		return ErrNotFound
 	}
-	_, err = s.sb.Update("coaching_pbvision_jobs",
-		"id=eq."+store.Q(asStr(row, "id")),
-		map[string]any{"tagged_avatar_id": avatarID, "updated_at": now()})
-	return err
+	return s.SetPBVisionAssignment(threadID, userID, email, asStr(row, "id"),
+		avatarID, threadID)
 }
 
 // parsePBVisionPlayers pulls the detected players out of a raw insights blob:

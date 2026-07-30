@@ -1480,6 +1480,25 @@ type PBVisionAnalysis struct {
 	// highlights, which are time-ranges into it, can be played inline).
 	SourceVideoURL string             `json:"sourceVideoUrl,omitempty"`
 	Highlights     []PBVisionHighlight `json:"highlights,omitempty"`
+	// ViewerRole is "coach" or "student". A coach sees Roster + Assignments to
+	// distribute the 4 detected players across their students; a student only
+	// sees their own tagged player (TaggedID).
+	ViewerRole  string              `json:"viewerRole,omitempty"`
+	Roster      []CoachStudentBrief `json:"roster,omitempty"`
+	Assignments []PBVisionAssignment `json:"assignments,omitempty"`
+}
+
+// CoachStudentBrief is a coach's student, for the assign dropdown.
+type CoachStudentBrief struct {
+	ThreadID string `json:"threadId"`
+	Name     string `json:"name"`
+}
+
+// PBVisionAssignment maps a detected player to a student for one analysis.
+type PBVisionAssignment struct {
+	AvatarID       int    `json:"avatarId"`
+	StudentThreadID string `json:"studentThreadId"`
+	StudentName    string `json:"studentName"`
 }
 
 // PBVisionHighlight is one notable moment PB Vision flagged: a time-range

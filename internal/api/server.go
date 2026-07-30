@@ -638,6 +638,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coaching/threads/{id}/analyze", requireAuth(s.analyzeThreadVideo))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/analysis", requireAuth(s.coachingPBVisionAnalysis))
 	mux.HandleFunc("POST /coaching/threads/{id}/pbvision/tag", requireAuth(s.coachingPBVisionTag))
+	mux.HandleFunc("POST /coaching/threads/{id}/pbvision/assign", requireAuth(s.coachingPBVisionAssign))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/history", requireAuth(s.coachingPBVisionHistory))
 	mux.HandleFunc("GET /coaching/threads/{id}/program", requireAuth(s.threadProgram))
 	mux.HandleFunc("POST /coach/students/{id}/program", requireAuth(s.createProgram))
@@ -5553,6 +5554,25 @@ func (s *Server) coachingPBVisionTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "tagged"})
+}
+
+// coachingPBVisionAssign lets a coach map a detected player to one of their
+// students (avatarId < 0 clears). One analysis can cover up to 4 students.
+func (s *Server) coachingPBVisionAssign(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		JobID          string `json:"jobId"`
+		AvatarID       int    `json:"avatarId"`
+		StudentThreadID string `json:"studentThreadId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetPBVisionAssignment(r.PathValue("id"), userID(r),
+		userEmail(r), req.JobID, req.AvatarID, req.StudentThreadID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "assigned"})
 }
 
 func (s *Server) coachingPBVisionHistory(w http.ResponseWriter, r *http.Request) {

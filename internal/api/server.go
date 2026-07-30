@@ -633,6 +633,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /admin/instructors", s.ownerEmailOnly(s.addInstructor))
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
 	mux.HandleFunc("GET /coaching/threads/{id}", requireAuth(s.coachingThread))
+	mux.HandleFunc("GET /coaching/threads/{id}/pbvision", requireAuth(s.coachingPBVision))
 	mux.HandleFunc("POST /coaching/threads/{id}/videos", requireAuth(s.addCoachingVideo))
 	mux.HandleFunc("POST /coaching/videos/{id}/feedback", requireAuth(s.addCoachingFeedback))
 	mux.HandleFunc("DELETE /coaching/videos/{id}", requireAuth(s.deleteCoachingVideo))
@@ -5460,6 +5461,15 @@ func (s *Server) coachingThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *Server) coachingPBVision(w http.ResponseWriter, r *http.Request) {
+	p, err := s.svc.GetPBVision(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (s *Server) addCoachingVideo(w http.ResponseWriter, r *http.Request) {

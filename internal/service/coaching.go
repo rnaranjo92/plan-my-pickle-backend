@@ -613,6 +613,42 @@ func (s *Service) signCoachingVideos(vids []model.CoachingVideo) {
 	}
 }
 
+func (s *Service) pbVisionReady() bool {
+	return s.columnReady("coaching_pbvision", "coach_student_id")
+}
+
+// GetPBVision returns the PB Vision analytics for a thread (member-gated). When
+// the column/feature isn't live or no report is synced, Connected is false so
+// the UI shows the "not connected yet" state instead of erroring.
+func (s *Service) GetPBVision(threadID, userID, email string) (model.PBVisionStats, error) {
+	if !s.coachingReady() {
+		return model.PBVisionStats{}, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return model.PBVisionStats{}, err
+	}
+	if !s.pbVisionReady() {
+		return model.PBVisionStats{Connected: false}, nil
+	}
+	row, err := s.sb.SelectOne("coaching_pbvision",
+		"coach_student_id=eq."+store.Q(threadID))
+	if err != nil {
+		return model.PBVisionStats{}, err
+	}
+	if row == nil {
+		return model.PBVisionStats{Connected: false}, nil
+	}
+	out := model.PBVisionStats{
+		Connected:    true,
+		Rating:       asFloatPtr(row, "rating"),
+		LastSyncedAt: asStr(row, "last_synced_at"),
+	}
+	if m, ok := row["stats"].(map[string]any); ok {
+		out.Stats = m
+	}
+	return out, nil
+}
+
 // GetThread returns a thread's clips (each with nested feedback), for a member.
 func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThread, error) {
 	if !s.coachingReady() {
@@ -1245,6 +1281,41 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 		taylorID = t
 		v := addClip(t, seedVideoURLs[0], "Hands battle at the net")
 		addFeedback(t, v, "coach", "Love the quick hands. Reset when it's above the net — don't counter everything.")
+	}
+
+	// Sample PB Vision report for Taylor so the PB Vision tab has example stats.
+	// (Fresh thread row each run → no prior pbvision row to clear.)
+	if s.pbVisionReady() && taylorID != "" {
+		_, _ = s.sb.Insert("coaching_pbvision", map[string]any{
+			"coach_student_id": taylorID,
+			"rating":           3.42,
+			"last_synced_at":   time.Now().UTC().Format(time.RFC3339),
+			"stats": map[string]any{
+				"matchesAnalyzed":   8,
+				"shotQuality":       72,
+				"serveInPct":        94,
+				"returnInPct":       88,
+				"kitchenArrivalPct": 61,
+				"thirdDropPct":      47,
+				"dinkErrorPct":      12,
+				"speedupWinPct":     55,
+				"winnersPerGame":    6.2,
+				"unforcedPerGame":   8.4,
+				"avgShotSpeedMph":   31,
+				"topShotSpeedMph":   58,
+				"avgRallyLength":    7.3,
+				"shotMix": map[string]any{
+					"Dinks":   34,
+					"Volleys": 15,
+					"Serves":  14,
+					"Returns": 13,
+					"Drives":  12,
+					"Drops":   12,
+				},
+				"strengths": []string{"Hands at the net", "Dink consistency", "Kitchen coverage"},
+				"improve":   []string{"3rd-shot drop under pressure", "Return depth", "Cut unforced errors"},
+			},
+		})
 	}
 
 	// Sample schedule entries (booked sessions + open + a day off). Re-runnable:

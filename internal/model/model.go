@@ -1386,6 +1386,16 @@ type CoachProfile struct {
 	DistanceKm      *float64 `json:"distanceKm,omitempty"`
 }
 
+// PBVisionStats is a student's PB Vision AI game-report analytics for a thread.
+// Stats is the flexible metric blob (shot quality, speeds, kitchen arrival, shot
+// mix, strengths/improve, etc.); Connected is false when no report is synced yet.
+type PBVisionStats struct {
+	Connected    bool           `json:"connected"`
+	Rating       *float64       `json:"rating,omitempty"`
+	LastSyncedAt string         `json:"lastSyncedAt,omitempty"`
+	Stats        map[string]any `json:"stats,omitempty"`
+}
+
 // CoachProfileRequest upserts the signed-in coach's discovery profile. Location
 // is geocoded from City server-side. Listing requires a bio + years of
 // experience (enforced in UpsertCoachProfile).

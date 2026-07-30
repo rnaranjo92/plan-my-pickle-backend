@@ -660,6 +660,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coach/intro-video", s.instructorOnly(s.clearCoachIntroVideo))
 	mux.HandleFunc("GET /coaches/{userId}/intro-video", requireAuth(s.coachIntroVideo))
 	mux.HandleFunc("GET /coaches/nearby", requireAuth(s.coachesNearby))
+	mux.HandleFunc("POST /coaches/{userId}/verified", s.ownerEmailOnly(s.setCoachVerified))
 	mux.HandleFunc("POST /coaches/{userId}/favorite", requireAuth(s.toggleFavoriteCoach))
 	mux.HandleFunc("GET /me/favorite-coaches", requireAuth(s.favoriteCoaches))
 	mux.HandleFunc("GET /coaches/{userId}/reviews", requireAuth(s.coachReviews))
@@ -5830,6 +5831,20 @@ func (s *Server) coachesNearby(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) setCoachVerified(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Verified bool `json:"verified"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetCoachVerified(r.PathValue("userId"), req.Verified); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"verified": req.Verified})
 }
 
 func (s *Server) toggleFavoriteCoach(w http.ResponseWriter, r *http.Request) {

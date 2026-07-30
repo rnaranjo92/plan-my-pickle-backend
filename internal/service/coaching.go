@@ -1971,7 +1971,22 @@ func mapCoachProfile(row map[string]any) model.CoachProfile {
 		PhotoURL:        asStr(row, "photo_url"),
 		HasIntroVideo:   strings.TrimSpace(asStr(row, "intro_video_url")) != "",
 		CancelPolicy:    asStr(row, "cancel_policy"),
+		Verified:        asBool(row, "verified"),
+		Certifications:  asStr(row, "certifications"),
 	}
+}
+
+// SetCoachVerified grants/revokes a coach's verified badge (owner-gated in API).
+func (s *Service) SetCoachVerified(coachUserID string, verified bool) error {
+	if !s.coachProfilesReady() || !s.columnReady("coach_profiles", "verified") {
+		return ErrCoachingUnavailable
+	}
+	_, err := s.sb.Upsert("coach_profiles", "user_id", map[string]any{
+		"user_id":  coachUserID,
+		"name":     s.coachingName(coachUserID),
+		"verified": verified,
+	})
+	return err
 }
 
 // cancelCutoffHours is how long before start a booking locks (no cancel).
@@ -2133,6 +2148,9 @@ func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileReques
 			pol = "flexible"
 		}
 		row["cancel_policy"] = pol
+	}
+	if s.columnReady("coach_profiles", "certifications") {
+		row["certifications"] = orNull(strings.TrimSpace(req.Certifications))
 	}
 	if city := strings.TrimSpace(req.City); city != "" {
 		if lat, lng := bestEffortGeocode(city); lat != nil && lng != nil {
@@ -3552,6 +3570,10 @@ func (s *Service) SeedDemoCoaches() (int, error) {
 		}
 		if yearsReady {
 			row["years_experience"] = d.Years
+		}
+		if s.columnReady("coach_profiles", "verified") {
+			row["verified"] = true
+			row["certifications"] = "PPR Certified · IPTPA Level 2"
 		}
 		if _, err := s.sb.Insert("coach_profiles", row); err == nil {
 			n++

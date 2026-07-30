@@ -1419,6 +1419,9 @@ type CoachProfile struct {
 	CancelPolicy string `json:"cancelPolicy,omitempty"`
 	// Favorited is true when the requesting viewer has saved this coach.
 	Favorited bool `json:"favorited"`
+	// Verified is granted after vetting; Certifications is coach-entered.
+	Verified       bool   `json:"verified"`
+	Certifications string `json:"certifications,omitempty"`
 }
 
 // CoachReview is a player's star rating + comment for a coach. One per
@@ -1478,6 +1481,7 @@ type CoachProfileRequest struct {
 	HourlyRateCents *int   `json:"hourlyRateCents"`
 	Skills          string `json:"skills"`
 	CancelPolicy    string `json:"cancelPolicy"`
+	Certifications  string `json:"certifications"`
 }
 
 // CoachingClass is a group class a coach offers that players can enroll in.

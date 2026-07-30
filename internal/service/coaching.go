@@ -1291,6 +1291,90 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 		addFeedback(t, v, "coach", "Love the quick hands. Reset when it's above the net — don't counter everything.")
 	}
 
+	// Real coach↔student link: connect the running coach (krizhia when she runs
+	// "Generate demo data") to rolando's live account so BOTH real accounts see a
+	// fully-loaded coaching thread. Skipped if the runner IS rolando (no self-coach).
+	const rolandoEmail = "rolando.naranjo0420@gmail.com"
+	if rolID := s.userIDByEmail(rolandoEmail); rolID != coachID {
+		// Idempotent: clear any prior seeded link (cascade removes its data).
+		_ = s.sb.Delete("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(rolandoEmail))
+		row := map[string]any{
+			"coach_id":      coachID,
+			"student_email": rolandoEmail,
+			"student_name":  "Rolando Naranjo",
+			"student_id":    orNull(rolID),
+		}
+		if studentNoteOK {
+			row["coach_note"] = "Solid hands at the net — push footwork and third-shot consistency."
+		}
+		if levelOK {
+			row["skill_level"] = "3.5"
+		}
+		if ins, _ := s.sb.Insert("coach_students", row); len(ins) > 0 {
+			rid := asStr(ins[0], "id")
+			count++
+			v1 := addClip(rid, seedVideoURLs[0], "Third-shot drop reps")
+			addFeedback(rid, v1, "coach", "Nice soft hands — let the drop float and reset before you move in.")
+			addFeedback(rid, v1, "student", "Got it coach — I'll freeze after the drop.")
+			addClipNote(rid, v1, "He rushes the kitchen after the drop — cue the freeze.")
+			v2 := addClip(rid, seedVideoURLs[1], "Dinking cross-court")
+			addFeedback(rid, v2, "coach", "Good patience here. Keep the paddle up between dinks.")
+
+			if s.columnReady("coaching_skill_ratings", "id") {
+				ratings := map[string]float64{
+					"serve": 3.5, "return": 3.0, "dinks": 3.5,
+					"drops": 2.5, "volleys": 3.5, "strategy": 3.0,
+				}
+				for _, sk := range coachingSkills {
+					r := ratings[sk]
+					_, _ = s.sb.Upsert("coaching_skill_ratings", "coach_student_id,skill",
+						map[string]any{
+							"coach_student_id": rid, "skill": sk,
+							"rating": r, "first_rating": r - 0.5,
+						})
+				}
+			}
+			if s.columnReady("coaching_shared_notes", "id") {
+				_, _ = s.sb.Insert("coaching_shared_notes", map[string]any{
+					"coach_student_id": rid,
+					"title":            "This week's focus",
+					"body":             "Third-shot drops under pressure, then get to the kitchen line. 20 min of drops before each session.",
+				})
+			}
+			if s.columnReady("coaching_assignments", "id") {
+				_, _ = s.sb.Insert("coaching_assignments", map[string]any{
+					"coach_student_id": rid,
+					"title":            "Drop-and-freeze drill",
+					"skill_category":   "drops",
+					"goal":             "10 in a row landing in the kitchen, then freeze before advancing.",
+					"status":           "assigned",
+					"assigned_by":      coachID,
+				})
+			}
+			if s.pbVisionReady() {
+				_, _ = s.sb.Insert("coaching_pbvision", map[string]any{
+					"coach_student_id": rid,
+					"rating":           3.35,
+					"last_synced_at":   time.Now().UTC().Format(time.RFC3339),
+					"stats": map[string]any{
+						"matchesAnalyzed": 6, "shotQuality": 69,
+						"serveInPct": 92, "returnInPct": 85, "kitchenArrivalPct": 58,
+						"thirdDropPct": 44, "dinkErrorPct": 14, "speedupWinPct": 52,
+						"winnersPerGame": 5.4, "unforcedPerGame": 9.1,
+						"avgShotSpeedMph": 29, "topShotSpeedMph": 54, "avgRallyLength": 6.8,
+						"shotMix": map[string]any{
+							"Dinks": 31, "Volleys": 16, "Serves": 15,
+							"Returns": 14, "Drives": 13, "Drops": 11,
+						},
+						"strengths": []string{"Hands at the net", "Serve consistency"},
+						"improve":   []string{"3rd-shot drop under pressure", "Cut unforced errors"},
+					},
+				})
+			}
+		}
+	}
+
 	// Sample PB Vision report for Taylor so the PB Vision tab has example stats.
 	// (Fresh thread row each run → no prior pbvision row to clear.)
 	if s.pbVisionReady() && taylorID != "" {
@@ -3356,6 +3440,10 @@ func (s *Service) RemoveDemoStudents(coachID string) (int, error) {
 	if err := s.sb.Delete("coach_students", filter); err != nil {
 		return 0, err
 	}
+	// Also clear the seeded real krizhia↔rolando link.
+	_ = s.sb.Delete("coach_students",
+		"coach_id=eq."+store.Q(coachID)+
+			"&student_email=eq."+store.Q("rolando.naranjo0420@gmail.com"))
 	return len(rows), nil
 }
 

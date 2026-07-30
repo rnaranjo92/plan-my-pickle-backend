@@ -1297,6 +1297,16 @@ type CoachingScheduleItem struct {
 	AllDay         bool   `json:"allDay"`
 	Location       string `json:"location,omitempty"`
 	Notes          string `json:"notes,omitempty"`
+	// CoachName is populated only on a player's own booked-sessions list.
+	CoachName string `json:"coachName,omitempty"`
+}
+
+// CoachBookingRequest is a player booking a 1:1 session inside a coach's open
+// availability window.
+type CoachBookingRequest struct {
+	StartsAt     string `json:"startsAt"`
+	DurationMins int    `json:"durationMins"`
+	Location     string `json:"location"`
 }
 
 // CoachingScheduleRequest books/opens/blocks a schedule entry.

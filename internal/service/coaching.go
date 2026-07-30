@@ -2095,6 +2095,232 @@ func (s *Service) DeleteCoachReview(authorID, reviewID string) error {
 		"id=eq."+store.Q(reviewID)+"&author_id=eq."+store.Q(authorID))
 }
 
+// --- 1:1 session booking (player books a coach's open availability) ---
+
+func parseSchedTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+// ListCoachAvailability returns a coach's upcoming OPEN availability windows
+// (the slots a player can book a 1:1 into).
+func (s *Service) ListCoachAvailability(coachUserID string) ([]model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() {
+		return []model.CoachingScheduleItem{}, nil
+	}
+	rows, err := s.sb.Select("coaching_schedule",
+		"coach_id=eq."+store.Q(coachUserID)+"&kind=eq.open&order=starts_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	nowT := time.Now().UTC()
+	out := make([]model.CoachingScheduleItem, 0, len(rows))
+	for _, r := range rows {
+		it := mapScheduleItem(r)
+		end, ok := parseSchedTime(it.EndsAt)
+		if !ok {
+			end, _ = parseSchedTime(it.StartsAt)
+		}
+		if !end.IsZero() && end.Before(nowT) {
+			continue // window already passed
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// BookCoachSession books a player's 1:1 session inside one of the coach's open
+// windows. Validates the slot fits a window and doesn't collide with an existing
+// session, links the player to the coach's roster, and notifies the coach.
+func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserID string, req model.CoachBookingRequest) (model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() || !s.coachingReady() {
+		return model.CoachingScheduleItem{}, ErrCoachingUnavailable
+	}
+	if playerID == "" || coachUserID == "" || playerID == coachUserID {
+		return model.CoachingScheduleItem{}, ErrForbidden
+	}
+	start, ok := parseSchedTime(req.StartsAt)
+	if !ok {
+		return model.CoachingScheduleItem{}, errors.New("pick a valid start time")
+	}
+	dur := req.DurationMins
+	if dur <= 0 {
+		dur = 60
+	}
+	if dur < 15 {
+		dur = 15
+	}
+	if dur > 240 {
+		dur = 240
+	}
+	end := start.Add(time.Duration(dur) * time.Minute)
+	if start.Before(time.Now().UTC()) {
+		return model.CoachingScheduleItem{}, errors.New("that time has already passed")
+	}
+
+	// Load the coach's schedule once: confirm the slot fits an open window and
+	// doesn't overlap an existing session.
+	rows, err := s.sb.Select("coaching_schedule",
+		"coach_id=eq."+store.Q(coachUserID)+"&select=kind,starts_at,ends_at")
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	inWindow := false
+	for _, r := range rows {
+		kind := asStr(r, "kind")
+		ws, ok1 := parseSchedTime(asStr(r, "starts_at"))
+		we, ok2 := parseSchedTime(asStr(r, "ends_at"))
+		switch kind {
+		case "open":
+			if ok1 && ok2 && !start.Before(ws) && !end.After(we) {
+				inWindow = true
+			}
+		case "session":
+			// Overlap if start < existing end AND end > existing start.
+			se := we
+			if !ok2 {
+				se = ws.Add(time.Hour)
+			}
+			if ok1 && start.Before(se) && end.After(ws) {
+				return model.CoachingScheduleItem{}, errors.New("that time is already booked — pick another slot")
+			}
+		}
+	}
+	if !inWindow {
+		return model.CoachingScheduleItem{}, errors.New("that time isn't within the coach's open availability")
+	}
+
+	// Link the player to the coach's roster and get the thread id.
+	s.ensureCoachStudentLink(coachUserID, playerID, playerName, playerEmail)
+	link, _ := s.sb.SelectOne("coach_students",
+		"coach_id=eq."+store.Q(coachUserID)+"&or=(student_id.eq."+store.Q(playerID)+
+			",student_email.eq."+store.Q(strings.ToLower(strings.TrimSpace(playerEmail)))+")&select=id&limit=1")
+	threadID := asStr(link, "id")
+
+	label := strings.TrimSpace(playerName)
+	if label == "" {
+		label = playerEmail
+	}
+	row := map[string]any{
+		"coach_id":  coachUserID,
+		"kind":      "session",
+		"starts_at": start.Format(time.RFC3339),
+		"ends_at":   end.Format(time.RFC3339),
+		"all_day":   false,
+		"location":  orNull(strings.TrimSpace(req.Location)),
+		"notes":     "Booked by player",
+	}
+	if threadID != "" {
+		row["coach_student_id"] = threadID
+		row["student_label"] = label
+	}
+	ins, err := s.sb.Insert("coaching_schedule", row)
+	if err != nil || len(ins) == 0 {
+		if err == nil {
+			err = errors.New("could not book the session")
+		}
+		return model.CoachingScheduleItem{}, err
+	}
+
+	// Notify the coach.
+	s.notifyUser(coachUserID, "coaching", playerID, label,
+		label+" booked a 1:1 session", "coaching:"+threadID)
+
+	return mapScheduleItem(ins[0]), nil
+}
+
+// ListMySessions returns a player's upcoming booked 1:1 sessions (with coach name).
+func (s *Service) ListMySessions(playerID, email string) ([]model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() || !s.coachingReady() {
+		return []model.CoachingScheduleItem{}, nil
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	// The player's thread ids (roster rows linked to them).
+	filter := "select=id,coach_id&"
+	if playerID != "" && email != "" {
+		filter += "or=(student_id.eq." + store.Q(playerID) + ",student_email.eq." + store.Q(email) + ")"
+	} else if playerID != "" {
+		filter += "student_id=eq." + store.Q(playerID)
+	} else if email != "" {
+		filter += "student_email=eq." + store.Q(email)
+	} else {
+		return []model.CoachingScheduleItem{}, nil
+	}
+	links, err := s.sb.Select("coach_students", filter)
+	if err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return []model.CoachingScheduleItem{}, nil
+	}
+	ids := make([]string, 0, len(links))
+	coachOf := map[string]string{}
+	for _, l := range links {
+		id := asStr(l, "id")
+		ids = append(ids, id)
+		coachOf[id] = asStr(l, "coach_id")
+	}
+	rows, err := s.sb.Select("coaching_schedule",
+		"coach_student_id="+store.In(ids)+"&kind=eq.session&order=starts_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	nowT := time.Now().UTC()
+	nameCache := map[string]string{}
+	out := make([]model.CoachingScheduleItem, 0, len(rows))
+	for _, r := range rows {
+		it := mapScheduleItem(r)
+		end, ok := parseSchedTime(it.EndsAt)
+		if !ok {
+			end, _ = parseSchedTime(it.StartsAt)
+		}
+		if !end.IsZero() && end.Before(nowT) {
+			continue
+		}
+		coachID := coachOf[it.CoachStudentID]
+		if coachID != "" {
+			n, seen := nameCache[coachID]
+			if !seen {
+				n = s.coachingName(coachID)
+				nameCache[coachID] = n
+			}
+			it.CoachName = n
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// CancelMySession lets a player cancel a session they booked (their thread only).
+func (s *Service) CancelMySession(playerID, email, sessionID string) error {
+	if !s.scheduleReady() {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_schedule",
+		"id=eq."+store.Q(sessionID)+"&select=coach_student_id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	threadID := asStr(row, "coach_student_id")
+	if threadID == "" {
+		return ErrForbidden
+	}
+	// Verify the thread belongs to this player.
+	if _, role, err := s.threadMembership(threadID, playerID, email); err != nil || role != "student" {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(sessionID))
+}
+
 // --- Coaching classes (marketplace Phase B) ---
 
 func (s *Service) classesReady() bool {

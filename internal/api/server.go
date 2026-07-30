@@ -657,6 +657,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaches/{userId}/reviews", requireAuth(s.coachReviews))
 	mux.HandleFunc("POST /coaches/{userId}/reviews", requireAuth(s.submitCoachReview))
 	mux.HandleFunc("DELETE /coach-reviews/{id}", requireAuth(s.deleteCoachReview))
+	mux.HandleFunc("GET /coaches/{userId}/availability", requireAuth(s.coachAvailability))
+	mux.HandleFunc("POST /coaches/{userId}/book", requireAuth(s.bookCoachSession))
+	mux.HandleFunc("GET /me/sessions", requireAuth(s.mySessions))
+	mux.HandleFunc("DELETE /me/sessions/{id}", requireAuth(s.cancelMySession))
 	mux.HandleFunc("GET /coach/classes", s.instructorOnly(s.myClasses))
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
@@ -5812,6 +5816,46 @@ func (s *Server) deleteCoachReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) coachAvailability(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachAvailability(r.PathValue("userId"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) bookCoachSession(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachBookingRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.BookCoachSession(
+		userID(r), userEmail(r), userName(r), r.PathValue("userId"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) mySessions(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListMySessions(userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) cancelMySession(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CancelMySession(userID(r), userEmail(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled"})
 }
 
 // Coaching classes (marketplace Phase B).

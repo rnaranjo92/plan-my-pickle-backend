@@ -5305,8 +5305,11 @@ func (s *Service) PendingRegistrations(eventID string) ([]model.Registration, er
 // count and the draw (owner-only at the handler). Declining a pending entry is
 // just DeleteRegistration.
 func (s *Service) ApproveRegistration(regID string) error {
+	// Name + email live on the linked players row (registrations has neither
+	// column), so embed the player via the player_id FK.
 	reg, err := s.sb.SelectOne("registrations",
-		"id=eq."+store.Q(regID)+"&select=id,event_id,full_name,email,bracket_id,approved")
+		"id=eq."+store.Q(regID)+
+			"&select=id,event_id,bracket_id,approved,player:players!player_id(full_name,email)")
 	if err != nil {
 		return err
 	}
@@ -5327,11 +5330,15 @@ func (s *Service) ApproveRegistration(regID string) error {
 	// "registered" feed post + the branded confirmation email (best-effort, off
 	// the request path — a mail hiccup never fails the approval).
 	eventID := asStr(reg, "event_id")
-	name := strings.TrimSpace(asStr(reg, "full_name"))
+	name, email := "", ""
+	if p := asMap(reg, "player"); p != nil {
+		name = strings.TrimSpace(asStr(p, "full_name"))
+		email = strings.TrimSpace(asStr(p, "email"))
+	}
 	if eventID != "" && name != "" {
 		s.AddFeedItem(eventID, "registered", name+" registered", regID)
 	}
-	if email := strings.TrimSpace(asStr(reg, "email")); email != "" && eventID != "" {
+	if email != "" && eventID != "" {
 		bracketID := asStr(reg, "bracket_id")
 		go s.SendRegistrationEmail(eventID, email, name, bracketID)
 	}

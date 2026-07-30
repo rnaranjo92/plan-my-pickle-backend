@@ -656,6 +656,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
 	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
+	mux.HandleFunc("GET /coach/classes/{id}/enrollments", s.instructorOnly(s.classEnrollments))
+	mux.HandleFunc("POST /coaching/classes/{id}/enroll", requireAuth(s.enrollClass))
+	mux.HandleFunc("POST /coaching/classes/{id}/unenroll", requireAuth(s.unenrollClass))
+	mux.HandleFunc("GET /me/classes", requireAuth(s.myEnrolledClasses))
 	mux.HandleFunc("POST /dev/test-sms", requireAuth(s.testSms))
 	mux.HandleFunc("POST /dev/test-sms-numbers", requireAuth(s.testSmsNumbers))
 	// Rename leftover "TEST ·" events + "Test Courts" venue to legit names.
@@ -5778,7 +5782,42 @@ func (s *Server) deleteClass(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) coachClasses(w http.ResponseWriter, r *http.Request) {
-	list, err := s.svc.ListCoachClassesPublic(r.PathValue("userId"))
+	list, err := s.svc.ListCoachClassesPublic(r.PathValue("userId"), userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) classEnrollments(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListClassEnrollments(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) enrollClass(w http.ResponseWriter, r *http.Request) {
+	e, err := s.svc.Enroll(r.PathValue("id"), userID(r), "", userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
+}
+
+func (s *Server) unenrollClass(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CancelClassEnrollment(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) myEnrolledClasses(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.MyEnrolledClasses(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

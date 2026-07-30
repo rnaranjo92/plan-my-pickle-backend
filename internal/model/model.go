@@ -1411,7 +1411,28 @@ type CoachingClass struct {
 	Capacity      int    `json:"capacity"`
 	PriceCents    int    `json:"priceCents"`
 	EnrolledCount int    `json:"enrolledCount"`
-	CreatedAt     string `json:"createdAt,omitempty"`
+	// Enrolled is set on player-facing lists: whether the caller is enrolled.
+	Enrolled  bool   `json:"enrolled"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
+// CoachingEnrollment is a player's seat in a class.
+type CoachingEnrollment struct {
+	ID          string `json:"id"`
+	ClassID     string `json:"classId,omitempty"`
+	UserID      string `json:"userId,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Status      string `json:"status"`
+	AmountCents int    `json:"amountCents"`
+	Paid        bool   `json:"paid"`
+	ChargeAt    string `json:"chargeAt,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	// ClassTitle/StartsAt populated on a player's "my classes" list.
+	ClassTitle string `json:"classTitle,omitempty"`
+	StartsAt   string `json:"startsAt,omitempty"`
+	CoachName  string `json:"coachName,omitempty"`
+	Location   string `json:"location,omitempty"`
 }
 
 // CoachingClassRequest creates a class (coach only).

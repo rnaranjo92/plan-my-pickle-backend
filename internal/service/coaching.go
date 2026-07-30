@@ -1908,11 +1908,13 @@ func (s *Service) ListMyClasses(coachID string) ([]model.CoachingClass, error) {
 	for _, r := range rows {
 		out = append(out, mapClass(r))
 	}
+	s.enrichClasses(out, "")
 	return out, nil
 }
 
-// ListCoachClassesPublic returns a coach's UPCOMING classes (player view).
-func (s *Service) ListCoachClassesPublic(coachUserID string) ([]model.CoachingClass, error) {
+// ListCoachClassesPublic returns a coach's UPCOMING classes (player view), with
+// enrolled counts and whether the viewer is enrolled.
+func (s *Service) ListCoachClassesPublic(coachUserID, viewerID string) ([]model.CoachingClass, error) {
 	if !s.classesReady() {
 		return []model.CoachingClass{}, nil
 	}
@@ -1929,6 +1931,7 @@ func (s *Service) ListCoachClassesPublic(coachUserID string) ([]model.CoachingCl
 		c.CoachName = name
 		out = append(out, c)
 	}
+	s.enrichClasses(out, viewerID)
 	return out, nil
 }
 
@@ -1988,6 +1991,219 @@ func (s *Service) DeleteClass(coachID, id string) error {
 		return ErrForbidden
 	}
 	return s.sb.Delete("coaching_classes", "id=eq."+store.Q(id))
+}
+
+// --- Class enrollments (marketplace Phase C/D) ---
+
+func (s *Service) enrollmentsReady() bool {
+	return s.columnReady("coaching_enrollments", "id")
+}
+
+func mapEnrollment(row map[string]any) model.CoachingEnrollment {
+	return model.CoachingEnrollment{
+		ID:          asStr(row, "id"),
+		ClassID:     asStr(row, "class_id"),
+		UserID:      asStr(row, "user_id"),
+		Name:        asStr(row, "name"),
+		Email:       asStr(row, "email"),
+		Status:      asStr(row, "status"),
+		AmountCents: asInt(row, "amount_cents"),
+		Paid:        asBool(row, "paid"),
+		ChargeAt:    asStr(row, "charge_at"),
+		CreatedAt:   asStr(row, "created_at"),
+	}
+}
+
+func (s *Service) classEnrolledCount(classID string) int {
+	rows, err := s.sb.Select("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&status=eq.enrolled&select=id")
+	if err != nil {
+		return 0
+	}
+	return len(rows)
+}
+
+// enrichClasses fills EnrolledCount (and, when viewerID is set, Enrolled).
+func (s *Service) enrichClasses(list []model.CoachingClass, viewerID string) {
+	if !s.enrollmentsReady() {
+		return
+	}
+	for i := range list {
+		list[i].EnrolledCount = s.classEnrolledCount(list[i].ID)
+		if viewerID != "" {
+			r, _ := s.sb.SelectOne("coaching_enrollments",
+				"class_id=eq."+store.Q(list[i].ID)+"&user_id=eq."+store.Q(viewerID)+
+					"&status=eq.enrolled&select=id")
+			list[i].Enrolled = r != nil
+		}
+	}
+}
+
+// ensureCoachStudentLink adds a roster link (coach↔player) if one doesn't exist,
+// so an enrolled player shows up in the coach's Students list.
+func (s *Service) ensureCoachStudentLink(coachID, studentID, name, email string) {
+	if coachID == "" || !s.coachingReady() {
+		return
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	var found map[string]any
+	if studentID != "" {
+		found, _ = s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_id=eq."+store.Q(studentID)+"&select=id")
+	}
+	if found == nil && email != "" {
+		found, _ = s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id")
+	}
+	if found != nil {
+		return
+	}
+	_, _ = s.sb.Insert("coach_students", map[string]any{
+		"coach_id":      coachID,
+		"student_id":    orNull(studentID),
+		"student_name":  orNull(strings.TrimSpace(name)),
+		"student_email": orNull(email),
+	})
+}
+
+// Enroll books a player's seat in a class. Free classes are paid immediately;
+// paid classes record charge_at = starts_at − 1h for a later off-session charge.
+func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnrollment, error) {
+	if !s.classesReady() || !s.enrollmentsReady() {
+		return model.CoachingEnrollment{}, ErrCoachingUnavailable
+	}
+	cls, err := s.sb.SelectOne("coaching_classes", "id=eq."+store.Q(classID))
+	if err != nil {
+		return model.CoachingEnrollment{}, err
+	}
+	if cls == nil {
+		return model.CoachingEnrollment{}, ErrNotFound
+	}
+	if strings.TrimSpace(name) == "" {
+		name = s.coachingName(userID)
+	}
+	existing, _ := s.sb.SelectOne("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID))
+	if existing != nil && asStr(existing, "status") == "enrolled" {
+		return mapEnrollment(existing), nil // idempotent
+	}
+	capacity := asInt(cls, "capacity")
+	if capacity > 0 && s.classEnrolledCount(classID) >= capacity {
+		return model.CoachingEnrollment{}, errors.New("this class is full")
+	}
+	price := asInt(cls, "price_cents")
+	row := map[string]any{
+		"class_id":     classID,
+		"user_id":      userID,
+		"name":         orNull(strings.TrimSpace(name)),
+		"email":        orNull(strings.ToLower(strings.TrimSpace(email))),
+		"status":       "enrolled",
+		"amount_cents": price,
+		"paid":         price == 0,
+	}
+	if price > 0 {
+		if t, ok := parseTime(asStr(cls, "starts_at")); ok {
+			row["charge_at"] = t.Add(-time.Hour).UTC().Format(time.RFC3339)
+		}
+	}
+	var out []map[string]any
+	if existing != nil {
+		out, err = s.sb.Update("coaching_enrollments",
+			"id=eq."+store.Q(asStr(existing, "id")), row)
+	} else {
+		out, err = s.sb.Insert("coaching_enrollments", row)
+	}
+	if err != nil {
+		return model.CoachingEnrollment{}, err
+	}
+	s.ensureCoachStudentLink(asStr(cls, "coach_id"), userID, name, email)
+	if len(out) > 0 {
+		return mapEnrollment(out[0]), nil
+	}
+	return mapEnrollment(row), nil
+}
+
+// CancelClassEnrollment drops the player's seat (kept as a canceled row).
+func (s *Service) CancelClassEnrollment(classID, userID string) error {
+	if !s.enrollmentsReady() {
+		return ErrCoachingUnavailable
+	}
+	_, err := s.sb.Update("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID),
+		map[string]any{"status": "canceled"})
+	return err
+}
+
+// ListClassEnrollments returns a class's enrolled players (coach-only).
+func (s *Service) ListClassEnrollments(classID, coachID string) ([]model.CoachingEnrollment, error) {
+	if !s.enrollmentsReady() {
+		return []model.CoachingEnrollment{}, nil
+	}
+	cls, err := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(classID)+"&select=coach_id")
+	if err != nil {
+		return nil, err
+	}
+	if cls == nil {
+		return nil, ErrNotFound
+	}
+	if asStr(cls, "coach_id") != coachID {
+		return nil, ErrForbidden
+	}
+	rows, err := s.sb.Select("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&status=eq.enrolled&order=created_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingEnrollment, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapEnrollment(r))
+	}
+	return out, nil
+}
+
+// MyEnrolledClasses returns the player's upcoming enrolled classes.
+func (s *Service) MyEnrolledClasses(userID string) ([]model.CoachingEnrollment, error) {
+	if !s.enrollmentsReady() {
+		return []model.CoachingEnrollment{}, nil
+	}
+	rows, err := s.sb.Select("coaching_enrollments",
+		"user_id=eq."+store.Q(userID)+"&status=eq.enrolled"+
+			"&select=*,class:coaching_classes(title,starts_at,location,coach_id,price_cents)")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingEnrollment, 0, len(rows))
+	for _, r := range rows {
+		e := mapEnrollment(r)
+		if c := asMap(r, "class"); c != nil {
+			starts := asStr(c, "starts_at")
+			if t, ok := parseTime(starts); ok && t.Before(time.Now()) {
+				continue // past class
+			}
+			e.ClassTitle = asStr(c, "title")
+			e.StartsAt = starts
+			e.Location = asStr(c, "location")
+			e.CoachName = s.coachingName(asStr(c, "coach_id"))
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt < out[j].StartsAt })
+	return out, nil
+}
+
+// parseTime parses a PostgREST timestamptz (RFC3339 / with nanos).
+func parseTime(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 // --- Demo helpers (owner-only): seed/remove dummy coaches + clear dummy students ---

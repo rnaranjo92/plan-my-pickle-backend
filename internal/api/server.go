@@ -5260,10 +5260,23 @@ func isOwnerInstructor(email string) bool {
 	return ownerInstructorEmails[strings.ToLower(strings.TrimSpace(email))]
 }
 
-// isCoach reports whether the request's account is a coach — a founding owner OR
-// on the instructors allowlist.
+// founderCoachEmails are the accounts that always get the COACH view. This is a
+// subset of the owners — rolando is an owner/admin but experiences the app as a
+// player (student), so only krizhia is a founding coach here. Everyone else
+// becomes a coach via the instructors table.
+var founderCoachEmails = map[string]bool{
+	"krizhia_roxas29@yahoo.com": true,
+}
+
+func isFounderCoach(email string) bool {
+	return founderCoachEmails[strings.ToLower(strings.TrimSpace(email))]
+}
+
+// isCoach reports whether the request's account is a coach — a founding coach OR
+// on the instructors allowlist. (Owner ≠ coach: an owner/admin can still be a
+// player.)
 func (s *Server) isCoach(r *http.Request) bool {
-	return isOwnerInstructor(userEmail(r)) ||
+	return isFounderCoach(userEmail(r)) ||
 		s.svc.IsInstructor(userID(r), userEmail(r))
 }
 

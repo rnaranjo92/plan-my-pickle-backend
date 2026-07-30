@@ -5260,12 +5260,13 @@ func isOwnerInstructor(email string) bool {
 	return ownerInstructorEmails[strings.ToLower(strings.TrimSpace(email))]
 }
 
-// founderCoachEmails are the accounts that always get the COACH view. This is a
-// subset of the owners — rolando is an owner/admin but experiences the app as a
-// player (student), so only krizhia is a founding coach here. Everyone else
-// becomes a coach via the instructors table.
+// founderCoachEmails are the accounts that always get the COACH view (Coach tab).
+// Kept separate from the owner set so the two roles can diverge, but currently
+// both founding owners are coaches. Everyone else becomes a coach via the
+// instructors table.
 var founderCoachEmails = map[string]bool{
-	"krizhia_roxas29@yahoo.com": true,
+	"rolando.naranjo0420@gmail.com": true,
+	"krizhia_roxas29@yahoo.com":     true,
 }
 
 func isFounderCoach(email string) bool {

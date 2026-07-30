@@ -5285,7 +5285,7 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string, force 
 // division into a compatible one. The emptied source division is left in place
 // (organizers can delete it from Edit tournament). Blocked once either division
 // has a generated draw (ErrDrawExists). Returns how many registrations moved.
-func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string) (int, error) {
+func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string, force bool) (int, error) {
 	fromBracketID = strings.TrimSpace(fromBracketID)
 	toBracketID = strings.TrimSpace(toBracketID)
 	if fromBracketID == "" || toBracketID == "" {
@@ -5295,6 +5295,7 @@ func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string) (int
 		return 0, errors.New("choose two different divisions")
 	}
 	// Both must belong to this event.
+	drawn := make([]string, 0, 2)
 	for _, b := range []string{fromBracketID, toBracketID} {
 		row, err := s.sb.SelectOne("brackets",
 			"id=eq."+store.Q(b)+"&select=event_id")
@@ -5304,12 +5305,33 @@ func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string) (int
 		if row == nil || asStr(row, "event_id") != eventID {
 			return 0, ErrNotFound
 		}
-		drawn, err := s.bracketDrawExists(b)
+		exists, err := s.bracketDrawExists(b)
 		if err != nil {
 			return 0, err
 		}
-		if drawn {
+		if exists {
+			drawn = append(drawn, b)
+		}
+	}
+	// A generated draw on either side blocks the merge (default) — with force,
+	// clear the affected UNSCORED draws so the organizer can rebuild.
+	if len(drawn) > 0 {
+		if !force {
 			return 0, ErrDrawExists
+		}
+		for _, b := range drawn {
+			scored, err := s.bracketHasScoredMatch(b)
+			if err != nil {
+				return 0, err
+			}
+			if scored {
+				return 0, ErrDrawHasScores
+			}
+		}
+		for _, b := range drawn {
+			if err := s.clearBracketDraw(b); err != nil {
+				return 0, err
+			}
 		}
 	}
 	// SelectAll, not Select: Select silently caps at PostgREST's max-rows, which

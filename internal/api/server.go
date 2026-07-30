@@ -4445,11 +4445,14 @@ func (s *Server) mergeDivision(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FromBracketID string `json:"fromBracketId"`
 		ToBracketID   string `json:"toBracketId"`
+		// Force clears the affected divisions' (unscored) draws so the merge can
+		// proceed; the organizer then rebuilds. Blocked if any match is scored.
+		Force bool `json:"force"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	moved, err := s.svc.MergeDivision(r.PathValue("id"), req.FromBracketID, req.ToBracketID)
+	moved, err := s.svc.MergeDivision(r.PathValue("id"), req.FromBracketID, req.ToBracketID, req.Force)
 	if err != nil {
 		status(w, err)
 		return

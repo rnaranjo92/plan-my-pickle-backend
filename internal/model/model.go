@@ -1417,6 +1417,8 @@ type CoachProfile struct {
 	HasIntroVideo bool `json:"hasIntroVideo"`
 	// CancelPolicy: flexible | moderate | strict.
 	CancelPolicy string `json:"cancelPolicy,omitempty"`
+	// Favorited is true when the requesting viewer has saved this coach.
+	Favorited bool `json:"favorited"`
 }
 
 // CoachReview is a player's star rating + comment for a coach. One per

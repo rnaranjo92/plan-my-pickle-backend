@@ -2017,9 +2017,106 @@ func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileReques
 	return s.GetMyCoachProfile(userID)
 }
 
+// --- Saved / favorite coaches ---
+
+func (s *Service) favoritesReady() bool {
+	return s.columnReady("coach_favorites", "id")
+}
+
+// ToggleFavoriteCoach adds/removes a saved coach; returns the new favorited state.
+func (s *Service) ToggleFavoriteCoach(userID, coachUserID string) (bool, error) {
+	if !s.favoritesReady() || userID == "" || coachUserID == "" {
+		return false, ErrCoachingUnavailable
+	}
+	existing, _ := s.sb.SelectOne("coach_favorites",
+		"user_id=eq."+store.Q(userID)+"&coach_user_id=eq."+store.Q(coachUserID)+"&select=id")
+	if existing != nil {
+		return false, s.sb.Delete("coach_favorites",
+			"user_id=eq."+store.Q(userID)+"&coach_user_id=eq."+store.Q(coachUserID))
+	}
+	_, err := s.sb.Insert("coach_favorites", map[string]any{
+		"user_id": userID, "coach_user_id": coachUserID,
+	})
+	return err == nil, err
+}
+
+// favoritesSet returns which of coachIDs the viewer has saved.
+func (s *Service) favoritesSet(userID string, coachIDs []string) map[string]bool {
+	out := map[string]bool{}
+	if !s.favoritesReady() || userID == "" || len(coachIDs) == 0 {
+		return out
+	}
+	rows, err := s.sb.Select("coach_favorites",
+		"user_id=eq."+store.Q(userID)+"&coach_user_id="+store.In(coachIDs)+
+			"&select=coach_user_id")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[asStr(r, "coach_user_id")] = true
+	}
+	return out
+}
+
+// ListFavoriteCoaches returns the viewer's saved coaches (profile + rating +
+// photo), newest-saved first.
+func (s *Service) ListFavoriteCoaches(userID string) ([]model.CoachProfile, error) {
+	if !s.favoritesReady() || !s.coachProfilesReady() || userID == "" {
+		return []model.CoachProfile{}, nil
+	}
+	favs, err := s.sb.Select("coach_favorites",
+		"user_id=eq."+store.Q(userID)+"&order=created_at.desc&select=coach_user_id")
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(favs))
+	for _, f := range favs {
+		if id := asStr(f, "coach_user_id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return []model.CoachProfile{}, nil
+	}
+	rows, err := s.sb.Select("coach_profiles", "user_id="+store.In(ids))
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]model.CoachProfile{}
+	uids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		p := mapCoachProfile(r)
+		if p.Name == "" {
+			p.Name = s.coachingName(p.UserID)
+		}
+		p.Favorited = true
+		byID[p.UserID] = p
+		uids = append(uids, p.UserID)
+	}
+	photos := s.photosByUser(uids)
+	agg := s.reviewsAggregate(uids)
+	out := make([]model.CoachProfile, 0, len(ids))
+	for _, id := range ids { // preserve saved order
+		p, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if p.PhotoURL == "" {
+			p.PhotoURL = photos[id]
+		}
+		if a, ok := agg[id]; ok {
+			avg := a.avg
+			p.RatingAvg = &avg
+			p.RatingCount = a.count
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // ListCoachesNearby returns listed coaches ranked by distance from (lat,lng).
 // Coaches without coordinates sort last; radiusKm<=0 means no radius cap.
-func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachProfile, error) {
+func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64, viewerID string) ([]model.CoachProfile, error) {
 	if !s.coachProfilesReady() {
 		return []model.CoachProfile{}, nil
 	}
@@ -2048,6 +2145,7 @@ func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachPr
 	// back to their account avatar only when they haven't set one.
 	photos := s.photosByUser(uids)
 	agg := s.reviewsAggregate(uids)
+	favs := s.favoritesSet(viewerID, uids)
 	for i := range out {
 		if out[i].PhotoURL == "" {
 			out[i].PhotoURL = photos[out[i].UserID]
@@ -2057,6 +2155,7 @@ func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64) ([]model.CoachPr
 			out[i].RatingAvg = &avg
 			out[i].RatingCount = a.count
 		}
+		out[i].Favorited = favs[out[i].UserID]
 	}
 	sort.Slice(out, func(i, j int) bool {
 		di, dj := out[i].DistanceKm, out[j].DistanceKm

@@ -629,6 +629,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/schedule/{id}", s.instructorOnly(s.updateCoachSchedule))
 	mux.HandleFunc("DELETE /coach/schedule/{id}", s.instructorOnly(s.deleteCoachSchedule))
 	mux.HandleFunc("POST /coach/schedule/{id}/attendance", s.instructorOnly(s.setSessionAttendance))
+	mux.HandleFunc("GET /coaching/threads/{id}/practice", requireAuth(s.practiceSummary))
+	mux.HandleFunc("POST /coaching/threads/{id}/practice", requireAuth(s.logPractice))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
 	mux.HandleFunc("POST /coaching/claim", requireAuth(s.claimCoachInvite))
@@ -6258,6 +6260,30 @@ func (s *Server) bookCoachSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) practiceSummary(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.svc.GetPracticeSummary(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
+}
+
+func (s *Server) logPractice(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Note string `json:"note"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	sum, err := s.svc.LogPractice(r.PathValue("id"), userID(r), userEmail(r), req.Note)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
 }
 
 func (s *Server) mySessions(w http.ResponseWriter, r *http.Request) {

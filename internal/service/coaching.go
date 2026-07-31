@@ -1515,6 +1515,118 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 	return mapProgram(row), nil
 }
 
+func (s *Service) practiceReady() bool {
+	return s.columnReady("coaching_practice_logs", "id")
+}
+
+// LogPractice records a student's self-logged practice on a thread (the return
+// hook). Bumps thread activity (resets the inactivity clock) and gives the coach
+// a low-key heads-up. Returns the updated summary.
+func (s *Service) LogPractice(threadID, userID, email, note string) (model.CoachingPracticeSummary, error) {
+	if !s.coachingReady() || !s.practiceReady() {
+		return model.CoachingPracticeSummary{}, ErrCoachingUnavailable
+	}
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return model.CoachingPracticeSummary{}, err
+	}
+	_, err = s.sb.Insert("coaching_practice_logs", map[string]any{
+		"coach_student_id": threadID,
+		"user_id":          orNull(userID),
+		"note":             orNull(strings.TrimSpace(note)),
+	})
+	if err != nil {
+		return model.CoachingPracticeSummary{}, err
+	}
+	s.bumpThreadActivity(threadID)
+	// Heads-up to the coach when the STUDENT logs (parity with drills/programs).
+	if role == "student" {
+		who := s.coachingName(userID)
+		if who == "" {
+			who = "Your student"
+		}
+		body := who + " logged a practice"
+		if n := strings.TrimSpace(note); n != "" {
+			body = who + " logged a practice: " + n
+		}
+		s.notifyUser(cs.CoachID, "coaching", userID, who, body,
+			"coaching:"+threadID)
+	}
+	return s.GetPracticeSummary(threadID, userID, email)
+}
+
+// GetPracticeSummary returns a thread's recent practice logs, total count, a
+// consecutive-day streak, and whether one was logged today (UTC).
+func (s *Service) GetPracticeSummary(threadID, userID, email string) (model.CoachingPracticeSummary, error) {
+	if !s.coachingReady() {
+		return model.CoachingPracticeSummary{}, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return model.CoachingPracticeSummary{}, err
+	}
+	out := model.CoachingPracticeSummary{Logs: []model.CoachingPracticeLog{}}
+	if !s.practiceReady() {
+		return out, nil
+	}
+	rows, err := s.sb.Select("coaching_practice_logs",
+		"coach_student_id=eq."+store.Q(threadID)+
+			"&order=created_at.desc&select=id,note,created_at,user_id&limit=200")
+	if err != nil {
+		return out, err
+	}
+	out.TotalLogs = len(rows)
+	// Distinct calendar days (UTC) for the streak, newest first.
+	daySeen := map[string]bool{}
+	days := []string{}
+	nameCache := map[string]string{}
+	for i, r := range rows {
+		created := asStr(r, "created_at")
+		if i < 20 { // return only the most recent 20 rows
+			uid := asStr(r, "user_id")
+			name, ok := nameCache[uid]
+			if !ok {
+				name = s.coachingName(uid)
+				nameCache[uid] = name
+			}
+			out.Logs = append(out.Logs, model.CoachingPracticeLog{
+				ID:       asStr(r, "id"),
+				Note:     asStr(r, "note"),
+				LoggedAt: created,
+				ByName:   name,
+			})
+		}
+		if len(created) >= 10 {
+			d := created[:10]
+			if !daySeen[d] {
+				daySeen[d] = true
+				days = append(days, d)
+			}
+		}
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	out.LoggedToday = daySeen[today]
+	// Streak: consecutive days ending today or yesterday.
+	if len(days) > 0 && (days[0] == today || days[0] == yesterday) {
+		streak := 1
+		cur, _ := time.Parse("2006-01-02", days[0])
+		for i := 1; i < len(days); i++ {
+			prev, perr := time.Parse("2006-01-02", days[i])
+			if perr != nil {
+				break
+			}
+			if cur.AddDate(0, 0, -1).Format("2006-01-02") == days[i] {
+				streak++
+				cur = prev
+			} else {
+				break
+			}
+		}
+		out.CurrentStreak = streak
+	}
+	return out, nil
+}
+
 // DeleteProgram removes a program (coach who owns the thread).
 func (s *Service) DeleteProgram(programID, userID, email string) error {
 	if !s.programsReady() {

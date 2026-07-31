@@ -1543,6 +1543,24 @@ type PBVisionPlayer struct {
 	Stats    map[string]any `json:"stats,omitempty"`
 }
 
+// CoachingPracticeLog is one "I practiced" entry a student self-logs between
+// sessions — the accountability/return hook.
+type CoachingPracticeLog struct {
+	ID       string `json:"id"`
+	Note     string `json:"note,omitempty"`
+	LoggedAt string `json:"loggedAt"`
+	ByName   string `json:"byName,omitempty"`
+}
+
+// CoachingPracticeSummary is a thread's practice history + a consecutive-day
+// streak, for the student's return hook and the coach's accountability view.
+type CoachingPracticeSummary struct {
+	Logs          []CoachingPracticeLog `json:"logs"`
+	CurrentStreak int                   `json:"currentStreak"`
+	TotalLogs     int                   `json:"totalLogs"`
+	LoggedToday   bool                  `json:"loggedToday"`
+}
+
 // CoachingProgram is a multi-week training plan assigned to a student.
 type CoachingProgram struct {
 	ID        string                `json:"id"`

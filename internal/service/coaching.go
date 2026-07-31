@@ -1870,6 +1870,44 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 	return vid, nil
 }
 
+// RecheckPBVisionJob force-polls PB Vision for a thread's in-flight analysis and
+// ingests it if it's done — so a coach/student can resolve a stuck "analyzing…"
+// clip on demand instead of waiting for the 60-min sweep. Returns the resulting
+// status ("ready" | "failed" | "processing" | "none").
+func (s *Service) RecheckPBVisionJob(threadID, userID, email, videoID string) (string, error) {
+	if !s.coachingReady() || !s.pbvisionJobsReady() {
+		return "", ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return "", err
+	}
+	if s.PBV == nil || !s.PBV.Configured() {
+		return "", errors.New("PB Vision isn't configured yet")
+	}
+	// The processing job for this clip (or the thread's latest, if no clip id).
+	filter := "coach_student_id=eq." + store.Q(threadID)
+	if videoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		filter = "source_video_id=eq." + store.Q(videoID)
+	}
+	row, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+		filter+"&status=eq.processing&order=updated_at.desc&limit=1&select=vid")
+	if row == nil {
+		return "none", nil // nothing in flight — already resolved
+	}
+	vid := asStr(row, "vid")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, ok := s.PBV.GetVideo(ctx, vid)
+	if !ok {
+		return "processing", nil // PB Vision still working (or no fetch endpoint)
+	}
+	s.handleCoachingPBVisionCallback(vid, res.Webpage, res.Insights, res.Stats, res.Error)
+	if strings.TrimSpace(res.Error) != "" {
+		return "failed", nil
+	}
+	return "ready", nil
+}
+
 // handleCoachingPBVisionCallback ingests a PB Vision completion for a coaching
 // job — invoked from HandlePBVisionWebhook. Best-effort; a no-op when the vid
 // isn't one of ours. Stores the raw payloads now; the highlight/stats PARSER is

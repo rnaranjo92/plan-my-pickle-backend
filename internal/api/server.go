@@ -650,6 +650,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/analysis", requireAuth(s.coachingPBVisionAnalysis))
 	mux.HandleFunc("POST /coaching/threads/{id}/pbvision/tag", requireAuth(s.coachingPBVisionTag))
 	mux.HandleFunc("POST /coaching/threads/{id}/pbvision/assign", requireAuth(s.coachingPBVisionAssign))
+	mux.HandleFunc("POST /coaching/threads/{id}/pbvision/recheck", requireAuth(s.coachingPBVisionRecheck))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/history", requireAuth(s.coachingPBVisionHistory))
 	mux.HandleFunc("GET /coaching/threads/{id}/program", requireAuth(s.threadProgram))
 	mux.HandleFunc("POST /coach/students/{id}/program", requireAuth(s.createProgram))
@@ -5721,6 +5722,22 @@ func (s *Server) coachingPBVisionAssign(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "assigned"})
+}
+
+func (s *Server) coachingPBVisionRecheck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VideoID string `json:"videoId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	st, err := s.svc.RecheckPBVisionJob(
+		r.PathValue("id"), userID(r), userEmail(r), req.VideoID)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": st})
 }
 
 func (s *Server) coachingPBVisionHistory(w http.ResponseWriter, r *http.Request) {

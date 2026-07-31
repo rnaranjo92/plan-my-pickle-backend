@@ -1153,7 +1153,7 @@ func (s *Service) CreateProgram(threadID, userID, email string, req model.Coachi
 	if !s.programsReady() {
 		return model.CoachingProgram{}, ErrCoachingUnavailable
 	}
-	_, role, err := s.threadMembership(threadID, userID, email)
+	cs, role, err := s.threadMembership(threadID, userID, email)
 	if err != nil {
 		return model.CoachingProgram{}, err
 	}
@@ -1189,6 +1189,8 @@ func (s *Service) CreateProgram(threadID, userID, email string, req model.Coachi
 		return model.CoachingProgram{}, err
 	}
 	s.bumpThreadActivity(threadID)
+	s.notifyCoachingCounterpart(cs, "coach", userID, s.coachingName(cs.CoachID),
+		"Your coach assigned a new training program: "+title)
 	return mapProgram(ins[0]), nil
 }
 
@@ -2348,13 +2350,40 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 	return mapScheduleItem(ins[0]), nil
 }
 
+// notifyStudentOfThread resolves a thread's student (linked id, else email, else
+// phone) and pushes them a message. Best-effort no-op if unresolved.
+func (s *Service) notifyStudentOfThread(threadID, actorID, actorName, body, link string) {
+	if threadID == "" {
+		return
+	}
+	row, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID)+
+		"&select=student_id,student_email,student_phone")
+	if row == nil {
+		return
+	}
+	recipient := asStr(row, "student_id")
+	if recipient == "" {
+		if e := asStr(row, "student_email"); e != "" {
+			recipient = s.userIDByEmail(e)
+		}
+	}
+	if recipient == "" {
+		if p := asStr(row, "student_phone"); p != "" {
+			recipient = s.userIDByPhone(p)
+		}
+	}
+	if recipient != "" && recipient != actorID {
+		s.notifyUser(recipient, "coaching", actorID, actorName, body, link)
+	}
+}
+
 // DeleteCoachScheduleItem removes a schedule entry the coach owns.
 func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
 	if !s.scheduleReady() {
 		return ErrCoachingUnavailable
 	}
 	row, err := s.sb.SelectOne("coaching_schedule",
-		"id=eq."+store.Q(id)+"&select=coach_id")
+		"id=eq."+store.Q(id)+"&select=coach_id,kind,coach_student_id")
 	if err != nil {
 		return err
 	}
@@ -2364,7 +2393,16 @@ func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
 	if asStr(row, "coach_id") != coachID {
 		return ErrForbidden
 	}
-	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(id))
+	if err := s.sb.Delete("coaching_schedule", "id=eq."+store.Q(id)); err != nil {
+		return err
+	}
+	// A booked session the coach dropped → tell the student.
+	if asStr(row, "kind") == "session" {
+		s.notifyStudentOfThread(asStr(row, "coach_student_id"), coachID,
+			s.coachingName(coachID), "Your coach cancelled your 1:1 session",
+			"coaching:"+asStr(row, "coach_student_id"))
+	}
+	return nil
 }
 
 // UpdateCoachScheduleItem edits a schedule entry the coach owns (its kind is
@@ -2374,7 +2412,7 @@ func (s *Service) UpdateCoachScheduleItem(coachID, id string, req model.Coaching
 		return model.CoachingScheduleItem{}, ErrCoachingUnavailable
 	}
 	cur, err := s.sb.SelectOne("coaching_schedule",
-		"id=eq."+store.Q(id)+"&select=coach_id,kind")
+		"id=eq."+store.Q(id)+"&select=coach_id,kind,coach_student_id")
 	if err != nil {
 		return model.CoachingScheduleItem{}, err
 	}
@@ -2416,6 +2454,15 @@ func (s *Service) UpdateCoachScheduleItem(coachID, id string, req model.Coaching
 	out, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(id), upd)
 	if err != nil {
 		return model.CoachingScheduleItem{}, err
+	}
+	// Booked session's time/location changed → tell the student.
+	if kind == "session" {
+		threadID := strings.TrimSpace(req.CoachStudentID)
+		if threadID == "" {
+			threadID = asStr(cur, "coach_student_id")
+		}
+		s.notifyStudentOfThread(threadID, coachID, s.coachingName(coachID),
+			"Your coach updated your 1:1 session time", "coaching:"+threadID)
 	}
 	if len(out) > 0 {
 		return mapScheduleItem(out[0]), nil
@@ -2724,9 +2771,11 @@ func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating 
 	if !s.skillsReady() {
 		return model.CoachingSkillRating{}, ErrCoachingUnavailable
 	}
-	if _, role, err := s.threadMembership(threadID, coachID, email); err != nil {
+	cs, role, err := s.threadMembership(threadID, coachID, email)
+	if err != nil {
 		return model.CoachingSkillRating{}, err
-	} else if role != "coach" {
+	}
+	if role != "coach" {
 		return model.CoachingSkillRating{}, ErrForbidden
 	}
 	skill = strings.ToLower(strings.TrimSpace(skill))
@@ -2746,6 +2795,8 @@ func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating 
 			return model.CoachingSkillRating{}, err
 		}
 		s.bumpThreadActivity(threadID)
+		s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(cs.CoachID),
+			"Your coach updated your skill assessment")
 		if len(out) > 0 {
 			return mapSkillRating(out[0]), nil
 		}
@@ -2765,6 +2816,8 @@ func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating 
 		return model.CoachingSkillRating{}, errors.New("could not save that rating")
 	}
 	s.bumpThreadActivity(threadID)
+	s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(cs.CoachID),
+		"Your coach rated your progress")
 	return mapSkillRating(ins[0]), nil
 }
 
@@ -3594,7 +3647,16 @@ func (s *Service) CancelMySession(playerID, email, sessionID string) error {
 	if err := s.enforceCancelCutoff(cs.CoachID, asStr(row, "starts_at")); err != nil {
 		return err
 	}
-	return s.sb.Delete("coaching_schedule", "id=eq."+store.Q(sessionID))
+	if err := s.sb.Delete("coaching_schedule", "id=eq."+store.Q(sessionID)); err != nil {
+		return err
+	}
+	who := s.coachingName(playerID)
+	if who == "" {
+		who = "Your student"
+	}
+	s.notifyUser(cs.CoachID, "coaching", playerID, who,
+		who+" cancelled their 1:1 session", "coaching:"+threadID)
+	return nil
 }
 
 // --- Class packs (buy N credits, spend one per paid enrollment) ---
@@ -3875,7 +3937,7 @@ func (s *Service) UpdateClass(coachID, id string, req model.CoachingClassRequest
 		return model.CoachingClass{}, ErrCoachingUnavailable
 	}
 	cur, _ := s.sb.SelectOne("coaching_classes",
-		"id=eq."+store.Q(id)+"&select=coach_id")
+		"id=eq."+store.Q(id)+"&select=coach_id,starts_at,location")
 	if cur == nil {
 		return model.CoachingClass{}, ErrNotFound
 	}
@@ -3913,10 +3975,36 @@ func (s *Service) UpdateClass(coachID, id string, req model.CoachingClassRequest
 	if err != nil {
 		return model.CoachingClass{}, err
 	}
+	// Notify enrollees only when the time or location actually changed.
+	if req.StartsAt != asStr(cur, "starts_at") ||
+		strings.TrimSpace(req.Location) != asStr(cur, "location") {
+		s.notifyClassEnrollees(id, coachID, s.coachingName(coachID),
+			"Class updated: \""+title+"\" — check the new time/location")
+	}
 	if len(out) > 0 {
 		return mapClass(out[0]), nil
 	}
 	return model.CoachingClass{}, errors.New("could not update that class")
+}
+
+// notifyClassEnrollees pushes a message to everyone enrolled/waitlisted in a
+// class (used when the coach changes or cancels it). Best-effort; no deep link
+// (classes live in "My classes", not a thread).
+func (s *Service) notifyClassEnrollees(classID, actorID, actorName, body string) {
+	if !s.enrollmentsReady() {
+		return
+	}
+	rows, _ := s.sb.SelectAll("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&select=user_id")
+	seen := map[string]bool{}
+	for _, r := range rows {
+		uid := asStr(r, "user_id")
+		if uid == "" || uid == actorID || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		s.notifyUser(uid, "coaching", actorID, actorName, body, "")
+	}
 }
 
 // DeleteClass removes a class the coach owns.
@@ -3925,7 +4013,7 @@ func (s *Service) DeleteClass(coachID, id string) error {
 		return ErrCoachingUnavailable
 	}
 	row, err := s.sb.SelectOne("coaching_classes",
-		"id=eq."+store.Q(id)+"&select=coach_id")
+		"id=eq."+store.Q(id)+"&select=coach_id,title")
 	if err != nil {
 		return err
 	}
@@ -3935,6 +4023,13 @@ func (s *Service) DeleteClass(coachID, id string) error {
 	if asStr(row, "coach_id") != coachID {
 		return ErrForbidden
 	}
+	title := asStr(row, "title")
+	if title == "" {
+		title = "a class"
+	}
+	// Notify enrollees BEFORE the delete (its FK cascade wipes the enrollments).
+	s.notifyClassEnrollees(id, coachID, s.coachingName(coachID),
+		"Class cancelled: \""+title+"\"")
 	return s.sb.Delete("coaching_classes", "id=eq."+store.Q(id))
 }
 

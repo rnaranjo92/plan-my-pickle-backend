@@ -249,6 +249,18 @@ func main() {
 		}
 	}()
 
+	// Coaching: remind students when a training-program week reaches its due
+	// date. 3-hour tick; each week reminded at most once (in-JSON flag).
+	go func() {
+		ticker := time.NewTicker(3 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.RemindDueProgramWeeks(); err != nil {
+				log.Printf("coaching: program-week reminder pass failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

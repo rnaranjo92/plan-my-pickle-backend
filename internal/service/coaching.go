@@ -1238,10 +1238,22 @@ func mapProgram(row map[string]any) model.CoachingProgram {
 	if arr, ok := row["weeks"].([]any); ok {
 		for _, w := range arr {
 			if m, ok := w.(map[string]any); ok {
-				p.Weeks = append(p.Weeks, model.CoachingProgramWeek{
+				wk := model.CoachingProgramWeek{
 					Focus: asStr(m, "focus"),
 					Done:  asBool(m, "done"),
-				})
+					Due:   asStr(m, "due"),
+				}
+				if dr, ok := m["drills"].([]any); ok {
+					for _, d := range dr {
+						if dm, ok := d.(map[string]any); ok {
+							wk.Drills = append(wk.Drills, model.CoachingProgramDrill{
+								ID:    asStr(dm, "id"),
+								Title: asStr(dm, "title"),
+							})
+						}
+					}
+				}
+				p.Weeks = append(p.Weeks, wk)
 			}
 		}
 	}
@@ -1287,9 +1299,25 @@ func (s *Service) CreateProgram(threadID, userID, email string, req model.Coachi
 	}
 	weeks := make([]map[string]any, 0, len(req.Weeks))
 	for _, f := range req.Weeks {
-		if f = strings.TrimSpace(f); f != "" {
-			weeks = append(weeks, map[string]any{"focus": f, "done": false})
+		focus := strings.TrimSpace(f.Focus)
+		if focus == "" {
+			continue
 		}
+		wk := map[string]any{"focus": focus, "done": false}
+		if due := strings.TrimSpace(f.Due); due != "" {
+			wk["due"] = due
+		}
+		drills := make([]map[string]any, 0, len(f.Drills))
+		for _, d := range f.Drills {
+			if id := strings.TrimSpace(d.ID); id != "" {
+				drills = append(drills, map[string]any{
+					"id": id, "title": strings.TrimSpace(d.Title)})
+			}
+		}
+		if len(drills) > 0 {
+			wk["drills"] = drills
+		}
+		weeks = append(weeks, wk)
 	}
 	if len(weeks) == 0 {
 		return model.CoachingProgram{}, errors.New("add at least one week")
@@ -4707,6 +4735,80 @@ func (s *Service) RemindUpcomingSessions() error {
 		}
 		_, _ = s.sb.Update("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")),
 			map[string]any{"reminded_at": nowT.Format(time.RFC3339)})
+	}
+	return nil
+}
+
+// RemindDueProgramWeeks nudges the student (and FYIs the coach) when a training
+// program week has reached its due date and isn't checked off yet. Each week is
+// reminded at most once (a "reminded" flag inside the week's JSON). Due dates
+// live inside the weeks blob, so this scans active programs in Go rather than
+// filtering in SQL.
+func (s *Service) RemindDueProgramWeeks() error {
+	if !s.programsReady() {
+		return nil
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	rows, err := s.sb.Select("coaching_programs",
+		"active=is.true&select=id,coach_student_id,weeks&limit=500")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		weeks, _ := r["weeks"].([]any)
+		if len(weeks) == 0 {
+			continue
+		}
+		threadID := asStr(r, "coach_student_id")
+		var coachID, studentID string
+		if cs, _ := s.sb.SelectOne("coach_students",
+			"id=eq."+store.Q(threadID)+"&select=coach_id,student_id"); cs != nil {
+			coachID = asStr(cs, "coach_id")
+			studentID = asStr(cs, "student_id")
+		}
+		changed := false
+		for wi, w := range weeks {
+			m, ok := w.(map[string]any)
+			if !ok || asBool(m, "done") || asBool(m, "reminded") {
+				continue
+			}
+			due := strings.TrimSpace(asStr(m, "due"))
+			if due == "" {
+				continue
+			}
+			if len(due) >= 10 {
+				due = due[:10] // compare date-only (handles RFC3339 too)
+			}
+			if due > today {
+				continue // not due yet
+			}
+			focus := asStr(m, "focus")
+			link := "coaching:" + threadID
+			body := "Reminder: a training program week is due"
+			if focus != "" {
+				body = "Reminder: “" + focus + "” is due in your training program"
+			}
+			if studentID != "" {
+				s.notifyStudentOfThread(threadID, coachID,
+					s.coachingName(coachID), body, link)
+			}
+			if coachID != "" {
+				who := s.coachingName(studentID)
+				if who == "" {
+					who = "your student"
+				}
+				s.notifyUser(coachID, "coaching", "", "",
+					"A program week is due for "+who+": "+focus, link)
+			}
+			m["reminded"] = true
+			weeks[wi] = m
+			changed = true
+		}
+		if changed {
+			_, _ = s.sb.Update("coaching_programs",
+				"id=eq."+store.Q(asStr(r, "id")),
+				map[string]any{"weeks": weeks, "updated_at": now()})
+		}
 	}
 	return nil
 }

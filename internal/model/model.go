@@ -1535,16 +1535,34 @@ type CoachingProgram struct {
 	CreatedAt string                `json:"createdAt,omitempty"`
 }
 
-// CoachingProgramWeek is one week's focus + completion.
+// CoachingProgramWeek is one week's focus + completion, plus an optional due
+// date and any drills the coach attached to that week.
 type CoachingProgramWeek struct {
-	Focus string `json:"focus"`
-	Done  bool   `json:"done"`
+	Focus  string                 `json:"focus"`
+	Done   bool                   `json:"done"`
+	Due    string                 `json:"due,omitempty"`
+	Drills []CoachingProgramDrill `json:"drills,omitempty"`
 }
 
-// CoachingProgramRequest creates a program (coach): title + per-week focuses.
+// CoachingProgramDrill is a drill reference attached to a program week (a copy
+// of the drill's id + title so the plan renders without a join).
+type CoachingProgramDrill struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// CoachingProgramRequest creates a program (coach): title + per-week entries.
 type CoachingProgramRequest struct {
-	Title string   `json:"title"`
-	Weeks []string `json:"weeks"`
+	Title string                     `json:"title"`
+	Weeks []CoachingProgramWeekInput `json:"weeks"`
+}
+
+// CoachingProgramWeekInput is one week as submitted by the coach: a focus line,
+// an optional due date (YYYY-MM-DD or RFC3339), and optional attached drills.
+type CoachingProgramWeekInput struct {
+	Focus  string                 `json:"focus"`
+	Due    string                 `json:"due,omitempty"`
+	Drills []CoachingProgramDrill `json:"drills,omitempty"`
 }
 
 // PBVisionReport is one historical PB Vision snapshot for a thread.

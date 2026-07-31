@@ -1226,6 +1226,11 @@ type CoachStudent struct {
 	HasUnread      bool   `json:"hasUnread"`
 	CreatedAt      string `json:"createdAt,omitempty"`
 	LastActivityAt string `json:"-"` // internal: drives HasUnread, not sent raw
+	// RubricAvg is the student's average skill-ratings score (nil when unrated);
+	// OpenGoals is how many assigned drills aren't done yet. Both are coach-facing
+	// roster aggregates so a coach can scan who needs attention.
+	RubricAvg *float64 `json:"rubricAvg,omitempty"`
+	OpenGoals int      `json:"openGoals"`
 	// CoachNote is the coach's private running note about the student — only
 	// populated for the coach's own views, redacted from the student's view.
 	CoachNote string `json:"coachNote,omitempty"`

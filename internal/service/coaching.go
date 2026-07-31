@@ -536,7 +536,55 @@ func (s *Service) ListCoachStudents(coachID string) ([]model.CoachStudent, error
 		out = append(out, cs)
 	}
 	s.applyUnread(coachID, out)
+	s.applyRosterAggregates(out)
 	return out, nil
+}
+
+// applyRosterAggregates fills each student's RubricAvg (mean skill rating) and
+// OpenGoals (drills not done) using two batched queries over all their threads,
+// so the coach roster can flag who needs attention without an N+1.
+func (s *Service) applyRosterAggregates(students []model.CoachStudent) {
+	if len(students) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(students))
+	idx := make(map[string]int, len(students))
+	for i, st := range students {
+		ids = append(ids, st.ID)
+		idx[st.ID] = i
+	}
+	// Skill-rating average per thread.
+	if s.columnReady("coaching_skill_ratings", "id") {
+		sum := map[string]float64{}
+		cnt := map[string]int{}
+		if rows, err := s.sb.Select("coaching_skill_ratings",
+			"coach_student_id="+store.In(ids)+"&select=coach_student_id,rating"); err == nil {
+			for _, r := range rows {
+				tid := asStr(r, "coach_student_id")
+				if v := asFloatPtr(r, "rating"); v != nil {
+					sum[tid] += *v
+					cnt[tid]++
+				}
+			}
+		}
+		for tid, c := range cnt {
+			if c > 0 {
+				avg := sum[tid] / float64(c)
+				students[idx[tid]].RubricAvg = &avg
+			}
+		}
+	}
+	// Open (not-done) assigned drills per thread.
+	if s.assignmentsReady() {
+		if rows, err := s.sb.Select("coaching_assignments",
+			"coach_student_id="+store.In(ids)+"&status=neq.done&select=coach_student_id"); err == nil {
+			for _, r := range rows {
+				if i, ok := idx[asStr(r, "coach_student_id")]; ok {
+					students[i].OpenGoals++
+				}
+			}
+		}
+	}
 }
 
 // RemoveCoachStudent deletes a roster row (and its clips/feedback via cascade).

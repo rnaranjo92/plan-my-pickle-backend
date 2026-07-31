@@ -261,6 +261,18 @@ func main() {
 		}
 	}()
 
+	// Coaching: nudge a coach when a student clip has sat ~24h without feedback.
+	// 3-hour tick; each clip nudges at most once (coach_reminded_at column).
+	go func() {
+		ticker := time.NewTicker(3 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.RemindCoachOfPendingClips(); err != nil {
+				log.Printf("coaching: pending-clip reminder pass failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

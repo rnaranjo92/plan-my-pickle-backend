@@ -593,6 +593,37 @@ func (s *Service) applyRosterAggregates(students []model.CoachStudent) {
 			}
 		}
 	}
+	// Clips the student uploaded that have no coach comment yet — the coach's
+	// review backlog. Two batched queries: the student's clips, then which of
+	// those a coach has answered.
+	if vids, err := s.sb.Select("coaching_videos",
+		"coach_student_id="+store.In(ids)+
+			"&uploader_role=eq.student&select=id,coach_student_id"); err == nil && len(vids) > 0 {
+		vidThread := make(map[string]string, len(vids))
+		vidIDs := make([]string, 0, len(vids))
+		for _, v := range vids {
+			id := asStr(v, "id")
+			if id != "" {
+				vidThread[id] = asStr(v, "coach_student_id")
+				vidIDs = append(vidIDs, id)
+			}
+		}
+		answered := map[string]bool{}
+		if fb, ferr := s.sb.Select("coaching_feedback",
+			"video_id="+store.In(vidIDs)+
+				"&author_role=eq.coach&select=video_id"); ferr == nil {
+			for _, f := range fb {
+				answered[asStr(f, "video_id")] = true
+			}
+		}
+		for vid, tid := range vidThread {
+			if !answered[vid] {
+				if i, ok := idx[tid]; ok {
+					students[i].AwaitingFeedback++
+				}
+			}
+		}
+	}
 }
 
 // RemoveCoachStudent deletes a roster row (and its clips/feedback via cascade).
@@ -5082,6 +5113,83 @@ func (s *Service) RemindDueProgramWeeks() error {
 				map[string]any{"weeks": weeks, "updated_at": now()})
 		}
 	}
+	return nil
+}
+
+// RemindCoachOfPendingClips nudges a coach when a student's uploaded clip has
+// gone ~24h without any coach comment — closing the feedback-latency loop (slow
+// replies are the top churn driver in video coaching). Each clip nudges at most
+// once (coach_reminded_at). Inert until that column runs.
+func (s *Service) RemindCoachOfPendingClips() error {
+	if !s.coachingReady() ||
+		!s.columnReady("coaching_videos", "coach_reminded_at") ||
+		!s.columnReady("coaching_videos", "uploader_role") {
+		return nil
+	}
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	rows, err := s.sb.Select("coaching_videos",
+		"uploader_role=eq.student&coach_reminded_at=is.null"+
+			"&created_at=lte."+store.Q(cutoff)+
+			"&select=id,coach_student_id&limit=300")
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	allIDs := make([]string, 0, len(rows))
+	threadOf := make(map[string]string, len(rows))
+	for _, r := range rows {
+		id := asStr(r, "id")
+		if id != "" {
+			allIDs = append(allIDs, id)
+			threadOf[id] = asStr(r, "coach_student_id")
+		}
+	}
+	// Which candidate clips already have a coach comment?
+	answered := map[string]bool{}
+	if fb, ferr := s.sb.Select("coaching_feedback",
+		"video_id="+store.In(allIDs)+"&author_role=eq.coach&select=video_id"); ferr == nil {
+		for _, f := range fb {
+			answered[asStr(f, "video_id")] = true
+		}
+	}
+	// Count still-unanswered clips per thread.
+	byThread := map[string]int{}
+	for id, tid := range threadOf {
+		if tid != "" && !answered[id] {
+			byThread[tid]++
+		}
+	}
+	for tid, cnt := range byThread {
+		cs, _ := s.sb.SelectOne("coach_students",
+			"id=eq."+store.Q(tid)+"&select=coach_id,student_name,student_email")
+		if cs == nil {
+			continue
+		}
+		coachID := asStr(cs, "coach_id")
+		if coachID == "" {
+			continue
+		}
+		who := asStr(cs, "student_name")
+		if who == "" {
+			who = asStr(cs, "student_email")
+		}
+		if who == "" {
+			who = "A student"
+		}
+		clips := "a clip"
+		if cnt > 1 {
+			clips = fmt.Sprintf("%d clips", cnt)
+		}
+		s.notifyUser(coachID, "coaching", "", "",
+			who+" has "+clips+" waiting for your feedback",
+			"coaching:"+tid)
+	}
+	// Mark every candidate reminded (answered ones too) so we stop re-scanning.
+	nowT := time.Now().UTC().Format(time.RFC3339)
+	_, _ = s.sb.Update("coaching_videos", "id="+store.In(allIDs),
+		map[string]any{"coach_reminded_at": nowT})
 	return nil
 }
 

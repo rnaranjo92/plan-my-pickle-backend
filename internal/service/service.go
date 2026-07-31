@@ -5205,7 +5205,16 @@ func (s *Service) clearBracketDraw(bracketID string) error {
 	if err := s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID)); err != nil {
 		return err
 	}
-	return s.sb.Delete("rounds", "bracket_id=eq."+store.Q(bracketID))
+	if err := s.sb.Delete("rounds", "bracket_id=eq."+store.Q(bracketID)); err != nil {
+		return err
+	}
+	// MLP team events: team_ties is the PARENT of the line matches (deleting the
+	// matches above leaves ties orphaned), and is bracket-scoped — clear it too
+	// so a rebuild starts clean. No-op on DBs without the team_ties table.
+	if s.columnReady("team_ties", "id") {
+		return s.sb.Delete("team_ties", "bracket_id=eq."+store.Q(bracketID))
+	}
+	return nil
 }
 
 // MoveRegistrationDivision reassigns one registration — and its paired partner,
@@ -5262,11 +5271,6 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string, force 
 				return ErrDrawHasScores
 			}
 		}
-		for _, b := range drawn {
-			if err := s.clearBracketDraw(b); err != nil {
-				return err
-			}
-		}
 	}
 	ids := []string{reg.id}
 	if reg.partnerID != "" {
@@ -5284,10 +5288,18 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string, force 
 			ids = append(ids, asStr(partnerReg, "id"))
 		}
 	}
-	_, err = s.sb.Update("registrations", "id="+store.In(ids), map[string]any{
-		"bracket_id": targetBracketID,
-	})
-	return err
+	// Reassign BEFORE clearing the draw: clearBracketDraw is irreversible and
+	// non-transactional, so a move that fails here must not leave wiped brackets.
+	if _, err := s.sb.Update("registrations", "id="+store.In(ids),
+		map[string]any{"bracket_id": targetBracketID}); err != nil {
+		return err
+	}
+	for _, b := range drawn {
+		if err := s.clearBracketDraw(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // MergeDivision moves EVERY registration from one division into another within
@@ -5338,36 +5350,65 @@ func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string, forc
 				return 0, ErrDrawHasScores
 			}
 		}
-		for _, b := range drawn {
-			if err := s.clearBracketDraw(b); err != nil {
-				return 0, err
-			}
-		}
 	}
 	// SelectAll, not Select: Select silently caps at PostgREST's max-rows, which
 	// would strand registrations past the cap in the "emptied" source division.
 	rows, err := s.sb.SelectAll("registrations",
 		"event_id=eq."+store.Q(eventID)+
-			"&bracket_id=eq."+store.Q(fromBracketID)+"&select=id")
+			"&bracket_id=eq."+store.Q(fromBracketID)+"&select=id,player_id")
 	if err != nil {
 		return 0, err
 	}
-	if len(rows) == 0 {
-		return 0, nil
+	moved := 0
+	if len(rows) > 0 {
+		// A player already registered in the TARGET division can't be moved there
+		// (unique(event_id,player_id,bracket_id) — multi-division is allowed), so
+		// that would 409 the whole batch. Drop the duplicate source reg instead.
+		targetPlayers := map[string]bool{}
+		tRows, terr := s.sb.SelectAll("registrations",
+			"event_id=eq."+store.Q(eventID)+
+				"&bracket_id=eq."+store.Q(toBracketID)+"&select=player_id")
+		if terr != nil {
+			return 0, terr
+		}
+		for _, r := range tRows {
+			if p := asStr(r, "player_id"); p != "" {
+				targetPlayers[p] = true
+			}
+		}
+		var toUpdate, toDelete []string
+		for _, r := range rows {
+			id := asStr(r, "id")
+			if id == "" {
+				continue
+			}
+			if p := asStr(r, "player_id"); p != "" && targetPlayers[p] {
+				toDelete = append(toDelete, id)
+			} else {
+				toUpdate = append(toUpdate, id)
+			}
+		}
+		// Reassign BEFORE clearing the draws so a failure leaves brackets intact.
+		if len(toUpdate) > 0 {
+			if _, uerr := s.sb.Update("registrations", "id="+store.In(toUpdate),
+				map[string]any{"bracket_id": toBracketID}); uerr != nil {
+				return 0, uerr
+			}
+		}
+		if len(toDelete) > 0 {
+			if derr := s.sb.Delete("registrations",
+				"id="+store.In(toDelete)); derr != nil {
+				return 0, derr
+			}
+		}
+		moved = len(toUpdate) + len(toDelete)
 	}
-	ids := make([]string, 0, len(rows))
-	for _, r := range rows {
-		if id := asStr(r, "id"); id != "" {
-			ids = append(ids, id)
+	for _, b := range drawn {
+		if err := s.clearBracketDraw(b); err != nil {
+			return 0, err
 		}
 	}
-	_, err = s.sb.Update("registrations", "id="+store.In(ids), map[string]any{
-		"bracket_id": toBracketID,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+	return moved, nil
 }
 
 // DeleteRegistration removes a player's registration from an event (organizer

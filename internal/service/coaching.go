@@ -781,12 +781,28 @@ func (s *Service) SetPBVisionAssignment(threadID, userID, email, jobID string, a
 		return err
 	}
 	job, err := s.sb.SelectOne("coaching_pbvision_jobs",
-		"id=eq."+store.Q(jobID)+"&select=id")
+		"id=eq."+store.Q(jobID)+"&select=id,coach_student_id")
 	if err != nil {
 		return err
 	}
 	if job == nil {
 		return ErrNotFound
+	}
+	// OBJECT-LEVEL AUTH: the job must belong to the caller, or anyone could bind
+	// a foreign job to their thread and read its analysis. A student may only
+	// touch a job initiated in their OWN thread; a coach must own the job's
+	// thread (be its coach).
+	jobThread := asStr(job, "coach_student_id")
+	if role == "student" {
+		if jobThread != threadID {
+			return ErrForbidden
+		}
+	} else {
+		jt, _ := s.sb.SelectOne("coach_students",
+			"id=eq."+store.Q(jobThread)+"&select=coach_id")
+		if jt == nil || asStr(jt, "coach_id") != cs.CoachID {
+			return ErrForbidden
+		}
 	}
 	targetThreadID = strings.TrimSpace(targetThreadID)
 	if role == "student" {

@@ -1804,12 +1804,16 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 	if videoURL == "" {
 		return "", errors.New("a video URL is required")
 	}
-	// Guard against an accidental double-submit of the SAME clip: if an analysis
-	// for this clip is already in flight, don't spend another PB Vision run.
+	// Guard against an accidental double-submit of the SAME clip: if a RECENT
+	// analysis for this clip is still in flight, don't spend another PB Vision
+	// run. A stale (>60-min) "processing" job is treated as dead so the student
+	// can retry — the sweep below also fails those out.
 	if videoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		fresh := time.Now().UTC().Add(-60 * time.Minute).Format(time.RFC3339)
 		if prev, _ := s.sb.SelectOne("coaching_pbvision_jobs",
 			"source_video_id=eq."+store.Q(videoID)+
-				"&status=eq.processing&select=id&limit=1"); prev != nil {
+				"&status=eq.processing&updated_at=gte."+store.Q(fresh)+
+				"&select=id&limit=1"); prev != nil {
 			return "", errors.New("this clip is already being analyzed on PB Vision")
 		}
 	}
@@ -5393,6 +5397,48 @@ func (s *Service) RemindDueProgramWeeks() error {
 			_, _ = s.sb.Update("coaching_programs",
 				"id=eq."+store.Q(asStr(r, "id")),
 				map[string]any{"weeks": weeks, "updated_at": now()})
+		}
+	}
+	return nil
+}
+
+// SweepStalePBVisionJobs fails coaching PB Vision jobs stuck "processing" for
+// over an hour — PB Vision's completion webhook never arrived (e.g. the same
+// video URL was already analyzed elsewhere, so no new callback fires). Marking
+// them failed stops the endless "analyzing…" chip and lets the student retry.
+func (s *Service) SweepStalePBVisionJobs() error {
+	if !s.pbvisionJobsReady() {
+		return nil
+	}
+	cutoff := time.Now().UTC().Add(-60 * time.Minute).Format(time.RFC3339)
+	rows, err := s.sb.Select("coaching_pbvision_jobs",
+		"status=eq.processing&updated_at=lt."+store.Q(cutoff)+
+			"&select=id,coach_student_id&limit=200")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		id := asStr(r, "id")
+		if id == "" {
+			continue
+		}
+		_, _ = s.sb.Update("coaching_pbvision_jobs", "id=eq."+store.Q(id),
+			map[string]any{
+				"status":     "failed",
+				"error":      "Analysis timed out — please try again.",
+				"updated_at": now(),
+			})
+		// Let the student know they can retry.
+		if tid := asStr(r, "coach_student_id"); tid != "" {
+			if cs, _ := s.sb.SelectOne("coach_students",
+				"id=eq."+store.Q(tid)+"&select=coach_id,student_id"); cs != nil {
+				coachID := asStr(cs, "coach_id")
+				if sid := asStr(cs, "student_id"); sid != "" {
+					s.notifyUser(sid, "coaching", coachID, s.coachingName(coachID),
+						"PB Vision couldn't finish that analysis — tap the clip to try again",
+						"coaching:"+tid+"?tab=pbvision")
+				}
+			}
 		}
 	}
 	return nil

@@ -285,6 +285,18 @@ func main() {
 		}
 	}()
 
+	// Coaching: fail PB Vision jobs stuck "processing" > 60 min (webhook never
+	// arrived) so the "analyzing…" chip clears and the student can retry.
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.SweepStalePBVisionJobs(); err != nil {
+				log.Printf("coaching: stale PB Vision sweep failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

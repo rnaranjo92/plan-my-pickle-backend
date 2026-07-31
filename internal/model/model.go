@@ -1501,6 +1501,9 @@ type PBVisionAnalysis struct {
 	// SourceVideoURL is a signed playback URL for the analyzed clip (so the
 	// highlights, which are time-ranges into it, can be played inline).
 	SourceVideoURL string             `json:"sourceVideoUrl,omitempty"`
+	// SourceVideoID is the coaching_videos id of the analyzed clip, so a coach
+	// can pin feedback onto a highlight (feedback attaches to that clip).
+	SourceVideoID  string             `json:"sourceVideoId,omitempty"`
 	Highlights     []PBVisionHighlight `json:"highlights,omitempty"`
 	// ViewerRole is "coach" or "student". A coach sees Roster + Assignments to
 	// distribute the 4 detected players across their students; a student only

@@ -1005,6 +1005,7 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 	// Sign the source clip so the highlights (time-ranges into it) can play.
 	if len(out.Highlights) > 0 {
 		if svid := asStr(row, "source_video_id"); svid != "" {
+			out.SourceVideoID = svid
 			if vrow, _ := s.sb.SelectOne("coaching_videos",
 				"id=eq."+store.Q(svid)+"&select=video_url"); vrow != nil {
 				path := coachingVideoPath(asStr(vrow, "video_url"))

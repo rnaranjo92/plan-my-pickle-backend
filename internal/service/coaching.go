@@ -1136,9 +1136,11 @@ func parsePBVisionHighlights(insights any) []model.PBVisionHighlight {
 		if title == "" {
 			title = strings.TrimSpace(fmt.Sprint(orDefault(h["kind"], "Highlight")))
 		}
+		// PB Vision reports highlight start/end in MILLISECONDS — convert to
+		// seconds so the label + video seek land in the right place.
 		out = append(out, model.PBVisionHighlight{
-			StartSeconds: pbNum(h["s"]),
-			EndSeconds:   pbNum(h["e"]),
+			StartSeconds: pbNum(h["s"]) / 1000.0,
+			EndSeconds:   pbNum(h["e"]) / 1000.0,
 			Kind:         fmt.Sprint(orDefault(h["kind"], "")),
 			Title:        title,
 		})

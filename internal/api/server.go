@@ -186,6 +186,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/roster", s.roster)
 	// Public, PII-free player profile (rating + across-events box score).
 	mux.HandleFunc("GET /players/{id}/profile", optionalAuth(s.playerProfile))
+	mux.HandleFunc("GET /feed/{id}", optionalAuth(s.feedItemGet))
 	mux.HandleFunc("GET /feed/{id}/comments", optionalAuth(s.commentList))
 	mux.HandleFunc("GET /brackets/{id}/matches", s.bracketMatches)
 	mux.HandleFunc("GET /rounds/{id}/matches", s.roundMatches)
@@ -4980,6 +4981,15 @@ func (s *Server) feedReact(w http.ResponseWriter, r *http.Request) {
 
 // commentList returns a feed item's comments (public read; canDelete/mine
 // reflect the optional caller).
+func (s *Server) feedItemGet(w http.ResponseWriter, r *http.Request) {
+	item, err := s.svc.GetFeedItem(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (s *Server) commentList(w http.ResponseWriter, r *http.Request) {
 	items, err := s.svc.ListComments(r.PathValue("id"), userID(r))
 	if err != nil {

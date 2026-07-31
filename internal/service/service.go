@@ -9159,6 +9159,25 @@ func (s *Service) ListFeed(eventID, callerID string) ([]model.FeedItem, error) {
 	return out, nil
 }
 
+// GetFeedItem returns a single feed item enriched like the feed (reactions,
+// comments, author photo) — powers the "someone reacted/commented" deep-link.
+func (s *Service) GetFeedItem(id, callerID string) (model.FeedItem, error) {
+	row, err := s.sb.SelectOne("feed_items", "id=eq."+store.Q(id)+"&select=*")
+	if err != nil {
+		return model.FeedItem{}, err
+	}
+	if row == nil {
+		return model.FeedItem{}, ErrNotFound
+	}
+	fi := mapFeedItem(row)
+	fi.ReactionCounts = map[string]int{}
+	fi.MyReactions = []string{}
+	out := []model.FeedItem{fi}
+	s.attachSocial(out, []string{fi.ID}, callerID)
+	s.attachActorPhotos(out)
+	return out[0], nil
+}
+
 // MyFeed returns a unified activity stream across every event the signed-in user
 // organizes or plays in, newest first, with each item's event name attached for
 // context. Powers the app's NewsFeed tab. Read-only + best-effort: a lookup miss
@@ -9454,7 +9473,7 @@ func (s *Service) ToggleReaction(feedItemID, userID, typ string) (model.Reaction
 		go func() {
 			name := s.resolveDisplayName(userID, "")
 			s.notifyUser(s.feedItemRecipient(feedItemID), "reaction", userID, name,
-				name+" reacted to your post", "feed")
+				name+" reacted to your post", "feed:"+feedItemID)
 		}()
 	}
 	counts := map[string]int{}
@@ -9536,7 +9555,7 @@ func (s *Service) AddComment(feedItemID, userID, email, text string) (model.Feed
 	go func() {
 		name := s.resolveDisplayName(userID, email)
 		s.notifyUser(s.feedItemRecipient(feedItemID), "comment", userID, name,
-			name+" commented on your post", "feed")
+			name+" commented on your post", "feed:"+feedItemID)
 	}()
 	return c, nil
 }

@@ -1482,10 +1482,11 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 		nowDone = !asBool(m, "done")
 		focus = asStr(m, "focus")
 		m["done"] = nowDone
-		// Re-opening a week (un-completing) re-arms its due-date reminder so a
+		// Re-opening a week (un-completing) re-arms both reminder tiers so a
 		// genuinely-still-due week can nudge again.
 		if !nowDone {
 			delete(m, "reminded")
+			delete(m, "reminded_soon")
 		}
 		weeks[index] = m
 	}
@@ -5034,7 +5035,9 @@ func (s *Service) RemindDueProgramWeeks() error {
 	if !s.programsReady() {
 		return nil
 	}
-	today := time.Now().UTC().Format("2006-01-02")
+	nowT := time.Now().UTC()
+	today := nowT.Format("2006-01-02")
+	soonCutoff := nowT.AddDate(0, 0, 2).Format("2006-01-02") // due within ~2 days
 	rows, err := s.sb.Select("coaching_programs",
 		"active=is.true&select=id,coach_student_id,weeks&limit=500")
 	if err != nil {
@@ -5074,7 +5077,7 @@ func (s *Service) RemindDueProgramWeeks() error {
 		changed := false
 		for wi, w := range weeks {
 			m, ok := w.(map[string]any)
-			if !ok || asBool(m, "done") || asBool(m, "reminded") {
+			if !ok || asBool(m, "done") {
 				continue
 			}
 			due := strings.TrimSpace(asStr(m, "due"))
@@ -5084,26 +5087,41 @@ func (s *Service) RemindDueProgramWeeks() error {
 			if len(due) >= 10 {
 				due = due[:10] // compare date-only (handles RFC3339 too)
 			}
-			if due > today {
-				continue // not due yet
-			}
 			focus := asStr(m, "focus")
 			link := "coaching:" + threadID
-			body := "Reminder: a training program week is due"
-			if focus != "" {
-				body = "Reminder: “" + focus + "” is due in your training program"
+			// Two tiers: a proactive "coming up" nudge 1–2 days before due, then
+			// a "due" nudge on/after the date. Each fires at most once via its own
+			// flag (reminded_soon / reminded).
+			var flag, studentBody, coachBody string
+			switch {
+			case due <= today && !asBool(m, "reminded"):
+				flag = "reminded"
+				studentBody = "Reminder: a training program week is due"
+				if focus != "" {
+					studentBody = "Reminder: “" + focus + "” is due in your training program"
+				}
+				coachBody = "A program week is due for "
+			case due > today && due <= soonCutoff && !asBool(m, "reminded_soon"):
+				flag = "reminded_soon"
+				studentBody = "Coming up: a training program week is due soon"
+				if focus != "" {
+					studentBody = "Coming up: “" + focus + "” is due soon in your training program"
+				}
+				coachBody = "A program week is due soon for "
+			default:
+				continue
 			}
 			s.notifyUser(studentID, "coaching", coachID, s.coachingName(coachID),
-				body, link)
+				studentBody, link)
 			if coachID != "" {
 				who := s.coachingName(studentID)
 				if who == "" {
 					who = "your student"
 				}
 				s.notifyUser(coachID, "coaching", "", "",
-					"A program week is due for "+who+": "+focus, link)
+					coachBody+who+": "+focus, link)
 			}
-			m["reminded"] = true
+			m[flag] = true
 			weeks[wi] = m
 			changed = true
 		}

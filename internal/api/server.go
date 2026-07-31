@@ -917,7 +917,11 @@ const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 // our PB Vision API key. Defaults to the QA accounts; add beta testers (e.g.
 // Austen) via PBVISION_COACHING_ALLOWLIST (comma-separated), "*" to open it up.
 func coachingAnalysisAllowed(email string) bool {
-	return emailInAllowlist(email, os.Getenv("PBVISION_COACHING_ALLOWLIST"), qaAllowlist)
+	if emailInAllowlist(email, "", qaAllowlist) {
+		return true // QA/owner accounts always allowed
+	}
+	// Beta testers (e.g. Austen) — just their emails; QA needn't be re-listed.
+	return emailInAllowlist(email, os.Getenv("PBVISION_COACHING_ALLOWLIST"), "")
 }
 
 // ladderOnlyGrants: comped accounts restricted to creating LADDER leagues only —

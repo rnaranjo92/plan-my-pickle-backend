@@ -636,6 +636,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coaching/claim", requireAuth(s.claimCoachInvite))
 	mux.HandleFunc("POST /coaching/broadcast", requireAuth(s.coachBroadcast))
 	mux.HandleFunc("POST /coaching/assign-bulk", requireAuth(s.coachAssignBulk))
+	mux.HandleFunc("GET /coach/program-templates", s.instructorOnly(s.listProgramTemplates))
+	mux.HandleFunc("POST /coach/program-templates", s.instructorOnly(s.saveProgramTemplate))
+	mux.HandleFunc("DELETE /coach/program-templates/{id}", s.instructorOnly(s.deleteProgramTemplate))
+	mux.HandleFunc("POST /coach/program-templates/apply", s.instructorOnly(s.applyProgramToStudents))
 	mux.HandleFunc("GET /admin/instructors", s.ownerEmailOnly(s.listInstructors))
 	mux.HandleFunc("POST /admin/instructors", s.ownerEmailOnly(s.addInstructor))
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
@@ -5491,6 +5495,53 @@ func (s *Server) coachAssignBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.svc.BulkAssignDrill(
 		userID(r), userEmail(r), req.ThreadIDs, req.AssignDrillRequest)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"assigned": n})
+}
+
+func (s *Server) listProgramTemplates(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListProgramTemplates(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) saveProgramTemplate(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachingProgramRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	t, err := s.svc.SaveProgramTemplate(userID(r), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) deleteProgramTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteProgramTemplate(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) applyProgramToStudents(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ThreadIDs []string `json:"threadIds"`
+		model.CoachingProgramRequest
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.ApplyProgramToStudents(
+		userID(r), userEmail(r), req.ThreadIDs, req.CoachingProgramRequest)
 	if err != nil {
 		status(w, err)
 		return

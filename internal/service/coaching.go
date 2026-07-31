@@ -1515,6 +1515,135 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 	return mapProgram(row), nil
 }
 
+func (s *Service) programTemplatesReady() bool {
+	return s.columnReady("coach_program_templates", "id")
+}
+
+func mapProgramTemplate(row map[string]any) model.CoachProgramTemplate {
+	t := model.CoachProgramTemplate{
+		ID:        asStr(row, "id"),
+		Title:     asStr(row, "title"),
+		CreatedAt: asStr(row, "created_at"),
+		Weeks:     []model.CoachingProgramWeek{},
+	}
+	if arr, ok := row["weeks"].([]any); ok {
+		for _, w := range arr {
+			if m, ok := w.(map[string]any); ok {
+				wk := model.CoachingProgramWeek{Focus: asStr(m, "focus")}
+				if dr, ok := m["drills"].([]any); ok {
+					for _, d := range dr {
+						if dm, ok := d.(map[string]any); ok {
+							wk.Drills = append(wk.Drills, model.CoachingProgramDrill{
+								ID: asStr(dm, "id"), Title: asStr(dm, "title")})
+						}
+					}
+				}
+				t.Weeks = append(t.Weeks, wk)
+			}
+		}
+	}
+	return t
+}
+
+// ListProgramTemplates returns a coach's saved templates (newest first).
+func (s *Service) ListProgramTemplates(coachID string) ([]model.CoachProgramTemplate, error) {
+	if !s.programTemplatesReady() {
+		return []model.CoachProgramTemplate{}, nil
+	}
+	rows, err := s.sb.Select("coach_program_templates",
+		"coach_id=eq."+store.Q(coachID)+"&order=created_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachProgramTemplate, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapProgramTemplate(r))
+	}
+	return out, nil
+}
+
+// SaveProgramTemplate stores a reusable template (coach). Due dates are dropped
+// — they're set per-student at apply time.
+func (s *Service) SaveProgramTemplate(coachID string, req model.CoachingProgramRequest) (model.CoachProgramTemplate, error) {
+	if !s.programTemplatesReady() {
+		return model.CoachProgramTemplate{}, ErrCoachingUnavailable
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.CoachProgramTemplate{}, errors.New("give the template a title")
+	}
+	weeks := make([]map[string]any, 0, len(req.Weeks))
+	for _, f := range req.Weeks {
+		focus := strings.TrimSpace(f.Focus)
+		if focus == "" {
+			continue
+		}
+		wk := map[string]any{"focus": focus}
+		drills := make([]map[string]any, 0, len(f.Drills))
+		for _, d := range f.Drills {
+			if id := strings.TrimSpace(d.ID); id != "" {
+				drills = append(drills, map[string]any{
+					"id": id, "title": strings.TrimSpace(d.Title)})
+			}
+		}
+		if len(drills) > 0 {
+			wk["drills"] = drills
+		}
+		weeks = append(weeks, wk)
+	}
+	if len(weeks) == 0 {
+		return model.CoachProgramTemplate{}, errors.New("add at least one week")
+	}
+	ins, err := s.sb.Insert("coach_program_templates", map[string]any{
+		"coach_id": coachID, "title": title, "weeks": weeks,
+	})
+	if err != nil || len(ins) == 0 {
+		if err == nil {
+			err = errors.New("could not save the template")
+		}
+		return model.CoachProgramTemplate{}, err
+	}
+	return mapProgramTemplate(ins[0]), nil
+}
+
+// DeleteProgramTemplate removes a coach's template.
+func (s *Service) DeleteProgramTemplate(coachID, id string) error {
+	if !s.programTemplatesReady() {
+		return ErrCoachingUnavailable
+	}
+	row, _ := s.sb.SelectOne("coach_program_templates",
+		"id=eq."+store.Q(id)+"&select=coach_id")
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	return s.sb.Delete("coach_program_templates", "id=eq."+store.Q(id))
+}
+
+// ApplyProgramToStudents assigns the same program (title + weeks) to each
+// selected student thread the coach owns. Reuses CreateProgram (which supersedes
+// any prior active program per thread). Returns how many were assigned.
+func (s *Service) ApplyProgramToStudents(coachID, email string, threadIDs []string, req model.CoachingProgramRequest) (int, error) {
+	if !s.programsReady() {
+		return 0, ErrCoachingUnavailable
+	}
+	if len(threadIDs) == 0 {
+		return 0, errors.New("pick at least one student")
+	}
+	n := 0
+	for _, tid := range threadIDs {
+		if tid = strings.TrimSpace(tid); tid == "" {
+			continue
+		}
+		if _, err := s.CreateProgram(tid, coachID, email, req); err == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (s *Service) practiceReady() bool {
 	return s.columnReady("coaching_practice_logs", "id")
 }

@@ -1543,6 +1543,15 @@ type PBVisionPlayer struct {
 	Stats    map[string]any `json:"stats,omitempty"`
 }
 
+// CoachProgramTemplate is a reusable multi-week plan a coach saves once and
+// applies to many students (weeks carry focus + drills, no per-student dates).
+type CoachProgramTemplate struct {
+	ID        string                `json:"id"`
+	Title     string                `json:"title"`
+	Weeks     []CoachingProgramWeek `json:"weeks"`
+	CreatedAt string                `json:"createdAt,omitempty"`
+}
+
 // CoachingPracticeLog is one "I practiced" entry a student self-logs between
 // sessions — the accountability/return hook.
 type CoachingPracticeLog struct {

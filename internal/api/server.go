@@ -630,6 +630,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /coach/schedule/{id}", s.instructorOnly(s.deleteCoachSchedule))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
+	mux.HandleFunc("POST /coaching/claim", requireAuth(s.claimCoachInvite))
 	mux.HandleFunc("GET /admin/instructors", s.ownerEmailOnly(s.listInstructors))
 	mux.HandleFunc("POST /admin/instructors", s.ownerEmailOnly(s.addInstructor))
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
@@ -5436,6 +5437,23 @@ func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, cs)
+}
+
+// claimCoachInvite binds a coach's invite token to the signed-in account, so the
+// student links even if they signed up with a different email/phone.
+func (s *Server) claimCoachInvite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	threadID, err := s.svc.ClaimCoachInvite(userID(r), req.Token)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"threadId": threadID})
 }
 
 // seedCoachingDemo populates the caller's Instructor pages with dummy data.

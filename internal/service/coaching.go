@@ -328,6 +328,13 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 	if resolved != "" {
 		row["student_id"] = resolved
 	}
+	// Not resolved to an account yet → mint an invite token that binds the
+	// relationship on ANY claim (survives an email/phone mismatch at signup).
+	inviteToken := ""
+	if resolved == "" && s.columnReady("coach_students", "invite_token") {
+		inviteToken = newID()
+		row["invite_token"] = inviteToken
+	}
 	ins, err := s.sb.Insert("coach_students", row)
 	if err != nil {
 		return model.CoachStudent{}, err
@@ -339,13 +346,70 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 	// auto-link when they sign up with that email/phone). Best-effort, off-path.
 	if resolved == "" {
 		if email != "" {
-			go s.sendCoachInvite(coachID, email, name)
+			go s.sendCoachInvite(coachID, email, name, inviteToken)
 		}
 		if rawPhone != "" {
-			go s.sendCoachInviteSMS(coachID, rawPhone)
+			go s.sendCoachInviteSMS(coachID, rawPhone, inviteToken)
 		}
 	}
 	return mapCoachStudent(ins[0]), nil
+}
+
+// coachInviteURL builds the claim link. A token binds on claim regardless of the
+// email/phone the invitee signs up with; email is a fallback prefill hint.
+func coachInviteURL(token, email string) string {
+	u := "https://app.planmypickle.com/?invite=coaching"
+	if token != "" {
+		u += "&ct=" + url.QueryEscape(token)
+	}
+	if email != "" {
+		u += "&email=" + url.QueryEscape(email)
+	}
+	return u
+}
+
+// ClaimCoachInvite binds an invite token to the caller (sets student_id on the
+// still-unlinked roster row), so the relationship links no matter which
+// email/phone the student signed up with. Returns the thread id.
+func (s *Service) ClaimCoachInvite(userID, token string) (string, error) {
+	if !s.coachingReady() {
+		return "", ErrCoachingUnavailable
+	}
+	token = strings.TrimSpace(token)
+	if token == "" || userID == "" {
+		return "", ErrForbidden
+	}
+	if !s.columnReady("coach_students", "invite_token") {
+		return "", errors.New("invites aren't available yet")
+	}
+	row, err := s.sb.SelectOne("coach_students",
+		"invite_token=eq."+store.Q(token)+"&select=id,student_id,coach_id")
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", ErrNotFound
+	}
+	threadID := asStr(row, "id")
+	if sid := asStr(row, "student_id"); sid != "" {
+		if sid == userID {
+			return threadID, nil // already claimed by this user — idempotent
+		}
+		return "", ErrForbidden // already claimed by someone else
+	}
+	if _, err := s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		map[string]any{"student_id": userID, "invite_token": nil}); err != nil {
+		return "", err
+	}
+	if coachID := asStr(row, "coach_id"); coachID != "" {
+		who := s.coachingName(userID)
+		if who == "" {
+			who = "A student"
+		}
+		s.notifyUser(coachID, "coaching", userID, who,
+			who+" joined your coaching", "coaching:"+threadID)
+	}
+	return threadID, nil
 }
 
 // userIDByPhone resolves an account-linked player by normalized phone (last-10),
@@ -372,7 +436,7 @@ func (s *Service) userIDByPhone(np string) string {
 // sendCoachInviteSMS texts a not-yet-registered student a link to join. They must
 // sign up with this phone so the roster row auto-links. No-op if SMS isn't set up
 // or the number isn't textable.
-func (s *Service) sendCoachInviteSMS(coachID, phone string) {
+func (s *Service) sendCoachInviteSMS(coachID, phone, token string) {
 	if s.Sms == nil || !gateway.SmsReachable(phone) {
 		return
 	}
@@ -381,8 +445,8 @@ func (s *Service) sendCoachInviteSMS(coachID, phone string) {
 		coach = "Your coach"
 	}
 	body := fmt.Sprintf(
-		"%s invited you to PlanMyPickle to share pickleball clips & feedback. Sign up with this number to see them: https://app.planmypickle.com",
-		coach)
+		"%s invited you to PlanMyPickle to share pickleball clips & feedback. Join here: %s",
+		coach, coachInviteURL(token, ""))
 	if r, err := s.Sms.Send(phone, body); err != nil || !r.OK {
 		log.Printf("coaching: invite SMS to %s failed: %v", phone, err)
 	}
@@ -392,7 +456,7 @@ func (s *Service) sendCoachInviteSMS(coachID, phone string) {
 // PlanMyPickle. They must sign up with the SAME email the coach used so the
 // roster row auto-links (backfilled on their first coaching view). No-op if the
 // email gateway isn't configured.
-func (s *Service) sendCoachInvite(coachID, studentEmail, studentName string) {
+func (s *Service) sendCoachInvite(coachID, studentEmail, studentName, token string) {
 	if s.Email == nil || !s.Email.Live() {
 		return
 	}
@@ -400,8 +464,7 @@ func (s *Service) sendCoachInvite(coachID, studentEmail, studentName string) {
 	if strings.TrimSpace(coach) == "" {
 		coach = "Your coach"
 	}
-	joinURL := "https://app.planmypickle.com/?invite=coaching&email=" +
-		url.QueryEscape(studentEmail)
+	joinURL := coachInviteURL(token, studentEmail)
 	esc := html.EscapeString
 	hi := ""
 	if strings.TrimSpace(studentName) != "" {

@@ -1270,15 +1270,20 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 		return model.CoachingProgram{}, err
 	}
 	threadID := asStr(row, "coach_student_id")
-	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
 		return model.CoachingProgram{}, err
 	}
 	weeks, _ := row["weeks"].([]any)
 	if index < 0 || index >= len(weeks) {
 		return model.CoachingProgram{}, errors.New("no such week")
 	}
+	nowDone := false
+	focus := ""
 	if m, ok := weeks[index].(map[string]any); ok {
-		m["done"] = !asBool(m, "done")
+		nowDone = !asBool(m, "done")
+		focus = asStr(m, "focus")
+		m["done"] = nowDone
 		weeks[index] = m
 	}
 	out, err := s.sb.Update("coaching_programs", "id=eq."+store.Q(programID),
@@ -1287,6 +1292,19 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 		return model.CoachingProgram{}, err
 	}
 	s.bumpThreadActivity(threadID)
+	// Student completing a program week → tell the coach (parity with drills).
+	if role == "student" && nowDone {
+		who := s.coachingName(userID)
+		if who == "" {
+			who = "Your student"
+		}
+		body := who + " completed a program week"
+		if focus != "" {
+			body = who + " completed a week: " + focus
+		}
+		s.notifyUser(cs.CoachID, "coaching", userID, who, body,
+			"coaching:"+threadID)
+	}
 	if len(out) > 0 {
 		return mapProgram(out[0]), nil
 	}
@@ -1499,8 +1517,10 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 		cs.CoachNote = "" // students never see the coach's private note about them
 		cs.SkillLevel = "" // nor the coach's skill assessment
 	}
-	// Opening a thread marks it read for the viewer.
+	// Opening a thread marks it read for the viewer — both the thread's unread
+	// dot and the bell rows that deep-link into it.
 	s.markThreadRead(userID, threadID)
+	s.markThreadNotificationsRead(userID, threadID)
 
 	vids, err := s.sb.Select("coaching_videos",
 		"coach_student_id=eq."+store.Q(threadID)+"&order=created_at.desc")
@@ -2411,6 +2431,19 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 		return model.CoachingScheduleItem{}, errors.New("could not save that")
 	}
 	return mapScheduleItem(ins[0]), nil
+}
+
+// markThreadNotificationsRead clears the viewer's unread bell rows that deep-link
+// into this thread (so opening the thread stops it showing as unread in the bell).
+func (s *Service) markThreadNotificationsRead(userID, threadID string) {
+	if userID == "" || threadID == "" ||
+		!s.columnReady("user_notifications", "read") {
+		return
+	}
+	_, _ = s.sb.Update("user_notifications",
+		"recipient_id=eq."+store.Q(userID)+"&read=is.false"+
+			"&link=like.coaching:"+threadID+"*",
+		map[string]any{"read": true})
 }
 
 // notifyStudentOfThread resolves a thread's student (linked id, else email, else

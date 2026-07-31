@@ -716,7 +716,83 @@ func (s *Service) GetPBVision(threadID, userID, email string) (model.PBVisionSta
 	if m, ok := row["stats"].(map[string]any); ok {
 		out.Stats = m
 	}
+	// If this thread has REAL analyzed jobs, override the summary with live
+	// truth: the actual match count + when the latest analysis was generated.
+	// The detailed per-shot metrics PB Vision doesn't return per player (serve %,
+	// mph, shot mix, an overall rating) are sample-only, so we drop them and flag
+	// the summary "live" — the real per-player numbers live in the analysis card.
+	if cnt, lastAt, ok := s.realPBVisionSummary(threadID); ok {
+		out.Rating = nil
+		out.LastSyncedAt = lastAt
+		if out.Stats == nil {
+			out.Stats = map[string]any{}
+		} else {
+			// Copy so we don't mutate the cached demo blob.
+			cp := make(map[string]any, len(out.Stats)+2)
+			for k, v := range out.Stats {
+				cp[k] = v
+			}
+			out.Stats = cp
+		}
+		out.Stats["live"] = true
+		out.Stats["matchesAnalyzed"] = cnt
+	}
 	return out, nil
+}
+
+// realPBVisionSummary returns a live rollup for a thread from its actual ready
+// PB Vision jobs (ones initiated in this thread or assigned to it): how many
+// matches were analyzed and when the latest one was generated. ok is false when
+// there are no completed analyses yet, so GetPBVision keeps any seeded summary.
+func (s *Service) realPBVisionSummary(threadID string) (count int, lastAt string, ok bool) {
+	if !s.pbvisionJobsReady() {
+		return 0, "", false
+	}
+	seen := map[string]bool{}
+	consider := func(updated string) {
+		count++
+		if updated > lastAt {
+			lastAt = updated
+		}
+	}
+	// Jobs initiated in this thread.
+	rows, _ := s.sb.Select("coaching_pbvision_jobs",
+		"coach_student_id=eq."+store.Q(threadID)+
+			"&status=eq.ready&select=id,updated_at")
+	for _, r := range rows {
+		id := asStr(r, "id")
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		consider(asStr(r, "updated_at"))
+	}
+	// Jobs where this thread's student was assigned a detected player (so one
+	// analysis can cover up to 4 students).
+	if s.columnReady("coaching_pbvision_assignments", "id") {
+		arows, _ := s.sb.Select("coaching_pbvision_assignments",
+			"coach_student_id=eq."+store.Q(threadID)+"&select=job_id")
+		ids := []string{}
+		for _, a := range arows {
+			jid := asStr(a, "job_id")
+			if jid != "" && !seen[jid] {
+				ids = append(ids, jid)
+			}
+		}
+		if len(ids) > 0 {
+			jrows, _ := s.sb.Select("coaching_pbvision_jobs",
+				"id="+store.In(ids)+"&status=eq.ready&select=id,updated_at")
+			for _, r := range jrows {
+				id := asStr(r, "id")
+				if id == "" || seen[id] {
+					continue
+				}
+				seen[id] = true
+				consider(asStr(r, "updated_at"))
+			}
+		}
+	}
+	return count, lastAt, count > 0
 }
 
 // GetThreadPBVisionAnalysis returns the detected players from the analysis

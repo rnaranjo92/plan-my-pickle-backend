@@ -509,10 +509,30 @@ func (s *Service) ListCoachStudents(coachID string) ([]model.CoachStudent, error
 	if err != nil {
 		return nil, err
 	}
+	// Collapse duplicate rows for the same person (same linked account, or same
+	// email when unlinked) — e.g. one added by email and another created when
+	// they booked a session. Keep the richer row (more clips); tie → the first,
+	// which is the most-recently-active given the ordering above.
 	out := make([]model.CoachStudent, 0, len(rows))
+	seen := map[string]int{}
 	for _, r := range rows {
 		cs := mapCoachStudent(r)
 		cs.VideoCount = s.threadVideoCount(cs.ID)
+		key := ""
+		if cs.StudentID != "" {
+			key = "id:" + cs.StudentID
+		} else if e := strings.ToLower(strings.TrimSpace(cs.StudentEmail)); e != "" {
+			key = "em:" + e
+		}
+		if key != "" {
+			if idx, ok := seen[key]; ok {
+				if cs.VideoCount > out[idx].VideoCount {
+					out[idx] = cs // prefer the row that actually has clips
+				}
+				continue
+			}
+			seen[key] = len(out)
+		}
 		out = append(out, cs)
 	}
 	s.applyUnread(coachID, out)
@@ -4538,13 +4558,20 @@ func (s *Service) ensureCoachStudentLink(coachID, studentID, name, email string)
 	var found map[string]any
 	if studentID != "" {
 		found, _ = s.sb.SelectOne("coach_students",
-			"coach_id=eq."+store.Q(coachID)+"&student_id=eq."+store.Q(studentID)+"&select=id")
+			"coach_id=eq."+store.Q(coachID)+"&student_id=eq."+store.Q(studentID)+"&select=id,student_id")
 	}
 	if found == nil && email != "" {
 		found, _ = s.sb.SelectOne("coach_students",
-			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id")
+			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id,student_id")
 	}
 	if found != nil {
+		// Backfill the account link onto an email-only row so a later booking
+		// doesn't spawn a second roster row for the same person.
+		if studentID != "" && asStr(found, "student_id") == "" {
+			_, _ = s.sb.Update("coach_students",
+				"id=eq."+store.Q(asStr(found, "id")),
+				map[string]any{"student_id": studentID})
+		}
 		return
 	}
 	_, _ = s.sb.Insert("coach_students", map[string]any{

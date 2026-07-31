@@ -628,6 +628,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/schedule", s.instructorOnly(s.addCoachSchedule))
 	mux.HandleFunc("POST /coach/schedule/{id}", s.instructorOnly(s.updateCoachSchedule))
 	mux.HandleFunc("DELETE /coach/schedule/{id}", s.instructorOnly(s.deleteCoachSchedule))
+	mux.HandleFunc("POST /coach/schedule/{id}/attendance", s.instructorOnly(s.setSessionAttendance))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
 	mux.HandleFunc("POST /coaching/claim", requireAuth(s.claimCoachInvite))
@@ -5902,6 +5903,21 @@ func (s *Server) updateCoachSchedule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteCoachSchedule(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.DeleteCoachScheduleItem(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) setSessionAttendance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetSessionAttendance(
+		userID(r), r.PathValue("id"), req.Status); err != nil {
 		status(w, err)
 		return
 	}

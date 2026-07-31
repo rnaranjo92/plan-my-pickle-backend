@@ -1310,6 +1310,8 @@ type CoachingScheduleItem struct {
 	Notes          string `json:"notes,omitempty"`
 	// CoachName is populated only on a player's own booked-sessions list.
 	CoachName string `json:"coachName,omitempty"`
+	// Status is a session's attendance: "" (unmarked), "attended", "no_show".
+	Status string `json:"status,omitempty"`
 }
 
 // CoachingMessage is one free-form chat message on a coaching thread.

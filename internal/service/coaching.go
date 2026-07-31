@@ -2366,6 +2366,7 @@ func mapScheduleItem(row map[string]any) model.CoachingScheduleItem {
 		AllDay:         asBool(row, "all_day"),
 		Location:       asStr(row, "location"),
 		Notes:          asStr(row, "notes"),
+		Status:         asStr(row, "status"),
 	}
 }
 
@@ -2499,6 +2500,32 @@ func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
 			"coaching:"+asStr(row, "coach_student_id"))
 	}
 	return nil
+}
+
+// SetSessionAttendance marks a booked session attended / no_show (coach only).
+// "" clears it. No-op until the status column runs.
+func (s *Service) SetSessionAttendance(coachID, sessionID, status string) error {
+	if !s.scheduleReady() || !s.columnReady("coaching_schedule", "status") {
+		return ErrCoachingUnavailable
+	}
+	status = strings.TrimSpace(status)
+	if status != "" && status != "attended" && status != "no_show" {
+		return errors.New("invalid status")
+	}
+	row, _ := s.sb.SelectOne("coaching_schedule",
+		"id=eq."+store.Q(sessionID)+"&select=coach_id,kind")
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	if asStr(row, "kind") != "session" {
+		return errors.New("only a booked session has attendance")
+	}
+	_, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(sessionID),
+		map[string]any{"status": orNull(status)})
+	return err
 }
 
 // UpdateCoachScheduleItem edits a schedule entry the coach owns (its kind is

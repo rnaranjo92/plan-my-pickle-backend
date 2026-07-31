@@ -958,6 +958,8 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 		Players:    parsePBVisionPlayers(row["insights"]),
 		Highlights: parsePBVisionHighlights(row["insights"]),
 		ViewerRole: role,
+		ThreadID:   threadID,
+		BuyerName:  cs.StudentName,
 	}
 	// This thread's tagged player: an explicit assignment wins; else the legacy
 	// single tagged_avatar_id (only meaningful for a job initiated here).
@@ -1015,6 +1017,40 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 				}
 			}
 		}
+	}
+	return out, nil
+}
+
+// ListCoachAnalyses returns every ready PB Vision analysis across the coach's
+// students, so the instructor can distribute detected players from one hub
+// instead of opening each student's thread. Only analyses INITIATED in a
+// student's thread are listed (that student is the buyer/payer); a thread that
+// merely had a player assigned to it isn't the buyer, so it's skipped — the
+// buyer's own card already covers that match. Each item carries its own
+// ThreadID so assignment calls route to the right (buyer's) thread.
+func (s *Service) ListCoachAnalyses(userID, email string) ([]model.PBVisionAnalysis, error) {
+	if !s.coachingReady() || !s.pbvisionJobsReady() {
+		return []model.PBVisionAnalysis{}, nil
+	}
+	students, err := s.ListCoachStudents(userID)
+	if err != nil {
+		return nil, err
+	}
+	out := []model.PBVisionAnalysis{}
+	seen := map[string]bool{}
+	for _, st := range students {
+		row, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+			"coach_student_id=eq."+store.Q(st.ID)+
+				"&status=eq.ready&order=updated_at.desc&limit=1&select=id")
+		if row == nil {
+			continue // this thread didn't buy an analysis
+		}
+		a, aerr := s.GetThreadPBVisionAnalysis(st.ID, userID, email)
+		if aerr != nil || !a.Ready || len(a.Players) == 0 || seen[a.JobID] {
+			continue
+		}
+		seen[a.JobID] = true
+		out = append(out, a)
 	}
 	return out, nil
 }

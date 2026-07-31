@@ -1504,7 +1504,12 @@ type PBVisionAnalysis struct {
 	// SourceVideoID is the coaching_videos id of the analyzed clip, so a coach
 	// can pin feedback onto a highlight (feedback attaches to that clip).
 	SourceVideoID  string             `json:"sourceVideoId,omitempty"`
-	Highlights     []PBVisionHighlight `json:"highlights,omitempty"`
+	// ThreadID is the coach_students thread this analysis lives in (the buyer's
+	// thread), and BuyerName is that student — so a coach-level list can label
+	// each analysis "Paid by <buyer>" and route assignments to the right thread.
+	ThreadID   string              `json:"threadId,omitempty"`
+	BuyerName  string              `json:"buyerName,omitempty"`
+	Highlights []PBVisionHighlight `json:"highlights,omitempty"`
 	// ViewerRole is "coach" or "student". A coach sees Roster + Assignments to
 	// distribute the 4 detected players across their students; a student only
 	// sees their own tagged player (TaggedID).

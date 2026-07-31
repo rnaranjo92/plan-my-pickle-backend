@@ -612,6 +612,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// Instructor Mode / Coaching (Phase 1). Coach-side = instructor-gated; thread
 	// reads/writes = any authed user, membership-checked in the service.
 	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
+	mux.HandleFunc("GET /coach/pbvision/analyses", s.instructorOnly(s.coachPBVisionAnalyses))
 	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
 	mux.HandleFunc("POST /coach/seed-demo", requireAuth(s.seedCoachingDemo))
 	mux.HandleFunc("POST /coach/clear-demo-students", s.instructorOnly(s.clearDemoStudents))
@@ -5687,6 +5688,17 @@ func (s *Server) coachingPBVisionAnalysis(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// coachPBVisionAnalyses lists every ready analysis across the coach's students,
+// for the "Match analyses" hub (assign detected players from one place).
+func (s *Server) coachPBVisionAnalyses(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachAnalyses(userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 // coachingPBVisionTag records which detected player is the student.

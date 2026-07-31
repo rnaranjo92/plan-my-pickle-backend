@@ -3005,7 +3005,7 @@ func (s *Service) SetSessionAttendance(coachID, sessionID, status string) error 
 		return errors.New("invalid status")
 	}
 	row, _ := s.sb.SelectOne("coaching_schedule",
-		"id=eq."+store.Q(sessionID)+"&select=coach_id,kind")
+		"id=eq."+store.Q(sessionID)+"&select=coach_id,kind,coach_student_id")
 	if row == nil {
 		return ErrNotFound
 	}
@@ -3015,9 +3015,20 @@ func (s *Service) SetSessionAttendance(coachID, sessionID, status string) error 
 	if asStr(row, "kind") != "session" {
 		return errors.New("only a booked session has attendance")
 	}
-	_, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(sessionID),
-		map[string]any{"status": orNull(status)})
-	return err
+	if _, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(sessionID),
+		map[string]any{"status": orNull(status)}); err != nil {
+		return err
+	}
+	// Marking a session attended → nudge the student to book their next one
+	// (turns captured attendance into a rebooking loop).
+	if status == "attended" {
+		if threadID := asStr(row, "coach_student_id"); threadID != "" {
+			s.notifyStudentOfThread(threadID, coachID, s.coachingName(coachID),
+				"Great session! Ready for the next one? Book from your coach's page",
+				"coaching:"+threadID)
+		}
+	}
+	return nil
 }
 
 // UpdateCoachScheduleItem edits a schedule entry the coach owns (its kind is

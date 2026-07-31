@@ -224,6 +224,31 @@ func main() {
 		}
 	}()
 
+	// Coaching: pre-session reminders (1:1 sessions within 24h). 15-min tick;
+	// once per session (reminded_at). Inert until the reminded_at column runs.
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.RemindUpcomingSessions(); err != nil {
+				log.Printf("coaching: session reminder pass failed: %v", err)
+			}
+		}
+	}()
+
+	// Coaching: re-engage students whose thread has gone quiet for 14 days.
+	// 6-hour tick; at most once per 14 days per thread (nudged_at). Inert until
+	// the nudged_at column runs.
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.SweepInactiveStudents(); err != nil {
+				log.Printf("coaching: inactive-student sweep failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

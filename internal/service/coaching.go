@@ -4563,6 +4563,74 @@ func (s *Service) PayForEnrollment(enrollmentID, userID, email, successURL, canc
 
 // RemindDueClassPayments notifies players ~1h before a paid class to pay & confirm
 // their seat (reconciler tick). Reminds once per enrollment (payment_ref sentinel).
+// RemindUpcomingSessions notifies students of a booked 1:1 session starting
+// within the next 24h (once — reminded_at guards re-sends). Cron sweep.
+func (s *Service) RemindUpcomingSessions() error {
+	if !s.scheduleReady() || !s.columnReady("coaching_schedule", "reminded_at") {
+		return nil
+	}
+	nowT := time.Now().UTC()
+	horizon := nowT.Add(24 * time.Hour)
+	rows, err := s.sb.Select("coaching_schedule",
+		"kind=eq.session&reminded_at=is.null"+
+			"&starts_at=gte."+store.Q(nowT.Format(time.RFC3339))+
+			"&starts_at=lte."+store.Q(horizon.Format(time.RFC3339))+
+			"&select=id,coach_id,coach_student_id&limit=300")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		threadID := asStr(r, "coach_student_id")
+		coachID := asStr(r, "coach_id")
+		if threadID != "" {
+			s.notifyStudentOfThread(threadID, coachID, s.coachingName(coachID),
+				"Reminder: your 1:1 coaching session is coming up soon",
+				"coaching:"+threadID)
+		}
+		_, _ = s.sb.Update("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")),
+			map[string]any{"reminded_at": nowT.Format(time.RFC3339)})
+	}
+	return nil
+}
+
+// SweepInactiveStudents nudges a linked student (and their coach) when a thread
+// has had no activity in 14 days, at most once per 14 days (nudged_at guard).
+func (s *Service) SweepInactiveStudents() error {
+	if !s.coachingReady() ||
+		!s.columnReady("coach_students", "nudged_at") ||
+		!s.columnReady("coach_students", "last_activity_at") {
+		return nil
+	}
+	nowT := time.Now().UTC()
+	cutoff := nowT.Add(-14 * 24 * time.Hour).Format(time.RFC3339)
+	rows, err := s.sb.Select("coach_students",
+		"last_activity_at=lt."+store.Q(cutoff)+"&student_id=not.is.null"+
+			"&or=(nudged_at.is.null,nudged_at.lt."+store.Q(cutoff)+")"+
+			"&select=id,coach_id,student_id&limit=200")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		threadID := asStr(r, "id")
+		coachID := asStr(r, "coach_id")
+		sid := asStr(r, "student_id")
+		if sid != "" {
+			s.notifyUser(sid, "coaching", coachID, s.coachingName(coachID),
+				"Your coach is ready when you are — upload a clip for feedback",
+				"coaching:"+threadID)
+		}
+		who := s.coachingName(sid)
+		if who == "" {
+			who = "A student"
+		}
+		s.notifyUser(coachID, "coaching", sid, who,
+			who+" has been quiet for 2 weeks — check in?", "coaching:"+threadID)
+		_, _ = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+			map[string]any{"nudged_at": nowT.Format(time.RFC3339)})
+	}
+	return nil
+}
+
 func (s *Service) RemindDueClassPayments() error {
 	if !s.enrollmentsReady() {
 		return nil

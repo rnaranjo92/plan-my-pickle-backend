@@ -924,6 +924,11 @@ func emailInAllowlist(email, list, dflt string) bool {
 
 const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 
+// pbVisionCoachingAllow: built-in PB Vision coaching beta testers, always allowed
+// regardless of the PBVISION_COACHING_ALLOWLIST env (which OVERRIDES its default
+// when set). Scoped to PB Vision analysis only — NOT the broader qaAllowlist.
+const pbVisionCoachingAllow = "rolando.naranjo92@yahoo.com"
+
 // coachingAnalysisAllowed gates the (currently FREE, un-metered) coaching PB
 // Vision analysis to a limited beta while payment is on hold — every run bills
 // our PB Vision API key. Defaults to the QA accounts; add beta testers (e.g.
@@ -931,6 +936,9 @@ const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 func coachingAnalysisAllowed(email string) bool {
 	if emailInAllowlist(email, "", qaAllowlist) {
 		return true // QA/owner accounts always allowed
+	}
+	if emailInAllowlist(email, "", pbVisionCoachingAllow) {
+		return true // built-in PB Vision beta testers (independent of the env)
 	}
 	// Beta testers (e.g. Austen) — just their emails; QA needn't be re-listed.
 	return emailInAllowlist(email, os.Getenv("PBVISION_COACHING_ALLOWLIST"), "")

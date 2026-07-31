@@ -1344,6 +1344,9 @@ type CoachBookingRequest struct {
 	StartsAt     string `json:"startsAt"`
 	DurationMins int    `json:"durationMins"`
 	Location     string `json:"location"`
+	// WhatToWorkOn is the player's optional agenda for the session; stored as the
+	// session notes so the coach sees the goal before they arrive.
+	WhatToWorkOn string `json:"whatToWorkOn"`
 }
 
 // CoachingScheduleRequest books/opens/blocks a schedule entry.

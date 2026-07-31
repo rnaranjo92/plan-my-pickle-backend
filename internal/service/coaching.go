@@ -3955,6 +3955,12 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 	if label == "" {
 		label = playerEmail
 	}
+	// The player's agenda becomes the session notes (so the coach sees the goal);
+	// fall back to a generic label when they didn't say.
+	notes := strings.TrimSpace(req.WhatToWorkOn)
+	if notes == "" {
+		notes = "Booked by player"
+	}
 	row := map[string]any{
 		"coach_id":  coachUserID,
 		"kind":      "session",
@@ -3962,7 +3968,7 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 		"ends_at":   end.Format(time.RFC3339),
 		"all_day":   false,
 		"location":  orNull(strings.TrimSpace(req.Location)),
-		"notes":     "Booked by player",
+		"notes":     notes,
 	}
 	if threadID != "" {
 		row["coach_student_id"] = threadID
@@ -3976,9 +3982,13 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 		return model.CoachingScheduleItem{}, err
 	}
 
-	// Notify the coach.
+	// Notify the coach (include the agenda so they can prep).
+	bookMsg := label + " booked a 1:1 session"
+	if notes != "Booked by player" {
+		bookMsg += " — wants to work on: " + notes
+	}
 	s.notifyUser(coachUserID, "coaching", playerID, label,
-		label+" booked a 1:1 session", "coaching:"+threadID)
+		bookMsg, "coaching:"+threadID)
 
 	return mapScheduleItem(ins[0]), nil
 }

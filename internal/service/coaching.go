@@ -1468,6 +1468,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 			Body:             asStr(f, "body"),
 			CreatedAt:        asStr(f, "created_at"),
 			TimestampSeconds: asFloatPtr(f, "timestamp_seconds"),
+			Annotation:       f["annotation"],
 		}
 		byVideo[fb.VideoID] = append(byVideo[fb.VideoID], fb)
 	}
@@ -1577,7 +1578,7 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 		return model.CoachingFeedback{}, ErrCoachingUnavailable
 	}
 	body := strings.TrimSpace(req.Body)
-	if body == "" {
+	if body == "" && req.Annotation == nil {
 		return model.CoachingFeedback{}, errors.New("write some feedback first")
 	}
 	vrow, err := s.sb.SelectOne("coaching_videos",
@@ -1604,6 +1605,9 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 		s.columnReady("coaching_feedback", "timestamp_seconds") {
 		fbRow["timestamp_seconds"] = *req.TimestampSeconds
 	}
+	if req.Annotation != nil && s.columnReady("coaching_feedback", "annotation") {
+		fbRow["annotation"] = req.Annotation
+	}
 	ins, err := s.sb.Insert("coaching_feedback", fbRow)
 	if err != nil {
 		return model.CoachingFeedback{}, err
@@ -1623,10 +1627,15 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 		CreatedAt:      asStr(ins[0], "created_at"),
 	}
 	fb.TimestampSeconds = asFloatPtr(ins[0], "timestamp_seconds")
+	fb.Annotation = ins[0]["annotation"]
 	s.bumpThreadActivity(threadID)
 	s.markThreadRead(userID, threadID)
+	notifyBody := name + ": " + truncate(body, 120)
+	if body == "" {
+		notifyBody = name + " drew an annotation on a clip"
+	}
 	s.notifyCoachingCounterpartLink(cs, role, userID, name,
-		name+": "+truncate(body, 120), "coaching:"+cs.ID+"?tab=videos")
+		notifyBody, "coaching:"+cs.ID+"?tab=videos")
 	return fb, nil
 }
 

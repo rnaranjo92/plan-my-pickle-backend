@@ -1284,6 +1284,10 @@ type CoachingFeedback struct {
 	CreatedAt      string `json:"createdAt,omitempty"`
 	// TimestampSeconds pins the comment to a moment in the clip (nullable).
 	TimestampSeconds *float64 `json:"timestampSeconds,omitempty"`
+	// Annotation is an optional telestration overlay for the pinned moment: a
+	// {strokes:[{tool,color,points:[[x,y]...]}]} blob with NORMALIZED (0..1)
+	// coordinates, re-drawn over the clip when the viewer seeks to the moment.
+	Annotation any `json:"annotation,omitempty"`
 }
 
 // CoachingThread is a roster row plus its clips (each with nested feedback).
@@ -1694,6 +1698,7 @@ type CoachingVideoRequest struct {
 type CoachingFeedbackRequest struct {
 	Body             string   `json:"body"`
 	TimestampSeconds *float64 `json:"timestampSeconds"`
+	Annotation       any      `json:"annotation"`
 }
 
 // WaitlistEntry is one person on an event's waitlist (used when the event is at

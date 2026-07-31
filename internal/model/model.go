@@ -1517,8 +1517,9 @@ type PBVisionHighlight struct {
 }
 
 // PBVisionPlayer is one detected on-court player. AvatarID is PB Vision's
-// per-video 0..3 index; Label is a human hint ("Team A · left side") since the
-// payload carries no name or photo. Stats holds that player's metrics.
+// per-video 0..3 index; Label is a human hint ("Team A · Player 1", matching the
+// badge + PB Vision's report) since the payload carries no name or photo. Stats
+// holds that player's metrics.
 type PBVisionPlayer struct {
 	AvatarID int            `json:"avatarId"`
 	Team     int            `json:"team"`

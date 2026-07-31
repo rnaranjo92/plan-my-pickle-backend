@@ -1032,8 +1032,11 @@ func parsePBVisionPlayers(insights any) []model.PBVisionPlayer {
 	return players
 }
 
-// labelPBVisionPlayers assigns "Team A · left side" style hints. Within a team
-// the two players are split by left_side_percentage (higher = the left player).
+// labelPBVisionPlayers labels each detected player "Team A/B · Player N", where
+// N = avatar_id+1 — matching BOTH our colored badge and PB Vision's own
+// "Player 1–4" report labels, so cross-referencing is trivial. (An earlier
+// left/right-side label derived from left_side_percentage was too noisy on short
+// clips to be trustworthy.)
 func labelPBVisionPlayers(players []model.PBVisionPlayer) {
 	teamName := func(t int) string {
 		switch t {
@@ -1045,30 +1048,9 @@ func labelPBVisionPlayers(players []model.PBVisionPlayer) {
 			return fmt.Sprintf("Team %d", t+1)
 		}
 	}
-	byTeam := map[int][]int{}
-	for i, p := range players {
-		byTeam[p.Team] = append(byTeam[p.Team], i)
-	}
-	for _, idxs := range byTeam {
-		if len(idxs) == 2 {
-			a, b := idxs[0], idxs[1]
-			if pbNum(players[b].Stats["left_side_percentage"]) >
-				pbNum(players[a].Stats["left_side_percentage"]) {
-				a, b = b, a
-			}
-			players[a].Label = teamName(players[a].Team) + " · left side"
-			players[b].Label = teamName(players[b].Team) + " · right side"
-		} else {
-			for n, i := range idxs {
-				players[i].Label = fmt.Sprintf("%s · player %d",
-					teamName(players[i].Team), n+1)
-			}
-		}
-	}
 	for i := range players {
-		if players[i].Label == "" {
-			players[i].Label = fmt.Sprintf("Player %d", players[i].AvatarID+1)
-		}
+		players[i].Label = fmt.Sprintf("%s · Player %d",
+			teamName(players[i].Team), players[i].AvatarID+1)
 	}
 }
 

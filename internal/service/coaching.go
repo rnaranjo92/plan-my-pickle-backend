@@ -3482,6 +3482,53 @@ func (s *Service) SendThreadMessage(threadID, userID, email, name string, req mo
 	return mapCoachingMessage(ins[0]), nil
 }
 
+// BroadcastToStudents sends the same chat message into each selected student
+// thread (a group announcement). Reuses SendThreadMessage, which validates the
+// coach owns each thread — non-owned threads are skipped. Returns how many sent.
+func (s *Service) BroadcastToStudents(coachID, email, name string, threadIDs []string, body string) (int, error) {
+	if !s.coachingReady() || !s.messagesReady() {
+		return 0, ErrCoachingUnavailable
+	}
+	if strings.TrimSpace(body) == "" {
+		return 0, errors.New("message is empty")
+	}
+	if len(threadIDs) == 0 {
+		return 0, errors.New("pick at least one student")
+	}
+	sent := 0
+	for _, tid := range threadIDs {
+		if tid = strings.TrimSpace(tid); tid == "" {
+			continue
+		}
+		if _, err := s.SendThreadMessage(tid, coachID, email, name,
+			model.CoachingMessageRequest{Body: body}); err == nil {
+			sent++
+		}
+	}
+	return sent, nil
+}
+
+// BulkAssignDrill assigns the same drill/goal to each selected student thread.
+// Reuses AssignDrill (which validates coach ownership). Returns how many.
+func (s *Service) BulkAssignDrill(coachID, email string, threadIDs []string, req model.AssignDrillRequest) (int, error) {
+	if !s.assignmentsReady() {
+		return 0, ErrCoachingUnavailable
+	}
+	if len(threadIDs) == 0 {
+		return 0, errors.New("pick at least one student")
+	}
+	n := 0
+	for _, tid := range threadIDs {
+		if tid = strings.TrimSpace(tid); tid == "" {
+			continue
+		}
+		if _, err := s.AssignDrill(tid, coachID, email, req); err == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // --- 1:1 session booking (player books a coach's open availability) ---
 
 func parseSchedTime(s string) (time.Time, bool) {

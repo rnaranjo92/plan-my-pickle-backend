@@ -631,6 +631,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
 	mux.HandleFunc("GET /me/coaching", requireAuth(s.myCoaching))
 	mux.HandleFunc("POST /coaching/claim", requireAuth(s.claimCoachInvite))
+	mux.HandleFunc("POST /coaching/broadcast", requireAuth(s.coachBroadcast))
+	mux.HandleFunc("POST /coaching/assign-bulk", requireAuth(s.coachAssignBulk))
 	mux.HandleFunc("GET /admin/instructors", s.ownerEmailOnly(s.listInstructors))
 	mux.HandleFunc("POST /admin/instructors", s.ownerEmailOnly(s.addInstructor))
 	mux.HandleFunc("DELETE /admin/instructors/{id}", s.ownerEmailOnly(s.removeInstructor))
@@ -5454,6 +5456,42 @@ func (s *Server) claimCoachInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"threadId": threadID})
+}
+
+// coachBroadcast sends one message into many of the coach's student threads.
+func (s *Server) coachBroadcast(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ThreadIDs []string `json:"threadIds"`
+		Body      string   `json:"body"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.BroadcastToStudents(
+		userID(r), userEmail(r), userName(r), req.ThreadIDs, req.Body)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"sent": n})
+}
+
+// coachAssignBulk assigns one drill/goal to many of the coach's students.
+func (s *Server) coachAssignBulk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ThreadIDs []string `json:"threadIds"`
+		model.AssignDrillRequest
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.BulkAssignDrill(
+		userID(r), userEmail(r), req.ThreadIDs, req.AssignDrillRequest)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"assigned": n})
 }
 
 // seedCoachingDemo populates the caller's Instructor pages with dummy data.

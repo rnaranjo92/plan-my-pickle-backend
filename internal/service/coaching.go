@@ -5371,6 +5371,45 @@ func (s *Service) SweepInactiveStudents() error {
 	return nil
 }
 
+// RemindNeverUploaded nudges a linked student who joined but hasn't uploaded a
+// single clip after 3 days — the moment coaching relationships die. Distinct
+// warmer copy + a direct upload link, fired once (first_nudge_at). This is an
+// ONBOARDING nudge, separate from the 14-day inactivity sweep.
+func (s *Service) RemindNeverUploaded() error {
+	if !s.coachingReady() || !s.columnReady("coach_students", "first_nudge_at") {
+		return nil
+	}
+	nowT := time.Now().UTC()
+	cutoff := nowT.AddDate(0, 0, -3).Format(time.RFC3339)
+	rows, err := s.sb.Select("coach_students",
+		"student_id=not.is.null&first_nudge_at=is.null"+
+			"&created_at=lte."+store.Q(cutoff)+
+			"&select=id,coach_id,student_id&limit=200")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		threadID := asStr(r, "id")
+		markNudged := func() {
+			_, _ = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+				map[string]any{"first_nudge_at": nowT.Format(time.RFC3339)})
+		}
+		// Already uploaded → nothing to onboard; mark so we never re-scan it.
+		if s.threadVideoCount(threadID) > 0 {
+			markNudged()
+			continue
+		}
+		coachID := asStr(r, "coach_id")
+		if sid := asStr(r, "student_id"); sid != "" {
+			s.notifyUser(sid, "coaching", coachID, s.coachingName(coachID),
+				"Your coach is ready for your first clip — record a rally and upload it for feedback",
+				"coaching:"+threadID)
+		}
+		markNudged()
+	}
+	return nil
+}
+
 func (s *Service) RemindDueClassPayments() error {
 	if !s.enrollmentsReady() {
 		return nil

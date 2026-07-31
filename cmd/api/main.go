@@ -273,6 +273,18 @@ func main() {
 		}
 	}()
 
+	// Coaching: onboarding nudge for a student who joined but hasn't uploaded a
+	// clip after 3 days. 6-hour tick; once per student (first_nudge_at column).
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.RemindNeverUploaded(); err != nil {
+				log.Printf("coaching: first-clip onboarding nudge failed: %v", err)
+			}
+		}
+	}()
+
 	handler := api.NewServer(svc)
 	srv := &http.Server{
 		Addr:         addr,

@@ -791,9 +791,11 @@ func (s *Service) SetPBVisionAssignment(threadID, userID, email, jobID string, a
 	targetThreadID = strings.TrimSpace(targetThreadID)
 	if role == "student" {
 		targetThreadID = threadID // a student can only tag themselves
-	} else if targetThreadID != "" {
-		tgt, _ := s.sb.SelectOne("coach_students",
-			"id=eq."+store.Q(targetThreadID)+"&select=coach_id")
+	}
+	var tgt map[string]any
+	if role != "student" && targetThreadID != "" {
+		tgt, _ = s.sb.SelectOne("coach_students", "id=eq."+store.Q(targetThreadID)+
+			"&select=coach_id,student_id,student_email,student_phone")
 		if tgt == nil || asStr(tgt, "coach_id") != cs.CoachID {
 			return ErrForbidden // coaches can only assign their own students
 		}
@@ -817,10 +819,31 @@ func (s *Service) SetPBVisionAssignment(threadID, userID, email, jobID string, a
 		jobF+"&avatar_id=eq."+strconv.Itoa(avatarID))
 	_ = s.sb.Delete("coaching_pbvision_assignments",
 		jobF+"&coach_student_id=eq."+store.Q(targetThreadID))
-	_, err = s.sb.Insert("coaching_pbvision_assignments", map[string]any{
+	if _, err = s.sb.Insert("coaching_pbvision_assignments", map[string]any{
 		"job_id": jobID, "avatar_id": avatarID, "coach_student_id": targetThreadID,
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	// A coach assigning a student → notify that student their stats are ready.
+	if tgt != nil {
+		recipient := asStr(tgt, "student_id")
+		if recipient == "" {
+			if e := asStr(tgt, "student_email"); e != "" {
+				recipient = s.userIDByEmail(e)
+			}
+		}
+		if recipient == "" {
+			if p := asStr(tgt, "student_phone"); p != "" {
+				recipient = s.userIDByPhone(p)
+			}
+		}
+		if recipient != "" && recipient != userID {
+			s.notifyUser(recipient, "coaching", userID, s.coachingName(cs.CoachID),
+				"Your coach shared a match analysis — see your PB Vision stats",
+				"coaching:"+targetThreadID+"?tab=pbvision")
+		}
+	}
+	return nil
 }
 
 // parsePBVisionHighlights pulls the flagged moments out of insights.highlights:

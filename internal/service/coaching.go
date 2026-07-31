@@ -444,9 +444,11 @@ func (s *Service) sendCoachInviteSMS(coachID, phone, token string) {
 	if strings.TrimSpace(coach) == "" {
 		coach = "Your coach"
 	}
+	// Short & punchy, with a shortened link so the whole text stays in one SMS
+	// segment (and doesn't look like a random token).
 	body := fmt.Sprintf(
-		"%s invited you to PlanMyPickle to share pickleball clips & feedback. Join here: %s",
-		coach, coachInviteURL(token, ""))
+		"%s added you as a student on PlanMyPickle — clips, feedback & drills in one place. Join for free: %s",
+		coach, s.ShortLink(coachInviteURL(token, "")))
 	if r, err := s.Sms.Send(phone, body); err != nil || !r.OK {
 		log.Printf("coaching: invite SMS to %s failed: %v", phone, err)
 	}

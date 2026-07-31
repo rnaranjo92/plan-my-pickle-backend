@@ -1349,6 +1349,9 @@ type CoachingScheduleRequest struct {
 	AllDay         bool   `json:"allDay"`
 	Location       string `json:"location"`
 	Notes          string `json:"notes"`
+	// RepeatWeeks, when > 1 on an open/blocked window, also creates that many
+	// weekly copies (this week + the next RepeatWeeks-1). Ignored for sessions.
+	RepeatWeeks int `json:"repeatWeeks"`
 }
 
 // CoachingDrill is one drill in a coach's library — either a shared starter drill

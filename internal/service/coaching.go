@@ -2531,14 +2531,48 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 	if label != "" {
 		row["student_label"] = label
 	}
-	ins, err := s.sb.Insert("coaching_schedule", row)
-	if err != nil {
-		return model.CoachingScheduleItem{}, err
+
+	// Weekly recurrence for open/blocked windows: create this occurrence plus
+	// RepeatWeeks-1 more, each 7 days later. Sessions never recur.
+	weeks := req.RepeatWeeks
+	if weeks < 1 {
+		weeks = 1
 	}
-	if len(ins) == 0 {
-		return model.CoachingScheduleItem{}, errors.New("could not save that")
+	if weeks > 26 {
+		weeks = 26 // cap at ~6 months
 	}
-	return mapScheduleItem(ins[0]), nil
+	start, sOK := parseSchedTime(req.StartsAt)
+	end, eOK := parseSchedTime(strings.TrimSpace(req.EndsAt))
+	if kind == "session" || !sOK {
+		weeks = 1 // can't safely shift without a parseable start
+	}
+
+	var first map[string]any
+	for k := 0; k < weeks; k++ {
+		if k > 0 {
+			row["starts_at"] = start.AddDate(0, 0, 7*k).Format(time.RFC3339)
+			if eOK {
+				row["ends_at"] = end.AddDate(0, 0, 7*k).Format(time.RFC3339)
+			}
+		}
+		ins, err := s.sb.Insert("coaching_schedule", row)
+		if err != nil {
+			if k == 0 {
+				return model.CoachingScheduleItem{}, err
+			}
+			break // keep the ones already made
+		}
+		if len(ins) == 0 {
+			if k == 0 {
+				return model.CoachingScheduleItem{}, errors.New("could not save that")
+			}
+			break
+		}
+		if first == nil {
+			first = ins[0]
+		}
+	}
+	return mapScheduleItem(first), nil
 }
 
 // markThreadNotificationsRead clears the viewer's unread bell rows that deep-link

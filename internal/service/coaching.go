@@ -526,12 +526,20 @@ func (s *Service) ListCoachStudents(coachID string) ([]model.CoachStudent, error
 		}
 		if key != "" {
 			if idx, ok := seen[key]; ok {
-				if cs.VideoCount > out[idx].VideoCount {
-					out[idx] = cs // prefer the row that actually has clips
+				// Only collapse a duplicate that carries NO clips of its own — an
+				// empty booking/seed row. Never hide a thread that has data (its
+				// clips, program, PB Vision, and ratings would become unreachable).
+				if cs.VideoCount == 0 {
+					continue // safe to drop this empty duplicate
 				}
-				continue
+				if out[idx].VideoCount == 0 {
+					out[idx] = cs // the survivor was empty; prefer the one with clips
+					continue
+				}
+				// Both rows have clips: keep both rather than lose data.
+			} else {
+				seen[key] = len(out)
 			}
-			seen[key] = len(out)
 		}
 		out = append(out, cs)
 	}
@@ -692,7 +700,12 @@ func (s *Service) threadMembership(threadID, userID, email string) (model.CoachS
 	if !studentMatch {
 		studentMatch = email != "" && strings.EqualFold(cs.StudentEmail, email)
 	}
-	if !studentMatch && cs.StudentPhone != "" && userID != "" {
+	// Phone match authorizes thread access only when the caller's phone is
+	// VERIFIED — the sign-up user_metadata phone is attacker-controllable and
+	// unverified, so matching on it would let anyone who knows a phone-invited
+	// student's number take over their thread. Unverified phone-invited students
+	// link securely via the coach's invite token (ClaimCoachInvite) instead.
+	if !studentMatch && cs.StudentPhone != "" && userID != "" && s.PhoneVerified(userID) {
 		studentMatch = normPhone(s.phoneOf(userID)) == cs.StudentPhone
 	}
 	if studentMatch {
@@ -1438,6 +1451,11 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 		nowDone = !asBool(m, "done")
 		focus = asStr(m, "focus")
 		m["done"] = nowDone
+		// Re-opening a week (un-completing) re-arms its due-date reminder so a
+		// genuinely-still-due week can nudge again.
+		if !nowDone {
+			delete(m, "reminded")
+		}
 		weeks[index] = m
 	}
 	out, err := s.sb.Update("coaching_programs", "id=eq."+store.Q(programID),
@@ -2565,14 +2583,20 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 		"notes":     orNull(strings.TrimSpace(req.Notes)),
 	}
 	if kind == "session" && strings.TrimSpace(req.CoachStudentID) != "" {
+		// Verify the thread belongs to THIS coach before attaching a session to
+		// it — otherwise a coach could inject a fabricated session (and a spoofed
+		// notification) into another coach's student thread.
+		owner, _ := s.sb.SelectOne("coach_students",
+			"id=eq."+store.Q(req.CoachStudentID)+
+				"&select=coach_id,student_name,student_email")
+		if owner == nil || asStr(owner, "coach_id") != coachID {
+			return model.CoachingScheduleItem{}, ErrForbidden
+		}
 		row["coach_student_id"] = req.CoachStudentID
 		if label == "" {
-			if r, _ := s.sb.SelectOne("coach_students",
-				"id=eq."+store.Q(req.CoachStudentID)+"&select=student_name,student_email"); r != nil {
-				label = asStr(r, "student_name")
-				if label == "" {
-					label = asStr(r, "student_email")
-				}
+			label = asStr(owner, "student_name")
+			if label == "" {
+				label = asStr(owner, "student_email")
 			}
 		}
 	}
@@ -2589,15 +2613,21 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 	if weeks > 26 {
 		weeks = 26 // cap at ~6 months
 	}
-	start, sOK := parseSchedTime(req.StartsAt)
-	end, eOK := parseSchedTime(strings.TrimSpace(req.EndsAt))
+	// Parse preserving the client's OFFSET (not normalized to UTC) so every
+	// weekly copy is stored in the same format as week 0 and holds the same local
+	// wall-clock time. AddDate on a fixed-offset time keeps the wall-clock within
+	// a DST period; without the IANA zone we can't do better than the offset.
+	start, sErr := time.Parse(time.RFC3339, strings.TrimSpace(req.StartsAt))
+	end, eErr := time.Parse(time.RFC3339, strings.TrimSpace(req.EndsAt))
+	sOK, eOK := sErr == nil, eErr == nil
 	if kind == "session" || !sOK {
 		weeks = 1 // can't safely shift without a parseable start
 	}
 
 	var first map[string]any
 	for k := 0; k < weeks; k++ {
-		if k > 0 {
+		if sOK {
+			// Normalize every occurrence (including k==0) to one consistent format.
 			row["starts_at"] = start.AddDate(0, 0, 7*k).Format(time.RFC3339)
 			if eOK {
 				row["ends_at"] = end.AddDate(0, 0, 7*k).Format(time.RFC3339)
@@ -2748,14 +2778,17 @@ func (s *Service) UpdateCoachScheduleItem(coachID, id string, req model.Coaching
 	if kind == "session" {
 		label := strings.TrimSpace(req.StudentLabel)
 		if id := strings.TrimSpace(req.CoachStudentID); id != "" {
+			// Only allow attaching to a thread this coach owns.
+			owner, _ := s.sb.SelectOne("coach_students",
+				"id=eq."+store.Q(id)+"&select=coach_id,student_name,student_email")
+			if owner == nil || asStr(owner, "coach_id") != coachID {
+				return model.CoachingScheduleItem{}, ErrForbidden
+			}
 			upd["coach_student_id"] = id
 			if label == "" {
-				if r, _ := s.sb.SelectOne("coach_students",
-					"id=eq."+store.Q(id)+"&select=student_name,student_email"); r != nil {
-					label = asStr(r, "student_name")
-					if label == "" {
-						label = asStr(r, "student_email")
-					}
+				label = asStr(owner, "student_name")
+				if label == "" {
+					label = asStr(owner, "student_email")
 				}
 			}
 		}
@@ -4984,9 +5017,28 @@ func (s *Service) RemindDueProgramWeeks() error {
 		threadID := asStr(r, "coach_student_id")
 		var coachID, studentID string
 		if cs, _ := s.sb.SelectOne("coach_students",
-			"id=eq."+store.Q(threadID)+"&select=coach_id,student_id"); cs != nil {
+			"id=eq."+store.Q(threadID)+
+				"&select=coach_id,student_id,student_email,student_phone"); cs != nil {
 			coachID = asStr(cs, "coach_id")
 			studentID = asStr(cs, "student_id")
+			// Resolve an account even when the roster row isn't linked yet, so an
+			// email/phone-invited student who has since signed up still gets the
+			// nudge — and we don't consume the one-shot reminder before they can.
+			if studentID == "" {
+				if e := asStr(cs, "student_email"); e != "" {
+					studentID = s.userIDByEmail(e)
+				}
+				if studentID == "" {
+					if p := asStr(cs, "student_phone"); p != "" {
+						studentID = s.userIDByPhone(p)
+					}
+				}
+			}
+		}
+		// No student account to notify yet → leave the week un-reminded so it
+		// fires once the student actually joins.
+		if studentID == "" {
+			continue
 		}
 		changed := false
 		for wi, w := range weeks {
@@ -5010,10 +5062,8 @@ func (s *Service) RemindDueProgramWeeks() error {
 			if focus != "" {
 				body = "Reminder: “" + focus + "” is due in your training program"
 			}
-			if studentID != "" {
-				s.notifyStudentOfThread(threadID, coachID,
-					s.coachingName(coachID), body, link)
-			}
+			s.notifyUser(studentID, "coaching", coachID, s.coachingName(coachID),
+				body, link)
 			if coachID != "" {
 				who := s.coachingName(studentID)
 				if who == "" {

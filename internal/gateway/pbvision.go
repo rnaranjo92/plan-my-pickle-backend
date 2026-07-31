@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -93,6 +94,54 @@ func (p *PBVision) AddVideoByURL(ctx context.Context, videoURL string, meta PBVi
 		return "", errors.New("pbvision: add_video_by_url returned no vid")
 	}
 	return out.Vid, nil
+}
+
+// GetVideoResult is a best-effort snapshot of a submitted video's analysis,
+// mirroring the completion-webhook payload.
+type GetVideoResult struct {
+	Webpage  string
+	Insights json.RawMessage
+	Stats    json.RawMessage
+	Error    string
+}
+
+// GetVideo fetches a video's current analysis by vid — used to resolve an
+// already-processed (duplicate) submission immediately instead of waiting for a
+// completion webhook that won't fire a second time. STRICTLY best-effort: the
+// partner API is primarily webhook-driven, so this path may not exist. Override
+// it with PBVISION_GET_VIDEO_PATH; any error / still-processing / unknown shape
+// returns ok=false and the caller falls back to the webhook.
+func (p *PBVision) GetVideo(ctx context.Context, vid string) (GetVideoResult, bool) {
+	if !p.Configured() || strings.TrimSpace(vid) == "" {
+		return GetVideoResult{}, false
+	}
+	path := strings.TrimSpace(os.Getenv("PBVISION_GET_VIDEO_PATH"))
+	if path == "" {
+		path = "/partner/get_video"
+	}
+	var out struct {
+		Status   string          `json:"status"`
+		Webpage  string          `json:"webpage"`
+		Insights json.RawMessage `json:"insights"`
+		Stats    json.RawMessage `json:"stats"`
+		Error    string          `json:"error"`
+	}
+	if err := p.post(ctx, path, map[string]any{"vid": vid}, &out); err != nil {
+		return GetVideoResult{}, false // endpoint absent or call failed
+	}
+	st := strings.ToLower(strings.TrimSpace(out.Status))
+	done := out.Error != "" || len(out.Insights) > 0 || out.Webpage != "" ||
+		st == "completed" || st == "complete" || st == "ready" ||
+		st == "done" || st == "failed"
+	if !done {
+		return GetVideoResult{}, false // still processing — wait for the webhook
+	}
+	return GetVideoResult{
+		Webpage:  out.Webpage,
+		Insights: out.Insights,
+		Stats:    out.Stats,
+		Error:    out.Error,
+	}, true
 }
 
 // SetWebhook registers the completion-webhook URL with PB Vision (one-time; the

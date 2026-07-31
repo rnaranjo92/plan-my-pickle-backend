@@ -1844,6 +1844,29 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 		return "", err
 	}
 	s.bumpThreadActivity(threadID)
+
+	// Best-effort: if PB Vision already has this video processed (a duplicate
+	// URL), its completion webhook won't fire again — pull the result now so the
+	// analysis resolves immediately AND the ready/failed notification is sent,
+	// instead of the chip hanging until the 60-min sweep. No-op (falls back to
+	// the webhook) if the fetch endpoint is absent or the video's still cooking.
+	go func(vid string) {
+		gctx, gcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer gcancel()
+		res, ok := s.PBV.GetVideo(gctx, vid)
+		if !ok {
+			return
+		}
+		// Skip if a webhook already handled it (don't double-notify).
+		if j, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+			"vid=eq."+store.Q(vid)+"&select=status"); j == nil ||
+			asStr(j, "status") != "processing" {
+			return
+		}
+		s.handleCoachingPBVisionCallback(
+			vid, res.Webpage, res.Insights, res.Stats, res.Error)
+	}(vid)
+
 	return vid, nil
 }
 

@@ -2452,6 +2452,7 @@ func mapScheduleItem(row map[string]any) model.CoachingScheduleItem {
 		AllDay:         asBool(row, "all_day"),
 		Location:       asStr(row, "location"),
 		Notes:          asStr(row, "notes"),
+		CoachID:        asStr(row, "coach_id"),
 		Status:         asStr(row, "status"),
 	}
 }
@@ -3913,6 +3914,118 @@ func (s *Service) CancelMySession(playerID, email, sessionID string) error {
 	s.notifyUser(cs.CoachID, "coaching", playerID, who,
 		who+" cancelled their 1:1 session", "coaching:"+threadID)
 	return nil
+}
+
+// RescheduleMySession moves a player's booked 1:1 to a new time (their thread
+// only). Validates the new slot fits one of the coach's open windows and doesn't
+// collide with another session (the session being moved is excluded), and honors
+// the coach's cancellation cutoff on the ORIGINAL time. Notifies the coach.
+func (s *Service) RescheduleMySession(playerID, email, sessionID string, req model.CoachBookingRequest) (model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() {
+		return model.CoachingScheduleItem{}, ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_schedule",
+		"id=eq."+store.Q(sessionID)+
+			"&select=coach_id,coach_student_id,starts_at,kind")
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	if row == nil {
+		return model.CoachingScheduleItem{}, ErrNotFound
+	}
+	if asStr(row, "kind") != "session" {
+		return model.CoachingScheduleItem{}, errors.New("only a booked session can be rescheduled")
+	}
+	threadID := asStr(row, "coach_student_id")
+	coachID := asStr(row, "coach_id")
+	if threadID == "" || coachID == "" {
+		return model.CoachingScheduleItem{}, ErrForbidden
+	}
+	// Verify the thread belongs to this player.
+	if _, role, err := s.threadMembership(threadID, playerID, email); err != nil || role != "student" {
+		return model.CoachingScheduleItem{}, ErrForbidden
+	}
+	// Moving off the original slot is governed by the same cutoff as cancelling.
+	if err := s.enforceCancelCutoff(coachID, asStr(row, "starts_at")); err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+
+	start, ok := parseSchedTime(req.StartsAt)
+	if !ok {
+		return model.CoachingScheduleItem{}, errors.New("pick a valid start time")
+	}
+	dur := req.DurationMins
+	if dur <= 0 {
+		dur = 60
+	}
+	if dur < 15 {
+		dur = 15
+	}
+	if dur > 240 {
+		dur = 240
+	}
+	end := start.Add(time.Duration(dur) * time.Minute)
+	if start.Before(time.Now().UTC()) {
+		return model.CoachingScheduleItem{}, errors.New("that time has already passed")
+	}
+
+	// Confirm the new slot fits an open window and doesn't overlap another
+	// session — excluding the one being moved.
+	rows, err := s.sb.Select("coaching_schedule",
+		"coach_id=eq."+store.Q(coachID)+"&select=id,kind,starts_at,ends_at")
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	inWindow := false
+	for _, r := range rows {
+		if asStr(r, "id") == sessionID {
+			continue // don't collide with ourselves
+		}
+		kind := asStr(r, "kind")
+		ws, ok1 := parseSchedTime(asStr(r, "starts_at"))
+		we, ok2 := parseSchedTime(asStr(r, "ends_at"))
+		switch kind {
+		case "open":
+			if ok1 && ok2 && !start.Before(ws) && !end.After(we) {
+				inWindow = true
+			}
+		case "session":
+			se := we
+			if !ok2 {
+				se = ws.Add(time.Hour)
+			}
+			if ok1 && start.Before(se) && end.After(ws) {
+				return model.CoachingScheduleItem{}, errors.New("that time is already booked — pick another slot")
+			}
+		}
+	}
+	if !inWindow {
+		return model.CoachingScheduleItem{}, errors.New("that time isn't within the coach's open availability")
+	}
+
+	upd := map[string]any{
+		"starts_at": start.Format(time.RFC3339),
+		"ends_at":   end.Format(time.RFC3339),
+	}
+	// Let a new reminder fire for the new time.
+	if s.columnReady("coaching_schedule", "reminded_at") {
+		upd["reminded_at"] = nil
+	}
+	out, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(sessionID), upd)
+	if err != nil || len(out) == 0 {
+		if err == nil {
+			err = errors.New("could not reschedule the session")
+		}
+		return model.CoachingScheduleItem{}, err
+	}
+	s.bumpThreadActivity(threadID)
+	who := s.coachingName(playerID)
+	if who == "" {
+		who = "Your student"
+	}
+	s.notifyUser(coachID, "coaching", playerID, who,
+		who+" rescheduled their 1:1 session", "coaching:"+threadID)
+	return mapScheduleItem(out[0]), nil
 }
 
 // --- Class packs (buy N credits, spend one per paid enrollment) ---

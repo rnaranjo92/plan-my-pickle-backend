@@ -1310,6 +1310,9 @@ type CoachingScheduleItem struct {
 	Notes          string `json:"notes,omitempty"`
 	// CoachName is populated only on a player's own booked-sessions list.
 	CoachName string `json:"coachName,omitempty"`
+	// CoachID is the coach's user id (so a player can fetch that coach's open
+	// availability to reschedule into).
+	CoachID string `json:"coachId,omitempty"`
 	// Status is a session's attendance: "" (unmarked), "attended", "no_show".
 	Status string `json:"status,omitempty"`
 }

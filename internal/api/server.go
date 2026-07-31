@@ -688,6 +688,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coaches/{userId}/book", requireAuth(s.bookCoachSession))
 	mux.HandleFunc("GET /me/sessions", requireAuth(s.mySessions))
 	mux.HandleFunc("DELETE /me/sessions/{id}", requireAuth(s.cancelMySession))
+	mux.HandleFunc("POST /me/sessions/{id}/reschedule", requireAuth(s.rescheduleMySession))
 	mux.HandleFunc("GET /coach/classes", s.instructorOnly(s.myClasses))
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
 	mux.HandleFunc("POST /coach/classes/{id}", s.instructorOnly(s.updateClass))
@@ -6274,6 +6275,20 @@ func (s *Server) cancelMySession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled"})
+}
+
+func (s *Server) rescheduleMySession(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachBookingRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.RescheduleMySession(
+		userID(r), userEmail(r), r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 // Coaching classes (marketplace Phase B).

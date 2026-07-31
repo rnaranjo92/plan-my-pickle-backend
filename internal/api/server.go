@@ -912,6 +912,14 @@ func emailInAllowlist(email, list, dflt string) bool {
 
 const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 
+// coachingAnalysisAllowed gates the (currently FREE, un-metered) coaching PB
+// Vision analysis to a limited beta while payment is on hold — every run bills
+// our PB Vision API key. Defaults to the QA accounts; add beta testers (e.g.
+// Austen) via PBVISION_COACHING_ALLOWLIST (comma-separated), "*" to open it up.
+func coachingAnalysisAllowed(email string) bool {
+	return emailInAllowlist(email, os.Getenv("PBVISION_COACHING_ALLOWLIST"), qaAllowlist)
+}
+
 // ladderOnlyGrants: comped accounts restricted to creating LADDER leagues only —
 // no tournaments, no other league types (round-robin/team/flex). They still pass
 // organizerAllowed (so the Organize tab + create endpoints are reachable), but
@@ -5504,6 +5512,13 @@ func (s *Server) coachingThread(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) analyzeThreadVideo(w http.ResponseWriter, r *http.Request) {
+	// Limited beta while payment is on hold — free but allowlisted so it can't
+	// run up an uncapped PB Vision bill on our API key.
+	if !coachingAnalysisAllowed(userEmail(r)) {
+		writeErr(w, http.StatusForbidden, errors.New(
+			"PB Vision analysis is in limited beta and isn't available on your account yet"))
+		return
+	}
 	var req struct {
 		VideoURL string `json:"videoUrl"`
 		VideoID  string `json:"videoId"`

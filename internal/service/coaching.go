@@ -5345,7 +5345,7 @@ func (s *Service) CoachPromoteEnrollment(coachID, enrollmentID string) error {
 		return ErrForbidden
 	}
 	row, _ := s.sb.SelectOne("coaching_enrollments",
-		"id=eq."+store.Q(enrollmentID)+"&select=class_id,user_id")
+		"id=eq."+store.Q(enrollmentID)+"&select=class_id,user_id,name,email")
 	if row == nil {
 		return ErrNotFound
 	}
@@ -5366,6 +5366,11 @@ func (s *Service) CoachPromoteEnrollment(coachID, enrollmentID string) error {
 		"id=eq."+store.Q(enrollmentID), upd); err != nil {
 		return err
 	}
+	// A manual promote enrolls the player, so link them onto the coach's roster
+	// (mirrors promoteNextWaitlisted; idempotent). Without this a manually-promoted
+	// student never appears in the coach's Students list / thread.
+	s.ensureCoachStudentLink(coachID, asStr(row, "user_id"),
+		asStr(row, "name"), asStr(row, "email"))
 	s.notifyUser(asStr(row, "user_id"), "coaching", coachID, s.coachingName(coachID),
 		"A seat opened up — you're in "+asStr(cls, "title"), "")
 	return nil
@@ -5466,8 +5471,17 @@ func (s *Service) SweepExpiredOffers() error {
 				title = t
 			}
 		}
-		_, _ = s.sb.Update("coaching_enrollments",
-			"id=eq."+store.Q(asStr(r, "id")), map[string]any{"status": "expired"})
+		// Compare-and-set: only expire a row that is STILL an unclaimed offer.
+		// Re-applying the select predicates on the write closes the TOCTOU where a
+		// payment webhook (markEnrollmentPaid) flipped this row to enrolled/paid
+		// between our SELECT and this UPDATE — we must not stomp a paid seat back to
+		// expired or double-offer it. 0 rows affected → someone claimed it; skip.
+		out, err := s.sb.Update("coaching_enrollments",
+			"id=eq."+store.Q(asStr(r, "id"))+"&status=eq.offered&paid=is.false",
+			map[string]any{"status": "expired"})
+		if err != nil || len(out) == 0 {
+			continue // claimed/paid mid-sweep — leave it and don't roll the seat
+		}
 		s.notifyUser(asStr(r, "user_id"), "coaching", "", "PlanMyPickle",
 			"Your open spot in “"+title+"” expired — it's been offered to the next person.",
 			"myclasses")
@@ -5648,9 +5662,25 @@ func (s *Service) CoachMarkEnrollmentPaid(coachID, enrollmentID string) error {
 	if !s.coachOwnsEnrollment(coachID, enrollmentID) {
 		return ErrForbidden
 	}
-	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
-		map[string]any{"paid": true, "payment_ref": "manual"})
-	return err
+	// Marking paid also confirms a claimed offer: flip to enrolled + clear the
+	// deadline so it isn't left stuck 'offered' (which SweepExpiredOffers skips
+	// once paid, and which players still see as "claim & pay").
+	upd := map[string]any{"paid": true, "payment_ref": "manual", "status": "enrolled"}
+	if s.columnReady("coaching_enrollments", "offer_expires_at") {
+		upd["offer_expires_at"] = nil
+	}
+	if _, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
+		upd); err != nil {
+		return err
+	}
+	// Cash-marking a manually-promoted seat also confirms the player — link them
+	// onto the coach's roster (idempotent), matching the Stripe webhook path.
+	if row, _ := s.sb.SelectOne("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID)+"&select=user_id,name,email"); row != nil {
+		s.ensureCoachStudentLink(coachID, asStr(row, "user_id"),
+			asStr(row, "name"), asStr(row, "email"))
+	}
+	return nil
 }
 
 // CoachRemoveEnrollment lets the coach drop a player from a class.
@@ -5688,8 +5718,10 @@ func (s *Service) ListClassEnrollments(classID, coachID string) ([]model.Coachin
 	if asStr(cls, "coach_id") != coachID {
 		return nil, ErrForbidden
 	}
+	// Include 'offered' so a held-but-unclaimed seat is visible to the coach and
+	// the roster seat-count matches classEnrolledCount (which counts enrolled+offered).
 	rows, err := s.sb.Select("coaching_enrollments",
-		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,waitlisted)&order=status.asc,created_at.asc")
+		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,waitlisted,offered)&order=status.asc,created_at.asc")
 	if err != nil {
 		return nil, err
 	}
@@ -5741,7 +5773,20 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 	if !s.enrollmentsReady() {
 		return nil
 	}
-	// Paying also confirms a claimed offer: flip to enrolled + clear the deadline.
+	row, _ := s.sb.SelectOne("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID)+"&select=user_id,name,email,class_id,status,paid")
+	if row == nil {
+		return nil
+	}
+	if asBool(row, "paid") {
+		return nil // idempotent — Stripe may deliver the webhook more than once
+	}
+	prevStatus := asStr(row, "status")
+	classID := asStr(row, "class_id")
+
+	// Money was captured, so the paying player KEEPS a seat — we never leave a
+	// charged customer stranded. Paying also confirms a claimed offer: flip to
+	// enrolled + clear the deadline.
 	upd := map[string]any{"paid": true, "status": "enrolled"}
 	if s.columnReady("coaching_enrollments", "offer_expires_at") {
 		upd["offer_expires_at"] = nil
@@ -5752,12 +5797,20 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 	}
 	// Ensure the now-confirmed player is on the coach's roster (covers a claimed
 	// offer, whose waitlist row never linked; idempotent for direct enrollments).
-	if row, _ := s.sb.SelectOne("coaching_enrollments",
-		"id=eq."+store.Q(enrollmentID)+"&select=user_id,name,email,class_id"); row != nil {
-		if c, _ := s.sb.SelectOne("coaching_classes",
-			"id=eq."+store.Q(asStr(row, "class_id"))+"&select=coach_id"); c != nil {
-			s.ensureCoachStudentLink(asStr(c, "coach_id"), asStr(row, "user_id"),
-				asStr(row, "name"), asStr(row, "email"))
+	if c, _ := s.sb.SelectOne("coaching_classes",
+		"id=eq."+store.Q(classID)+"&select=coach_id,capacity,title"); c != nil {
+		coachID := asStr(c, "coach_id")
+		s.ensureCoachStudentLink(coachID, asStr(row, "user_id"),
+			asStr(row, "name"), asStr(row, "email"))
+		// Rare race backstop: if this payment landed just after the offer was swept
+		// and the seat had already rolled to the next waitlister (prevStatus was
+		// terminal), honoring it can push the class one over capacity. Honor the
+		// payment but alert the coach to reconcile rather than silently oversell.
+		if prevStatus == "expired" || prevStatus == "canceled" {
+			if cap := asInt(c, "capacity"); cap > 0 && s.classEnrolledCount(classID) > cap {
+				s.notifyUser(coachID, "coaching", "", "PlanMyPickle",
+					"Heads up: a late payment for “"+asStr(c, "title")+"” put it one over capacity. Please reconcile a seat.", "")
+			}
 		}
 	}
 	return nil
@@ -5781,6 +5834,22 @@ func (s *Service) PayForEnrollment(enrollmentID, userID, email, successURL, canc
 	}
 	if asBool(row, "paid") || asInt(row, "amount_cents") <= 0 {
 		return "", nil // nothing to charge
+	}
+	// Only a live seat may be paid for. Block a stale/expired offer or a waitlist
+	// row (queue-jump) from ever starting a checkout — a completed charge on one of
+	// those would oversell the class. An 'offered' seat must still be within its
+	// claim window. 'enrolled' covers a direct paid enroll awaiting its charge.
+	switch asStr(row, "status") {
+	case "enrolled":
+		// ok — a held seat awaiting payment
+	case "offered":
+		if s.columnReady("coaching_enrollments", "offer_expires_at") {
+			if t, ok := parseTime(asStr(row, "offer_expires_at")); ok && time.Now().After(t) {
+				return "", errors.New("this spot's claim window has passed — it may have gone to the next person")
+			}
+		}
+	default:
+		return "", errors.New("this spot is no longer available to pay for")
 	}
 	gw, ok := s.stripeGW()
 	if !ok {

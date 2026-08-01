@@ -1542,15 +1542,26 @@ type PBVisionRallyBand struct {
 
 // PBVisionPlayerStat = one detected player's team-stats row.
 type PBVisionPlayerStat struct {
-	AvatarID         int     `json:"avatarId"`
-	Team             int     `json:"team"`
-	ServeKitchenPct  float64 `json:"serveKitchenPct"`
-	ReturnKitchenPct float64 `json:"returnKitchenPct"`
-	ShotSharePct     float64 `json:"shotSharePct"`
-	LeftSidePct      float64 `json:"leftSidePct"`
-	Speedups         int     `json:"speedups"`
-	ShotCount        int     `json:"shotCount"`
-	ShotQuality      float64 `json:"shotQuality"`
+	AvatarID         int                `json:"avatarId"`
+	Team             int                `json:"team"`
+	ServeKitchenPct  float64            `json:"serveKitchenPct"`
+	ReturnKitchenPct float64            `json:"returnKitchenPct"`
+	ShotSharePct     float64            `json:"shotSharePct"`
+	LeftSidePct      float64            `json:"leftSidePct"`
+	Speedups         int                `json:"speedups"`
+	ShotCount        int                `json:"shotCount"`
+	ShotQuality      float64            `json:"shotQuality"`
+	Shots            []PBVisionShotStat `json:"shots,omitempty"`
+}
+
+// PBVisionShotStat = one shot type's per-player breakdown (the "data nerds" view).
+type PBVisionShotStat struct {
+	Type       string  `json:"type"`
+	Count      int     `json:"count"`
+	SuccessPct float64 `json:"successPct"`
+	WonPct     float64 `json:"wonPct"`  // rally_won_percentage
+	Quality    float64 `json:"quality"` // 0–1
+	AvgSpeed   float64 `json:"avgSpeed"`
 }
 
 // CoachStudentBrief is a coach's student, for the assign dropdown.

@@ -1226,6 +1226,7 @@ func parsePBVisionMatchStats(raw any) *model.PBVisionMatchStats {
 		if sp, ok := p["speedups"].(map[string]any); ok {
 			ps.Speedups = int(pbNum(sp["count"]))
 		}
+		ps.Shots = pbShotStats(p)
 		out.Players = append(out.Players, ps)
 		// Rally-won bands are team-level (identical for both players on a team).
 		if team == 0 {
@@ -1278,6 +1279,46 @@ func pbFloatSlice(v any) []float64 {
 	out := make([]float64, 0, len(arr))
 	for _, x := range arr {
 		out = append(out, pbNum(x))
+	}
+	return out
+}
+
+// pbShotOrder is the curated shot-type list (key → label) shown in the per-
+// player breakdown, in a sensible reading order.
+var pbShotOrder = []struct{ key, label string }{
+	{"serves", "Serves"}, {"returns", "Returns"},
+	{"thirds", "3rd shots"}, {"third_drives", "3rd drives"},
+	{"third_drops", "3rd drops"}, {"fourths", "4th shots"},
+	{"fifths", "5th shots"}, {"drives", "Drives"}, {"drops", "Drops"},
+	{"dinks", "Dinks"}, {"resets", "Resets"}, {"speedups", "Speed-ups"},
+	{"smashes", "Smashes"}, {"lobs", "Lobs"}, {"poaches", "Poaches"},
+	{"passing", "Passing"}, {"forehands", "Forehands"}, {"backhands", "Backhands"},
+}
+
+// pbShotStats extracts a player's per-shot-type breakdown (only types actually
+// hit). Fields come from each shot object's outcome_stats + speed_stats.
+func pbShotStats(p map[string]any) []model.PBVisionShotStat {
+	out := []model.PBVisionShotStat{}
+	for _, it := range pbShotOrder {
+		st, ok := p[it.key].(map[string]any)
+		if !ok {
+			continue
+		}
+		cnt := int(pbNum(st["count"]))
+		if cnt <= 0 {
+			continue
+		}
+		s := model.PBVisionShotStat{
+			Type: it.label, Count: cnt, Quality: pbNum(st["average_quality"]),
+		}
+		if os, ok := st["outcome_stats"].(map[string]any); ok {
+			s.SuccessPct = pbNum(os["success_percentage"])
+			s.WonPct = pbNum(os["rally_won_percentage"])
+		}
+		if sp, ok := st["speed_stats"].(map[string]any); ok {
+			s.AvgSpeed = pbNum(sp["average"])
+		}
+		out = append(out, s)
 	}
 	return out
 }

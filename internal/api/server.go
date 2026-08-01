@@ -6508,7 +6508,10 @@ func (s *Server) classEnrollments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) enrollClass(w http.ResponseWriter, r *http.Request) {
-	e, err := s.svc.Enroll(r.PathValue("id"), userID(r), "", userEmail(r))
+	// ?pay=1 tells the service to skip auto-spending a class credit and charge
+	// instead (the unified enroll sheet lets the player choose credit vs pay).
+	skipCredit := r.URL.Query().Get("pay") == "1"
+	e, err := s.svc.Enroll(r.PathValue("id"), userID(r), "", userEmail(r), skipCredit)
 	if err != nil {
 		status(w, err)
 		return

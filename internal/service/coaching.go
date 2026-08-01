@@ -5570,7 +5570,7 @@ func (s *Service) ensureCoachStudentLink(coachID, studentID, name, email string)
 
 // Enroll books a player's seat in a class. Free classes are paid immediately;
 // paid classes record charge_at = starts_at − 1h for a later off-session charge.
-func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnrollment, error) {
+func (s *Service) Enroll(classID, userID, name, email string, skipCredit bool) (model.CoachingEnrollment, error) {
 	if !s.classesReady() || !s.enrollmentsReady() {
 		return model.CoachingEnrollment{}, ErrCoachingUnavailable
 	}
@@ -5626,7 +5626,7 @@ func (s *Service) Enroll(classID, userID, name, email string) (model.CoachingEnr
 	// A paid class: if the player holds a class-credit with this coach, spend one
 	// and the seat is paid instantly — no per-class charge.
 	usedCredit := false
-	if price > 0 && s.consumeCredit(asStr(cls, "coach_id"), userID) {
+	if price > 0 && !skipCredit && s.consumeCredit(asStr(cls, "coach_id"), userID) {
 		usedCredit = true
 	}
 	row := map[string]any{

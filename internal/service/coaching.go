@@ -5175,12 +5175,18 @@ func (s *Service) grantPackCredits(meta, dedupKey string) error {
 	return nil
 }
 
-// consumeCredit spends one credit if the player has any (read-then-write; fine at
-// this scale). Returns true when a credit was spent.
+// consumeCredit spends one credit if the player has any. Prefers the atomic
+// spend_coach_credit RPC (no lost update under concurrency); falls back to the
+// read-then-write when the function isn't migrated yet. Returns true when spent.
 func (s *Service) consumeCredit(coachID, userID string) bool {
 	if !s.creditsReady() || coachID == "" || userID == "" {
 		return false
 	}
+	if body, err := s.sb.RPC("spend_coach_credit",
+		map[string]any{"p_coach": coachID, "p_user": userID}); err == nil {
+		return strings.TrimSpace(string(body)) == "true"
+	}
+	// Fallback (RPC not present): non-atomic read-then-write.
 	cur, _ := s.MyCoachCredits(coachID, userID)
 	if cur <= 0 {
 		return false
@@ -5191,12 +5197,18 @@ func (s *Service) consumeCredit(coachID, userID string) bool {
 	return err == nil
 }
 
-// restoreCredit returns one spent class credit to the player (the mirror of
-// consumeCredit) when a credit-funded seat is torn down.
+// restoreCredit returns one spent class credit to the player. Prefers the atomic
+// restore_coach_credit RPC (no lost update when two seats of the same player
+// settle at once); falls back to the read-then-write when it isn't migrated yet.
 func (s *Service) restoreCredit(coachID, userID string) bool {
 	if !s.creditsReady() || coachID == "" || userID == "" {
 		return false
 	}
+	if _, err := s.sb.RPC("restore_coach_credit",
+		map[string]any{"p_coach": coachID, "p_user": userID}); err == nil {
+		return true
+	}
+	// Fallback (RPC not present): non-atomic read-then-write.
 	cur, _ := s.MyCoachCredits(coachID, userID)
 	_, err := s.sb.Upsert("coaching_credits", "coach_id,user_id", map[string]any{
 		"coach_id":          coachID,
@@ -5215,7 +5227,10 @@ func alreadyRefundedErr(err error) bool {
 		return false
 	}
 	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "already refunded") ||
+	// Prefer Stripe's STABLE machine code (present in the marshaled error), with
+	// the human message wording as a fallback (Stripe owns/may reword the message).
+	return strings.Contains(m, "charge_already_refunded") ||
+		strings.Contains(m, "already refunded") ||
 		strings.Contains(m, "already been refunded") ||
 		strings.Contains(m, "no amount available")
 }
@@ -5242,9 +5257,14 @@ func (s *Service) settleEnrollmentRefund(enrollmentID, coachID, userID, paymentR
 		}
 		if !s.restoreCredit(coachID, userID) {
 			// Restore failed — revert the claim so a retry can re-attempt.
-			_, _ = s.sb.Update("coaching_enrollments",
+			if _, rerr := s.sb.Update("coaching_enrollments",
 				"id=eq."+store.Q(enrollmentID)+"&payment_ref=eq."+store.Q(refundedRef("credit")),
-				map[string]any{"payment_ref": "credit"})
+				map[string]any{"payment_ref": "credit"}); rerr != nil {
+				// Revert also failed → the row is stuck at refunded:credit with the
+				// credit NOT restored. Log loudly so ops can hand-restore it.
+				log.Printf("coaching: STRANDED CREDIT (revert failed) enrollment=%s coach=%s user=%s: %v",
+					enrollmentID, coachID, userID, rerr)
+			}
 			return "", true
 		}
 		return "Your class credit was returned.", false
@@ -5660,9 +5680,12 @@ func (s *Service) settleClassEnrollments(classID, coachID string) int {
 	if !s.enrollmentsReady() {
 		return 0
 	}
-	rows, _ := s.sb.SelectAll("coaching_enrollments",
+	rows, rerr := s.sb.SelectAll("coaching_enrollments",
 		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,offered,canceled)"+
 			"&select=id,user_id,status,paid,payment_ref")
+	if rerr != nil {
+		return 1 // couldn't read the roster → treat as unsettled so the delete aborts
+	}
 	failed := 0
 	for _, r := range rows {
 		pref := asStr(r, "payment_ref")

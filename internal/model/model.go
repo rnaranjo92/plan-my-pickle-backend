@@ -1509,6 +1509,8 @@ type PBVisionAnalysis struct {
 	// each analysis "Paid by <buyer>" and route assignments to the right thread.
 	ThreadID   string              `json:"threadId,omitempty"`
 	BuyerName  string              `json:"buyerName,omitempty"`
+	// CreatedAt is when the analysis became ready (for a date label).
+	CreatedAt  string              `json:"createdAt,omitempty"`
 	Highlights []PBVisionHighlight `json:"highlights,omitempty"`
 	// ViewerRole is "coach" or "student". A coach sees Roster + Assignments to
 	// distribute the 4 detected players across their students; a student only

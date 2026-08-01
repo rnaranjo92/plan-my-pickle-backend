@@ -927,7 +927,7 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 	}
 	hasAssign := s.columnReady("coaching_pbvision_assignments", "id")
 	sel := func(id string) string {
-		q := "status=eq.ready&limit=1&select=id,report_url,insights,stats"
+		q := "status=eq.ready&limit=1&select=id,report_url,insights,stats,updated_at"
 		if s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id") {
 			q += ",tagged_avatar_id"
 		}
@@ -960,6 +960,7 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 		ViewerRole: role,
 		ThreadID:   threadID,
 		BuyerName:  cs.StudentName,
+		CreatedAt:  asStr(row, "updated_at"),
 		MatchStats: parsePBVisionMatchStats(row["stats"]),
 	}
 	// This thread's tagged player: an explicit assignment wins; else the legacy

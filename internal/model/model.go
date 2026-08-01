@@ -1709,9 +1709,12 @@ type CoachingClass struct {
 	PriceCents    int    `json:"priceCents"`
 	EnrolledCount int    `json:"enrolledCount"`
 	WaitlistCount int    `json:"waitlistCount"`
-	// Enrolled / Waitlisted reflect the caller's own status on player-facing lists.
-	Enrolled   bool   `json:"enrolled"`
-	Waitlisted bool   `json:"waitlisted"`
+	// Enrolled / Waitlisted / Offered reflect the caller's own status. Offered =
+	// a freed paid seat awaiting claim; OfferExpiresAt is the claim deadline.
+	Enrolled       bool   `json:"enrolled"`
+	Waitlisted     bool   `json:"waitlisted"`
+	Offered        bool   `json:"offered,omitempty"`
+	OfferExpiresAt string `json:"offerExpiresAt,omitempty"`
 	IsIntro    bool   `json:"isIntro"`
 	CreatedAt  string `json:"createdAt,omitempty"`
 }
@@ -1727,7 +1730,10 @@ type CoachingEnrollment struct {
 	AmountCents int    `json:"amountCents"`
 	Paid        bool   `json:"paid"`
 	ChargeAt    string `json:"chargeAt,omitempty"`
-	CreatedAt   string `json:"createdAt,omitempty"`
+	// OfferExpiresAt is set when status is 'offered' (a freed paid seat the
+	// player must claim & pay before this time, or it rolls to the next person).
+	OfferExpiresAt string `json:"offerExpiresAt,omitempty"`
+	CreatedAt      string `json:"createdAt,omitempty"`
 	// ClassTitle/StartsAt populated on a player's "my classes" list.
 	ClassTitle string `json:"classTitle,omitempty"`
 	StartsAt   string `json:"startsAt,omitempty"`

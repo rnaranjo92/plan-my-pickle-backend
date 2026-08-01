@@ -237,6 +237,18 @@ func main() {
 		}
 	}()
 
+	// Coaching classes: expire unclaimed paid-seat offers and roll the seat to
+	// the next waitlister. 5-min tick. Inert until offer_expires_at runs.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.SweepExpiredOffers(); err != nil {
+				log.Printf("coaching: offer-expiry sweep failed: %v", err)
+			}
+		}
+	}()
+
 	// Coaching: pre-session reminders (1:1 sessions within 24h). 15-min tick;
 	// once per session (reminded_at). Inert until the reminded_at column runs.
 	go func() {

@@ -5245,17 +5245,20 @@ func mapEnrollment(row map[string]any) model.CoachingEnrollment {
 		UserID:      asStr(row, "user_id"),
 		Name:        asStr(row, "name"),
 		Email:       asStr(row, "email"),
-		Status:      asStr(row, "status"),
-		AmountCents: asInt(row, "amount_cents"),
-		Paid:        asBool(row, "paid"),
-		ChargeAt:    asStr(row, "charge_at"),
-		CreatedAt:   asStr(row, "created_at"),
+		Status:         asStr(row, "status"),
+		AmountCents:    asInt(row, "amount_cents"),
+		Paid:           asBool(row, "paid"),
+		ChargeAt:       asStr(row, "charge_at"),
+		OfferExpiresAt: asStr(row, "offer_expires_at"),
+		CreatedAt:      asStr(row, "created_at"),
 	}
 }
 
 func (s *Service) classEnrolledCount(classID string) int {
+	// 'offered' seats are held during a claim window, so they count toward
+	// capacity (the seat isn't free until the offer is claimed or expires).
 	rows, err := s.sb.Select("coaching_enrollments",
-		"class_id=eq."+store.Q(classID)+"&status=eq.enrolled&select=id")
+		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,offered)&select=id")
 	if err != nil {
 		return 0
 	}
@@ -5271,11 +5274,18 @@ func (s *Service) enrichClasses(list []model.CoachingClass, viewerID string) {
 		list[i].EnrolledCount = s.classEnrolledCount(list[i].ID)
 		list[i].WaitlistCount = s.classStatusCount(list[i].ID, "waitlisted")
 		if viewerID != "" {
+			sel := "status"
+			if s.columnReady("coaching_enrollments", "offer_expires_at") {
+				sel += ",offer_expires_at"
+			}
 			r, _ := s.sb.SelectOne("coaching_enrollments",
 				"class_id=eq."+store.Q(list[i].ID)+"&user_id=eq."+store.Q(viewerID)+
-					"&status=in.(enrolled,waitlisted)&select=status")
-			list[i].Enrolled = asStr(r, "status") == "enrolled"
-			list[i].Waitlisted = asStr(r, "status") == "waitlisted"
+					"&status=in.(enrolled,waitlisted,offered)&select="+sel)
+			st := asStr(r, "status")
+			list[i].Enrolled = st == "enrolled"
+			list[i].Waitlisted = st == "waitlisted"
+			list[i].Offered = st == "offered"
+			list[i].OfferExpiresAt = asStr(r, "offer_expires_at")
 		}
 	}
 }
@@ -5343,8 +5353,43 @@ func (s *Service) promoteNextWaitlisted(classID string) {
 	if next == nil {
 		return
 	}
+	coachID := asStr(cls, "coach_id")
+	coachName := s.coachingName(coachID)
+	title := asStr(cls, "title")
+	price := asInt(cls, "price_cents")
+	nowT := time.Now().UTC()
+
+	// PAID class → don't silently enroll/charge. Offer the seat with a claim
+	// window: the player must confirm & pay before it rolls to the next person.
+	if price > 0 && s.columnReady("coaching_enrollments", "offer_expires_at") {
+		deadline := nowT.Add(12 * time.Hour)
+		if t, ok := parseTime(asStr(cls, "starts_at")); ok && t.Before(deadline) {
+			deadline = t
+		}
+		if deadline.After(nowT.Add(15 * time.Minute)) {
+			upd := map[string]any{
+				"status":           "offered",
+				"amount_cents":     price,
+				"paid":             false,
+				"offer_expires_at": deadline.Format(time.RFC3339),
+			}
+			if _, err := s.sb.Update("coaching_enrollments",
+				"id=eq."+store.Q(asStr(next, "id")), upd); err != nil {
+				return
+			}
+			s.notifyUser(asStr(next, "user_id"), "coaching", coachID, coachName,
+				"A spot opened in “"+title+"”! Claim & pay in My classes before "+
+					deadline.Local().Format("Mon 3:04 PM")+
+					" or it goes to the next person. You won't be charged until you confirm.",
+				"myclasses")
+			return
+		}
+		// Class too imminent for a claim window — fall through to direct enroll.
+	}
+
+	// FREE class (or paid with no time for a claim window) → auto-enroll.
 	upd := map[string]any{"status": "enrolled"}
-	if asInt(cls, "price_cents") > 0 {
+	if price > 0 {
 		if t, ok := parseTime(asStr(cls, "starts_at")); ok {
 			upd["charge_at"] = t.Add(-time.Hour).UTC().Format(time.RFC3339)
 		}
@@ -5353,9 +5398,42 @@ func (s *Service) promoteNextWaitlisted(classID string) {
 		"id=eq."+store.Q(asStr(next, "id")), upd); err != nil {
 		return
 	}
-	s.notifyUser(asStr(next, "user_id"), "coaching", asStr(cls, "coach_id"),
-		s.coachingName(asStr(cls, "coach_id")),
-		"A seat opened up — you're now enrolled in "+asStr(cls, "title"), "")
+	s.notifyUser(asStr(next, "user_id"), "coaching", coachID, coachName,
+		"A seat opened up — you're now enrolled in "+title, "myclasses")
+}
+
+// SweepExpiredOffers expires unclaimed paid-seat offers (status 'offered' past
+// their deadline, still unpaid), freeing the seat and rolling it to the next
+// waitlisted player. Inert until the offer_expires_at column exists.
+func (s *Service) SweepExpiredOffers() error {
+	if !s.enrollmentsReady() ||
+		!s.columnReady("coaching_enrollments", "offer_expires_at") {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	rows, err := s.sb.Select("coaching_enrollments",
+		"status=eq.offered&paid=is.false&offer_expires_at=lte."+store.Q(now)+
+			"&select=id,user_id,class_id&limit=200")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		cid := asStr(r, "class_id")
+		title := "your class"
+		if c, _ := s.sb.SelectOne("coaching_classes",
+			"id=eq."+store.Q(cid)+"&select=title"); c != nil {
+			if t := asStr(c, "title"); t != "" {
+				title = t
+			}
+		}
+		_, _ = s.sb.Update("coaching_enrollments",
+			"id=eq."+store.Q(asStr(r, "id")), map[string]any{"status": "expired"})
+		s.notifyUser(asStr(r, "user_id"), "coaching", "", "PlanMyPickle",
+			"Your open spot in “"+title+"” expired — it's been offered to the next person.",
+			"myclasses")
+		s.promoteNextWaitlisted(cid) // roll to the next waitlister
+	}
+	return nil
 }
 
 // ensureCoachStudentLink adds a roster link (coach↔player) if one doesn't exist,
@@ -5588,7 +5666,7 @@ func (s *Service) MyEnrolledClasses(userID string) ([]model.CoachingEnrollment, 
 		return []model.CoachingEnrollment{}, nil
 	}
 	rows, err := s.sb.Select("coaching_enrollments",
-		"user_id=eq."+store.Q(userID)+"&status=in.(enrolled,waitlisted)"+
+		"user_id=eq."+store.Q(userID)+"&status=in.(enrolled,waitlisted,offered)"+
 			"&select=*,class:coaching_classes(title,starts_at,location,coach_id,price_cents)")
 	if err != nil {
 		return nil, err
@@ -5617,8 +5695,12 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 	if !s.enrollmentsReady() {
 		return nil
 	}
-	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
-		map[string]any{"paid": true})
+	// Paying also confirms a claimed offer: flip to enrolled + clear the deadline.
+	upd := map[string]any{"paid": true, "status": "enrolled"}
+	if s.columnReady("coaching_enrollments", "offer_expires_at") {
+		upd["offer_expires_at"] = nil
+	}
+	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID), upd)
 	return err
 }
 

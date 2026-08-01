@@ -63,6 +63,7 @@ func (s *Server) registerSEO(mux *http.ServeMux) {
 	mux.HandleFunc("GET /pickleball-tournaments/{state}/{county}", s.seoCityHub)
 	mux.HandleFunc("GET /pickleball-leagues/{state}/{county}", s.seoLeagueHub)
 	mux.HandleFunc("GET /l/{id}", s.seoLeaguePage)
+	mux.HandleFunc("GET /class/{id}", s.seoClassPage)
 }
 
 func leagueTypeLabel(t string) string {
@@ -138,6 +139,15 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 		if st != "" && co != "" && !seenHub[st+"/"+co] {
 			seenHub[st+"/"+co] = true
 			urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-tournaments/" + st + "/" + co})
+		}
+	}
+	// Public upcoming coaching classes.
+	if classes, _ := s.svc.PublicUpcomingClasses(seoMaxEvents); len(classes) > 0 {
+		for _, c := range classes {
+			if seoIsDemoName(c.Title) {
+				continue
+			}
+			urls = append(urls, url{loc: seoCanonicalBase + "/class/" + c.ID, lastmod: isoDate(c.StartsAt)})
 		}
 	}
 	// Public leagues + their per-metro league hubs.
@@ -430,6 +440,108 @@ func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- coaching class page ---
+
+type seoClassData struct {
+	Title, Canonical, Description, H1                  string
+	CoachLine, DateLine, VenueLine, FeeLine, SpotsLine string
+	RegisterURL                                        string
+	JSONLD                                             template.HTML
+}
+
+func (s *Server) seoClassPage(w http.ResponseWriter, r *http.Request) {
+	c, err := s.svc.PublicClassByID(r.PathValue("id"))
+	// Never expose a demo/test class through the crawlable surface.
+	if err != nil || seoIsDemoName(c.Title) ||
+		(c.CoachName != "" && seoIsDemoName(c.CoachName)) {
+		s.seoNotFound(w)
+		return
+	}
+
+	dateLine := fmtEventDate(c.StartsAt)
+	venue := strings.TrimSpace(c.Location)
+	fee := "Free"
+	if c.PriceCents > 0 {
+		fee = "$" + centsToDollars(c.PriceCents)
+	}
+	coachLine := ""
+	if c.CoachName != "" {
+		coachLine = "with " + c.CoachName
+	}
+	spots, avail := "", "https://schema.org/InStock"
+	if c.Capacity > 0 {
+		left := c.Capacity - c.EnrolledCount
+		if left <= 0 {
+			spots, avail = "Full — join the waitlist", "https://schema.org/SoldOut"
+		} else {
+			spots = fmt.Sprintf("%d of %d spots left", left, c.Capacity)
+		}
+	}
+
+	desc := "Join " + c.Title
+	if c.CoachName != "" {
+		desc += " with " + c.CoachName
+	}
+	if dateLine != "" {
+		desc += " on " + dateLine
+	}
+	if venue != "" {
+		desc += " at " + venue
+	}
+	desc += ". " + fee + " · book your spot on PlanMyPickle."
+
+	ld := map[string]any{
+		"@context":            "https://schema.org",
+		"@type":               "EducationEvent",
+		"name":                c.Title,
+		"about":               "Pickleball",
+		"url":                 seoCanonicalBase + "/class/" + c.ID,
+		"eventAttendanceMode": "https://schema.org/OfflineEventAttendanceMode",
+	}
+	if d := isoDate(c.StartsAt); d != "" {
+		ld["startDate"] = d
+	}
+	if d := isoDate(c.EndsAt); d != "" {
+		ld["endDate"] = d
+	}
+	if strings.TrimSpace(c.Description) != "" {
+		ld["description"] = c.Description
+	}
+	if venue != "" {
+		place := map[string]any{"@type": "Place", "name": venue}
+		if c.Lat != nil && c.Lng != nil {
+			place["geo"] = map[string]any{
+				"@type": "GeoCoordinates", "latitude": *c.Lat, "longitude": *c.Lng}
+		}
+		ld["location"] = place
+	}
+	if c.CoachName != "" {
+		ld["performer"] = map[string]any{"@type": "Person", "name": c.CoachName}
+	}
+	ld["organizer"] = map[string]any{
+		"@type": "Organization", "name": "PlanMyPickle", "url": seoCanonicalBase}
+	ld["offers"] = map[string]any{
+		"@type": "Offer", "url": seoAppBase + "/?class=" + c.ID,
+		"price": centsToDollars(c.PriceCents), "priceCurrency": "USD",
+		"availability": avail,
+	}
+	ldJSON, _ := json.Marshal(ld)
+
+	s.seoRender(w, seoClassTmpl, seoClassData{
+		Title:       c.Title + " — Pickleball Class | PlanMyPickle",
+		Canonical:   seoCanonicalBase + "/class/" + c.ID,
+		Description: desc,
+		H1:          c.Title,
+		CoachLine:   coachLine,
+		DateLine:    dateLine,
+		VenueLine:   venue,
+		FeeLine:     fee,
+		SpotsLine:   spots,
+		RegisterURL: seoAppBase + "/?class=" + c.ID,
+		JSONLD:      template.HTML(ldJSON),
+	})
+}
+
 // --- event results / standings page ---
 
 type seoResultsData struct {
@@ -581,6 +693,17 @@ var seoEventTmpl = template.Must(template.New("ev").Parse(seoHead + `
 <p><a class="cta" href="{{.RegisterURL}}">Register &amp; see the live bracket →</a></p>
 <p class="meta">Registration, live scores, schedule, and standings run on PlanMyPickle. Tap above to open the event and sign up.</p>
 {{if .ResultsURL}}<p class="meta">🏆 <a href="{{.ResultsURL}}">Results &amp; standings</a></p>{{end}}
+` + seoFoot))
+
+var seoClassTmpl = template.Must(template.New("cls").Parse(seoHead + `
+<h1>{{.H1}}</h1>
+{{if .CoachLine}}<p class="meta">🎾 {{.CoachLine}}</p>{{end}}
+{{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
+{{if .VenueLine}}<p class="meta">📍 {{.VenueLine}}</p>{{end}}
+<p class="meta">💵 {{.FeeLine}}</p>
+{{if .SpotsLine}}<p class="meta">👥 {{.SpotsLine}}</p>{{end}}
+<p><a class="cta" href="{{.RegisterURL}}">Book your spot →</a></p>
+<p class="meta">Class booking runs on PlanMyPickle. Tap above to reserve your spot and get reminders.</p>
 ` + seoFoot))
 
 var seoResultsTmpl = template.Must(template.New("res").Parse(seoHead + `

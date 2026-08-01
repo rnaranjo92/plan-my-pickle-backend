@@ -4858,6 +4858,47 @@ func (s *Service) ListClassesNearby(lat, lng, radiusKm float64, viewerID string)
 	return out, nil
 }
 
+// PublicClassByID returns one class (with coach name + counts) for the crawlable
+// SEO page — no auth, since a class listing is public. Errors if not found.
+func (s *Service) PublicClassByID(id string) (model.CoachingClass, error) {
+	if !s.classesReady() {
+		return model.CoachingClass{}, ErrNotFound
+	}
+	row, err := s.sb.SelectOne("coaching_classes", "id=eq."+store.Q(id))
+	if err != nil {
+		return model.CoachingClass{}, err
+	}
+	if row == nil {
+		return model.CoachingClass{}, ErrNotFound
+	}
+	c := mapClass(row)
+	c.CoachName = s.coachingName(c.CoachID)
+	list := []model.CoachingClass{c}
+	s.enrichClasses(list, "")
+	return list[0], nil
+}
+
+// PublicUpcomingClasses lists upcoming classes across all coaches (for the SEO
+// sitemap). Cheap projection; capped by limit.
+func (s *Service) PublicUpcomingClasses(limit int) ([]model.CoachingClass, error) {
+	if !s.classesReady() {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.sb.Select("coaching_classes",
+		"starts_at=gte."+store.Q(now())+"&order=starts_at.asc&limit="+strconv.Itoa(limit))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachingClass, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapClass(r))
+	}
+	return out, nil
+}
+
 // CreateClass adds a class for the signed-in coach.
 func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (model.CoachingClass, error) {
 	if !s.classesReady() {

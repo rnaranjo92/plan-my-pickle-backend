@@ -5386,7 +5386,7 @@ func (s *Service) promoteNextWaitlisted(classID string) {
 		return // no free seat
 	}
 	next, _ := s.sb.SelectOne("coaching_enrollments",
-		"class_id=eq."+store.Q(classID)+"&status=eq.waitlisted&order=created_at.asc&limit=1&select=id,user_id")
+		"class_id=eq."+store.Q(classID)+"&status=eq.waitlisted&order=created_at.asc&limit=1&select=id,user_id,name,email")
 	if next == nil {
 		return
 	}
@@ -5435,6 +5435,9 @@ func (s *Service) promoteNextWaitlisted(classID string) {
 		"id=eq."+store.Q(asStr(next, "id")), upd); err != nil {
 		return
 	}
+	// Now enrolled → make sure they appear on the coach's roster.
+	s.ensureCoachStudentLink(coachID, asStr(next, "user_id"),
+		asStr(next, "name"), asStr(next, "email"))
 	s.notifyUser(asStr(next, "user_id"), "coaching", coachID, coachName,
 		"A seat opened up — you're now enrolled in "+title, "myclasses")
 }
@@ -5743,8 +5746,21 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 	if s.columnReady("coaching_enrollments", "offer_expires_at") {
 		upd["offer_expires_at"] = nil
 	}
-	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID), upd)
-	return err
+	if _, err := s.sb.Update("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID), upd); err != nil {
+		return err
+	}
+	// Ensure the now-confirmed player is on the coach's roster (covers a claimed
+	// offer, whose waitlist row never linked; idempotent for direct enrollments).
+	if row, _ := s.sb.SelectOne("coaching_enrollments",
+		"id=eq."+store.Q(enrollmentID)+"&select=user_id,name,email,class_id"); row != nil {
+		if c, _ := s.sb.SelectOne("coaching_classes",
+			"id=eq."+store.Q(asStr(row, "class_id"))+"&select=coach_id"); c != nil {
+			s.ensureCoachStudentLink(asStr(c, "coach_id"), asStr(row, "user_id"),
+				asStr(row, "name"), asStr(row, "email"))
+		}
+	}
+	return nil
 }
 
 // PayForEnrollment returns a hosted-checkout URL for an unpaid paid enrollment.

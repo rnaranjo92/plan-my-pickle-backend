@@ -1462,7 +1462,9 @@ type CoachReview struct {
 	AuthorName  string `json:"authorName"`
 	Rating      int    `json:"rating"`
 	Body        string `json:"body,omitempty"`
-	CreatedAt   string `json:"createdAt"`
+	// CoachResponse is the reviewed coach's public reply, if any.
+	CoachResponse string `json:"coachResponse,omitempty"`
+	CreatedAt     string `json:"createdAt"`
 }
 
 // CoachReviewRequest submits/updates the caller's review of a coach.
@@ -1772,6 +1774,14 @@ type CoachingClassRequest struct {
 	// RepeatWeeks > 1 clones this class weekly for that many total weeks (each an
 	// independent class/enrollment). 0 or 1 = a one-off class.
 	RepeatWeeks int `json:"repeatWeeks"`
+}
+
+// CoachCreditOwed is one student's outstanding prepaid-class balance with a
+// coach — the coach-facing view of pack liability (sessions they owe).
+type CoachCreditOwed struct {
+	StudentID        string `json:"studentId"`
+	StudentName      string `json:"studentName"`
+	CreditsRemaining int    `json:"creditsRemaining"`
 }
 
 // CoachPack is a discounted bundle of class credits a coach sells.

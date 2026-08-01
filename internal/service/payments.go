@@ -566,9 +566,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.AnalysisID != "" {
 			return s.markAnalysisPaid(evt.AnalysisID)
 		}
-		// A paid class enrollment — mark the seat paid.
+		// A paid class enrollment — mark the seat paid (store the PaymentIntent so
+		// the seat can be refunded if the class/seat is later torn down).
 		if evt.EnrollmentID != "" {
-			return s.markEnrollmentPaid(evt.EnrollmentID)
+			return s.markEnrollmentPaid(evt.EnrollmentID, evt.PaymentIntentID)
 		}
 		// A class-pack purchase — grant the credits.
 		if evt.PackPurchase != "" {

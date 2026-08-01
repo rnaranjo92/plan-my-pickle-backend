@@ -13,6 +13,7 @@ import (
 	"github.com/stripe/stripe-go/v79/accountlink"
 	billingportalsession "github.com/stripe/stripe-go/v79/billingportal/session"
 	checkoutsession "github.com/stripe/stripe-go/v79/checkout/session"
+	"github.com/stripe/stripe-go/v79/refund"
 	"github.com/stripe/stripe-go/v79/webhook"
 )
 
@@ -47,6 +48,7 @@ type stripeClient struct {
 	links    *accountlink.Client
 	sessions *checkoutsession.Client
 	portal   *billingportalsession.Client
+	refunds  *refund.Client
 }
 
 // NewStripeGateway builds a Stripe-backed payment gateway from the platform's
@@ -66,6 +68,7 @@ func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 			links:    &accountlink.Client{B: backends.API, Key: secretKey},
 			sessions: &checkoutsession.Client{B: backends.API, Key: secretKey},
 			portal:   &billingportalsession.Client{B: backends.API, Key: secretKey},
+			refunds:  &refund.Client{B: backends.API, Key: secretKey},
 		},
 		webhookSecret: webhookSecret,
 		mode:          mode,
@@ -444,6 +447,24 @@ func (g *StripeGateway) CreatePlatformCheckout(refID, metaKey string, amountCent
 	return sess.URL, nil
 }
 
+// Refund fully refunds a PaymentIntent (used when a paid class seat is canceled/
+// removed or its class is deleted). Platform charges have no destination/transfer,
+// so a plain full refund suffices. Idempotent enough for our use: Stripe rejects a
+// second full refund of an already-fully-refunded PI, which the caller treats as
+// success (the money is already back).
+func (g *StripeGateway) Refund(paymentIntentID string) error {
+	paymentIntentID = strings.TrimSpace(paymentIntentID)
+	if !strings.HasPrefix(paymentIntentID, "pi_") {
+		return fmt.Errorf("not a refundable payment intent: %q", paymentIntentID)
+	}
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.RefundParams{PaymentIntent: stripe.String(paymentIntentID)}
+	params.Context = ctx
+	_, err := g.client.refunds.New(params)
+	return err
+}
+
 // ---- webhooks ----
 
 // ErrUnhandledWebhook signals a verified-but-ignored event type, so the caller
@@ -472,6 +493,9 @@ type WebhookEvent struct {
 	// checkout.session.completed (mode=payment) — a class-pack purchase, encoded
 	// as "coachId:userId:credits".
 	PackPurchase string
+	// The PaymentIntent behind a completed checkout — stored so a paid class seat
+	// can later be refunded (Refund(paymentIntentID)).
+	PaymentIntentID string
 	// account.updated
 	AccountID      string
 	ChargesEnabled bool
@@ -531,17 +555,22 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			}
 			return WebhookEvent{Type: string(event.Type), Subscription: sub}, nil
 		}
+		piID := ""
+		if sess.PaymentIntent != nil {
+			piID = sess.PaymentIntent.ID
+		}
 		return WebhookEvent{
-			Type:           string(event.Type),
-			RegistrationID: sess.Metadata["registration_id"],
-			EventPassID:    sess.Metadata["event_pass_id"],
-			VendorID:       sess.Metadata["vendor_id"],
-			AnalysisID:     sess.Metadata["analysis_id"],
-			EnrollmentID:   sess.Metadata["enrollment_id"],
-			PackPurchase:   sess.Metadata["pack_purchase"],
-			AmountCents:    int(sess.AmountTotal),
-			AddonTee:       sess.Metadata["addon_tee"] == "1",
-			AddonGrips:     sess.Metadata["addon_grips"] == "1",
+			Type:            string(event.Type),
+			RegistrationID:  sess.Metadata["registration_id"],
+			EventPassID:     sess.Metadata["event_pass_id"],
+			VendorID:        sess.Metadata["vendor_id"],
+			AnalysisID:      sess.Metadata["analysis_id"],
+			EnrollmentID:    sess.Metadata["enrollment_id"],
+			PackPurchase:    sess.Metadata["pack_purchase"],
+			PaymentIntentID: piID,
+			AmountCents:     int(sess.AmountTotal),
+			AddonTee:        sess.Metadata["addon_tee"] == "1",
+			AddonGrips:      sess.Metadata["addon_grips"] == "1",
 		}, nil
 	case stripe.EventTypeCustomerSubscriptionUpdated,
 		stripe.EventTypeCustomerSubscriptionDeleted:

@@ -107,6 +107,12 @@ func notifPushURL(link string) string {
 	case link == "myclasses":
 		// Class enroll/offer/claim-and-pay/change → the player's My classes list.
 		return base + "/?classes=1"
+	case link == "coachclasses":
+		return base + "/?coachclasses=1" // coach's class-management screen
+	case link == "coachreviews":
+		return base + "/?coachreviews=1" // coach's reviews inbox
+	case link == "coachcredits":
+		return base + "/?coachcredits=1" // coach's prepaid-credit liability view
 	default:
 		return base
 	}

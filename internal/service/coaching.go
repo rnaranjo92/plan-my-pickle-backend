@@ -513,7 +513,7 @@ func (s *Service) ListCoachStudents(coachID string) ([]model.CoachStudent, error
 		order = "last_activity_at.desc"
 	}
 	rows, err := s.sb.Select("coach_students",
-		"coach_id=eq."+store.Q(coachID)+"&order="+order)
+		"coach_id=eq."+store.Q(coachID)+s.activeStudentFilter()+"&order="+order)
 	if err != nil {
 		return nil, err
 	}
@@ -635,11 +635,14 @@ func (s *Service) applyRosterAggregates(students []model.CoachStudent) {
 }
 
 // RemoveCoachStudent deletes a roster row (and its clips/feedback via cascade).
+// It also tears down cleanly: cancels the student's future 1:1 sessions, tells
+// the student the coaching ended, and prunes both parties' now-dead bell links.
 func (s *Service) RemoveCoachStudent(coachID, id string) error {
 	if !s.coachingReady() {
 		return ErrCoachingUnavailable
 	}
-	row, err := s.sb.SelectOne("coach_students", "id=eq."+store.Q(id)+"&select=coach_id")
+	row, err := s.sb.SelectOne("coach_students", "id=eq."+store.Q(id)+
+		"&select=coach_id,student_id,student_email,student_phone,student_name")
 	if err != nil {
 		return err
 	}
@@ -649,7 +652,107 @@ func (s *Service) RemoveCoachStudent(coachID, id string) error {
 	if asStr(row, "coach_id") != coachID {
 		return ErrForbidden
 	}
-	return s.sb.Delete("coach_students", "id=eq."+store.Q(id))
+	cs := mapCoachStudent(row)
+	coachName := s.coachingName(coachID)
+
+	// Cancel future 1:1 sessions on this thread first — the schedule FK is ON
+	// DELETE SET NULL, so leaving them would strand a stale session on the coach's
+	// calendar and vanish it from the student's My Sessions with no notice.
+	if s.scheduleReady() {
+		nowT := time.Now().UTC().Format(time.RFC3339)
+		sess, _ := s.sb.SelectAll("coaching_schedule",
+			"coach_student_id=eq."+store.Q(id)+"&kind=eq.session"+
+				"&starts_at=gte."+store.Q(nowT)+"&select=id")
+		if len(sess) > 0 {
+			s.notifyCoachingCounterpartLink(cs, "coach", coachID, coachName,
+				"Your upcoming 1:1 session was canceled", "")
+			for _, r := range sess {
+				_ = s.sb.Delete("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")))
+			}
+		}
+	}
+
+	if derr := s.sb.Delete("coach_students", "id=eq."+store.Q(id)); derr != nil {
+		return derr
+	}
+	// Tell the student the coaching ended — this is otherwise the only silent
+	// destructive coaching action. The thread is gone, so use an EMPTY link (a
+	// coaching:<id> link would dead-end on "thread not found").
+	s.notifyCoachingCounterpartLink(cs, "coach", coachID, coachName,
+		"Your coach ended your coaching and removed your clip history", "")
+	// Prune both parties' stale bell rows that deep-link into the now-gone thread
+	// (they would otherwise route to a permanent "Could not load this thread").
+	if s.columnReady("user_notifications", "link") {
+		_ = s.sb.Delete("user_notifications", "link=like.coaching:"+id+"*")
+	}
+	return nil
+}
+
+// LeaveCoach lets a STUDENT end a coaching relationship (soft-archive so their
+// clip history is preserved but the thread hides from both rosters). Coaches use
+// RemoveCoachStudent instead. Inert until the left_at column exists.
+func (s *Service) LeaveCoach(threadID, userID, email string) error {
+	if !s.coachingReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.columnReady("coach_students", "left_at") {
+		return ErrCoachingUnavailable
+	}
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil {
+		return err
+	}
+	if role != "student" {
+		return ErrForbidden // the coach severs via RemoveCoachStudent
+	}
+	if _, err := s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		map[string]any{"left_at": now()}); err != nil {
+		return err
+	}
+	who := s.coachingName(userID)
+	if strings.TrimSpace(who) == "" {
+		who = "Your student"
+	}
+	s.notifyCoachingCounterpartLink(cs, "student", userID, who,
+		who+" ended their coaching with you", "")
+	return nil
+}
+
+// CoachStudentCredits lists each student who holds prepaid class credits with this
+// coach — the coach-facing view of how many sessions they owe.
+func (s *Service) CoachStudentCredits(coachID string) ([]model.CoachCreditOwed, error) {
+	if !s.creditsReady() || coachID == "" {
+		return []model.CoachCreditOwed{}, nil
+	}
+	rows, err := s.sb.Select("coaching_credits",
+		"coach_id=eq."+store.Q(coachID)+"&credits_remaining=gt.0"+
+			"&order=credits_remaining.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachCreditOwed, 0, len(rows))
+	for _, r := range rows {
+		uid := asStr(r, "user_id")
+		name := s.coachingName(uid)
+		if strings.TrimSpace(name) == "" {
+			name = "A player"
+		}
+		out = append(out, model.CoachCreditOwed{
+			StudentID:        uid,
+			StudentName:      name,
+			CreditsRemaining: asInt(r, "credits_remaining"),
+		})
+	}
+	return out, nil
+}
+
+// activeStudentFilter appends a left_at IS NULL predicate once the soft-leave
+// column exists, so a student who left a coach drops off both rosters.
+func (s *Service) activeStudentFilter() string {
+	if s.columnReady("coach_students", "left_at") {
+		return "&left_at=is.null"
+	}
+	return ""
 }
 
 // ListStudentThreads returns the threads addressed to this student's email (their
@@ -671,9 +774,10 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 	// would otherwise never surface here, even though thread ACCESS keys on
 	// student_id — matching the id-based discovery ListMySessions already uses.
 	byID := map[string]map[string]any{}
+	af := s.activeStudentFilter()
 	if studentID != "" {
 		if rows, e := s.sb.Select("coach_students",
-			"student_id=eq."+store.Q(studentID)+"&order=created_at.desc"); e == nil {
+			"student_id=eq."+store.Q(studentID)+af+"&order=created_at.desc"); e == nil {
 			for _, r := range rows {
 				byID[asStr(r, "id")] = r
 			}
@@ -681,7 +785,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 	}
 	if email != "" {
 		if rows, e := s.sb.Select("coach_students",
-			"student_email=eq."+store.Q(email)+"&order=created_at.desc"); e == nil {
+			"student_email=eq."+store.Q(email)+af+"&order=created_at.desc"); e == nil {
 			for _, r := range rows {
 				byID[asStr(r, "id")] = r
 			}
@@ -689,7 +793,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 	}
 	if np != "" {
 		if rows, e := s.sb.Select("coach_students",
-			"student_phone=eq."+store.Q(np)+"&order=created_at.desc"); e == nil {
+			"student_phone=eq."+store.Q(np)+af+"&order=created_at.desc"); e == nil {
 			for _, r := range rows {
 				byID[asStr(r, "id")] = r
 			}
@@ -711,7 +815,7 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		}
 		cs.CoachName = s.coachingName(cs.CoachID)
 		cs.VideoCount = s.threadVideoCount(cs.ID)
-		cs.CoachNote = "" // the coach's private note about the student is never sent to them
+		cs.CoachNote = ""  // the coach's private note about the student is never sent to them
 		cs.SkillLevel = "" // coach's assessment — coach-only
 		out = append(out, cs)
 	}
@@ -2277,7 +2381,7 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 	}
 	cs.CoachName = s.coachingName(cs.CoachID)
 	if role != "coach" {
-		cs.CoachNote = "" // students never see the coach's private note about them
+		cs.CoachNote = ""  // students never see the coach's private note about them
 		cs.SkillLevel = "" // nor the coach's skill assessment
 	}
 	// Opening a thread marks it read for the viewer — both the thread's unread
@@ -2308,10 +2412,10 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 	}
 	for _, f := range fbs {
 		fb := model.CoachingFeedback{
-			ID:         asStr(f, "id"),
-			VideoID:    asStr(f, "video_id"),
-			AuthorID:   asStr(f, "author_id"),
-			AuthorRole: asStr(f, "author_role"),
+			ID:               asStr(f, "id"),
+			VideoID:          asStr(f, "video_id"),
+			AuthorID:         asStr(f, "author_id"),
+			AuthorRole:       asStr(f, "author_role"),
 			AuthorName:       nameOf(asStr(f, "author_id")),
 			Body:             asStr(f, "body"),
 			CreatedAt:        asStr(f, "created_at"),
@@ -4177,13 +4281,14 @@ func (s *Service) coachReviewsReady() bool {
 
 func mapCoachReview(row map[string]any) model.CoachReview {
 	return model.CoachReview{
-		ID:          asStr(row, "id"),
-		CoachUserID: asStr(row, "coach_user_id"),
-		AuthorID:    asStr(row, "author_id"),
-		AuthorName:  asStr(row, "author_name"),
-		Rating:      asInt(row, "rating"),
-		Body:        asStr(row, "body"),
-		CreatedAt:   asStr(row, "created_at"),
+		ID:            asStr(row, "id"),
+		CoachUserID:   asStr(row, "coach_user_id"),
+		AuthorID:      asStr(row, "author_id"),
+		AuthorName:    asStr(row, "author_name"),
+		Rating:        asInt(row, "rating"),
+		Body:          asStr(row, "body"),
+		CoachResponse: asStr(row, "coach_response"),
+		CreatedAt:     asStr(row, "created_at"),
 	}
 }
 
@@ -4291,7 +4396,68 @@ func (s *Service) SubmitCoachReview(authorID, authorName, coachUserID string, re
 		"body":          orNull(body),
 		"updated_at":    now(),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Tell the coach — a review (esp. an edited-down one) otherwise silently moves
+	// their public rating with no signal. Deep-links to their reviews inbox.
+	s.notifyUser(coachUserID, "coaching", authorID, authorName,
+		authorName+" left you a "+strconv.Itoa(req.Rating)+"-star review", "coachreviews")
+	return nil
+}
+
+// RespondToCoachReview lets the reviewed coach post a public reply to a review of
+// them (one response per review; empty clears it).
+func (s *Service) RespondToCoachReview(coachUserID, reviewID, response string) error {
+	if !s.coachReviewsReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.columnReady("coach_reviews", "coach_response") {
+		return ErrCoachingUnavailable
+	}
+	row, _ := s.sb.SelectOne("coach_reviews",
+		"id=eq."+store.Q(reviewID)+"&select=coach_user_id,author_id")
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_user_id") != coachUserID {
+		return ErrForbidden // only the reviewed coach may reply
+	}
+	response = strings.TrimSpace(response)
+	if r := []rune(response); len(r) > 1000 {
+		response = string(r[:1000])
+	}
+	if _, err := s.sb.Update("coach_reviews", "id=eq."+store.Q(reviewID),
+		map[string]any{"coach_response": orNull(response), "updated_at": now()}); err != nil {
+		return err
+	}
+	// Let the reviewer know the coach replied.
+	if response != "" {
+		if aid := asStr(row, "author_id"); aid != "" && aid != coachUserID {
+			s.notifyUser(aid, "coaching", coachUserID, s.coachingName(coachUserID),
+				s.coachingName(coachUserID)+" responded to your review", "")
+		}
+	}
+	return nil
+}
+
+// ListCoachReviewsForOwner returns all reviews of the calling coach (their inbox),
+// newest first — distinct from the public ListCoachReviews (which also computes
+// the aggregate + the viewer's own review).
+func (s *Service) ListCoachReviewsForOwner(coachUserID string) ([]model.CoachReview, error) {
+	if !s.coachReviewsReady() {
+		return []model.CoachReview{}, nil
+	}
+	rows, err := s.sb.Select("coach_reviews",
+		"coach_user_id=eq."+store.Q(coachUserID)+"&order=updated_at.desc")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachReview, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapCoachReview(r))
+	}
+	return out, nil
 }
 
 // DeleteCoachReview removes the caller's own review.
@@ -4944,7 +5110,24 @@ func (s *Service) grantPackCredits(meta string) error {
 		"credits_remaining": cur + credits,
 		"updated_at":        now(),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Surface the purchase to BOTH sides — it's a real revenue/obligation event
+	// that was previously completely silent (no bell, no balance signal).
+	buyerName := s.coachingName(userID)
+	if strings.TrimSpace(buyerName) == "" {
+		buyerName = "A player"
+	}
+	// Buyer: confirm the credits landed (Stripe redirect may beat the webhook).
+	s.notifyUser(userID, "coaching", coachID, s.coachingName(coachID),
+		strconv.Itoa(credits)+" class credits were added to your balance", "myclasses")
+	// Coach: they now owe N prepaid sessions.
+	if coachID != userID {
+		s.notifyUser(coachID, "coaching", userID, buyerName,
+			buyerName+" purchased your "+strconv.Itoa(credits)+"-class pack", "coachcredits")
+	}
+	return nil
 }
 
 // consumeCredit spends one credit if the player has any (read-then-write; fine at
@@ -4961,6 +5144,60 @@ func (s *Service) consumeCredit(coachID, userID string) bool {
 		"coach_id=eq."+store.Q(coachID)+"&user_id=eq."+store.Q(userID),
 		map[string]any{"credits_remaining": cur - 1, "updated_at": now()})
 	return err == nil
+}
+
+// restoreCredit returns one spent class credit to the player (the mirror of
+// consumeCredit) when a credit-funded seat is torn down.
+func (s *Service) restoreCredit(coachID, userID string) bool {
+	if !s.creditsReady() || coachID == "" || userID == "" {
+		return false
+	}
+	cur, _ := s.MyCoachCredits(coachID, userID)
+	_, err := s.sb.Upsert("coaching_credits", "coach_id,user_id", map[string]any{
+		"coach_id":          coachID,
+		"user_id":           userID,
+		"credits_remaining": cur + 1,
+		"updated_at":        now(),
+	})
+	return err == nil
+}
+
+// settleEnrollmentRefund returns the money for a torn-down PAID seat: a class
+// credit is restored, a Stripe-captured seat is refunded via its stored
+// PaymentIntent. Returns a short human line for the teardown notification (empty
+// when nothing was owed — free seat, cash seat, or never-charged charge_at row).
+// The caller MUST guard against double-settlement (only call for a still-active
+// seat, and clear payment_ref in the same status update).
+func (s *Service) settleEnrollmentRefund(coachID, userID, paymentRef string, paid bool) string {
+	switch {
+	case paymentRef == "credit":
+		if s.restoreCredit(coachID, userID) {
+			return "Your class credit was returned."
+		}
+	case paid && strings.HasPrefix(paymentRef, "pi_"):
+		if gw, ok := s.stripeGW(); ok {
+			if err := gw.Refund(paymentRef); err == nil {
+				return "A refund was issued to your original payment."
+			}
+		}
+	case paid && paymentRef == "manual":
+		// Paid in cash off-platform — we can't auto-refund; tell them to expect
+		// the coach to return it directly.
+		return "Your coach will return your payment."
+	}
+	return ""
+}
+
+// refundedRef marks a payment_ref as settled so a repeat teardown can't refund
+// twice, while preserving what it was for the record.
+func refundedRef(paymentRef string) string {
+	if paymentRef == "" {
+		return ""
+	}
+	if strings.HasPrefix(paymentRef, "refunded:") {
+		return paymentRef
+	}
+	return "refunded:" + paymentRef
 }
 
 // --- Coaching classes (marketplace Phase B) ---
@@ -5328,6 +5565,33 @@ func (s *Service) notifyClassEnrollees(classID, actorID, actorName, body string)
 	}
 }
 
+// settleClassEnrollments refunds/returns every prepaid live seat in a class
+// (used before a class delete, whose FK cascade would otherwise wipe the rows and
+// strand the money). Each settled student is told their money came back.
+func (s *Service) settleClassEnrollments(classID, coachID string) {
+	if !s.enrollmentsReady() {
+		return
+	}
+	rows, _ := s.sb.SelectAll("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,offered)"+
+			"&select=id,user_id,paid,payment_ref")
+	for _, r := range rows {
+		uid := asStr(r, "user_id")
+		pref := asStr(r, "payment_ref")
+		msg := s.settleEnrollmentRefund(coachID, uid, pref, asBool(r, "paid"))
+		if msg == "" {
+			continue
+		}
+		// Mark refunded (belt-and-suspenders — the row is about to be deleted).
+		_, _ = s.sb.Update("coaching_enrollments", "id=eq."+store.Q(asStr(r, "id")),
+			map[string]any{"payment_ref": refundedRef(pref)})
+		if uid != "" && uid != coachID {
+			s.notifyUser(uid, "coaching", coachID, s.coachingName(coachID), msg,
+				"myclasses")
+		}
+	}
+}
+
 // DeleteClass removes a class the coach owns.
 func (s *Service) DeleteClass(coachID, id string) error {
 	if !s.classesReady() {
@@ -5348,6 +5612,8 @@ func (s *Service) DeleteClass(coachID, id string) error {
 	if title == "" {
 		title = "a class"
 	}
+	// Return everyone's money BEFORE the delete cascades the enrollment rows away.
+	s.settleClassEnrollments(id, coachID)
 	// Notify enrollees BEFORE the delete (its FK cascade wipes the enrollments).
 	s.notifyClassEnrollees(id, coachID, s.coachingName(coachID),
 		"Class cancelled: \""+title+"\"")
@@ -5362,11 +5628,11 @@ func (s *Service) enrollmentsReady() bool {
 
 func mapEnrollment(row map[string]any) model.CoachingEnrollment {
 	return model.CoachingEnrollment{
-		ID:          asStr(row, "id"),
-		ClassID:     asStr(row, "class_id"),
-		UserID:      asStr(row, "user_id"),
-		Name:        asStr(row, "name"),
-		Email:       asStr(row, "email"),
+		ID:             asStr(row, "id"),
+		ClassID:        asStr(row, "class_id"),
+		UserID:         asStr(row, "user_id"),
+		Name:           asStr(row, "name"),
+		Email:          asStr(row, "email"),
 		Status:         asStr(row, "status"),
 		AmountCents:    asInt(row, "amount_cents"),
 		Paid:           asBool(row, "paid"),
@@ -5471,7 +5737,7 @@ func (s *Service) CoachPromoteEnrollment(coachID, enrollmentID string) error {
 	s.ensureCoachStudentLink(coachID, asStr(row, "user_id"),
 		asStr(row, "name"), asStr(row, "email"))
 	s.notifyUser(asStr(row, "user_id"), "coaching", coachID, s.coachingName(coachID),
-		"A seat opened up — you're in "+asStr(cls, "title"), "")
+		"A seat opened up — you're in "+asStr(cls, "title"), "myclasses")
 	return nil
 }
 
@@ -5735,31 +6001,69 @@ func (s *Service) notifyCoachOfEnrollment(cls map[string]any, userID, name, verb
 	if title != "" {
 		body = name + " " + verb + " “" + title + "”"
 	}
-	s.notifyUser(coachID, "coaching", userID, name, body, "")
+	s.notifyUser(coachID, "coaching", userID, name, body, "coachclasses")
 }
 
-// CancelClassEnrollment drops the player's seat (kept as a canceled row).
+// CancelClassEnrollment drops the player's seat (kept as a canceled row). Any
+// prepaid money is settled (credit restored / Stripe seat refunded), and the
+// coach is told the roster shrank.
 func (s *Service) CancelClassEnrollment(classID, userID string) error {
 	if !s.enrollmentsReady() {
 		return ErrCoachingUnavailable
 	}
+	coachID, title := "", ""
 	// Honor the coach's cancellation cutoff.
 	if cls, _ := s.sb.SelectOne("coaching_classes",
-		"id=eq."+store.Q(classID)+"&select=coach_id,starts_at"); cls != nil {
-		if err := s.enforceCancelCutoff(asStr(cls, "coach_id"),
-			asStr(cls, "starts_at")); err != nil {
+		"id=eq."+store.Q(classID)+"&select=coach_id,starts_at,title"); cls != nil {
+		coachID = asStr(cls, "coach_id")
+		title = asStr(cls, "title")
+		if err := s.enforceCancelCutoff(coachID, asStr(cls, "starts_at")); err != nil {
 			return err
 		}
 	}
-	_, err := s.sb.Update("coaching_enrollments",
-		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID),
-		map[string]any{"status": "canceled"})
-	if err == nil {
-		// If that freed a seat, pull in the next waitlisted player (no-op when
-		// the canceler was themselves waitlisted — the class is still full).
-		s.promoteNextWaitlisted(classID)
+	// Read the seat BEFORE canceling so we can settle its payment idempotently.
+	enr, _ := s.sb.SelectOne("coaching_enrollments",
+		"class_id=eq."+store.Q(classID)+"&user_id=eq."+store.Q(userID)+
+			"&status=in.(enrolled,offered,waitlisted)"+
+			"&select=id,name,status,paid,payment_ref&limit=1")
+	if enr == nil {
+		return nil // nothing active to cancel
 	}
-	return err
+	refundMsg := ""
+	upd := map[string]any{"status": "canceled"}
+	// Only an active seat is settled; a waitlist row never held money.
+	if st := asStr(enr, "status"); st == "enrolled" || st == "offered" {
+		pref := asStr(enr, "payment_ref")
+		refundMsg = s.settleEnrollmentRefund(coachID, userID, pref, asBool(enr, "paid"))
+		if refundMsg != "" {
+			upd["payment_ref"] = refundedRef(pref) // block a double refund
+		}
+	}
+	if _, err := s.sb.Update("coaching_enrollments",
+		"id=eq."+store.Q(asStr(enr, "id")), upd); err != nil {
+		return err
+	}
+	// Tell the coach a player dropped (parity with 1:1 cancel + enroll).
+	if coachID != "" && coachID != userID {
+		who := asStr(enr, "name")
+		if strings.TrimSpace(who) == "" {
+			who = "A player"
+		}
+		label := "your class"
+		if title != "" {
+			label = "“" + title + "”"
+		}
+		s.notifyUser(coachID, "coaching", userID, who,
+			who+" canceled "+label, "coachclasses")
+	}
+	// Tell the student their money was returned, if anything was owed.
+	if refundMsg != "" {
+		s.notifyUser(userID, "coaching", coachID, s.coachingName(coachID),
+			refundMsg, "myclasses")
+	}
+	// If that freed a seat, pull in the next waitlisted player.
+	s.promoteNextWaitlisted(classID)
+	return nil
 }
 
 // coachOwnsEnrollment verifies an enrollment belongs to a class the coach owns.
@@ -5812,10 +6116,22 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 		return ErrForbidden
 	}
 	row, _ := s.sb.SelectOne("coaching_enrollments",
-		"id=eq."+store.Q(enrollmentID)+"&select=class_id,status,user_id")
-	wasEnrolled := asStr(row, "status") == "enrolled"
-	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
-		map[string]any{"status": "canceled"})
+		"id=eq."+store.Q(enrollmentID)+"&select=class_id,status,user_id,paid,payment_ref")
+	prevStatus := asStr(row, "status")
+	wasEnrolled := prevStatus == "enrolled"
+	// Settle any prepaid money the removed player put down (blameless removal →
+	// restore credit / refund the Stripe seat) BEFORE flipping to canceled.
+	refundMsg := ""
+	upd := map[string]any{"status": "canceled"}
+	if prevStatus == "enrolled" || prevStatus == "offered" {
+		pref := asStr(row, "payment_ref")
+		refundMsg = s.settleEnrollmentRefund(coachID, asStr(row, "user_id"), pref,
+			asBool(row, "paid"))
+		if refundMsg != "" {
+			upd["payment_ref"] = refundedRef(pref)
+		}
+	}
+	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID), upd)
 	if err == nil {
 		// Tell the removed player — their prior "you're enrolled" is never
 		// otherwise retracted, so they'd show up to a class they're no longer in.
@@ -5827,8 +6143,12 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 					title = "“" + t + "”"
 				}
 			}
+			body := "Your coach removed you from " + title
+			if refundMsg != "" {
+				body += " — " + refundMsg
+			}
 			s.notifyUser(uid, "coaching", coachID, s.coachingName(coachID),
-				"Your coach removed you from "+title, "myclasses")
+				body, "myclasses")
 		}
 		if wasEnrolled {
 			s.promoteNextWaitlisted(asStr(row, "class_id"))
@@ -5904,7 +6224,7 @@ func (s *Service) MyEnrolledClasses(userID string) ([]model.CoachingEnrollment, 
 }
 
 // markEnrollmentPaid flips a paid class enrollment to paid (webhook path).
-func (s *Service) markEnrollmentPaid(enrollmentID string) error {
+func (s *Service) markEnrollmentPaid(enrollmentID, paymentIntentID string) error {
 	if !s.enrollmentsReady() {
 		return nil
 	}
@@ -5926,6 +6246,11 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 	if s.columnReady("coaching_enrollments", "offer_expires_at") {
 		upd["offer_expires_at"] = nil
 	}
+	// Store the PaymentIntent as the refund handle so a later teardown can
+	// auto-refund this seat. Guarded so it's inert until the column exists.
+	if paymentIntentID != "" && s.columnReady("coaching_enrollments", "payment_ref") {
+		upd["payment_ref"] = paymentIntentID
+	}
 	if _, err := s.sb.Update("coaching_enrollments",
 		"id=eq."+store.Q(enrollmentID), upd); err != nil {
 		return err
@@ -5946,7 +6271,7 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 				who = "A player"
 			}
 			s.notifyUser(coachID, "coaching", uid, who,
-				who+" claimed & paid for “"+asStr(c, "title")+"”", "")
+				who+" claimed & paid for “"+asStr(c, "title")+"”", "coachclasses")
 		}
 		// Rare race backstop: if this payment landed just after the offer was swept
 		// and the seat had already rolled to the next waitlister (prevStatus was
@@ -5955,7 +6280,7 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 		if prevStatus == "expired" || prevStatus == "canceled" {
 			if cap := asInt(c, "capacity"); cap > 0 && s.classEnrolledCount(classID) > cap {
 				s.notifyUser(coachID, "coaching", "", "PlanMyPickle",
-					"Heads up: a late payment for “"+asStr(c, "title")+"” put it one over capacity. Please reconcile a seat.", "")
+					"Heads up: a late payment for “"+asStr(c, "title")+"” put it one over capacity. Please reconcile a seat.", "coachclasses")
 			}
 		}
 	}

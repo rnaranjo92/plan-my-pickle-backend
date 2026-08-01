@@ -688,6 +688,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/favorite-coaches", requireAuth(s.favoriteCoaches))
 	mux.HandleFunc("GET /coaches/{userId}/reviews", requireAuth(s.coachReviews))
 	mux.HandleFunc("POST /coaches/{userId}/reviews", requireAuth(s.submitCoachReview))
+	mux.HandleFunc("GET /coach/reviews", s.instructorOnly(s.coachReviewsInbox))
+	mux.HandleFunc("POST /coach/reviews/{id}/respond", s.instructorOnly(s.respondCoachReview))
+	mux.HandleFunc("GET /coach/credits-owed", s.instructorOnly(s.coachCreditsOwed))
+	mux.HandleFunc("POST /coaching/threads/{id}/leave", requireAuth(s.leaveCoach))
 	mux.HandleFunc("DELETE /coach-reviews/{id}", requireAuth(s.deleteCoachReview))
 	mux.HandleFunc("GET /coaches/{userId}/packs", requireAuth(s.coachPacks))
 	mux.HandleFunc("POST /coach/packs", s.instructorOnly(s.createPack))
@@ -6256,6 +6260,50 @@ func (s *Server) deleteCoachReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// coachReviewsInbox returns all reviews of the calling coach (their inbox).
+func (s *Server) coachReviewsInbox(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCoachReviewsForOwner(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// respondCoachReview lets the reviewed coach post a public reply to a review.
+func (s *Server) respondCoachReview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Response string `json:"response"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.RespondToCoachReview(userID(r), r.PathValue("id"), req.Response); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// coachCreditsOwed lists students who hold prepaid credits with the calling coach.
+func (s *Server) coachCreditsOwed(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.CoachStudentCredits(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// leaveCoach lets a student end a coaching relationship (soft-archive).
+func (s *Server) leaveCoach(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.LeaveCoach(r.PathValue("id"), userID(r), userEmail(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
 }
 
 func (s *Server) setCoachIntroVideo(w http.ResponseWriter, r *http.Request) {

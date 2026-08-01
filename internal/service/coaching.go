@@ -5122,7 +5122,28 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 	if len(ins) == 0 {
 		return model.CoachingClass{}, errors.New("could not save that class")
 	}
-	return mapClass(ins[0]), nil
+	c := mapClass(ins[0])
+	go s.notifyCoachFollowersOfClass(coachID, c.Title) // players who saved this coach
+	return c, nil
+}
+
+// notifyCoachFollowersOfClass tells players who saved (follow) this coach that a
+// new class was posted — turns one-time discovery into a recurring funnel.
+func (s *Service) notifyCoachFollowersOfClass(coachID, title string) {
+	if !s.favoritesReady() || coachID == "" {
+		return
+	}
+	rows, _ := s.sb.Select("coach_favorites",
+		"coach_user_id=eq."+store.Q(coachID)+"&select=user_id&limit=500")
+	name := s.coachingName(coachID)
+	for _, r := range rows {
+		uid := asStr(r, "user_id")
+		if uid == "" || uid == coachID {
+			continue
+		}
+		s.notifyUser(uid, "coaching", coachID, name,
+			name+" posted a new class: “"+title+"”", "")
+	}
 }
 
 // UpdateClass edits a class the coach owns.

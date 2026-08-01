@@ -351,6 +351,12 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 		if rawPhone != "" {
 			go s.sendCoachInviteSMS(coachID, rawPhone, inviteToken)
 		}
+	} else {
+		// Already a PlanMyPickle account → no invite email fires, so tell them
+		// directly that the coaching relationship started (mirrors the invite).
+		s.notifyUser(resolved, "coaching", coachID, s.coachingName(coachID),
+			s.coachingName(coachID)+" added you as a student",
+			"coaching:"+asStr(ins[0], "id"))
 	}
 	return mapCoachStudent(ins[0]), nil
 }
@@ -655,12 +661,24 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	np := normPhone(s.phoneOf(studentID))
-	if email == "" && np == "" {
+	if email == "" && np == "" && studentID == "" {
 		return []model.CoachStudent{}, nil
 	}
-	// Threads addressed to this student by email OR phone. Two queries + dedup
-	// avoids fiddly PostgREST or() escaping.
+	// Threads addressed to this student by account id, email, OR phone. Separate
+	// queries + dedup avoids fiddly PostgREST or() escaping. The student_id branch
+	// is load-bearing: a phone-first signup (roster row has student_id but null
+	// email/phone) or an invite claimed from a different email/phone than invited
+	// would otherwise never surface here, even though thread ACCESS keys on
+	// student_id — matching the id-based discovery ListMySessions already uses.
 	byID := map[string]map[string]any{}
+	if studentID != "" {
+		if rows, e := s.sb.Select("coach_students",
+			"student_id=eq."+store.Q(studentID)+"&order=created_at.desc"); e == nil {
+			for _, r := range rows {
+				byID[asStr(r, "id")] = r
+			}
+		}
+	}
 	if email != "" {
 		if rows, e := s.sb.Select("coach_students",
 			"student_email=eq."+store.Q(email)+"&order=created_at.desc"); e == nil {
@@ -1707,17 +1725,26 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 		return model.CoachingProgram{}, err
 	}
 	s.bumpThreadActivity(threadID)
-	// Student completing a program week → tell the coach (parity with drills).
-	if role == "student" && nowDone {
+	// Completing a program week notifies the OTHER party, whichever side did it —
+	// true parity with drills (SetAssignmentDone), which notifies for either actor.
+	if nowDone {
 		who := s.coachingName(userID)
-		if who == "" {
-			who = "Your student"
+		var body string
+		if role == "coach" {
+			body = "Your coach marked a program week complete"
+			if focus != "" {
+				body = "Your coach marked a week complete: " + focus
+			}
+		} else {
+			if who == "" {
+				who = "Your student"
+			}
+			body = who + " completed a program week"
+			if focus != "" {
+				body = who + " completed a week: " + focus
+			}
 		}
-		body := who + " completed a program week"
-		if focus != "" {
-			body = who + " completed a week: " + focus
-		}
-		s.notifyUser(cs.CoachID, "coaching", userID, who, body,
+		s.notifyCoachingCounterpartLink(cs, role, userID, who, body,
 			"coaching:"+threadID)
 	}
 	if len(out) > 0 {
@@ -1973,14 +2000,29 @@ func (s *Service) DeleteProgram(programID, userID, email string) error {
 		return ErrCoachingUnavailable
 	}
 	row, _ := s.sb.SelectOne("coaching_programs",
-		"id=eq."+store.Q(programID)+"&select=coach_student_id")
+		"id=eq."+store.Q(programID)+"&select=coach_student_id,title")
 	if row == nil {
 		return ErrNotFound
 	}
-	if _, role, err := s.threadMembership(asStr(row, "coach_student_id"), userID, email); err != nil || role != "coach" {
+	threadID := asStr(row, "coach_student_id")
+	cs, role, err := s.threadMembership(threadID, userID, email)
+	if err != nil || role != "coach" {
 		return ErrForbidden
 	}
-	return s.sb.Delete("coaching_programs", "id=eq."+store.Q(programID))
+	if derr := s.sb.Delete("coaching_programs", "id=eq."+store.Q(programID)); derr != nil {
+		return derr
+	}
+	// The plan vanishes from the student's Goals tab — tell them, so their
+	// in-progress program doesn't just silently disappear on next open.
+	s.bumpThreadActivity(threadID)
+	title := asStr(row, "title")
+	body := "Your coach removed your training program"
+	if title != "" {
+		body = "Your coach removed the training program “" + title + "”"
+	}
+	s.notifyCoachingCounterpartLink(cs, "coach", userID, s.coachingName(cs.CoachID),
+		body, "coaching:"+threadID)
+	return nil
 }
 
 // --- PB Vision auto-import (highlights + stats into the coaching thread) ---
@@ -3198,6 +3240,14 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 		if first == nil {
 			first = ins[0]
 		}
+	}
+	// Tell the student a session was scheduled for them (mirrors reschedule/cancel
+	// which already notify). Without this the coach-booked session only surfaces
+	// passively in the student's My Sessions list.
+	if kind == "session" && strings.TrimSpace(req.CoachStudentID) != "" {
+		s.notifyStudentOfThread(req.CoachStudentID, coachID, s.coachingName(coachID),
+			"Your coach scheduled a 1:1 session for you",
+			"coaching:"+req.CoachStudentID)
 	}
 	return mapScheduleItem(first), nil
 }
@@ -5269,7 +5319,9 @@ func (s *Service) notifyClassEnrollees(classID, actorID, actorName, body string)
 			continue
 		}
 		seen[uid] = true
-		s.notifyUser(uid, "coaching", actorID, actorName, body, "")
+		// Deep-link to My classes so a "class updated/cancelled" tap lands somewhere
+		// (the class lives there, not in a thread).
+		s.notifyUser(uid, "coaching", actorID, actorName, body, "myclasses")
 	}
 }
 
@@ -5617,6 +5669,7 @@ func (s *Service) Enroll(classID, userID, name, email string, skipCredit bool) (
 		if err != nil {
 			return model.CoachingEnrollment{}, err
 		}
+		s.notifyCoachOfEnrollment(cls, userID, name, "joined the waitlist for")
 		if len(out) > 0 {
 			return mapEnrollment(out[0]), nil
 		}
@@ -5656,10 +5709,30 @@ func (s *Service) Enroll(classID, userID, name, email string, skipCredit bool) (
 		return model.CoachingEnrollment{}, err
 	}
 	s.ensureCoachStudentLink(asStr(cls, "coach_id"), userID, name, email)
+	s.notifyCoachOfEnrollment(cls, userID, name, "enrolled in")
 	if len(out) > 0 {
 		return mapEnrollment(out[0]), nil
 	}
 	return mapEnrollment(row), nil
+}
+
+// notifyCoachOfEnrollment pings the class's coach that a player joined (enrolled
+// or waitlisted) — parity with 1:1 booking, which notifies the coach. Best-effort;
+// no coach-side class deep-link exists yet, so the link is empty (informational).
+func (s *Service) notifyCoachOfEnrollment(cls map[string]any, userID, name, verb string) {
+	coachID := asStr(cls, "coach_id")
+	if coachID == "" || coachID == userID {
+		return
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "A player"
+	}
+	title := asStr(cls, "title")
+	body := name + " " + verb + " your class"
+	if title != "" {
+		body = name + " " + verb + " “" + title + "”"
+	}
+	s.notifyUser(coachID, "coaching", userID, name, body, "")
 }
 
 // CancelClassEnrollment drops the player's seat (kept as a canceled row).
@@ -5736,12 +5809,27 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 		return ErrForbidden
 	}
 	row, _ := s.sb.SelectOne("coaching_enrollments",
-		"id=eq."+store.Q(enrollmentID)+"&select=class_id,status")
+		"id=eq."+store.Q(enrollmentID)+"&select=class_id,status,user_id")
 	wasEnrolled := asStr(row, "status") == "enrolled"
 	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID),
 		map[string]any{"status": "canceled"})
-	if err == nil && wasEnrolled {
-		s.promoteNextWaitlisted(asStr(row, "class_id"))
+	if err == nil {
+		// Tell the removed player — their prior "you're enrolled" is never
+		// otherwise retracted, so they'd show up to a class they're no longer in.
+		if uid := asStr(row, "user_id"); uid != "" {
+			title := "a class"
+			if c, _ := s.sb.SelectOne("coaching_classes",
+				"id=eq."+store.Q(asStr(row, "class_id"))+"&select=title"); c != nil {
+				if t := asStr(c, "title"); t != "" {
+					title = "“" + t + "”"
+				}
+			}
+			s.notifyUser(uid, "coaching", coachID, s.coachingName(coachID),
+				"Your coach removed you from "+title, "myclasses")
+		}
+		if wasEnrolled {
+			s.promoteNextWaitlisted(asStr(row, "class_id"))
+		}
 	}
 	return err
 }
@@ -5846,6 +5934,16 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 		coachID := asStr(c, "coach_id")
 		s.ensureCoachStudentLink(coachID, asStr(row, "user_id"),
 			asStr(row, "name"), asStr(row, "email"))
+		// Tell the coach the seat was claimed & paid — otherwise the offer→claim→
+		// paid loop the coach kicked off completes invisibly to them.
+		if uid := asStr(row, "user_id"); coachID != "" && coachID != uid {
+			who := asStr(row, "name")
+			if strings.TrimSpace(who) == "" {
+				who = "A player"
+			}
+			s.notifyUser(coachID, "coaching", uid, who,
+				who+" enrolled & paid for “"+asStr(c, "title")+"”", "")
+		}
 		// Rare race backstop: if this payment landed just after the offer was swept
 		// and the seat had already rolled to the next waitlister (prevStatus was
 		// terminal), honoring it can push the class one over capacity. Honor the
@@ -5992,6 +6090,13 @@ func (s *Service) RemindUpcomingSessions() error {
 				"Reminder: your 1:1 coaching session is coming up soon",
 				"coaching:"+threadID)
 		}
+		// Remind the COACH too — they agreed to the session and can otherwise
+		// no-show; only the student was being nudged before.
+		if coachID != "" {
+			s.notifyUser(coachID, "coaching", "", "PlanMyPickle",
+				"Reminder: you have a 1:1 coaching session coming up soon",
+				"coaching:"+threadID)
+		}
 		_, _ = s.sb.Update("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")),
 			map[string]any{"reminded_at": nowT.Format(time.RFC3339)})
 	}
@@ -6132,14 +6237,22 @@ func (s *Service) SweepStalePBVisionJobs() error {
 				"error":      "Analysis timed out — please try again.",
 				"updated_at": now(),
 			})
-		// Let the student know they can retry.
+		// Notify BOTH parties the analysis died — mirroring the normal webhook
+		// path, which pings coach + student on success or failure. Without this the
+		// coach (who was told to expect a result) sees it silently never appear.
 		if tid := asStr(r, "coach_student_id"); tid != "" {
 			if cs, _ := s.sb.SelectOne("coach_students",
 				"id=eq."+store.Q(tid)+"&select=coach_id,student_id"); cs != nil {
 				coachID := asStr(cs, "coach_id")
-				if sid := asStr(cs, "student_id"); sid != "" {
+				sid := asStr(cs, "student_id")
+				if sid != "" {
 					s.notifyUser(sid, "coaching", coachID, s.coachingName(coachID),
 						"PB Vision couldn't finish that analysis — tap the clip to try again",
+						"coaching:"+tid+"?tab=pbvision")
+				}
+				if coachID != "" && coachID != sid {
+					s.notifyUser(coachID, "coaching", "", "PlanMyPickle",
+						"PB Vision couldn't finish that analysis — try a longer match clip",
 						"coaching:"+tid+"?tab=pbvision")
 				}
 			}

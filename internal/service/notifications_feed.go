@@ -104,6 +104,9 @@ func notifPushURL(link string) string {
 			id = id[:i]
 		}
 		return base + "/?coaching=" + id + tab
+	case link == "myclasses":
+		// Class enroll/offer/claim-and-pay/change → the player's My classes list.
+		return base + "/?classes=1"
 	default:
 		return base
 	}

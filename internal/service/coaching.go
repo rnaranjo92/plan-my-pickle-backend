@@ -5661,6 +5661,61 @@ func (s *Service) PayForEnrollment(enrollmentID, userID, email, successURL, canc
 // their seat (reconciler tick). Reminds once per enrollment (payment_ref sentinel).
 // RemindUpcomingSessions notifies students of a booked 1:1 session starting
 // within the next 24h (once — reminded_at guards re-sends). Cron sweep.
+// RemindUpcomingClasses notifies enrolled players ~24h and ~1h before a class
+// (two tiers, each sent once) to cut no-shows. Inert until the reminder columns
+// exist.
+func (s *Service) RemindUpcomingClasses() error {
+	if !s.enrollmentsReady() || !s.classesReady() ||
+		!s.columnReady("coaching_enrollments", "reminded_24h") {
+		return nil
+	}
+	nowT := time.Now().UTC()
+	horizon := nowT.Add(24 * time.Hour)
+	classes, err := s.sb.Select("coaching_classes",
+		"starts_at=gte."+store.Q(nowT.Format(time.RFC3339))+
+			"&starts_at=lte."+store.Q(horizon.Format(time.RFC3339))+
+			"&select=id,title,starts_at,location&limit=300")
+	if err != nil {
+		return err
+	}
+	for _, c := range classes {
+		cid := asStr(c, "id")
+		st, ok := parseSchedTime(asStr(c, "starts_at"))
+		if !ok {
+			continue
+		}
+		until := st.Sub(nowT)
+		// 1h tier fires within 90 min; otherwise the day-before tier.
+		col := "reminded_24h"
+		when := "is tomorrow"
+		if until <= 90*time.Minute {
+			col = "reminded_1h"
+			when = "starts in about an hour"
+		} else if st.YearDay() == nowT.YearDay() && st.Year() == nowT.Year() {
+			when = "is later today"
+		}
+		title := asStr(c, "title")
+		if title == "" {
+			title = "your class"
+		}
+		body := "“" + title + "” " + when + "."
+		if loc := strings.TrimSpace(asStr(c, "location")); loc != "" {
+			body += " At " + loc + "."
+		}
+		ens, _ := s.sb.Select("coaching_enrollments",
+			"class_id=eq."+store.Q(cid)+"&status=eq.enrolled&"+col+
+				"=is.false&select=id,user_id&limit=300")
+		for _, e := range ens {
+			if uid := asStr(e, "user_id"); uid != "" {
+				s.notifyUser(uid, "coaching", "", "PlanMyPickle", body, "myclasses")
+			}
+			_, _ = s.sb.Update("coaching_enrollments",
+				"id=eq."+store.Q(asStr(e, "id")), map[string]any{col: true})
+		}
+	}
+	return nil
+}
+
 func (s *Service) RemindUpcomingSessions() error {
 	if !s.scheduleReady() || !s.columnReady("coaching_schedule", "reminded_at") {
 		return nil

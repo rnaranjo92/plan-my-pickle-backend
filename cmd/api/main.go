@@ -224,6 +224,19 @@ func main() {
 		}
 	}()
 
+	// Coaching classes: ~24h and ~1h no-show reminders to enrolled players.
+	// 10-min tick; each tier sent once per enrollment. Inert until the
+	// reminded_24h/reminded_1h columns run.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.RemindUpcomingClasses(); err != nil {
+				log.Printf("coaching: class reminder pass failed: %v", err)
+			}
+		}
+	}()
+
 	// Coaching: pre-session reminders (1:1 sessions within 24h). 15-min tick;
 	// once per session (reminded_at). Inert until the reminded_at column runs.
 	go func() {

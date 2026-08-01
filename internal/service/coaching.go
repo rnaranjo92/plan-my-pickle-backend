@@ -3739,6 +3739,8 @@ func mapCoachProfile(row map[string]any) model.CoachProfile {
 		Listed:          asBool(row, "listed"),
 		Bio:             asStr(row, "bio"),
 		YearsExperience: asIntPtr(row, "years_experience"),
+		BusinessName:    asStr(row, "business_name"),
+		Address:         asStr(row, "address"),
 		City:            asStr(row, "city"),
 		Lat:             asFloatPtr(row, "lat"),
 		Lng:             asFloatPtr(row, "lng"),
@@ -3928,8 +3930,18 @@ func (s *Service) UpsertCoachProfile(userID string, req model.CoachProfileReques
 	if s.columnReady("coach_profiles", "certifications") {
 		row["certifications"] = orNull(strings.TrimSpace(req.Certifications))
 	}
-	if city := strings.TrimSpace(req.City); city != "" {
-		if lat, lng := bestEffortGeocode(city); lat != nil && lng != nil {
+	if s.columnReady("coach_profiles", "business_name") {
+		row["business_name"] = orNull(strings.TrimSpace(req.BusinessName))
+		row["address"] = orNull(strings.TrimSpace(req.Address))
+	}
+	// Geocode the most specific location we have — a street address pins the
+	// coach far more precisely than a city; fall back to city.
+	geoQuery := strings.TrimSpace(req.Address)
+	if geoQuery == "" {
+		geoQuery = strings.TrimSpace(req.City)
+	}
+	if geoQuery != "" {
+		if lat, lng := bestEffortGeocode(geoQuery); lat != nil && lng != nil {
 			row["lat"] = *lat
 			row["lng"] = *lng
 		}

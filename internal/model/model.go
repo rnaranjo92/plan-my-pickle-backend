@@ -1430,6 +1430,8 @@ type CoachProfile struct {
 	Listed          bool     `json:"listed"`
 	Bio             string   `json:"bio,omitempty"`
 	YearsExperience *int     `json:"yearsExperience,omitempty"`
+	BusinessName    string   `json:"businessName,omitempty"`
+	Address         string   `json:"address,omitempty"`
 	City            string   `json:"city,omitempty"`
 	Lat             *float64 `json:"lat,omitempty"`
 	Lng             *float64 `json:"lng,omitempty"`
@@ -1679,6 +1681,8 @@ type CoachProfileRequest struct {
 	Listed          bool   `json:"listed"`
 	Bio             string `json:"bio"`
 	YearsExperience *int   `json:"yearsExperience"`
+	BusinessName    string `json:"businessName"`
+	Address         string `json:"address"`
 	City            string `json:"city"`
 	HourlyRateCents *int   `json:"hourlyRateCents"`
 	Skills          string `json:"skills"`

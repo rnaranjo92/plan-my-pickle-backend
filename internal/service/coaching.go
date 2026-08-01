@@ -1021,6 +1021,29 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 	return out, nil
 }
 
+// PBVisionRawJSON returns the raw PB Vision insights + stats payload for the
+// thread's latest ready analysis — a member-gated inspector so we can map new
+// stat fields (forward pressure, kitchen-arrival splits, rallies-won, …) into
+// the app before building their display.
+func (s *Service) PBVisionRawJSON(threadID, userID, email string) (map[string]any, error) {
+	if !s.coachingReady() || !s.pbvisionJobsReady() {
+		return nil, ErrCoachingUnavailable
+	}
+	if _, _, err := s.threadMembership(threadID, userID, email); err != nil {
+		return nil, err
+	}
+	row, err := s.sb.SelectOne("coaching_pbvision_jobs",
+		"coach_student_id=eq."+store.Q(threadID)+
+			"&status=eq.ready&order=updated_at.desc&limit=1&select=insights,stats")
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return map[string]any{}, nil
+	}
+	return map[string]any{"insights": row["insights"], "stats": row["stats"]}, nil
+}
+
 // ListCoachAnalyses returns every ready PB Vision analysis across the coach's
 // students, so the instructor can distribute detected players from one hub
 // instead of opening each student's thread. Only analyses INITIATED in a

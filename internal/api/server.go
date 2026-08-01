@@ -613,6 +613,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// reads/writes = any authed user, membership-checked in the service.
 	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
 	mux.HandleFunc("GET /coach/pbvision/analyses", s.instructorOnly(s.coachPBVisionAnalyses))
+	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/raw", requireAuth(s.coachingPBVisionRaw))
 	mux.HandleFunc("POST /coach/students", s.instructorOnly(s.addCoachStudent))
 	mux.HandleFunc("POST /coach/seed-demo", requireAuth(s.seedCoachingDemo))
 	mux.HandleFunc("POST /coach/clear-demo-students", s.instructorOnly(s.clearDemoStudents))
@@ -5700,6 +5701,17 @@ func (s *Server) coachPBVisionAnalyses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// coachingPBVisionRaw dumps the raw PB Vision insights+stats JSON for a thread's
+// latest analysis (member-gated inspector — used to map new stat fields).
+func (s *Server) coachingPBVisionRaw(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.PBVisionRawJSON(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // coachingPBVisionTag records which detected player is the student.

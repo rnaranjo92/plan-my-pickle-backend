@@ -1707,6 +1707,8 @@ type CoachingClass struct {
 	DistanceKm    *float64 `json:"distanceKm,omitempty"`
 	Capacity      int    `json:"capacity"`
 	PriceCents    int    `json:"priceCents"`
+	// Level: '' | beginner | intermediate | advanced.
+	Level         string `json:"level,omitempty"`
 	EnrolledCount int    `json:"enrolledCount"`
 	WaitlistCount int    `json:"waitlistCount"`
 	// Enrolled / Waitlisted / Offered reflect the caller's own status. Offered =
@@ -1760,6 +1762,7 @@ type CoachingClassRequest struct {
 	// geocodes Location so the class still lands on the map.
 	Lat         *float64 `json:"lat"`
 	Lng         *float64 `json:"lng"`
+	Level       string `json:"level"`
 	Capacity    int    `json:"capacity"`
 	PriceCents  int    `json:"priceCents"`
 	IsIntro     bool   `json:"isIntro"`

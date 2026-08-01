@@ -4927,6 +4927,7 @@ func mapClass(row map[string]any) model.CoachingClass {
 		Location:    asStr(row, "location"),
 		Lat:         asFloatPtr(row, "lat"),
 		Lng:         asFloatPtr(row, "lng"),
+		Level:       asStr(row, "level"),
 		Capacity:    asInt(row, "capacity"),
 		PriceCents:  asInt(row, "price_cents"),
 		IsIntro:     asBool(row, "is_intro"),
@@ -4974,6 +4975,15 @@ func (s *Service) ListCoachClassesPublic(coachUserID, viewerID string) ([]model.
 	}
 	s.enrichClasses(out, viewerID)
 	return out, nil
+}
+
+func normalizeClassLevel(l string) string {
+	switch strings.ToLower(strings.TrimSpace(l)) {
+	case "beginner", "intermediate", "advanced":
+		return strings.ToLower(strings.TrimSpace(l))
+	default:
+		return ""
+	}
 }
 
 // applyClassGeo stamps lat/lng onto a class row: an explicit map-picker pin
@@ -5114,6 +5124,9 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 	if s.columnReady("coaching_classes", "is_intro") {
 		classRow["is_intro"] = req.IsIntro
 	}
+	if s.columnReady("coaching_classes", "level") {
+		classRow["level"] = orNull(normalizeClassLevel(req.Level))
+	}
 	s.applyClassGeo(classRow, req)
 	ins, err := s.sb.Insert("coaching_classes", classRow)
 	if err != nil {
@@ -5185,6 +5198,9 @@ func (s *Service) UpdateClass(coachID, id string, req model.CoachingClassRequest
 	}
 	if s.columnReady("coaching_classes", "is_intro") {
 		upd["is_intro"] = req.IsIntro
+	}
+	if s.columnReady("coaching_classes", "level") {
+		upd["level"] = orNull(normalizeClassLevel(req.Level))
 	}
 	// Re-pin only when the coach moved the pin or changed the location text, so
 	// an unrelated edit doesn't spend a geocode call or clobber a good pin.

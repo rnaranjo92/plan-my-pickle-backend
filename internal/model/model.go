@@ -1739,6 +1739,8 @@ type CoachingEnrollment struct {
 	StartsAt   string `json:"startsAt,omitempty"`
 	CoachName  string `json:"coachName,omitempty"`
 	Location   string `json:"location,omitempty"`
+	// WaitlistPosition is the player's 1-based spot in the waitlist (when waitlisted).
+	WaitlistPosition int `json:"waitlistPosition,omitempty"`
 }
 
 // EnrollPayRequest carries the return URLs for a class-enrollment checkout.

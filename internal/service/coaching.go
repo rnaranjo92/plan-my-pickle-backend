@@ -5684,6 +5684,12 @@ func (s *Service) MyEnrolledClasses(userID string) ([]model.CoachingEnrollment, 
 			e.Location = asStr(c, "location")
 			e.CoachName = s.coachingName(asStr(c, "coach_id"))
 		}
+		if e.Status == "waitlisted" && e.CreatedAt != "" {
+			w, _ := s.sb.Select("coaching_enrollments",
+				"class_id=eq."+store.Q(e.ClassID)+"&status=eq.waitlisted"+
+					"&created_at=lt."+store.Q(e.CreatedAt)+"&select=id")
+			e.WaitlistPosition = len(w) + 1
+		}
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt < out[j].StartsAt })

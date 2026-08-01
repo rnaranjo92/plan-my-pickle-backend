@@ -5078,7 +5078,7 @@ func (s *Service) BuyPack(packID, userID, email, successURL, cancelURL string) (
 	meta := coachID + ":" + userID + ":" + strconv.Itoa(credits)
 	// Free pack → grant immediately, no checkout.
 	if price <= 0 {
-		return "", s.grantPackCredits(meta)
+		return "", s.grantPackCredits(meta, "") // free pack: direct call, no redelivery
 	}
 	gw, ok := s.stripeGW()
 	if !ok {
@@ -5089,8 +5089,11 @@ func (s *Service) BuyPack(packID, userID, email, successURL, cancelURL string) (
 }
 
 // grantPackCredits credits a player's balance from a "coachId:userId:credits"
-// metadata string (idempotency is not enforced — Stripe delivers once normally).
-func (s *Service) grantPackCredits(meta string) error {
+// metadata string. dedupKey (the Stripe PaymentIntent id on the paid webhook path)
+// makes it idempotent against Stripe's at-least-once redelivery: the grant is
+// recorded in coaching_credit_grants keyed on dedupKey, and a replay is a no-op.
+// Pass "" for the free-pack path (a direct call, never redelivered).
+func (s *Service) grantPackCredits(meta, dedupKey string) error {
 	if !s.creditsReady() {
 		return nil
 	}
@@ -5102,6 +5105,25 @@ func (s *Service) grantPackCredits(meta string) error {
 	credits, _ := strconv.Atoi(parts[2])
 	if coachID == "" || userID == "" || credits <= 0 {
 		return nil
+	}
+	// Idempotency: claim the grant first. If the key already exists (redelivered
+	// webhook) skip entirely — no double credits, no double bells.
+	if dedupKey != "" && s.columnReady("coaching_credit_grants", "grant_key") {
+		_, ierr := s.sb.Insert("coaching_credit_grants", map[string]any{
+			"grant_key": dedupKey,
+			"coach_id":  coachID,
+			"user_id":   userID,
+			"credits":   credits,
+		})
+		if ierr != nil {
+			// Insert failed — if the key is already present, this is a replay: ack
+			// and skip. Otherwise (a transient error) fall through and still grant,
+			// since the customer paid.
+			if e, _ := s.sb.SelectOne("coaching_credit_grants",
+				"grant_key=eq."+store.Q(dedupKey)+"&select=id"); e != nil {
+				return nil
+			}
+		}
 	}
 	cur, _ := s.MyCoachCredits(coachID, userID)
 	_, err := s.sb.Upsert("coaching_credits", "coach_id,user_id", map[string]any{
@@ -5164,28 +5186,36 @@ func (s *Service) restoreCredit(coachID, userID string) bool {
 
 // settleEnrollmentRefund returns the money for a torn-down PAID seat: a class
 // credit is restored, a Stripe-captured seat is refunded via its stored
-// PaymentIntent. Returns a short human line for the teardown notification (empty
-// when nothing was owed — free seat, cash seat, or never-charged charge_at row).
-// The caller MUST guard against double-settlement (only call for a still-active
-// seat, and clear payment_ref in the same status update).
-func (s *Service) settleEnrollmentRefund(coachID, userID, paymentRef string, paid bool) string {
+// PaymentIntent. Returns (msg, failed): msg is a short human line for the
+// teardown notification (empty when nothing was owed — free/cash/never-charged);
+// failed is true when money WAS owed but the refund/restore call errored, so the
+// caller must NOT treat it as settled (preserve the live payment_ref for retry).
+// The caller also guards against double-settlement (only settle an active seat,
+// and rewrite payment_ref to refundedRef() on success).
+func (s *Service) settleEnrollmentRefund(coachID, userID, paymentRef string, paid bool) (string, bool) {
 	switch {
 	case paymentRef == "credit":
 		if s.restoreCredit(coachID, userID) {
-			return "Your class credit was returned."
+			return "Your class credit was returned.", false
 		}
+		return "", true // credit was owed but the restore write failed
 	case paid && strings.HasPrefix(paymentRef, "pi_"):
-		if gw, ok := s.stripeGW(); ok {
-			if err := gw.Refund(paymentRef); err == nil {
-				return "A refund was issued to your original payment."
-			}
+		gw, ok := s.stripeGW()
+		if !ok {
+			return "", true // a Stripe seat is owed a refund but the gateway is down
 		}
+		if err := gw.Refund(paymentRef); err != nil {
+			log.Printf("coaching: refund FAILED coach=%s user=%s pi=%s: %v",
+				coachID, userID, paymentRef, err)
+			return "", true
+		}
+		return "A refund was issued to your original payment.", false
 	case paid && paymentRef == "manual":
 		// Paid in cash off-platform — we can't auto-refund; tell them to expect
 		// the coach to return it directly.
-		return "Your coach will return your payment."
+		return "Your coach will return your payment.", false
 	}
-	return ""
+	return "", false // nothing was owed
 }
 
 // refundedRef marks a payment_ref as settled so a repeat teardown can't refund
@@ -5567,22 +5597,29 @@ func (s *Service) notifyClassEnrollees(classID, actorID, actorName, body string)
 
 // settleClassEnrollments refunds/returns every prepaid live seat in a class
 // (used before a class delete, whose FK cascade would otherwise wipe the rows and
-// strand the money). Each settled student is told their money came back.
-func (s *Service) settleClassEnrollments(classID, coachID string) {
+// strand the money). Each settled student is told their money came back. Returns
+// the number of seats whose refund/credit FAILED — the caller must NOT delete the
+// class while that is > 0, or the cascade destroys the live payment handle.
+func (s *Service) settleClassEnrollments(classID, coachID string) int {
 	if !s.enrollmentsReady() {
-		return
+		return 0
 	}
 	rows, _ := s.sb.SelectAll("coaching_enrollments",
 		"class_id=eq."+store.Q(classID)+"&status=in.(enrolled,offered)"+
 			"&select=id,user_id,paid,payment_ref")
+	failed := 0
 	for _, r := range rows {
 		uid := asStr(r, "user_id")
 		pref := asStr(r, "payment_ref")
-		msg := s.settleEnrollmentRefund(coachID, uid, pref, asBool(r, "paid"))
-		if msg == "" {
+		msg, didFail := s.settleEnrollmentRefund(coachID, uid, pref, asBool(r, "paid"))
+		if didFail {
+			failed++ // leave the live payment_ref intact for a retry
 			continue
 		}
-		// Mark refunded (belt-and-suspenders — the row is about to be deleted).
+		if msg == "" {
+			continue // nothing was owed
+		}
+		// Mark refunded so a retry (after an aborted delete) can't refund twice.
 		_, _ = s.sb.Update("coaching_enrollments", "id=eq."+store.Q(asStr(r, "id")),
 			map[string]any{"payment_ref": refundedRef(pref)})
 		if uid != "" && uid != coachID {
@@ -5590,6 +5627,7 @@ func (s *Service) settleClassEnrollments(classID, coachID string) {
 				"myclasses")
 		}
 	}
+	return failed
 }
 
 // DeleteClass removes a class the coach owns.
@@ -5613,7 +5651,13 @@ func (s *Service) DeleteClass(coachID, id string) error {
 		title = "a class"
 	}
 	// Return everyone's money BEFORE the delete cascades the enrollment rows away.
-	s.settleClassEnrollments(id, coachID)
+	// If any refund/credit-restore FAILED, ABORT — deleting now would cascade the
+	// row (and its live PaymentIntent handle) away, permanently stranding the money.
+	// The coach can retry once Stripe recovers (already-refunded seats are no-ops).
+	if failed := s.settleClassEnrollments(id, coachID); failed > 0 {
+		return errors.New("couldn't refund every paid seat (payment provider " +
+			"unavailable) — no one was charged twice; please try deleting again shortly")
+	}
 	// Notify enrollees BEFORE the delete (its FK cascade wipes the enrollments).
 	s.notifyClassEnrollees(id, coachID, s.coachingName(coachID),
 		"Class cancelled: \""+title+"\"")
@@ -5815,6 +5859,47 @@ func (s *Service) promoteNextWaitlisted(classID string) {
 // SweepExpiredOffers expires unclaimed paid-seat offers (status 'offered' past
 // their deadline, still unpaid), freeing the seat and rolling it to the next
 // waitlisted player. Inert until the offer_expires_at column exists.
+// SweepFailedRefunds retries a canceled paid seat whose refund/credit-restore
+// failed earlier (its row still carries a live pi_ or "credit" payment_ref). This
+// closes the loop so a transient Stripe/DB outage during a cancel/remove doesn't
+// permanently strand a paying customer's money.
+func (s *Service) SweepFailedRefunds() error {
+	if !s.enrollmentsReady() {
+		return nil
+	}
+	rows, err := s.sb.Select("coaching_enrollments",
+		"status=eq.canceled&paid=is.true"+
+			"&or=(payment_ref=like.pi_*,payment_ref=eq.credit)"+
+			"&select=id,user_id,class_id,payment_ref&limit=100")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		classID := asStr(r, "class_id")
+		coachID := ""
+		if c, _ := s.sb.SelectOne("coaching_classes",
+			"id=eq."+store.Q(classID)+"&select=coach_id"); c != nil {
+			coachID = asStr(c, "coach_id")
+		}
+		if coachID == "" {
+			continue // class gone — can't resolve the credit's coach; leave for ops
+		}
+		uid := asStr(r, "user_id")
+		pref := asStr(r, "payment_ref")
+		msg, failed := s.settleEnrollmentRefund(coachID, uid, pref, true)
+		if failed || msg == "" {
+			continue // still failing — try again next tick
+		}
+		_, _ = s.sb.Update("coaching_enrollments", "id=eq."+store.Q(asStr(r, "id")),
+			map[string]any{"payment_ref": refundedRef(pref)})
+		if uid != "" {
+			s.notifyUser(uid, "coaching", coachID, s.coachingName(coachID),
+				msg, "myclasses")
+		}
+	}
+	return nil
+}
+
 func (s *Service) SweepExpiredOffers() error {
 	if !s.enrollmentsReady() ||
 		!s.columnReady("coaching_enrollments", "offer_expires_at") {
@@ -5872,12 +5957,21 @@ func (s *Service) ensureCoachStudentLink(coachID, studentID, name, email string)
 			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id,student_id")
 	}
 	if found != nil {
+		upd := map[string]any{}
 		// Backfill the account link onto an email-only row so a later booking
 		// doesn't spawn a second roster row for the same person.
 		if studentID != "" && asStr(found, "student_id") == "" {
+			upd["student_id"] = studentID
+		}
+		// Re-engaging (new enroll/booking) UN-archives a thread the student had
+		// left — otherwise the active, paying engagement stays hidden from both
+		// rosters and the preserved clip history is orphaned.
+		if s.columnReady("coach_students", "left_at") {
+			upd["left_at"] = nil
+		}
+		if len(upd) > 0 {
 			_, _ = s.sb.Update("coach_students",
-				"id=eq."+store.Q(asStr(found, "id")),
-				map[string]any{"student_id": studentID})
+				"id=eq."+store.Q(asStr(found, "id")), upd)
 		}
 		return
 	}
@@ -6029,15 +6123,17 @@ func (s *Service) CancelClassEnrollment(classID, userID string) error {
 	if enr == nil {
 		return nil // nothing active to cancel
 	}
-	refundMsg := ""
+	refundMsg, refundFailed := "", false
 	upd := map[string]any{"status": "canceled"}
 	// Only an active seat is settled; a waitlist row never held money.
 	if st := asStr(enr, "status"); st == "enrolled" || st == "offered" {
 		pref := asStr(enr, "payment_ref")
-		refundMsg = s.settleEnrollmentRefund(coachID, userID, pref, asBool(enr, "paid"))
+		refundMsg, refundFailed = s.settleEnrollmentRefund(coachID, userID, pref, asBool(enr, "paid"))
 		if refundMsg != "" {
-			upd["payment_ref"] = refundedRef(pref) // block a double refund
+			upd["payment_ref"] = refundedRef(pref) // settled → block a double refund
 		}
+		// On a FAILED refund we leave payment_ref as the live pi_/credit so the
+		// SweepFailedRefunds reconciler can retry; the student still gets to cancel.
 	}
 	if _, err := s.sb.Update("coaching_enrollments",
 		"id=eq."+store.Q(asStr(enr, "id")), upd); err != nil {
@@ -6056,10 +6152,14 @@ func (s *Service) CancelClassEnrollment(classID, userID string) error {
 		s.notifyUser(coachID, "coaching", userID, who,
 			who+" canceled "+label, "coachclasses")
 	}
-	// Tell the student their money was returned, if anything was owed.
+	// Tell the student what happened to their money.
 	if refundMsg != "" {
 		s.notifyUser(userID, "coaching", coachID, s.coachingName(coachID),
 			refundMsg, "myclasses")
+	} else if refundFailed {
+		s.notifyUser(userID, "coaching", coachID, s.coachingName(coachID),
+			"You've been unenrolled — your refund is processing and will arrive shortly.",
+			"myclasses")
 	}
 	// If that freed a seat, pull in the next waitlisted player.
 	s.promoteNextWaitlisted(classID)
@@ -6121,15 +6221,16 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 	wasEnrolled := prevStatus == "enrolled"
 	// Settle any prepaid money the removed player put down (blameless removal →
 	// restore credit / refund the Stripe seat) BEFORE flipping to canceled.
-	refundMsg := ""
+	refundMsg, refundFailed := "", false
 	upd := map[string]any{"status": "canceled"}
 	if prevStatus == "enrolled" || prevStatus == "offered" {
 		pref := asStr(row, "payment_ref")
-		refundMsg = s.settleEnrollmentRefund(coachID, asStr(row, "user_id"), pref,
+		refundMsg, refundFailed = s.settleEnrollmentRefund(coachID, asStr(row, "user_id"), pref,
 			asBool(row, "paid"))
 		if refundMsg != "" {
 			upd["payment_ref"] = refundedRef(pref)
 		}
+		// A failed refund keeps the live payment_ref for SweepFailedRefunds to retry.
 	}
 	_, err := s.sb.Update("coaching_enrollments", "id=eq."+store.Q(enrollmentID), upd)
 	if err == nil {
@@ -6146,6 +6247,8 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 			body := "Your coach removed you from " + title
 			if refundMsg != "" {
 				body += " — " + refundMsg
+			} else if refundFailed {
+				body += " — your refund is processing and will arrive shortly."
 			}
 			s.notifyUser(uid, "coaching", coachID, s.coachingName(coachID),
 				body, "myclasses")
@@ -6680,6 +6783,7 @@ func (s *Service) SweepInactiveStudents() error {
 	cutoff := nowT.Add(-14 * 24 * time.Hour).Format(time.RFC3339)
 	rows, err := s.sb.Select("coach_students",
 		"last_activity_at=lt."+store.Q(cutoff)+"&student_id=not.is.null"+
+			s.activeStudentFilter()+ // don't nudge a student who left the coach
 			"&or=(nudged_at.is.null,nudged_at.lt."+store.Q(cutoff)+")"+
 			"&select=id,coach_id,student_id&limit=200")
 	if err != nil {
@@ -6718,6 +6822,7 @@ func (s *Service) RemindNeverUploaded() error {
 	cutoff := nowT.AddDate(0, 0, -3).Format(time.RFC3339)
 	rows, err := s.sb.Select("coach_students",
 		"student_id=not.is.null&first_nudge_at=is.null"+
+			s.activeStudentFilter()+ // don't nudge a student who left the coach
 			"&created_at=lte."+store.Q(cutoff)+
 			"&select=id,coach_id,student_id&limit=200")
 	if err != nil {

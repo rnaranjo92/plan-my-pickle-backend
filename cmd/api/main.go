@@ -249,6 +249,19 @@ func main() {
 		}
 	}()
 
+	// Coaching classes: retry refunds/credit-restores that failed during a
+	// cancel/remove (transient Stripe/DB outage), so no paid seat stays stranded.
+	// 30-min tick.
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.SweepFailedRefunds(); err != nil {
+				log.Printf("coaching: failed-refund sweep failed: %v", err)
+			}
+		}
+	}()
+
 	// Coaching: pre-session reminders (1:1 sessions within 24h). 15-min tick;
 	// once per session (reminded_at). Inert until the reminded_at column runs.
 	go func() {

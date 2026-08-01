@@ -571,9 +571,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.EnrollmentID != "" {
 			return s.markEnrollmentPaid(evt.EnrollmentID, evt.PaymentIntentID)
 		}
-		// A class-pack purchase — grant the credits.
+		// A class-pack purchase — grant the credits (idempotent on the PaymentIntent
+		// so a redelivered webhook can't double-grant).
 		if evt.PackPurchase != "" {
-			return s.grantPackCredits(evt.PackPurchase)
+			return s.grantPackCredits(evt.PackPurchase, evt.PaymentIntentID)
 		}
 		if evt.RegistrationID == "" {
 			return nil // nothing to attribute the payment to

@@ -1766,6 +1766,9 @@ type CoachingClassRequest struct {
 	Capacity    int    `json:"capacity"`
 	PriceCents  int    `json:"priceCents"`
 	IsIntro     bool   `json:"isIntro"`
+	// RepeatWeeks > 1 clones this class weekly for that many total weeks (each an
+	// independent class/enrollment). 0 or 1 = a one-off class.
+	RepeatWeeks int `json:"repeatWeeks"`
 }
 
 // CoachPack is a discounted bundle of class credits a coach sells.

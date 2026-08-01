@@ -5136,6 +5136,36 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 		return model.CoachingClass{}, errors.New("could not save that class")
 	}
 	c := mapClass(ins[0])
+	// Recurring v1: clone this class weekly for the next weeks as independent
+	// classes (each with its own roster/enrollment). A full enroll-once-pay-once
+	// course cohort is a larger follow-up; this captures most of the value and
+	// fills the coach's date chip row.
+	if weeks := req.RepeatWeeks; weeks > 1 {
+		if weeks > 12 {
+			weeks = 12
+		}
+		if bt, ok := parseTime(req.StartsAt); ok {
+			be, haveEnd := time.Time{}, false
+			if e := strings.TrimSpace(req.EndsAt); e != "" {
+				if et, ok2 := parseTime(e); ok2 {
+					be, haveEnd = et, true
+				}
+			}
+			for w := 1; w < weeks; w++ {
+				clone := make(map[string]any, len(classRow))
+				for k, v := range classRow {
+					clone[k] = v
+				}
+				clone["starts_at"] = bt.AddDate(0, 0, 7*w).Format(time.RFC3339)
+				if haveEnd {
+					clone["ends_at"] = be.AddDate(0, 0, 7*w).Format(time.RFC3339)
+				}
+				if _, err := s.sb.Insert("coaching_classes", clone); err != nil {
+					break // base class is saved; stop cloning on first failure
+				}
+			}
+		}
+	}
 	go s.notifyCoachFollowersOfClass(coachID, c.Title) // players who saved this coach
 	return c, nil
 }

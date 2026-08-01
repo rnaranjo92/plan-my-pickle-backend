@@ -5337,9 +5337,23 @@ func (s *Service) enrichClasses(list []model.CoachingClass, viewerID string) {
 	if !s.enrollmentsReady() {
 		return
 	}
+	policyReady := s.coachProfilesReady() &&
+		s.columnReady("coach_profiles", "cancel_policy")
+	policyCache := map[string]string{} // coach_id → cancel_policy (per batch)
 	for i := range list {
 		list[i].EnrolledCount = s.classEnrolledCount(list[i].ID)
 		list[i].WaitlistCount = s.classStatusCount(list[i].ID, "waitlisted")
+		if policyReady && list[i].CoachID != "" {
+			cid := list[i].CoachID
+			pol, ok := policyCache[cid]
+			if !ok {
+				r, _ := s.sb.SelectOne("coach_profiles",
+					"user_id=eq."+store.Q(cid)+"&select=cancel_policy")
+				pol = asStr(r, "cancel_policy")
+				policyCache[cid] = pol
+			}
+			list[i].CancelPolicy = pol
+		}
 		if viewerID != "" {
 			sel := "status"
 			if s.columnReady("coaching_enrollments", "offer_expires_at") {

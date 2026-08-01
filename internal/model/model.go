@@ -1717,6 +1717,9 @@ type CoachingClass struct {
 	Waitlisted     bool   `json:"waitlisted"`
 	Offered        bool   `json:"offered,omitempty"`
 	OfferExpiresAt string `json:"offerExpiresAt,omitempty"`
+	// CancelPolicy (flexible|moderate|strict) drives the refund/cutoff line shown
+	// to players at enroll/cancel time. Empty = flexible (cancel anytime).
+	CancelPolicy string `json:"cancelPolicy,omitempty"`
 	IsIntro    bool   `json:"isIntro"`
 	CreatedAt  string `json:"createdAt,omitempty"`
 }

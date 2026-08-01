@@ -2482,13 +2482,11 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 	if body == "" {
 		notifyBody = name + " drew an annotation on a clip"
 	}
-	// Carry the specific clip (and timestamp) so the tap opens the annotated clip
-	// cued to the moment — not just the newest clip on the Videos tab.
-	link := "coaching:" + cs.ID + "?tab=videos&clip=" + videoID
-	if fb.TimestampSeconds != nil && *fb.TimestampSeconds >= 0 {
-		link += "&t=" + strconv.Itoa(int(*fb.TimestampSeconds))
-	}
-	s.notifyCoachingCounterpartLink(cs, role, userID, name, notifyBody, link)
+	// Carry the specific clip so the tap opens the annotated clip (with its
+	// feedback list + per-comment "Jump to m:ss" buttons) — not just the newest
+	// clip on the Videos tab.
+	s.notifyCoachingCounterpartLink(cs, role, userID, name, notifyBody,
+		"coaching:"+cs.ID+"?tab=videos&clip="+videoID)
 	return fb, nil
 }
 
@@ -5939,15 +5937,16 @@ func (s *Service) markEnrollmentPaid(enrollmentID string) error {
 		coachID := asStr(c, "coach_id")
 		s.ensureCoachStudentLink(coachID, asStr(row, "user_id"),
 			asStr(row, "name"), asStr(row, "email"))
-		// Tell the coach the seat was claimed & paid — otherwise the offer→claim→
-		// paid loop the coach kicked off completes invisibly to them.
-		if uid := asStr(row, "user_id"); coachID != "" && coachID != uid {
+		// Tell the coach an OFFERED seat was claimed & paid — otherwise the
+		// offer→claim→paid loop completes invisibly to them. A direct paid enroll
+		// already pinged the coach in Enroll, so don't double up here.
+		if uid := asStr(row, "user_id"); prevStatus == "offered" && coachID != "" && coachID != uid {
 			who := asStr(row, "name")
 			if strings.TrimSpace(who) == "" {
 				who = "A player"
 			}
 			s.notifyUser(coachID, "coaching", uid, who,
-				who+" enrolled & paid for “"+asStr(c, "title")+"”", "")
+				who+" claimed & paid for “"+asStr(c, "title")+"”", "")
 		}
 		// Rare race backstop: if this payment landed just after the offer was swept
 		// and the seat had already rolled to the next waitlister (prevStatus was
@@ -6096,8 +6095,9 @@ func (s *Service) RemindUpcomingSessions() error {
 				"coaching:"+threadID)
 		}
 		// Remind the COACH too — they agreed to the session and can otherwise
-		// no-show; only the student was being nudged before.
-		if coachID != "" {
+		// no-show; only the student was being nudged before. Require threadID so
+		// the deep-link opens a real thread (a session can have no student thread).
+		if coachID != "" && threadID != "" {
 			s.notifyUser(coachID, "coaching", "", "PlanMyPickle",
 				"Reminder: you have a 1:1 coaching session coming up soon",
 				"coaching:"+threadID)

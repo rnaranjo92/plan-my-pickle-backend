@@ -4743,6 +4743,8 @@ func mapClass(row map[string]any) model.CoachingClass {
 		StartsAt:    asStr(row, "starts_at"),
 		EndsAt:      asStr(row, "ends_at"),
 		Location:    asStr(row, "location"),
+		Lat:         asFloatPtr(row, "lat"),
+		Lng:         asFloatPtr(row, "lng"),
 		Capacity:    asInt(row, "capacity"),
 		PriceCents:  asInt(row, "price_cents"),
 		IsIntro:     asBool(row, "is_intro"),
@@ -4792,6 +4794,70 @@ func (s *Service) ListCoachClassesPublic(coachUserID, viewerID string) ([]model.
 	return out, nil
 }
 
+// applyClassGeo stamps lat/lng onto a class row: an explicit map-picker pin
+// wins; otherwise best-effort geocode the typed location. No-op if the columns
+// aren't live or nothing resolves (the class just won't show on the map).
+func (s *Service) applyClassGeo(row map[string]any, req model.CoachingClassRequest) {
+	if !s.columnReady("coaching_classes", "lat") {
+		return
+	}
+	if req.Lat != nil && req.Lng != nil {
+		row["lat"] = *req.Lat
+		row["lng"] = *req.Lng
+		return
+	}
+	if lat, lng := bestEffortGeocode(strings.TrimSpace(req.Location)); lat != nil && lng != nil {
+		row["lat"] = *lat
+		row["lng"] = *lng
+	}
+}
+
+// ListClassesNearby returns UPCOMING classes across all coaches that carry
+// coordinates, ranked by distance from (lat,lng). radiusKm<=0 means no cap.
+func (s *Service) ListClassesNearby(lat, lng, radiusKm float64, viewerID string) ([]model.CoachingClass, error) {
+	if !s.classesReady() || !s.columnReady("coaching_classes", "lat") {
+		return []model.CoachingClass{}, nil
+	}
+	rows, err := s.sb.Select("coaching_classes",
+		"starts_at=gte."+store.Q(now())+"&lat=not.is.null&order=starts_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	nameCache := map[string]string{}
+	out := make([]model.CoachingClass, 0, len(rows))
+	for _, r := range rows {
+		c := mapClass(r)
+		if c.Lat == nil || c.Lng == nil {
+			continue
+		}
+		d := haversineKm(lat, lng, *c.Lat, *c.Lng)
+		if radiusKm > 0 && d > radiusKm {
+			continue
+		}
+		c.DistanceKm = &d
+		n, ok := nameCache[c.CoachID]
+		if !ok {
+			n = s.coachingName(c.CoachID)
+			nameCache[c.CoachID] = n
+		}
+		c.CoachName = n
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		const far = 1e308 // classes without a distance sort last
+		di, dj := far, far
+		if out[i].DistanceKm != nil {
+			di = *out[i].DistanceKm
+		}
+		if out[j].DistanceKm != nil {
+			dj = *out[j].DistanceKm
+		}
+		return di < dj
+	})
+	s.enrichClasses(out, viewerID)
+	return out, nil
+}
+
 // CreateClass adds a class for the signed-in coach.
 func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (model.CoachingClass, error) {
 	if !s.classesReady() {
@@ -4825,6 +4891,7 @@ func (s *Service) CreateClass(coachID string, req model.CoachingClassRequest) (m
 	if s.columnReady("coaching_classes", "is_intro") {
 		classRow["is_intro"] = req.IsIntro
 	}
+	s.applyClassGeo(classRow, req)
 	ins, err := s.sb.Insert("coaching_classes", classRow)
 	if err != nil {
 		return model.CoachingClass{}, err
@@ -4874,6 +4941,11 @@ func (s *Service) UpdateClass(coachID, id string, req model.CoachingClassRequest
 	}
 	if s.columnReady("coaching_classes", "is_intro") {
 		upd["is_intro"] = req.IsIntro
+	}
+	// Re-pin only when the coach moved the pin or changed the location text, so
+	// an unrelated edit doesn't spend a geocode call or clobber a good pin.
+	if req.Lat != nil || strings.TrimSpace(req.Location) != asStr(cur, "location") {
+		s.applyClassGeo(upd, req)
 	}
 	out, err := s.sb.Update("coaching_classes", "id=eq."+store.Q(id), upd)
 	if err != nil {

@@ -1648,6 +1648,11 @@ type CoachingClass struct {
 	StartsAt      string `json:"startsAt"`
 	EndsAt        string `json:"endsAt,omitempty"`
 	Location      string `json:"location,omitempty"`
+	// Lat/Lng pin the class on the player-facing map; DistanceKm is filled on
+	// "classes near me" results (km from the viewer).
+	Lat           *float64 `json:"lat,omitempty"`
+	Lng           *float64 `json:"lng,omitempty"`
+	DistanceKm    *float64 `json:"distanceKm,omitempty"`
 	Capacity      int    `json:"capacity"`
 	PriceCents    int    `json:"priceCents"`
 	EnrolledCount int    `json:"enrolledCount"`
@@ -1691,6 +1696,10 @@ type CoachingClassRequest struct {
 	StartsAt    string `json:"startsAt"`
 	EndsAt      string `json:"endsAt"`
 	Location    string `json:"location"`
+	// Lat/Lng are an explicit map-picker pin; when nil the service best-effort
+	// geocodes Location so the class still lands on the map.
+	Lat         *float64 `json:"lat"`
+	Lng         *float64 `json:"lng"`
 	Capacity    int    `json:"capacity"`
 	PriceCents  int    `json:"priceCents"`
 	IsIntro     bool   `json:"isIntro"`

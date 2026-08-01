@@ -702,6 +702,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/classes", s.instructorOnly(s.createClass))
 	mux.HandleFunc("POST /coach/classes/{id}", s.instructorOnly(s.updateClass))
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
+	mux.HandleFunc("GET /classes/nearby", requireAuth(s.classesNearby))
 	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
 	mux.HandleFunc("GET /coach/classes/{id}/enrollments", s.instructorOnly(s.classEnrollments))
 	mux.HandleFunc("POST /coach/enrollments/{id}/mark-paid", s.instructorOnly(s.markEnrollmentPaidByCoach))
@@ -6155,6 +6156,23 @@ func (s *Server) coachesNearby(w http.ResponseWriter, r *http.Request) {
 	}
 	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radiusKm"), 64)
 	list, err := s.svc.ListCoachesNearby(lat, lng, radius, userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// classesNearby returns upcoming classes ranked by distance from the player.
+func (s *Server) classesNearby(w http.ResponseWriter, r *http.Request) {
+	lat, err1 := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
+	lng, err2 := strconv.ParseFloat(r.URL.Query().Get("lng"), 64)
+	if err1 != nil || err2 != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("lat and lng query params are required"))
+		return
+	}
+	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radiusKm"), 64)
+	list, err := s.svc.ListClassesNearby(lat, lng, radius, userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

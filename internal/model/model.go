@@ -1516,6 +1516,41 @@ type PBVisionAnalysis struct {
 	ViewerRole  string              `json:"viewerRole,omitempty"`
 	Roster      []CoachStudentBrief `json:"roster,omitempty"`
 	Assignments []PBVisionAssignment `json:"assignments,omitempty"`
+	// MatchStats is the advanced team/player breakdown parsed from PB Vision's
+	// stats.json (kitchen arrival, shot distribution, rallies won, …).
+	MatchStats *PBVisionMatchStats `json:"matchStats,omitempty"`
+}
+
+// PBVisionMatchStats mirrors PB Vision's Team-Stats page from the stats.json
+// payload. Percentages are 0–100. Players are index 0–3 = avatar 0–3 (P1–P4).
+type PBVisionMatchStats struct {
+	Score            []int                `json:"score,omitempty"`            // [A,B]
+	TeamPctToKitchen []float64            `json:"teamPctToKitchen,omitempty"` // [A,B]
+	AvgShots         float64              `json:"avgShots,omitempty"`
+	LongestRally     int                  `json:"longestRally,omitempty"`
+	KitchenRallies   int                  `json:"kitchenRallies,omitempty"`
+	RalliesWon       []PBVisionRallyBand  `json:"ralliesWon,omitempty"`
+	Players          []PBVisionPlayerStat `json:"players,omitempty"`
+}
+
+// PBVisionRallyBand = who won what share of rallies of a given length.
+type PBVisionRallyBand struct {
+	Label string  `json:"label"`
+	TeamA float64 `json:"teamA"`
+	TeamB float64 `json:"teamB"`
+}
+
+// PBVisionPlayerStat = one detected player's team-stats row.
+type PBVisionPlayerStat struct {
+	AvatarID         int     `json:"avatarId"`
+	Team             int     `json:"team"`
+	ServeKitchenPct  float64 `json:"serveKitchenPct"`
+	ReturnKitchenPct float64 `json:"returnKitchenPct"`
+	ShotSharePct     float64 `json:"shotSharePct"`
+	LeftSidePct      float64 `json:"leftSidePct"`
+	Speedups         int     `json:"speedups"`
+	ShotCount        int     `json:"shotCount"`
+	ShotQuality      float64 `json:"shotQuality"`
 }
 
 // CoachStudentBrief is a coach's student, for the assign dropdown.

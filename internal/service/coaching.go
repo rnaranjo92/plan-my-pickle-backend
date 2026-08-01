@@ -927,7 +927,7 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 	}
 	hasAssign := s.columnReady("coaching_pbvision_assignments", "id")
 	sel := func(id string) string {
-		q := "status=eq.ready&limit=1&select=id,report_url,insights"
+		q := "status=eq.ready&limit=1&select=id,report_url,insights,stats"
 		if s.columnReady("coaching_pbvision_jobs", "tagged_avatar_id") {
 			q += ",tagged_avatar_id"
 		}
@@ -960,6 +960,7 @@ func (s *Service) GetThreadPBVisionAnalysis(threadID, userID, email string) (mod
 		ViewerRole: role,
 		ThreadID:   threadID,
 		BuyerName:  cs.StudentName,
+		MatchStats: parsePBVisionMatchStats(row["stats"]),
 	}
 	// This thread's tagged player: an explicit assignment wins; else the legacy
 	// single tagged_avatar_id (only meaningful for a job initiated here).
@@ -1177,6 +1178,110 @@ func (s *Service) SetPBVisionAssignment(threadID, userID, email, jobID string, a
 
 // parsePBVisionHighlights pulls the flagged moments out of insights.highlights:
 // time-ranges (s..e seconds) into the source clip with a label.
+// parsePBVisionMatchStats maps PB Vision's stats.json into the Team-Stats model.
+// Field formulas verified against a real payload: per-player kitchen-arrival % =
+// (oneself.num + partner.num) / (oneself.den + partner.den); shot share =
+// team_shot_percentage; team→kitchen = game.team_percentage_to_kitchen (0–1).
+func parsePBVisionMatchStats(raw any) *model.PBVisionMatchStats {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	game, _ := m["game"].(map[string]any)
+	playersRaw, _ := m["players"].([]any)
+	if game == nil || len(playersRaw) == 0 {
+		return nil
+	}
+	out := &model.PBVisionMatchStats{
+		AvgShots:       pbNum(game["avg_shots"]),
+		KitchenRallies: int(pbNum(game["kitchen_rallies"])),
+	}
+	if s := pbFloatSlice(game["game_outcome"]); len(s) == 2 {
+		out.Score = []int{int(s[0]), int(s[1])}
+	}
+	if s := pbFloatSlice(game["team_percentage_to_kitchen"]); len(s) == 2 {
+		out.TeamPctToKitchen = []float64{s[0] * 100, s[1] * 100}
+	}
+	if lr, ok := game["longest_rally"].(map[string]any); ok {
+		out.LongestRally = int(pbNum(lr["num_shots"]))
+	}
+
+	var shortA, shortB, medA, medB, longA, longB float64
+	for i, pr := range playersRaw {
+		p, ok := pr.(map[string]any)
+		if !ok {
+			continue
+		}
+		team := int(pbNum(p["team"]))
+		ps := model.PBVisionPlayerStat{
+			AvatarID:         i,
+			Team:             team,
+			ServeKitchenPct:  pbKitchenArrival(p, "serving"),
+			ReturnKitchenPct: pbKitchenArrival(p, "returning"),
+			ShotSharePct:     pbNum(p["team_shot_percentage"]),
+			LeftSidePct:      pbNum(p["team_left_side_percentage"]),
+			ShotCount:        int(pbNum(p["shot_count"])),
+			ShotQuality:      pbNum(p["average_shot_quality"]),
+		}
+		if sp, ok := p["speedups"].(map[string]any); ok {
+			ps.Speedups = int(pbNum(sp["count"]))
+		}
+		out.Players = append(out.Players, ps)
+		// Rally-won bands are team-level (identical for both players on a team).
+		if team == 0 {
+			shortA = pbNum(p["team_short_length_rallies_won"])
+			medA = pbNum(p["team_medium_length_rallies_won"])
+			longA = pbNum(p["team_long_length_rallies_won"])
+		} else {
+			shortB = pbNum(p["team_short_length_rallies_won"])
+			medB = pbNum(p["team_medium_length_rallies_won"])
+			longB = pbNum(p["team_long_length_rallies_won"])
+		}
+	}
+	out.RalliesWon = []model.PBVisionRallyBand{
+		{Label: "Short rallies · 1–5 shots", TeamA: shortA, TeamB: shortB},
+		{Label: "Medium rallies · 6–10 shots", TeamA: medA, TeamB: medB},
+		{Label: "Long rallies · 11+ shots", TeamA: longA, TeamB: longB},
+	}
+	return out
+}
+
+// pbKitchenArrival returns a player's kitchen-arrival % for a role (serving |
+// returning), combining their own + partner's shots: (Σnum)/(Σden)*100.
+func pbKitchenArrival(p map[string]any, role string) float64 {
+	kap, ok := p["kitchen_arrival_percentage"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	r, ok := kap[role].(map[string]any)
+	if !ok {
+		return 0
+	}
+	var num, den float64
+	for _, k := range []string{"oneself", "partner"} {
+		if x, ok := r[k].(map[string]any); ok {
+			num += pbNum(x["numerator"])
+			den += pbNum(x["denominator"])
+		}
+	}
+	if den == 0 {
+		return 0
+	}
+	return num / den * 100
+}
+
+func pbFloatSlice(v any) []float64 {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]float64, 0, len(arr))
+	for _, x := range arr {
+		out = append(out, pbNum(x))
+	}
+	return out
+}
+
 func parsePBVisionHighlights(insights any) []model.PBVisionHighlight {
 	m, ok := insights.(map[string]any)
 	if !ok {

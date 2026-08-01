@@ -2482,8 +2482,13 @@ func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.Coac
 	if body == "" {
 		notifyBody = name + " drew an annotation on a clip"
 	}
-	s.notifyCoachingCounterpartLink(cs, role, userID, name,
-		notifyBody, "coaching:"+cs.ID+"?tab=videos")
+	// Carry the specific clip (and timestamp) so the tap opens the annotated clip
+	// cued to the moment — not just the newest clip on the Videos tab.
+	link := "coaching:" + cs.ID + "?tab=videos&clip=" + videoID
+	if fb.TimestampSeconds != nil && *fb.TimestampSeconds >= 0 {
+		link += "&t=" + strconv.Itoa(int(*fb.TimestampSeconds))
+	}
+	s.notifyCoachingCounterpartLink(cs, role, userID, name, notifyBody, link)
 	return fb, nil
 }
 

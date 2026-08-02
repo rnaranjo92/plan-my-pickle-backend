@@ -5352,9 +5352,11 @@ func (s *Service) ListMyClasses(coachID string) ([]model.CoachingClass, error) {
 	if !s.classesReady() {
 		return []model.CoachingClass{}, nil
 	}
+	// Return ALL of the coach's classes (upcoming + past), soonest first — a
+	// class shouldn't vanish from the coach's management view the moment it ends;
+	// the client groups them into Upcoming / Past.
 	rows, err := s.sb.Select("coaching_classes",
-		"coach_id=eq."+store.Q(coachID)+"&starts_at=gte."+store.Q(now())+
-			"&order=starts_at.asc")
+		"coach_id=eq."+store.Q(coachID)+"&order=starts_at.asc")
 	if err != nil {
 		return nil, err
 	}

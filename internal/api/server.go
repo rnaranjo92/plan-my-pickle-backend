@@ -709,6 +709,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/classes/{id}", s.instructorOnly(s.updateClass))
 	mux.HandleFunc("DELETE /coach/classes/{id}", s.instructorOnly(s.deleteClass))
 	mux.HandleFunc("GET /classes/nearby", requireAuth(s.classesNearby))
+	mux.HandleFunc("GET /public/classes/{id}", s.publicClassJSON)
 	mux.HandleFunc("GET /coaches/{userId}/classes", requireAuth(s.coachClasses))
 	mux.HandleFunc("GET /coach/classes/{id}/enrollments", s.instructorOnly(s.classEnrollments))
 	mux.HandleFunc("POST /coach/enrollments/{id}/mark-paid", s.instructorOnly(s.markEnrollmentPaidByCoach))
@@ -6188,6 +6189,18 @@ func (s *Server) coachesNearby(w http.ResponseWriter, r *http.Request) {
 }
 
 // classesNearby returns upcoming classes ranked by distance from the player.
+// publicClassJSON returns one class as JSON with no auth, so a scanned/shared
+// class link can render a proper landing page (upcoming, ended, or not-found)
+// in the app instead of a raw 404.
+func (s *Server) publicClassJSON(w http.ResponseWriter, r *http.Request) {
+	c, err := s.svc.PublicClassByID(r.PathValue("id"))
+	if err != nil {
+		status(w, err) // 404 when the class doesn't exist
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
 func (s *Server) classesNearby(w http.ResponseWriter, r *http.Request) {
 	lat, err1 := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
 	lng, err2 := strconv.ParseFloat(r.URL.Query().Get("lng"), 64)

@@ -6813,11 +6813,18 @@ func (s *Service) RemindUpcomingSessions() error {
 		"kind=eq.session&reminded_at=is.null"+
 			"&starts_at=gte."+store.Q(nowT.Format(time.RFC3339))+
 			"&starts_at=lte."+store.Q(horizon.Format(time.RFC3339))+
-			"&select=id,coach_id,coach_student_id&limit=300")
+			"&select=id,coach_id,coach_student_id,status&limit=300")
 	if err != nil {
 		return err
 	}
 	for _, r := range rows {
+		// Only remind CONFIRMED sessions — never a request still awaiting the
+		// coach's approval (or one already declined). Legacy/coach-added rows have
+		// a null status and are treated as confirmed. (Filtered in code because a
+		// PostgREST status=neq.pending would also drop those null rows.)
+		if st := asStr(r, "status"); st == "pending" || st == "declined" {
+			continue
+		}
 		threadID := asStr(r, "coach_student_id")
 		coachID := asStr(r, "coach_id")
 		coachName := s.coachingName(coachID)
@@ -6850,6 +6857,57 @@ func (s *Service) RemindUpcomingSessions() error {
 		}
 		_, _ = s.sb.Update("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")),
 			map[string]any{"reminded_at": nowT.Format(time.RFC3339)})
+	}
+	return nil
+}
+
+// ExpireStalePendingBookings auto-declines 1:1 booking requests that a coach
+// never answered and whose time has already passed — they can no longer happen
+// and, left 'pending', would hold the coach's slot forever. The student is
+// nudged to rebook. Only PAST-start requests expire: a still-future request
+// stays pending however far out it is, so genuine advance bookings aren't
+// killed. Cron sweep; no-op until the status column exists.
+func (s *Service) ExpireStalePendingBookings() error {
+	if !s.scheduleReady() || !s.columnReady("coaching_schedule", "status") {
+		return nil
+	}
+	nowT := time.Now().UTC()
+	rows, err := s.sb.Select("coaching_schedule",
+		"kind=eq.session&status=eq.pending"+
+			"&starts_at=lt."+store.Q(nowT.Format(time.RFC3339))+
+			"&select=id,coach_id,coach_student_id,starts_at,ends_at&limit=300")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		// A long session that started but hasn't ended yet isn't stale — wait.
+		if end, ok := parseSchedTime(asStr(r, "ends_at")); ok && end.After(nowT) {
+			continue
+		}
+		id := asStr(r, "id")
+		// Reuse 'declined' as the terminal "not happening" state so every existing
+		// filter (coach schedule, player sessions, slot-overlap) already excludes it.
+		if _, uerr := s.sb.Update("coaching_schedule", "id=eq."+store.Q(id),
+			map[string]any{"status": "declined"}); uerr != nil {
+			log.Printf("coaching: expire pending booking %s failed: %v", id, uerr)
+			continue
+		}
+		threadID := asStr(r, "coach_student_id")
+		if threadID == "" {
+			continue
+		}
+		coachID := asStr(r, "coach_id")
+		coachName := s.coachingName(coachID)
+		if strings.TrimSpace(coachName) == "" {
+			coachName = "your coach"
+		}
+		msg := "Your session request"
+		if st, ok := parseSchedTime(asStr(r, "starts_at")); ok {
+			msg += " for " + s.fmtSessionWhen(st)
+		}
+		msg += " expired — " + coachName +
+			" didn't confirm in time. Pick a new open time to try again."
+		s.notifyStudentOfThread(threadID, coachID, coachName, msg, "myclasses")
 	}
 	return nil
 }

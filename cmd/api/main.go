@@ -274,6 +274,19 @@ func main() {
 		}
 	}()
 
+	// Coaching: auto-decline 1:1 booking requests the coach never answered and
+	// whose time has passed, so a stale request can't hold a slot forever. 30-min
+	// tick. Inert until the status column runs.
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.ExpireStalePendingBookings(); err != nil {
+				log.Printf("coaching: stale-booking expiry failed: %v", err)
+			}
+		}
+	}()
+
 	// Coaching: re-engage students whose thread has gone quiet for 14 days.
 	// 6-hour tick; at most once per 14 days per thread (nudged_at). Inert until
 	// the nudged_at column runs.

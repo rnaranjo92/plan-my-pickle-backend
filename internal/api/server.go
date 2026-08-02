@@ -98,6 +98,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events", optionalAuth(s.listEvents))
 	// Events the signed-in user is registered to PLAY in (the "Playing" home tab).
 	mux.HandleFunc("GET /me/events", requireAuth(s.myEvents))
+	mux.HandleFunc("GET /me/is-coach", requireAuth(s.myIsCoach))
 	mux.HandleFunc("GET /me/profile", requireAuth(s.myProfile))
 	mux.HandleFunc("POST /me/profile", requireAuth(s.saveProfileDetails))
 	mux.HandleFunc("POST /me/basic", requireAuth(s.saveBasicInfo))
@@ -5393,6 +5394,13 @@ var founderCoachEmails = map[string]bool{
 
 func isFounderCoach(email string) bool {
 	return founderCoachEmails[strings.ToLower(strings.TrimSpace(email))]
+}
+
+// myIsCoach lets the client ask whether THIS account is a coach (founder coach or
+// on the instructors allowlist), so the Coach tab can gate its coach-only UI on
+// the real role instead of a hardcoded email list.
+func (s *Server) myIsCoach(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"isCoach": s.isCoach(r)})
 }
 
 // isCoach reports whether the request's account is a coach — a founding coach OR

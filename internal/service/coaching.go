@@ -2306,17 +2306,26 @@ func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, 
 	}
 	s.bumpThreadActivity(threadID)
 	// Push + bell to BOTH the coach and the student, on success or failure.
-	coachBody, studentBody := "PB Vision analysis ready — review highlights",
-		"Your PB Vision highlights are ready"
-	if failed {
-		coachBody, studentBody = "PB Vision analysis failed — try a longer match clip",
-			"PB Vision couldn't analyze that clip — try a longer match video"
-	}
 	if cs, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID)); cs != nil {
 		coachID := asStr(cs, "coach_id")
+		sid := asStr(cs, "student_id")
+		who := s.coachingName(sid)
+		if strings.TrimSpace(who) == "" {
+			who = asStr(cs, "student_name")
+		}
+		if strings.TrimSpace(who) == "" {
+			who = "A student"
+		}
+		// Coach body names the student whose analysis it is; student body is their own.
+		coachBody, studentBody := who+"'s PB Vision analysis is ready — review highlights",
+			"Your PB Vision highlights are ready"
+		if failed {
+			coachBody = who + "'s PB Vision analysis failed — try a longer match clip"
+			studentBody = "PB Vision couldn't analyze that clip — try a longer match video"
+		}
 		pbLink := "coaching:" + threadID + "?tab=pbvision"
 		s.notifyUser(coachID, "coaching", "", "", coachBody, pbLink)
-		if sid := asStr(cs, "student_id"); sid != "" && sid != coachID {
+		if sid != "" && sid != coachID {
 			s.notifyUser(sid, "coaching", "", "", studentBody, pbLink)
 		}
 	}
@@ -3749,7 +3758,18 @@ func (s *Service) SetAssignmentDone(assignmentID, userID, email string, done boo
 	}
 	s.bumpThreadActivity(threadID)
 	if done {
-		s.notifyCoachingCounterpart(cs, role, userID, s.coachingName(userID), "Completed: "+asStr(row, "title"))
+		who := s.coachingName(userID)
+		title := asStr(row, "title")
+		var body string
+		if role == "coach" {
+			body = "Your coach marked a drill complete: " + title
+		} else {
+			if strings.TrimSpace(who) == "" {
+				who = "Your student"
+			}
+			body = who + " completed: " + title
+		}
+		s.notifyCoachingCounterpart(cs, role, userID, who, body)
 	}
 	if len(out) == 0 {
 		return mapAssignment(row), nil
@@ -6596,17 +6616,32 @@ func (s *Service) RemindUpcomingSessions() error {
 	for _, r := range rows {
 		threadID := asStr(r, "coach_student_id")
 		coachID := asStr(r, "coach_id")
+		coachName := s.coachingName(coachID)
+		if strings.TrimSpace(coachName) == "" {
+			coachName = "your coach"
+		}
 		if threadID != "" {
 			s.notifyStudentOfThread(threadID, coachID, s.coachingName(coachID),
-				"Reminder: your 1:1 coaching session is coming up soon",
+				"Reminder: your 1:1 session with "+coachName+" is coming up soon",
 				"coaching:"+threadID)
 		}
 		// Remind the COACH too — they agreed to the session and can otherwise
 		// no-show; only the student was being nudged before. Require threadID so
 		// the deep-link opens a real thread (a session can have no student thread).
 		if coachID != "" && threadID != "" {
+			studentName := ""
+			if cs, _ := s.sb.SelectOne("coach_students",
+				"id=eq."+store.Q(threadID)+"&select=student_id,student_name"); cs != nil {
+				studentName = s.coachingName(asStr(cs, "student_id"))
+				if strings.TrimSpace(studentName) == "" {
+					studentName = asStr(cs, "student_name")
+				}
+			}
+			if strings.TrimSpace(studentName) == "" {
+				studentName = "your student"
+			}
 			s.notifyUser(coachID, "coaching", "", "PlanMyPickle",
-				"Reminder: you have a 1:1 coaching session coming up soon",
+				"Reminder: your 1:1 session with "+studentName+" is coming up soon",
 				"coaching:"+threadID)
 		}
 		_, _ = s.sb.Update("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")),

@@ -41,8 +41,30 @@ func (f *PlacesFinder) Nearby(lat, lng, radiusKm float64) ([]Court, error) {
 	if radius > 50000 {
 		radius = 50000 // Places circle radius cap
 	}
+	// Two text queries, merged: "pickleball court" nails dedicated courts, while
+	// "pickleball" also surfaces clubs/gyms that OFFER pickleball but aren't
+	// listed as a court (e.g. Life Time Fitness). dedupe() collapses overlaps.
+	var all []Court
+	var firstErr error
+	for _, term := range []string{"pickleball court", "pickleball"} {
+		cs, err := f.queryText(term, lat, lng, radius)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		all = append(all, cs...)
+	}
+	if len(all) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return dedupe(all), nil
+}
+
+func (f *PlacesFinder) queryText(term string, lat, lng, radius float64) ([]Court, error) {
 	body, _ := json.Marshal(map[string]any{
-		"textQuery": "pickleball court",
+		"textQuery": term,
 		"locationBias": map[string]any{
 			"circle": map[string]any{
 				"center": map[string]any{"latitude": lat, "longitude": lng},

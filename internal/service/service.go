@@ -107,8 +107,9 @@ func courtCacheKey(lat, lng, radiusKm float64) string {
 		radiusKm = 25
 	}
 	// Version prefix invalidates stale cached results when the data shape or
-	// source changes (v2: distance-rank; v3: Google Places; v4: rating/category).
-	return fmt.Sprintf("v4:%.3f:%.3f:%.1f", lat, lng, radiusKm)
+	// source changes (v2: distance-rank; v3: Google Places; v4: rating/category;
+	// v5: broadened "pickleball" query catches clubs/gyms like Life Time).
+	return fmt.Sprintf("v5:%.3f:%.3f:%.1f", lat, lng, radiusKm)
 }
 
 // NearbyCourts finds pickleball courts near a point (for the create-event venue

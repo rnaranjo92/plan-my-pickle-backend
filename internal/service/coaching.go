@@ -3311,6 +3311,11 @@ func (s *Service) ListCoachSchedule(coachID string) ([]model.CoachingScheduleIte
 	}
 	out := make([]model.CoachingScheduleItem, 0, len(rows))
 	for _, r := range rows {
+		// A declined booking request is dead — keep it off the coach's schedule so
+		// it isn't mistaken for a real session.
+		if asStr(r, "status") == "declined" {
+			continue
+		}
 		out = append(out, mapScheduleItem(r))
 	}
 	return out, nil
@@ -4857,7 +4862,7 @@ func (s *Service) RespondToBooking(coachID, sessionID string, approve bool) (mod
 	}
 	row, err := s.sb.SelectOne("coaching_schedule",
 		"id=eq."+store.Q(sessionID)+
-			"&select=coach_id,kind,status,coach_student_id,starts_at,student_label")
+			"&select=coach_id,kind,status,coach_student_id,starts_at,ends_at,student_label")
 	if err != nil {
 		return model.CoachingScheduleItem{}, err
 	}
@@ -4873,6 +4878,42 @@ func (s *Service) RespondToBooking(coachID, sessionID string, approve bool) (mod
 	if st := asStr(row, "status"); st != "pending" {
 		// Idempotent-friendly: a session already handled just reports its state.
 		return model.CoachingScheduleItem{}, errors.New("this request has already been " + respondedLabel(st))
+	}
+
+	// Approving commits the slot: re-check it doesn't collide with a session the
+	// coach committed AFTER this request came in (a manually-added session or a
+	// reschedule). Only committed sessions block — other pending requests and
+	// declined rows don't.
+	if approve {
+		if start, ok := parseSchedTime(asStr(row, "starts_at")); ok {
+			end, ok2 := parseSchedTime(asStr(row, "ends_at"))
+			if !ok2 {
+				end = start.Add(time.Hour)
+			}
+			others, oerr := s.sb.Select("coaching_schedule",
+				"coach_id=eq."+store.Q(coachID)+"&kind=eq.session&id=neq."+
+					store.Q(sessionID)+"&select=starts_at,ends_at,status")
+			if oerr == nil {
+				for _, o := range others {
+					switch asStr(o, "status") {
+					case "pending", "declined":
+						continue // not committed — doesn't hold the slot
+					}
+					os, ok := parseSchedTime(asStr(o, "starts_at"))
+					if !ok {
+						continue
+					}
+					oe, ok := parseSchedTime(asStr(o, "ends_at"))
+					if !ok {
+						oe = os.Add(time.Hour)
+					}
+					if start.Before(oe) && end.After(os) {
+						return model.CoachingScheduleItem{}, errors.New(
+							"that time now overlaps another booked session — move the other booking first")
+					}
+				}
+			}
+		}
 	}
 
 	newStatus := "declined"

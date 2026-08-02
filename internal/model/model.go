@@ -1217,6 +1217,13 @@ type CoachStudent struct {
 	ID             string `json:"id"`
 	CoachID        string `json:"coachId,omitempty"`
 	CoachName      string `json:"coachName,omitempty"`
+	// CoachPhotoURL is the coach's avatar (coach profile photo, else account
+	// avatar) — populated only on the student's "My coaching" list for a richer
+	// card. LastActivity is the newest thread activity as an ISO timestamp
+	// (the frontend renders it as "3 days ago"); mirrors the internal
+	// LastActivityAt but is safe to serialize.
+	CoachPhotoURL  string `json:"coachPhotoUrl,omitempty"`
+	LastActivity   string `json:"lastActivity,omitempty"`
 	StudentEmail   string `json:"studentEmail,omitempty"`
 	StudentPhone   string `json:"studentPhone,omitempty"`
 	StudentName    string `json:"studentName,omitempty"`

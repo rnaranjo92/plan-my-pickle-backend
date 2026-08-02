@@ -98,6 +98,37 @@ func (s *Service) coachingName(userID string) string {
 	return s.resolveDisplayName(userID, "")
 }
 
+// coachPhotosByID returns coachID -> avatar URL for a batch of coaches, used to
+// give the student's coaching cards a real face. A coach's dedicated profile
+// photo (coach_profiles.photo_url) wins; otherwise it falls back to their
+// account avatar (pmp_profiles). Missing/blank entries are simply absent.
+func (s *Service) coachPhotosByID(coachIDs []string) map[string]string {
+	out := s.photosByUser(coachIDs) // account avatars first
+	if !s.coachProfilesReady() {
+		return out
+	}
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(coachIDs))
+	for _, c := range coachIDs {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			uniq = append(uniq, c)
+		}
+	}
+	if len(uniq) == 0 {
+		return out
+	}
+	if rows, err := s.sb.Select("coach_profiles",
+		"user_id="+store.In(uniq)+"&select=user_id,photo_url"); err == nil {
+		for _, r := range rows {
+			if u := strings.TrimSpace(asStr(r, "photo_url")); u != "" {
+				out[asStr(r, "user_id")] = u // dedicated coach photo overrides
+			}
+		}
+	}
+	return out
+}
+
 // --- Instructor (coach) allowlist ---
 
 // IsInstructor reports whether an account email is on the coach allowlist
@@ -815,9 +846,27 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 		}
 		cs.CoachName = s.coachingName(cs.CoachID)
 		cs.VideoCount = s.threadVideoCount(cs.ID)
-		cs.CoachNote = ""  // the coach's private note about the student is never sent to them
-		cs.SkillLevel = "" // coach's assessment — coach-only
+		cs.LastActivity = cs.LastActivityAt // ISO → frontend renders "3 days ago"
+		cs.CoachNote = ""                   // the coach's private note about the student is never sent to them
+		cs.SkillLevel = ""                  // coach's assessment — coach-only
 		out = append(out, cs)
+	}
+	// Coach avatars (one batched lookup) so each card shows a real face.
+	coachIDs := make([]string, 0, len(out))
+	for _, cs := range out {
+		coachIDs = append(coachIDs, cs.CoachID)
+	}
+	photos := s.coachPhotosByID(coachIDs)
+	for i := range out {
+		out[i].CoachPhotoURL = photos[out[i].CoachID]
+	}
+	// Open drills the student still owes (a batched aggregate) makes the card
+	// actionable. The other roster aggregates are the COACH's private view
+	// (skill assessment, their review backlog) — strip them from the student.
+	s.applyRosterAggregates(out)
+	for i := range out {
+		out[i].RubricAvg = nil
+		out[i].AwaitingFeedback = 0
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	s.applyUnread(studentID, out)

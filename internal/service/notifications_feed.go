@@ -113,6 +113,8 @@ func notifPushURL(link string) string {
 		return base + "/?coachreviews=1" // coach's reviews inbox
 	case link == "coachcredits":
 		return base + "/?coachcredits=1" // coach's prepaid-credit liability view
+	case link == "coachschedule":
+		return base + "/?coachschedule=1" // coach's schedule (approve booking requests)
 	default:
 		return base
 	}

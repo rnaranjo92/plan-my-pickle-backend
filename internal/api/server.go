@@ -633,6 +633,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /coach/schedule/{id}", s.instructorOnly(s.updateCoachSchedule))
 	mux.HandleFunc("DELETE /coach/schedule/{id}", s.instructorOnly(s.deleteCoachSchedule))
 	mux.HandleFunc("POST /coach/schedule/{id}/attendance", s.instructorOnly(s.setSessionAttendance))
+	mux.HandleFunc("POST /coach/schedule/{id}/respond", s.instructorOnly(s.respondToBooking))
 	mux.HandleFunc("GET /coaching/threads/{id}/practice", requireAuth(s.practiceSummary))
 	mux.HandleFunc("POST /coaching/threads/{id}/practice", requireAuth(s.logPractice))
 	mux.HandleFunc("GET /me/coaching-role", requireAuth(s.coachingRole))
@@ -6049,6 +6050,22 @@ func (s *Server) setSessionAttendance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// respondToBooking: a coach approves or declines a pending 1:1 booking request.
+func (s *Server) respondToBooking(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Approve bool `json:"approve"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.RespondToBooking(userID(r), r.PathValue("id"), req.Approve)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 // Coach drill library + assignments (a student's game plan).

@@ -4743,7 +4743,7 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 	// Load the coach's schedule once: confirm the slot fits an open window and
 	// doesn't overlap an existing session.
 	rows, err := s.sb.Select("coaching_schedule",
-		"coach_id=eq."+store.Q(coachUserID)+"&select=kind,starts_at,ends_at")
+		"coach_id=eq."+store.Q(coachUserID)+"&select=kind,starts_at,ends_at,status")
 	if err != nil {
 		return model.CoachingScheduleItem{}, err
 	}
@@ -4758,7 +4758,12 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 				inWindow = true
 			}
 		case "session":
-			// Overlap if start < existing end AND end > existing start.
+			// A declined request no longer holds its slot.
+			if asStr(r, "status") == "declined" {
+				continue
+			}
+			// Overlap if start < existing end AND end > existing start. A still-
+			// pending request also holds the slot, so two players can't grab it.
 			se := we
 			if !ok2 {
 				se = ws.Add(time.Hour)
@@ -4789,6 +4794,10 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 	if notes == "" {
 		notes = "Booked by player"
 	}
+	// A player-initiated booking is a REQUEST: it starts 'pending' and the coach
+	// must approve it (see RespondToBooking). Where the status column hasn't been
+	// added yet, degrade gracefully to the old auto-confirmed behaviour.
+	approvalReady := s.columnReady("coaching_schedule", "status")
 	row := map[string]any{
 		"coach_id":  coachUserID,
 		"kind":      "session",
@@ -4797,6 +4806,9 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 		"all_day":   false,
 		"location":  orNull(strings.TrimSpace(req.Location)),
 		"notes":     notes,
+	}
+	if approvalReady {
+		row["status"] = "pending"
 	}
 	if threadID != "" {
 		row["coach_student_id"] = threadID
@@ -4810,15 +4822,109 @@ func (s *Service) BookCoachSession(playerID, playerEmail, playerName, coachUserI
 		return model.CoachingScheduleItem{}, err
 	}
 
-	// Notify the coach (include the agenda so they can prep).
-	bookMsg := label + " booked a 1:1 session"
+	// Notify the coach (include the agenda so they can prep). When approval is on,
+	// the copy + deep-link point them at the request to approve or decline.
+	when := s.fmtSessionWhen(start)
+	var bookMsg string
+	if approvalReady {
+		bookMsg = label + " requested a 1:1 session for " + when + " — approve or decline"
+	} else {
+		bookMsg = label + " booked a 1:1 session for " + when
+	}
 	if notes != "Booked by player" {
-		bookMsg += " — wants to work on: " + notes
+		bookMsg += " (wants to work on: " + notes + ")"
 	}
 	s.notifyUser(coachUserID, "coaching", playerID, label,
-		bookMsg, "coaching:"+threadID)
+		bookMsg, "coachschedule")
 
 	return mapScheduleItem(ins[0]), nil
+}
+
+// fmtSessionWhen renders a session start for notification copy, e.g.
+// "Mon Aug 4, 3:30 PM". Times are shown in the server's local zone — good enough
+// for a nudge; the app renders exact local times on the card.
+func (s *Service) fmtSessionWhen(t time.Time) string {
+	return t.Local().Format("Mon Jan 2, 3:04 PM")
+}
+
+// RespondToBooking lets a coach approve or decline a pending 1:1 booking request.
+// Only the owning coach may act, only on a session that's still 'pending'. On
+// approve the slot becomes 'confirmed'; on decline it becomes 'declined' (which
+// frees the slot for others). The student is notified either way.
+func (s *Service) RespondToBooking(coachID, sessionID string, approve bool) (model.CoachingScheduleItem, error) {
+	if !s.scheduleReady() || !s.columnReady("coaching_schedule", "status") {
+		return model.CoachingScheduleItem{}, ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coaching_schedule",
+		"id=eq."+store.Q(sessionID)+
+			"&select=coach_id,kind,status,coach_student_id,starts_at,student_label")
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+	if row == nil {
+		return model.CoachingScheduleItem{}, ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return model.CoachingScheduleItem{}, ErrForbidden
+	}
+	if asStr(row, "kind") != "session" {
+		return model.CoachingScheduleItem{}, errors.New("that isn't a booking request")
+	}
+	if st := asStr(row, "status"); st != "pending" {
+		// Idempotent-friendly: a session already handled just reports its state.
+		return model.CoachingScheduleItem{}, errors.New("this request has already been " + respondedLabel(st))
+	}
+
+	newStatus := "declined"
+	if approve {
+		newStatus = "confirmed"
+	}
+	out, err := s.sb.Update("coaching_schedule", "id=eq."+store.Q(sessionID),
+		map[string]any{"status": newStatus})
+	if err != nil {
+		return model.CoachingScheduleItem{}, err
+	}
+
+	// Tell the student. Land them on "My classes", where their sessions live.
+	threadID := asStr(row, "coach_student_id")
+	coachName := s.coachingName(coachID)
+	when := ""
+	if st, ok := parseSchedTime(asStr(row, "starts_at")); ok {
+		when = s.fmtSessionWhen(st)
+	}
+	var msg string
+	if approve {
+		msg = coachName + " confirmed your session"
+		if when != "" {
+			msg += " for " + when
+		}
+	} else {
+		msg = coachName + " couldn't take your session request"
+		if when != "" {
+			msg += " for " + when
+		}
+		msg += " — pick another open time"
+	}
+	if threadID != "" {
+		s.notifyStudentOfThread(threadID, coachID, coachName, msg, "myclasses")
+	}
+
+	if len(out) > 0 {
+		return mapScheduleItem(out[0]), nil
+	}
+	return mapScheduleItem(row), nil
+}
+
+// respondedLabel maps a non-pending status to friendly past-tense text.
+func respondedLabel(status string) string {
+	switch status {
+	case "confirmed", "attended", "no_show":
+		return "approved"
+	case "declined":
+		return "declined"
+	default:
+		return "handled"
+	}
 }
 
 // ListMySessions returns a player's upcoming booked 1:1 sessions (with coach name).
@@ -4862,6 +4968,12 @@ func (s *Service) ListMySessions(playerID, email string) ([]model.CoachingSchedu
 	out := make([]model.CoachingScheduleItem, 0, len(rows))
 	for _, r := range rows {
 		it := mapScheduleItem(r)
+		// A declined request is dead — the student was already told; don't keep
+		// showing it on their upcoming list. 'pending' and 'confirmed' stay so the
+		// card can show its approval state.
+		if it.Status == "declined" {
+			continue
+		}
 		end, ok := parseSchedTime(it.EndsAt)
 		if !ok {
 			end, _ = parseSchedTime(it.StartsAt)

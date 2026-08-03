@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -96,6 +97,31 @@ func (s *Service) coachingName(userID string) string {
 		}
 	}
 	return s.resolveDisplayName(userID, "")
+}
+
+// coachLabel is the student-facing name for a coach in notifications, e.g.
+// "Coach Kay". Falls back to "Your coach" when no name is on file.
+func (s *Service) coachLabel(coachID string) string {
+	return coachLabelFrom(s.coachingName(coachID))
+}
+
+// coachLabelFrom derives the "Coach <FirstName>" label from an already-resolved
+// display name, so callers holding the name (or in a loop) don't re-query the
+// profile. Uses the first name token that STARTS with a letter, so a name led by
+// an emoji/punctuation ("🎾 Kay") still yields "Coach Kay" and never injects a
+// native glyph into student copy. Falls back to "Your coach" when empty.
+func coachLabelFrom(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Your coach"
+	}
+	for _, f := range strings.Fields(name) {
+		r := []rune(f)
+		if len(r) > 0 && unicode.IsLetter(r[0]) {
+			return "Coach " + f
+		}
+	}
+	return name // no alphabetic token — better than "Coach 🎾"
 }
 
 // coachPhotosByID returns coachID -> avatar URL for a batch of coaches, used to
@@ -710,7 +736,7 @@ func (s *Service) RemoveCoachStudent(coachID, id string) error {
 	// destructive coaching action. The thread is gone, so use an EMPTY link (a
 	// coaching:<id> link would dead-end on "thread not found").
 	s.notifyCoachingCounterpartLink(cs, "coach", coachID, coachName,
-		"Your coach ended your coaching and removed your clip history", "")
+		s.coachLabel(coachID)+" ended your coaching and removed your clip history", "")
 	// Prune both parties' stale bell rows that deep-link into the now-gone thread
 	// (they would otherwise route to a permanent "Could not load this thread").
 	if s.columnReady("user_notifications", "link") {
@@ -1341,7 +1367,7 @@ func (s *Service) SetPBVisionAssignment(threadID, userID, email, jobID string, a
 		}
 		if recipient != "" && recipient != userID {
 			s.notifyUser(recipient, "coaching", userID, s.coachingName(cs.CoachID),
-				"Your coach shared a match analysis — see your PB Vision stats",
+				s.coachLabel(cs.CoachID)+" shared a match analysis — see your PB Vision stats",
 				"coaching:"+targetThreadID+"?tab=pbvision")
 		}
 	}
@@ -1833,7 +1859,7 @@ func (s *Service) CreateProgram(threadID, userID, email string, req model.Coachi
 	}
 	s.bumpThreadActivity(threadID)
 	s.notifyCoachingCounterpart(cs, "coach", userID, s.coachingName(cs.CoachID),
-		"Your coach assigned a new training program: "+title)
+		s.coachLabel(cs.CoachID)+" assigned a new training program: "+title)
 	return mapProgram(ins[0]), nil
 }
 
@@ -1884,9 +1910,9 @@ func (s *Service) ToggleProgramWeek(programID string, index int, userID, email s
 		who := s.coachingName(userID)
 		var body string
 		if role == "coach" {
-			body = "Your coach marked a program week complete"
+			body = s.coachLabel(userID) + " marked a program week complete"
 			if focus != "" {
-				body = "Your coach marked a week complete: " + focus
+				body = s.coachLabel(userID) + " marked a week complete: " + focus
 			}
 		} else {
 			if who == "" {
@@ -2169,9 +2195,9 @@ func (s *Service) DeleteProgram(programID, userID, email string) error {
 	// in-progress program doesn't just silently disappear on next open.
 	s.bumpThreadActivity(threadID)
 	title := asStr(row, "title")
-	body := "Your coach removed your training program"
+	body := s.coachLabel(userID) + " removed your training program"
 	if title != "" {
-		body = "Your coach removed the training program “" + title + "”"
+		body = s.coachLabel(userID) + " removed the training program “" + title + "”"
 	}
 	s.notifyCoachingCounterpartLink(cs, "coach", userID, s.coachingName(cs.CoachID),
 		body, "coaching:"+threadID)
@@ -2804,7 +2830,7 @@ func (s *Service) SetSharedNote(threadID, coachID, body string) error {
 	s.bumpThreadActivity(threadID)
 	if body != "" {
 		s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(coachID),
-			"Your coach shared a note")
+			s.coachLabel(coachID)+" shared a note")
 	}
 	return nil
 }
@@ -2891,7 +2917,7 @@ func (s *Service) AddSharedNote(threadID, coachID, email, title, body string) (m
 	}
 	s.bumpThreadActivity(threadID)
 	s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(coachID),
-		"Your coach shared a note")
+		s.coachLabel(coachID)+" shared a note")
 	return mapSharedNote(ins[0]), nil
 }
 
@@ -3416,7 +3442,7 @@ func (s *Service) AddCoachScheduleItem(coachID string, req model.CoachingSchedul
 	// passively in the student's My Sessions list.
 	if kind == "session" && strings.TrimSpace(req.CoachStudentID) != "" {
 		s.notifyStudentOfThread(req.CoachStudentID, coachID, s.coachingName(coachID),
-			"Your coach scheduled a 1:1 session for you",
+			s.coachLabel(coachID)+" scheduled a 1:1 session for you",
 			"coaching:"+req.CoachStudentID)
 	}
 	return mapScheduleItem(first), nil
@@ -3484,7 +3510,7 @@ func (s *Service) DeleteCoachScheduleItem(coachID, id string) error {
 	// A booked session the coach dropped → tell the student.
 	if asStr(row, "kind") == "session" {
 		s.notifyStudentOfThread(asStr(row, "coach_student_id"), coachID,
-			s.coachingName(coachID), "Your coach cancelled your 1:1 session",
+			s.coachingName(coachID), s.coachLabel(coachID)+" cancelled your 1:1 session",
 			"coaching:"+asStr(row, "coach_student_id"))
 	}
 	return nil
@@ -3587,7 +3613,7 @@ func (s *Service) UpdateCoachScheduleItem(coachID, id string, req model.Coaching
 			threadID = asStr(cur, "coach_student_id")
 		}
 		s.notifyStudentOfThread(threadID, coachID, s.coachingName(coachID),
-			"Your coach updated your 1:1 session time", "coaching:"+threadID)
+			s.coachLabel(coachID)+" updated your 1:1 session time", "coaching:"+threadID)
 	}
 	if len(out) > 0 {
 		return mapScheduleItem(out[0]), nil
@@ -3643,7 +3669,7 @@ func (s *Service) ListDrills(coachID string) ([]model.CoachingDrill, error) {
 		return []model.CoachingDrill{}, nil
 	}
 	rows, err := s.sb.Select("coaching_drills",
-		"or=(coach_id.eq."+coachID+",is_starter.is.true)&order=is_starter.asc,created_at.desc")
+		"or=(coach_id.eq."+store.Q(coachID)+",is_starter.is.true)&order=is_starter.asc,created_at.desc")
 	if err != nil {
 		return nil, err
 	}
@@ -3741,7 +3767,13 @@ func (s *Service) AssignDrill(threadID, coachID, email string, req model.AssignD
 	goal := strings.TrimSpace(req.Goal)
 	drillID := strings.TrimSpace(req.DrillID)
 	if drillID != "" && s.drillsReady() {
-		if d, _ := s.sb.SelectOne("coaching_drills", "id=eq."+store.Q(drillID)); d != nil {
+		// Only the coach's OWN drills or shared starters — never another coach's
+		// private drill (scoping matches ListDrills). If it's neither, don't copy
+		// its content and don't link the foreign id.
+		d, _ := s.sb.SelectOne("coaching_drills",
+			"id=eq."+store.Q(drillID)+
+				"&or=(coach_id.eq."+store.Q(coachID)+",is_starter.is.true)")
+		if d != nil {
 			if title == "" {
 				title = asStr(d, "title")
 			}
@@ -3751,6 +3783,8 @@ func (s *Service) AssignDrill(threadID, coachID, email string, req model.AssignD
 			if goal == "" {
 				goal = asStr(d, "goal")
 			}
+		} else {
+			drillID = ""
 		}
 	}
 	if title == "" {
@@ -3816,7 +3850,7 @@ func (s *Service) SetAssignmentDone(assignmentID, userID, email string, done boo
 		title := asStr(row, "title")
 		var body string
 		if role == "coach" {
-			body = "Your coach marked a drill complete: " + title
+			body = s.coachLabel(userID) + " marked a drill complete: " + title
 		} else {
 			if strings.TrimSpace(who) == "" {
 				who = "Your student"
@@ -3932,7 +3966,7 @@ func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating 
 		}
 		s.bumpThreadActivity(threadID)
 		s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(cs.CoachID),
-			"Your coach updated your skill assessment")
+			s.coachLabel(cs.CoachID)+" updated your skill assessment")
 		if len(out) > 0 {
 			return mapSkillRating(out[0]), nil
 		}
@@ -3953,7 +3987,7 @@ func (s *Service) SetSkillRating(threadID, coachID, email, skill string, rating 
 	}
 	s.bumpThreadActivity(threadID)
 	s.notifyCoachingCounterpart(cs, "coach", coachID, s.coachingName(cs.CoachID),
-		"Your coach rated your progress")
+		s.coachLabel(cs.CoachID)+" rated your progress")
 	return mapSkillRating(ins[0]), nil
 }
 
@@ -5506,8 +5540,9 @@ func (s *Service) settleEnrollmentRefund(enrollmentID, coachID, userID, paymentR
 		return "A refund was issued to your original payment.", false
 	case paid && paymentRef == "manual":
 		// Paid in cash off-platform — we can't auto-refund; tell them to expect
-		// the coach to return it directly.
-		return "Your coach will return your payment.", false
+		// it back directly. No coach name here: this string is appended after a
+		// body that already names the coach ("Coach Kay removed you from … — …").
+		return "They'll return your payment directly.", false
 	}
 	return "", false // nothing was owed
 }
@@ -6547,7 +6582,7 @@ func (s *Service) CoachRemoveEnrollment(coachID, enrollmentID string) error {
 					title = "“" + t + "”"
 				}
 			}
-			body := "Your coach removed you from " + title
+			body := s.coachLabel(coachID) + " removed you from " + title
 			if refundMsg != "" {
 				body += " — " + refundMsg
 			} else if refundFailed {
@@ -7170,8 +7205,9 @@ func (s *Service) SweepInactiveStudents() error {
 		coachID := asStr(r, "coach_id")
 		sid := asStr(r, "student_id")
 		if sid != "" {
-			s.notifyUser(sid, "coaching", coachID, s.coachingName(coachID),
-				"Your coach is ready when you are — upload a clip for feedback",
+			name := s.coachingName(coachID)
+			s.notifyUser(sid, "coaching", coachID, name,
+				coachLabelFrom(name)+" is ready when you are — upload a clip for feedback",
 				"coaching:"+threadID)
 		}
 		who := s.coachingName(sid)
@@ -7217,8 +7253,9 @@ func (s *Service) RemindNeverUploaded() error {
 		}
 		coachID := asStr(r, "coach_id")
 		if sid := asStr(r, "student_id"); sid != "" {
-			s.notifyUser(sid, "coaching", coachID, s.coachingName(coachID),
-				"Your coach is ready for your first clip — record a rally and upload it for feedback",
+			name := s.coachingName(coachID)
+			s.notifyUser(sid, "coaching", coachID, name,
+				coachLabelFrom(name)+" is ready for your first clip — record a rally and upload it for feedback",
 				"coaching:"+threadID)
 		}
 		markNudged()

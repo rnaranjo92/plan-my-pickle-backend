@@ -1866,13 +1866,17 @@ func (s *Service) seedPBVisionJob(threadID, sourceVideoID string) {
 	// team-level (repeated for both players on a team).
 	player := func(team, shots, speedups int, shotPct, leftPct, quality, shortW, medW, longW float64, kap map[string]any, shots2 map[string]any) map[string]any {
 		p := map[string]any{
-			"team":                           team,
-			"kitchen_arrival_percentage":     kap,
-			"team_shot_percentage":           shotPct,
-			"team_left_side_percentage":      leftPct,
-			"shot_count":                     shots,
-			"average_shot_quality":           quality,
-			"speedups":                       map[string]any{"count": speedups},
+			"team":                       team,
+			"kitchen_arrival_percentage": kap,
+			"team_shot_percentage":       shotPct,
+			"team_left_side_percentage":  leftPct,
+			"shot_count":                 shots,
+			"average_shot_quality":       quality,
+			// Full shot shape (not just {count}) so it satisfies BOTH readers:
+			// the "Speed-ups share" scalar (reads .count) and pbShotStats, which
+			// lists "speedups" as a shot type — a count-only object would render a
+			// degenerate all-zero row in the per-player shot table.
+			"speedups":                       shot(speedups, 3.4, 62, 48, 46),
 			"team_short_length_rallies_won":  shortW,
 			"team_medium_length_rallies_won": medW,
 			"team_long_length_rallies_won":   longW,

@@ -2741,7 +2741,62 @@ func (s *Service) GetThread(threadID, userID, email string) (model.CoachingThrea
 	}
 	// Private bucket → hand out short-lived signed playback URLs.
 	s.signCoachingVideos(out.Videos)
+	// Section-visibility prefs (default all-on for a coach with no settings row).
+	set := s.coachSettings(cs.CoachID)
+	out.ShowProgress = set.ShowProgress
+	out.ShowAchievements = set.ShowAchievements
+	out.ShowSkillRatings = set.ShowSkillRatings
 	return out, nil
+}
+
+// coachSettingsReady reports whether the coach_settings table exists yet.
+func (s *Service) coachSettingsReady() bool {
+	return s.columnReady("coach_settings", "coach_id")
+}
+
+// coachSettings loads a coach's Goals-tab section prefs. A missing row or a
+// pre-migration DB yields all-true, so nothing is hidden by default.
+func (s *Service) coachSettings(coachID string) model.CoachSettings {
+	def := model.CoachSettings{ShowProgress: true, ShowAchievements: true, ShowSkillRatings: true}
+	if coachID == "" || !s.coachSettingsReady() {
+		return def
+	}
+	row, err := s.sb.SelectOne("coach_settings", "coach_id=eq."+store.Q(coachID)+
+		"&select=show_progress,show_achievements,show_skill_ratings")
+	if err != nil || row == nil {
+		return def
+	}
+	return model.CoachSettings{
+		ShowProgress:     asBool(row, "show_progress"),
+		ShowAchievements: asBool(row, "show_achievements"),
+		ShowSkillRatings: asBool(row, "show_skill_ratings"),
+	}
+}
+
+// GetCoachSettings returns the coach's own section prefs (for the settings UI).
+func (s *Service) GetCoachSettings(coachID string) (model.CoachSettings, error) {
+	if !s.coachingReady() {
+		return model.CoachSettings{}, ErrCoachingUnavailable
+	}
+	return s.coachSettings(coachID), nil
+}
+
+// UpdateCoachSettings upserts a coach's Goals-tab section prefs.
+func (s *Service) UpdateCoachSettings(coachID string, set model.CoachSettings) error {
+	if !s.coachingReady() {
+		return ErrCoachingUnavailable
+	}
+	if !s.coachSettingsReady() {
+		return errors.New("coach settings aren't available yet")
+	}
+	_, err := s.sb.Upsert("coach_settings", "coach_id", map[string]any{
+		"coach_id":           coachID,
+		"show_progress":      set.ShowProgress,
+		"show_achievements":  set.ShowAchievements,
+		"show_skill_ratings": set.ShowSkillRatings,
+		"updated_at":         now(),
+	})
+	return err
 }
 
 // AddThreadVideo records a clip a member uploaded, then notifies the counterpart.

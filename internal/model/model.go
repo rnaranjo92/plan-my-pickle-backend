@@ -26,17 +26,17 @@ type Event struct {
 	ExtraDivisionFeeMode       string `json:"extraDivisionFeeMode"`
 	AdditionalDivisionFeeCents int    `json:"additionalDivisionFeeCents"`
 	// Paid add-ons a registrant can buy with their entry (0 = not offered).
-	AddonTeeCents   int     `json:"addonTeeCents"`
-	AddonGripsCents int     `json:"addonGripsCents"`
+	AddonTeeCents   int `json:"addonTeeCents"`
+	AddonGripsCents int `json:"addonGripsCents"`
 	// Event-tee presale (custom merch): a name, up to two design images
 	// (front/back), and the sizes the organizer offers. Priced by AddonTeeCents.
 	AddonTeeName     string   `json:"addonTeeName,omitempty"`
 	AddonTeeFrontURL string   `json:"addonTeeFrontUrl,omitempty"`
 	AddonTeeBackURL  string   `json:"addonTeeBackUrl,omitempty"`
 	AddonTeeSizes    []string `json:"addonTeeSizes,omitempty"`
-	Currency        string  `json:"currency"`
-	ZelleHandle     *string `json:"zelleHandle,omitempty"`
-	VenmoHandle     *string `json:"venmoHandle,omitempty"`
+	Currency         string   `json:"currency"`
+	ZelleHandle      *string  `json:"zelleHandle,omitempty"`
+	VenmoHandle      *string  `json:"venmoHandle,omitempty"`
 	// GcashHandle = the organizer's GCash mobile number for manual PH collection
 	// (players pay out-of-band, organizer marks paid). Same model as Zelle/Venmo.
 	GcashHandle  *string `json:"gcashHandle,omitempty"`
@@ -1077,20 +1077,20 @@ type CreateEventRequest struct {
 	AddonTeeCents              int    `json:"addonTeeCents,omitempty"`
 	AddonGripsCents            int    `json:"addonGripsCents,omitempty"`
 	// Event-tee presale (custom merch) config.
-	AddonTeeName     string   `json:"addonTeeName,omitempty"`
-	AddonTeeFrontURL string   `json:"addonTeeFrontUrl,omitempty"`
-	AddonTeeBackURL  string   `json:"addonTeeBackUrl,omitempty"`
-	AddonTeeSizes    []string `json:"addonTeeSizes,omitempty"`
-	ZelleHandle                string `json:"zelleHandle,omitempty"`
-	VenmoHandle                string `json:"venmoHandle,omitempty"`
-	GcashHandle                string `json:"gcashHandle,omitempty"`
-	ClubID                     string `json:"clubId,omitempty"`
-	Location                   string `json:"location"`
-	ContactPhone               string `json:"contactPhone"`
-	VenueNotes                 string `json:"venueNotes"`
-	WaiverURL                  string `json:"waiverUrl"`
-	ConfirmEmailSubject        string `json:"confirmEmailSubject"`
-	ConfirmEmailMessage        string `json:"confirmEmailMessage"`
+	AddonTeeName        string   `json:"addonTeeName,omitempty"`
+	AddonTeeFrontURL    string   `json:"addonTeeFrontUrl,omitempty"`
+	AddonTeeBackURL     string   `json:"addonTeeBackUrl,omitempty"`
+	AddonTeeSizes       []string `json:"addonTeeSizes,omitempty"`
+	ZelleHandle         string   `json:"zelleHandle,omitempty"`
+	VenmoHandle         string   `json:"venmoHandle,omitempty"`
+	GcashHandle         string   `json:"gcashHandle,omitempty"`
+	ClubID              string   `json:"clubId,omitempty"`
+	Location            string   `json:"location"`
+	ContactPhone        string   `json:"contactPhone"`
+	VenueNotes          string   `json:"venueNotes"`
+	WaiverURL           string   `json:"waiverUrl"`
+	ConfirmEmailSubject string   `json:"confirmEmailSubject"`
+	ConfirmEmailMessage string   `json:"confirmEmailMessage"`
 	// Organizer email branding (Premium) — applied to every outgoing email for
 	// this event when the owner is Premium. EmailBrandColor is a #RRGGBB accent;
 	// EmailSignature is a plain-text sign-off. Pointers so the write path can tell
@@ -1221,9 +1221,9 @@ type AnalysisCheckoutRequest struct {
 // account id (may be empty until the student logs in). VideoCount is a convenience
 // count returned on list views.
 type CoachStudent struct {
-	ID             string `json:"id"`
-	CoachID        string `json:"coachId,omitempty"`
-	CoachName      string `json:"coachName,omitempty"`
+	ID        string `json:"id"`
+	CoachID   string `json:"coachId,omitempty"`
+	CoachName string `json:"coachName,omitempty"`
 	// CoachPhotoURL is the coach's avatar (coach profile photo, else account
 	// avatar) — populated only on the student's "My coaching" list for a richer
 	// card. LastActivity is the newest thread activity as an ISO timestamp
@@ -1244,9 +1244,9 @@ type CoachStudent struct {
 	// OpenGoals is how many assigned drills aren't done yet; AwaitingFeedback is
 	// how many of the student's own clips have no coach comment yet. All three are
 	// coach-facing roster aggregates so a coach can scan who needs attention.
-	RubricAvg       *float64 `json:"rubricAvg,omitempty"`
-	OpenGoals       int      `json:"openGoals"`
-	AwaitingFeedback int     `json:"awaitingFeedback"`
+	RubricAvg        *float64 `json:"rubricAvg,omitempty"`
+	OpenGoals        int      `json:"openGoals"`
+	AwaitingFeedback int      `json:"awaitingFeedback"`
 	// CoachNote is the coach's private running note about the student — only
 	// populated for the coach's own views, redacted from the student's view.
 	CoachNote string `json:"coachNote,omitempty"`
@@ -1315,6 +1315,20 @@ type CoachingFeedback struct {
 type CoachingThread struct {
 	Student CoachStudent    `json:"student"`
 	Videos  []CoachingVideo `json:"videos"`
+	// Per-coach section visibility (from coach_settings). Both the coach's and
+	// the student's Goals tab honor these, so a coach who doesn't use skill
+	// ratings / progress / achievements can hide those cards. Default true.
+	ShowProgress     bool `json:"showProgress"`
+	ShowAchievements bool `json:"showAchievements"`
+	ShowSkillRatings bool `json:"showSkillRatings"`
+}
+
+// CoachSettings is a coach's per-account preferences (currently which Goals-tab
+// sections they use). Missing row / pre-migration DB ⇒ all true.
+type CoachSettings struct {
+	ShowProgress     bool `json:"showProgress"`
+	ShowAchievements bool `json:"showAchievements"`
+	ShowSkillRatings bool `json:"showSkillRatings"`
 }
 
 // CoachingScheduleItem is one entry on the coach's schedule: a booked lesson
@@ -1511,30 +1525,30 @@ type PBVisionStats struct {
 // analyzed clip: the detected players (for the "which player are you?" picker)
 // plus which one the student tagged. Empty (Ready=false) when nothing's ready.
 type PBVisionAnalysis struct {
-	Ready     bool                `json:"ready"`
-	JobID     string              `json:"jobId,omitempty"`
-	ReportURL string              `json:"reportUrl,omitempty"`
-	TaggedID  *int                `json:"taggedAvatarId,omitempty"`
-	Players   []PBVisionPlayer    `json:"players,omitempty"`
+	Ready     bool             `json:"ready"`
+	JobID     string           `json:"jobId,omitempty"`
+	ReportURL string           `json:"reportUrl,omitempty"`
+	TaggedID  *int             `json:"taggedAvatarId,omitempty"`
+	Players   []PBVisionPlayer `json:"players,omitempty"`
 	// SourceVideoURL is a signed playback URL for the analyzed clip (so the
 	// highlights, which are time-ranges into it, can be played inline).
-	SourceVideoURL string             `json:"sourceVideoUrl,omitempty"`
+	SourceVideoURL string `json:"sourceVideoUrl,omitempty"`
 	// SourceVideoID is the coaching_videos id of the analyzed clip, so a coach
 	// can pin feedback onto a highlight (feedback attaches to that clip).
-	SourceVideoID  string             `json:"sourceVideoId,omitempty"`
+	SourceVideoID string `json:"sourceVideoId,omitempty"`
 	// ThreadID is the coach_students thread this analysis lives in (the buyer's
 	// thread), and BuyerName is that student — so a coach-level list can label
 	// each analysis "Paid by <buyer>" and route assignments to the right thread.
-	ThreadID   string              `json:"threadId,omitempty"`
-	BuyerName  string              `json:"buyerName,omitempty"`
+	ThreadID  string `json:"threadId,omitempty"`
+	BuyerName string `json:"buyerName,omitempty"`
 	// CreatedAt is when the analysis became ready (for a date label).
 	CreatedAt  string              `json:"createdAt,omitempty"`
 	Highlights []PBVisionHighlight `json:"highlights,omitempty"`
 	// ViewerRole is "coach" or "student". A coach sees Roster + Assignments to
 	// distribute the 4 detected players across their students; a student only
 	// sees their own tagged player (TaggedID).
-	ViewerRole  string              `json:"viewerRole,omitempty"`
-	Roster      []CoachStudentBrief `json:"roster,omitempty"`
+	ViewerRole  string               `json:"viewerRole,omitempty"`
+	Roster      []CoachStudentBrief  `json:"roster,omitempty"`
 	Assignments []PBVisionAssignment `json:"assignments,omitempty"`
 	// MatchStats is the advanced team/player breakdown parsed from PB Vision's
 	// stats.json (kitchen arrival, shot distribution, rallies won, …).
@@ -1592,9 +1606,9 @@ type CoachStudentBrief struct {
 
 // PBVisionAssignment maps a detected player to a student for one analysis.
 type PBVisionAssignment struct {
-	AvatarID       int    `json:"avatarId"`
+	AvatarID        int    `json:"avatarId"`
 	StudentThreadID string `json:"studentThreadId"`
-	StudentName    string `json:"studentName"`
+	StudentName     string `json:"studentName"`
 }
 
 // PBVisionHighlight is one notable moment PB Vision flagged: a time-range
@@ -1708,21 +1722,21 @@ type CoachProfileRequest struct {
 
 // CoachingClass is a group class a coach offers that players can enroll in.
 type CoachingClass struct {
-	ID            string `json:"id"`
-	CoachID       string `json:"coachId,omitempty"`
-	CoachName     string `json:"coachName,omitempty"`
-	Title         string `json:"title"`
-	Description   string `json:"description,omitempty"`
-	StartsAt      string `json:"startsAt"`
-	EndsAt        string `json:"endsAt,omitempty"`
-	Location      string `json:"location,omitempty"`
+	ID          string `json:"id"`
+	CoachID     string `json:"coachId,omitempty"`
+	CoachName   string `json:"coachName,omitempty"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	StartsAt    string `json:"startsAt"`
+	EndsAt      string `json:"endsAt,omitempty"`
+	Location    string `json:"location,omitempty"`
 	// Lat/Lng pin the class on the player-facing map; DistanceKm is filled on
 	// "classes near me" results (km from the viewer).
-	Lat           *float64 `json:"lat,omitempty"`
-	Lng           *float64 `json:"lng,omitempty"`
-	DistanceKm    *float64 `json:"distanceKm,omitempty"`
-	Capacity      int    `json:"capacity"`
-	PriceCents    int    `json:"priceCents"`
+	Lat        *float64 `json:"lat,omitempty"`
+	Lng        *float64 `json:"lng,omitempty"`
+	DistanceKm *float64 `json:"distanceKm,omitempty"`
+	Capacity   int      `json:"capacity"`
+	PriceCents int      `json:"priceCents"`
 	// Level: '' | beginner | intermediate | advanced.
 	Level         string `json:"level,omitempty"`
 	EnrolledCount int    `json:"enrolledCount"`
@@ -1736,8 +1750,8 @@ type CoachingClass struct {
 	// CancelPolicy (flexible|moderate|strict) drives the refund/cutoff line shown
 	// to players at enroll/cancel time. Empty = flexible (cancel anytime).
 	CancelPolicy string `json:"cancelPolicy,omitempty"`
-	IsIntro    bool   `json:"isIntro"`
-	CreatedAt  string `json:"createdAt,omitempty"`
+	IsIntro      bool   `json:"isIntro"`
+	CreatedAt    string `json:"createdAt,omitempty"`
 }
 
 // CoachingEnrollment is a player's seat in a class.
@@ -1779,12 +1793,12 @@ type CoachingClassRequest struct {
 	Location    string `json:"location"`
 	// Lat/Lng are an explicit map-picker pin; when nil the service best-effort
 	// geocodes Location so the class still lands on the map.
-	Lat         *float64 `json:"lat"`
-	Lng         *float64 `json:"lng"`
-	Level       string `json:"level"`
-	Capacity    int    `json:"capacity"`
-	PriceCents  int    `json:"priceCents"`
-	IsIntro     bool   `json:"isIntro"`
+	Lat        *float64 `json:"lat"`
+	Lng        *float64 `json:"lng"`
+	Level      string   `json:"level"`
+	Capacity   int      `json:"capacity"`
+	PriceCents int      `json:"priceCents"`
+	IsIntro    bool     `json:"isIntro"`
 	// RepeatWeeks > 1 clones this class weekly for that many total weeks (each an
 	// independent class/enrollment). 0 or 1 = a one-off class.
 	RepeatWeeks int `json:"repeatWeeks"`

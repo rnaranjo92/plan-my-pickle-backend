@@ -57,11 +57,11 @@ func NewServer(svc *service.Service) http.Handler {
 	s := &Server{
 		svc:               svc,
 		phoneCheckin:      newRateLimiter(60, 60),
-		regLimiter:        newRateLimiter(40, 60), // 40 self-registrations/min per event
-		regContactLimiter: newRateLimiter(5, 600), // 5 self-registrations / 10 min per phone|email
-		passcodeLimiter:   newRateLimiter(10, 60), // 10 passcode attempts/min per event
-		socialLimiter:     newRateLimiter(30, 60), // 30 social writes/min per user
-		createLimiter:     newRateLimiter(20, 60), // 20 event/league creates/min per user
+		regLimiter:        newRateLimiter(40, 60),  // 40 self-registrations/min per event
+		regContactLimiter: newRateLimiter(5, 600),  // 5 self-registrations / 10 min per phone|email
+		passcodeLimiter:   newRateLimiter(10, 60),  // 10 passcode attempts/min per event
+		socialLimiter:     newRateLimiter(30, 60),  // 30 social writes/min per user
+		createLimiter:     newRateLimiter(20, 60),  // 20 event/league creates/min per user
 		sessionLimiter:    newRateLimiter(600, 60), // 600 checkout-session Stripe lookups/min (global, cache-miss only)
 		otpLimiter:        newRateLimiter(5, 600),  // 5 OTP sends / 10 min per user
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
@@ -617,6 +617,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /admin/blocked-contacts/{id}", s.ownerEmailOnly(s.removeBlockedContact))
 	// Instructor Mode / Coaching (Phase 1). Coach-side = instructor-gated; thread
 	// reads/writes = any authed user, membership-checked in the service.
+	mux.HandleFunc("GET /coach/settings", s.instructorOnly(s.coachSettings))
+	mux.HandleFunc("POST /coach/settings", s.instructorOnly(s.updateCoachSettings))
 	mux.HandleFunc("GET /coach/students", s.instructorOnly(s.coachStudents))
 	mux.HandleFunc("GET /coach/pbvision/analyses", s.instructorOnly(s.coachPBVisionAnalyses))
 	mux.HandleFunc("GET /coaching/threads/{id}/pbvision/raw", requireAuth(s.coachingPBVisionRaw))
@@ -5529,6 +5531,27 @@ func (s *Server) coachStudents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+func (s *Server) coachSettings(w http.ResponseWriter, r *http.Request) {
+	set, err := s.svc.GetCoachSettings(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, set)
+}
+
+func (s *Server) updateCoachSettings(w http.ResponseWriter, r *http.Request) {
+	var req model.CoachSettings
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.UpdateCoachSettings(userID(r), req); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
 	var req model.AddCoachStudentRequest
 	if !decode(w, r, &req) {
@@ -5805,8 +5828,8 @@ func (s *Server) coachingPBVisionTag(w http.ResponseWriter, r *http.Request) {
 // students (avatarId < 0 clears). One analysis can cover up to 4 students.
 func (s *Server) coachingPBVisionAssign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		JobID          string `json:"jobId"`
-		AvatarID       int    `json:"avatarId"`
+		JobID           string `json:"jobId"`
+		AvatarID        int    `json:"avatarId"`
 		StudentThreadID string `json:"studentThreadId"`
 	}
 	if !decode(w, r, &req) {

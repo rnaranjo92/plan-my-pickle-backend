@@ -352,18 +352,30 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 		}
 		return model.CoachStudent{}, errors.New("enter the student's email or phone")
 	}
-	// Already on this coach's roster (by email or phone)?
-	if email != "" {
-		if existing, _ := s.sb.SelectOne("coach_students",
-			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select=id"); existing != nil {
-			return model.CoachStudent{}, errors.New("that student is already on your roster")
-		}
+	// Already on this coach's roster? Match by email or phone. A row the student
+	// LEFT (left_at set) is HIDDEN from the roster (see activeStudentFilter), so a
+	// plain "already added" error would strand the coach with an invisible
+	// duplicate they can never re-add. Reactivate that left row instead; only an
+	// ACTIVE match is a genuine duplicate.
+	leftReady := s.columnReady("coach_students", "left_at")
+	dupSel := "id,student_id,invite_token,student_email,student_phone,student_name"
+	if leftReady {
+		dupSel += ",left_at"
 	}
-	if np != "" {
-		if existing, _ := s.sb.SelectOne("coach_students",
-			"coach_id=eq."+store.Q(coachID)+"&student_phone=eq."+store.Q(np)+"&select=id"); existing != nil {
+	var dup map[string]any
+	if email != "" {
+		dup, _ = s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_email=eq."+store.Q(email)+"&select="+dupSel)
+	}
+	if dup == nil && np != "" {
+		dup, _ = s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_phone=eq."+store.Q(np)+"&select="+dupSel)
+	}
+	if dup != nil {
+		if !leftReady || asStr(dup, "left_at") == "" {
 			return model.CoachStudent{}, errors.New("that student is already on your roster")
 		}
+		return s.reactivateLeftStudent(coachID, dup, email, np, rawPhone, name, level, phoneReady)
 	}
 	row := map[string]any{
 		"coach_id":      coachID,
@@ -416,6 +428,64 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 			"coaching:"+asStr(ins[0], "id"))
 	}
 	return mapCoachStudent(ins[0]), nil
+}
+
+// reactivateLeftStudent revives a coach_students row the student previously LEFT
+// (left_at set → hidden from the roster) instead of erroring "already added". It
+// clears left_at, refreshes name/level/contact, re-links to an account if one
+// exists now, and re-fires the invite so the student is pinged again.
+func (s *Service) reactivateLeftStudent(coachID string, row map[string]any,
+	email, np, rawPhone, name, level string, phoneReady bool) (model.CoachStudent, error) {
+	id := asStr(row, "id")
+	patch := map[string]any{"left_at": nil}
+	if name != "" {
+		patch["student_name"] = name
+	}
+	if email != "" {
+		patch["student_email"] = email
+	}
+	if phoneReady && np != "" {
+		patch["student_phone"] = np
+	}
+	if level != "" && s.columnReady("coach_students", "skill_level") {
+		patch["skill_level"] = level
+	}
+	// Re-link if the contact now maps to an account.
+	resolved := asStr(row, "student_id")
+	if resolved == "" {
+		resolved = s.userIDByEmail(email)
+		if resolved == "" && np != "" {
+			resolved = s.userIDByPhone(np)
+		}
+		if resolved != "" {
+			patch["student_id"] = resolved
+		}
+	}
+	inviteToken := asStr(row, "invite_token")
+	if resolved == "" && inviteToken == "" && s.columnReady("coach_students", "invite_token") {
+		inviteToken = newID()
+		patch["invite_token"] = inviteToken
+	}
+	if _, err := s.sb.Update("coach_students", "id=eq."+store.Q(id), patch); err != nil {
+		return model.CoachStudent{}, err
+	}
+	// Re-fire the invite on whatever channels we have (same as a fresh add).
+	if resolved == "" {
+		if email != "" {
+			go s.sendCoachInvite(coachID, email, name, inviteToken)
+		}
+		if rawPhone != "" {
+			go s.sendCoachInviteSMS(coachID, rawPhone, inviteToken)
+		}
+	} else {
+		s.notifyUser(resolved, "coaching", coachID, s.coachingName(coachID),
+			s.coachingName(coachID)+" added you as a student", "coaching:"+id)
+	}
+	fresh, err := s.sb.SelectOne("coach_students", "id=eq."+store.Q(id)+"&select=*")
+	if err != nil || fresh == nil {
+		return model.CoachStudent{}, errors.New("could not reactivate that student")
+	}
+	return mapCoachStudent(fresh), nil
 }
 
 // coachInviteURL builds the claim link. A token binds on claim regardless of the

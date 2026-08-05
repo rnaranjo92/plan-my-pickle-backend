@@ -6032,6 +6032,40 @@ func (s *Service) RecordCourtScore(eventID string, court int, tok string, t1, t2
 	return s.RecordScore(matchID, t1, t2)
 }
 
+// SetLiveScore writes the RUNNING scorebug values for an in-progress match (the
+// broadcast overlay reads these). Deliberately separate from RecordScore: it
+// never touches the final, standings-affecting team1_score/team2_score, never
+// flips the match status, and never records games — so a leaked court token or
+// a fat-fingered live tap can't corrupt results or point-differential math.
+func (s *Service) SetLiveScore(matchID string, t1, t2 int) error {
+	if t1 < 0 || t2 < 0 {
+		return errors.New("scores must be >= 0")
+	}
+	_, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
+		"live_team1":      t1,
+		"live_team2":      t2,
+		"live_updated_at": now(),
+	})
+	return err
+}
+
+// SetCourtLiveScore is the court-QR-token path for SetLiveScore: it authorizes
+// via the per-court token and targets the live game on that court (mirrors
+// RecordCourtScore's auth, minus the dispute guard since this writes no result).
+func (s *Service) SetCourtLiveScore(eventID string, court int, tok string, t1, t2 int) error {
+	if !s.VerifyCourtToken(eventID, tok) {
+		return ErrForbidden
+	}
+	matchID, err := s.liveMatchOnCourt(eventID, court)
+	if err != nil {
+		return err
+	}
+	if matchID == "" {
+		return fmt.Errorf("no game in progress on court %d", court)
+	}
+	return s.SetLiveScore(matchID, t1, t2)
+}
+
 // playerNamesByID resolves player IDs to display names for the given event.
 // Returns nil for an empty input (the common case — no lookup performed).
 func (s *Service) playerNamesByID(eventID string, ids []string) ([]string, error) {

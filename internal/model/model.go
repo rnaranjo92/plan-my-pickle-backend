@@ -892,6 +892,13 @@ type Match struct {
 	Team1Score      *int     `json:"team1Score,omitempty"`      // total points across all games
 	Team2Score      *int     `json:"team2Score,omitempty"`
 	WinningTeam     *int     `json:"winningTeam,omitempty"` // series winner (games won)
+	// LiveTeam1/LiveTeam2 are the RUNNING game score of an in-progress match,
+	// pushed point-by-point from the court scorer page for the broadcast overlay.
+	// Separate from Team1Score/Team2Score (final, standings-affecting, written
+	// only at completion) so live updates never corrupt results. Null until a
+	// scorekeeper pushes the first update.
+	LiveTeam1 *int `json:"liveTeam1,omitempty"`
+	LiveTeam2 *int `json:"liveTeam2,omitempty"`
 	// Games is the per-game breakdown for a best-of-N match (omitted for legacy
 	// single-game matches scored before per-game tracking).
 	Games      []GameScore `json:"games,omitempty"`

@@ -556,6 +556,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
 	mux.HandleFunc("POST /matches/{id}/score", s.ownerOrPasscode("match", "id", s.recordScore))
+	// Live scorebug for the broadcast overlay — running score, no result written.
+	// Same scorekeeper auth as recording: owner JWT / event passcode by match id,
+	// or the per-court QR token by event+court.
+	mux.HandleFunc("POST /matches/{id}/live-score", s.ownerOrPasscode("match", "id", s.liveScore))
+	mux.HandleFunc("POST /events/{id}/court/{n}/live-score", s.courtLiveScore)
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/unstart", s.ownerOnly("match", "id", s.unstartMatch))
@@ -3140,6 +3145,58 @@ func (s *Server) courtScore(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.svc.RecordCourtScore(
 		r.PathValue("id"), court, req.Token, req.Team1Score, req.Team2Score); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// liveScore updates the running scorebug (broadcast overlay) for a match, authed
+// by owner JWT / event passcode (via ownerOrPasscode). Writes no result and
+// never changes match status — just the live_team1/live_team2 columns.
+func (s *Server) liveScore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Team1 int `json:"team1"`
+		Team2 int `json:"team2"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.regLimiter.allow("livescore:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("too many score updates, slow down"))
+		return
+	}
+	if err := s.svc.SetLiveScore(r.PathValue("id"), req.Team1, req.Team2); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// courtLiveScore is the court-QR-token path for liveScore: it targets the live
+// game on a court, authed by the per-court token in the body (public route).
+func (s *Server) courtLiveScore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"courtToken"`
+		Team1 int    `json:"team1"`
+		Team2 int    `json:"team2"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	court, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || court < 1 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid court number"))
+		return
+	}
+	if !s.regLimiter.allow("courtlivescore:" + r.PathValue("id")) {
+		writeErr(w, http.StatusTooManyRequests,
+			errors.New("too many score updates, slow down"))
+		return
+	}
+	if err := s.svc.SetCourtLiveScore(
+		r.PathValue("id"), court, req.Token, req.Team1, req.Team2); err != nil {
 		status(w, err)
 		return
 	}

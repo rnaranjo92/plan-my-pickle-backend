@@ -517,6 +517,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /freebies/{id}", s.ownerOnly("freebie", "id", s.deleteFreebie))
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/manual-game", s.ownerOnly("event", "id", s.manualGame))
+	mux.HandleFunc("POST /events/{id}/format", s.ownerOnly("event", "id", s.changeEventFormat))
 	mux.HandleFunc("POST /events/{id}/clear-arrangement", s.ownerOnly("event", "id", s.clearArrangement))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
@@ -3486,6 +3487,30 @@ func (s *Server) notifyScheduleDelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"push": push, "sms": sms})
+}
+
+// changeEventFormat switches an existing event's draw format and rebuilds the
+// draw (owner only). This is destructive — it wipes the current draw + scores —
+// so the app confirms with the organizer before calling it.
+func (s *Server) changeEventFormat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Format  string `json:"format"`
+		Arrange *bool  `json:"arrange"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	arrange := req.Arrange == nil || *req.Arrange
+	res, err := s.svc.ChangeEventFormat(r.PathValue("id"), req.Format, userID(r), arrange)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	if res.Matches > 0 {
+		s.svc.AddFeedItem(r.PathValue("id"), "schedule_posted",
+			fmt.Sprintf("Format changed — %d matches", res.Matches), "")
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {

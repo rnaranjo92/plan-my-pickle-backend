@@ -5917,6 +5917,50 @@ func (s *Service) ClearArrangement(eventID string) error {
 	return err
 }
 
+// validTournamentFormat mirrors the frontend picker + the GenerateSchedule
+// branches. (Team/MLP structure is fixed by roster, not tournament_format.)
+func validTournamentFormat(tf string) bool {
+	switch tf {
+	case "round_robin", "single_elim", "double_elim", "pools_playoff", "compass":
+		return true
+	}
+	return false
+}
+
+// ChangeEventFormat switches an existing event's draw format after creation
+// (e.g. round_robin → pools_playoff) and rebuilds the draw in the new format.
+// This is intentionally NOT part of UpdateEvent, which leaves format fixed. It
+// wipes the current draw and any recorded scores (GenerateSchedule force=true),
+// so the caller MUST have warned the organizer first. Returns the new draw's
+// ScheduleResult. Team events are rejected — their lines come from rosters.
+func (s *Service) ChangeEventFormat(eventID, newFormat, ownerID string, arrange bool) (model.ScheduleResult, error) {
+	newFormat = strings.TrimSpace(newFormat)
+	if !validTournamentFormat(newFormat) {
+		return model.ScheduleResult{}, fmt.Errorf("unknown tournament format %q", newFormat)
+	}
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	if ev.TeamSize > 0 {
+		return model.ScheduleResult{}, errors.New("team events don't use a draw format")
+	}
+	// Premium-gate advanced draws, mirroring the create-time gate.
+	if premiumTournamentFormat(newFormat) && !s.IsPremium(ownerID) {
+		return model.ScheduleResult{}, ErrPremiumRequired
+	}
+	if ev.TournamentFormat == newFormat {
+		return model.ScheduleResult{}, nil // no-op — nothing to rebuild
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"tournament_format": newFormat}); err != nil {
+		return model.ScheduleResult{}, err
+	}
+	// Rebuild the draw in the new format. force=true wipes the old matches +
+	// scores (GenerateSchedule reads the just-updated tournament_format).
+	return s.GenerateSchedule(eventID, true, arrange)
+}
+
 // DeleteMatch removes a single SCHEDULED, non-bracket match (its participants +
 // any dupr_submissions row cascade via the FK). Powers the edit-match sheet's
 // Delete. Completed/bracket matches are rejected — deleting a scored match would

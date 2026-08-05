@@ -1812,6 +1812,120 @@ func (s *Service) seedPBVisionReport(threadID string, rating float64, syncedAt s
 	})
 }
 
+// seedPBVisionJob inserts a canned status='ready' analysis job for a demo thread
+// so the PB Vision tab's rich visuals — the detected-player picker and the team
+// match-stats — render on seeded data. (The rating hero + history come from
+// coaching_pbvision / _reports separately.) sourceVideoID points at one of the
+// thread's clips; the highlights list only *plays* when that clip is signable,
+// and the seeded sample clips live outside the coaching bucket, so highlights
+// parse but stay hidden — the player picker + match stats are the marquee
+// visuals this unblocks. Shapes mirror the real PB Vision payload exactly (see
+// parsePBVisionPlayers / parsePBVisionMatchStats).
+func (s *Service) seedPBVisionJob(threadID, sourceVideoID string) {
+	if !s.pbvisionJobsReady() || threadID == "" {
+		return
+	}
+	// A kitchen-arrival tree: serving/returning × oneself/partner (num/den).
+	ka := func(so, sod, sp, spd, ro, rod, rp, rpd float64) map[string]any {
+		leaf := func(n, d float64) map[string]any {
+			return map[string]any{"numerator": n, "denominator": d}
+		}
+		return map[string]any{
+			"serving":   map[string]any{"oneself": leaf(so, sod), "partner": leaf(sp, spd)},
+			"returning": map[string]any{"oneself": leaf(ro, rod), "partner": leaf(rp, rpd)},
+		}
+	}
+	// A per-shot-type stat block: count, quality, outcome %, avg speed.
+	shot := func(count int, q, succ, won, speed float64) map[string]any {
+		return map[string]any{
+			"count":           count,
+			"average_quality": q,
+			"outcome_stats":   map[string]any{"success_percentage": succ, "rally_won_percentage": won},
+			"speed_stats":     map[string]any{"average": speed},
+		}
+	}
+	ka0 := ka(18, 22, 16, 22, 20, 24, 19, 24)
+	ka1 := ka(16, 22, 18, 22, 18, 24, 20, 24)
+	ka2 := ka(15, 23, 14, 23, 17, 25, 16, 25)
+	ka3 := ka(14, 23, 15, 23, 16, 25, 17, 25)
+
+	// insights.player_data — feeds the detected-player picker.
+	playerData := []map[string]any{
+		{"avatar_id": 0, "team": 0, "shot_count": 142, "left_side_percentage": 38, "total_team_shot_percentage": 52, "kitchen_arrival_percentage": ka0},
+		{"avatar_id": 1, "team": 0, "shot_count": 131, "left_side_percentage": 62, "total_team_shot_percentage": 48, "kitchen_arrival_percentage": ka1},
+		{"avatar_id": 2, "team": 1, "shot_count": 128, "left_side_percentage": 45, "total_team_shot_percentage": 51, "kitchen_arrival_percentage": ka2},
+		{"avatar_id": 3, "team": 1, "shot_count": 119, "left_side_percentage": 55, "total_team_shot_percentage": 49, "kitchen_arrival_percentage": ka3},
+	}
+	highlights := []map[string]any{
+		{"s": 800, "e": 3200, "kind": "rally", "short_description": "Long hands battle at the net — reset under pressure"},
+		{"s": 3600, "e": 5200, "kind": "winner", "short_description": "Third-shot drop, advance, and put-away"},
+		{"s": 5600, "e": 7400, "kind": "speedup", "short_description": "Speed-up won at the kitchen line"},
+	}
+
+	// stats.players — feeds the team match-stats breakdown. Rally-won bands are
+	// team-level (repeated for both players on a team).
+	player := func(team, shots, speedups int, shotPct, leftPct, quality, shortW, medW, longW float64, kap map[string]any, shots2 map[string]any) map[string]any {
+		p := map[string]any{
+			"team":                           team,
+			"kitchen_arrival_percentage":     kap,
+			"team_shot_percentage":           shotPct,
+			"team_left_side_percentage":      leftPct,
+			"shot_count":                     shots,
+			"average_shot_quality":           quality,
+			"speedups":                       map[string]any{"count": speedups},
+			"team_short_length_rallies_won":  shortW,
+			"team_medium_length_rallies_won": medW,
+			"team_long_length_rallies_won":   longW,
+		}
+		for k, v := range shots2 {
+			p[k] = v
+		}
+		return p
+	}
+	statsPlayers := []map[string]any{
+		player(0, 142, 5, 52, 38, 3.6, 9, 7, 4, ka0, map[string]any{
+			"serves": shot(21, 3.6, 96, 44, 34), "returns": shot(19, 3.5, 92, 47, 41),
+			"dinks": shot(38, 3.9, 88, 58, 18), "drops": shot(14, 3.1, 71, 52, 22),
+			"drives": shot(12, 3.3, 66, 49, 39), "thirds": shot(16, 3.2, 74, 51, 28),
+		}),
+		player(0, 131, 3, 48, 62, 3.3, 9, 7, 4, ka1, map[string]any{
+			"serves": shot(20, 3.3, 90, 41, 33), "returns": shot(18, 3.2, 86, 43, 40),
+			"dinks": shot(31, 3.5, 82, 53, 17), "drops": shot(13, 2.9, 66, 47, 21),
+			"drives": shot(15, 3.4, 69, 51, 41), "thirds": shot(14, 3.0, 70, 48, 27),
+		}),
+		player(1, 128, 4, 51, 45, 3.2, 6, 4, 2, ka2, map[string]any{
+			"serves": shot(19, 3.2, 89, 39, 32), "returns": shot(17, 3.1, 84, 40, 39),
+			"dinks": shot(29, 3.3, 79, 48, 16), "drops": shot(12, 2.8, 63, 44, 20),
+			"drives": shot(16, 3.3, 67, 50, 42), "thirds": shot(13, 2.9, 68, 45, 26),
+		}),
+		player(1, 119, 2, 49, 55, 3.0, 6, 4, 2, ka3, map[string]any{
+			"serves": shot(18, 3.0, 87, 37, 31), "returns": shot(16, 2.9, 82, 38, 38),
+			"dinks": shot(27, 3.1, 76, 45, 15), "drops": shot(11, 2.7, 61, 42, 19),
+			"drives": shot(14, 3.1, 64, 47, 40), "thirds": shot(12, 2.8, 66, 43, 25),
+		}),
+	}
+	game := map[string]any{
+		"avg_shots":                  7.3,
+		"kitchen_rallies":            41,
+		"game_outcome":               []float64{11, 7},
+		"team_percentage_to_kitchen": []float64{0.86, 0.79},
+		"longest_rally":              map[string]any{"num_shots": 24},
+	}
+
+	row := map[string]any{
+		"vid":              "seed-job-" + threadID,
+		"coach_student_id": threadID,
+		"status":           "ready",
+		"insights":         map[string]any{"player_data": playerData, "highlights": highlights},
+		"stats":            map[string]any{"game": game, "players": statsPlayers},
+		"updated_at":       time.Now().UTC().Format(time.RFC3339),
+	}
+	if sourceVideoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		row["source_video_id"] = sourceVideoID
+	}
+	_, _ = s.sb.Upsert("coaching_pbvision_jobs", "vid", row)
+}
+
 // --- Multi-week training programs ---
 
 func (s *Service) programsReady() bool {
@@ -3196,6 +3310,9 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 		taylorID = t
 		v := addClip(t, seedVideoURLs[0], "Hands battle at the net")
 		addFeedback(t, v, "coach", "Love the quick hands. Reset when it's above the net — don't counter everything.")
+		// Canned ready analysis so the PB Vision tab's player picker + match
+		// stats render on demo data (summary/history seeded separately below).
+		s.seedPBVisionJob(t, v)
 	}
 
 	// Real coach↔student link: connect the running coach (krizhia when she runs
@@ -3227,6 +3344,9 @@ func (s *Service) SeedCoachingTestData(coachID string) (int, error) {
 			addClipNote(rid, v1, "He rushes the kitchen after the drop — cue the freeze.")
 			v2 := addClip(rid, seedVideoURLs[1], "Dinking cross-court")
 			addFeedback(rid, v2, "coach", "Good patience here. Keep the paddle up between dinks.")
+			// Ready analysis so rolando's live login also shows the PB Vision
+			// player picker + match stats (great for the two-device demo).
+			s.seedPBVisionJob(rid, v1)
 
 			if s.columnReady("coaching_skill_ratings", "id") {
 				ratings := map[string]float64{

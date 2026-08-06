@@ -262,6 +262,11 @@ func (s *Service) cloneEventOccurrence(headID string, startsAt, endsAt time.Time
 			}
 		}
 	}
+	// Membership league: seed the new weekly session's court count + auto-roster
+	// every active member into it (best-effort, off the request path).
+	if lid, _ := payload["league_id"].(string); lid != "" {
+		go s.applyLeagueSessionDefaults(lid, newID)
+	}
 	// Publish to the feed like a normal create.
 	s.ensureEventPosts([]string{newID})
 	return newID, nil

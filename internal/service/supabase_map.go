@@ -273,6 +273,7 @@ func mapLeague(m map[string]any) model.League {
 		Location:        asStrPtr(m, "location"),
 		CoachLed:        asBool(m, "coach_led"),
 		CoachID:         asStrPtr(m, "coach_id"),
+		CourtCount:      asIntPtr(m, "court_count"),
 	}
 	// Ladder rule config rides along on ladder-type leagues (0068 columns; absent
 	// pre-migration → the defaults below fill in).

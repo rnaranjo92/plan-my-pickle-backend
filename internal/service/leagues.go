@@ -83,6 +83,10 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 		payload["coach_led"] = true
 		payload["coach_id"] = ownerID
 	}
+	if req.CourtCount != nil && *req.CourtCount > 0 &&
+		s.columnReady("leagues", "court_count") {
+		payload["court_count"] = *req.CourtCount
+	}
 	rows, err := s.sb.Insert("leagues", payload)
 	if err != nil {
 		return "", err
@@ -587,6 +591,8 @@ func (s *Service) AddEventToLeague(leagueID, eventID string) error {
 	if coachID := s.leagueCoach(leagueID); coachID != "" {
 		go s.enrollLeaguePlayersForEvent(coachID, eventID)
 	}
+	// Membership league: seed the session's court count + auto-roster members.
+	go s.applyLeagueSessionDefaults(leagueID, eventID)
 	return nil
 }
 

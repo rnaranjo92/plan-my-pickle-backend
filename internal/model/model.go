@@ -274,6 +274,23 @@ type League struct {
 	// tab. CoachID is that coach (the league owner). CoachLed=false when off.
 	CoachLed bool    `json:"coachLed"`
 	CoachID  *string `json:"coachId,omitempty"`
+	// CourtCount is the default number of courts the league's sessions schedule
+	// on (a "New session" seeds its num_courts from this). Nil = per-session.
+	CourtCount *int `json:"courtCount,omitempty"`
+}
+
+// LeagueMember is someone who joined a league once and is auto-rostered into
+// every session. Added by name + email/phone, invited by text/email, claimed by
+// token → UserID set (mirrors CoachStudent).
+type LeagueMember struct {
+	ID        string `json:"id"`
+	LeagueID  string `json:"leagueId"`
+	UserID    string `json:"userId,omitempty"`
+	FullName  string `json:"fullName"`
+	Email     string `json:"email,omitempty"`
+	Phone     string `json:"phone,omitempty"`
+	Linked    bool   `json:"linked"` // has a resolved account
+	CreatedAt string `json:"createdAt"`
 }
 
 // LeagueVideo is a clip a league member posted to the league's video feed.
@@ -307,6 +324,8 @@ type CreateLeagueRequest struct {
 	// CoachLed makes this a coach-led league (instructor owners only): every
 	// registrant is auto-enrolled as the owner's coaching student.
 	CoachLed bool `json:"coachLed"`
+	// CourtCount is the default court count the league's sessions schedule on.
+	CourtCount *int `json:"courtCount,omitempty"`
 	// Divisions are the league's brackets (skill/age/DUPR bands). Empty creates
 	// a single "Open" division by default (mirrors event creation).
 	Divisions []LeagueBracketInput `json:"divisions"`

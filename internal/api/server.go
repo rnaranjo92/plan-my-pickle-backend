@@ -298,6 +298,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
 	mux.HandleFunc("GET /leagues/{id}/videos", s.leagueViewer("id", s.leagueVideos))
 	mux.HandleFunc("POST /leagues/{id}/videos", requireAuth(s.addLeagueVideo))
+	mux.HandleFunc("GET /leagues/{id}/members", s.leagueViewer("id", s.leagueMembers))
+	mux.HandleFunc("POST /leagues/{id}/members", s.ownerOnly("league", "id", s.addLeagueMember))
+	mux.HandleFunc("DELETE /leagues/{id}/members/{memberId}", s.ownerOnly("league", "id", s.removeLeagueMember))
+	mux.HandleFunc("POST /leagues/claim", requireAuth(s.claimLeagueInvite))
 	// Set/clear the league banner (the client uploaded the image to Storage; this
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
@@ -1222,6 +1226,57 @@ func (s *Server) addLeagueVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) leagueMembers(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListLeagueMembers(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addLeagueMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FullName string `json:"fullName"`
+		Email    string `json:"email"`
+		Phone    string `json:"phone"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	m, err := s.svc.AddLeagueMember(r.PathValue("id"), userID(r),
+		req.FullName, req.Email, req.Phone)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) removeLeagueMember(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveLeagueMember(r.PathValue("id"),
+		r.PathValue("memberId"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) claimLeagueInvite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	leagueID, err := s.svc.ClaimLeagueInvite(userID(r), req.Token)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"leagueId": leagueID})
 }
 
 // listLadder returns a division's ladder, ordered by position (1 = top). This is

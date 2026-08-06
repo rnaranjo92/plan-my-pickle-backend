@@ -545,6 +545,8 @@ func mapFeedItem(m map[string]any) model.FeedItem {
 	if meta := asMap(m, "meta"); meta != nil {
 		fi.PosterURL = asStrPtr(meta, "poster_url")
 		fi.StartsAt = asStrPtr(meta, "starts_at")
+		fi.MediaURL = asStrPtr(meta, "media_url")
+		fi.MediaType = asStrPtr(meta, "media_type")
 	}
 	return fi
 }

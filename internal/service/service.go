@@ -10294,20 +10294,29 @@ func (s *Service) AccountExists(email string) bool {
 // PostAnnouncement adds an organizer announcement to the feed. When notify is
 // true, it also pushes the announcement to the event's registered players (off
 // the request path).
-func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool) (model.FeedItem, error) {
+func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	mediaURL = strings.TrimSpace(mediaURL)
+	// A post needs either words or an attachment.
+	if text == "" && mediaURL == "" {
 		return model.FeedItem{}, errors.New("post text is required")
 	}
 	if r := []rune(text); len(r) > 1000 {
 		text = string(r[:1000])
 	}
-	rows, err := s.sb.Insert("feed_items", map[string]any{
+	row := map[string]any{
 		"event_id":   eventID,
 		"type":       "announcement",
 		"text":       text,
 		"actor_name": orNull(actorName),
-	})
+	}
+	if mediaURL != "" {
+		if mediaType != "video" && mediaType != "image" {
+			mediaType = "video"
+		}
+		row["meta"] = map[string]any{"media_url": mediaURL, "media_type": mediaType}
+	}
+	rows, err := s.sb.Insert("feed_items", row)
 	if err != nil {
 		return model.FeedItem{}, err
 	}
@@ -10315,7 +10324,12 @@ func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool)
 		return model.FeedItem{}, errors.New("feed insert returned no row")
 	}
 	if notify {
-		go s.notifyEventPlayers(eventID, text)
+		// Media-only posts still ping players with a sensible line.
+		push := text
+		if push == "" {
+			push = "Posted a video"
+		}
+		go s.notifyEventPlayers(eventID, push)
 	}
 	return mapFeedItem(rows[0]), nil
 }

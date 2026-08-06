@@ -2194,6 +2194,10 @@ type FeedItem struct {
 	// the card can show the poster + date without a second fetch.
 	PosterURL *string `json:"posterUrl,omitempty"`
 	StartsAt  *string `json:"startsAt,omitempty"`
+	// MediaURL + MediaType attach an uploaded photo/video to an announcement post
+	// (also stashed in the item's meta JSON). MediaType is "video" or "image".
+	MediaURL  *string `json:"mediaUrl,omitempty"`
+	MediaType *string `json:"mediaType,omitempty"`
 	// EventName is the parent event's name. Attached only by MyFeed (the app's
 	// NewsFeed aggregates activity across many events and needs the label);
 	// empty on the per-event feed where the event is already in context.
@@ -2212,6 +2216,10 @@ type FeedPostRequest struct {
 	// Notify: also push this announcement to the event's registered players
 	// (linked accounts). Off = the post only appears in the Feed tab.
 	Notify bool `json:"notify"`
+	// MediaURL + MediaType attach an uploaded video (or image) to the post. A
+	// post may be media-only (empty Text). MediaType is "video" or "image".
+	MediaURL  string `json:"mediaUrl"`
+	MediaType string `json:"mediaType"`
 }
 
 // ReactionRequest toggles a reaction of Type on a feed item.

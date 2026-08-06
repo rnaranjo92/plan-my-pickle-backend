@@ -5370,7 +5370,7 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	item, err := s.svc.PostAnnouncement(r.PathValue("id"), req.Text, "Organizer", req.Notify)
+	item, err := s.svc.PostAnnouncement(r.PathValue("id"), req.Text, "Organizer", req.Notify, req.MediaURL, req.MediaType)
 	if err != nil {
 		status(w, err)
 		return

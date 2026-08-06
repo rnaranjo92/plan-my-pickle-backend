@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
@@ -280,7 +281,7 @@ func (s *Service) applyLeagueSessionDefaults(leagueID, eventID string) {
 // only. Best used BEFORE the draw is generated; if a draw already exists, the
 // organizer should regenerate it so the new pairing lands in the matches.
 func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email, phone string) (model.Registration, error) {
-	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=owner_id")
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=owner_id,perpetual")
 	if err != nil {
 		return model.Registration{}, err
 	}
@@ -290,6 +291,12 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 	if asStr(ev, "owner_id") != ownerID {
 		return model.Registration{}, ErrForbidden
 	}
+	// A perpetual (recurring-league) event is ONE ongoing tournament, so the
+	// absent member stays permanently rostered — we just bench them for today
+	// (uncheck) rather than delete their registration, and check the sub IN so
+	// today's draw picks them up. A normal session event still removes the out
+	// player (that session is discardable).
+	perpetual := asBool(ev, "perpetual")
 	if strings.TrimSpace(name) == "" {
 		return model.Registration{}, errors.New("enter the substitute's name")
 	}
@@ -315,8 +322,21 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 	if err != nil {
 		return model.Registration{}, err
 	}
-	// Remove the out player's registration for THIS session only.
-	_ = s.sb.Delete("registrations", "id=eq."+store.Q(asStr(reg, "id")))
+	if perpetual {
+		// Bench the member for today (stay rostered) and mark the sub present so
+		// the day's schedule includes them. Clear the member's partner link since
+		// the sub takes that slot below.
+		_, _ = s.sb.Update("registrations", "id=eq."+store.Q(asStr(reg, "id")),
+			map[string]any{"checked_in": false, "checked_in_at": nil, "partner_id": nil})
+		_, _ = s.sb.Update("registrations", "id=eq."+store.Q(sub.ID),
+			map[string]any{
+				"checked_in":    true,
+				"checked_in_at": time.Now().UTC().Format(time.RFC3339),
+			})
+	} else {
+		// Normal session event: remove the out player's registration entirely.
+		_ = s.sb.Delete("registrations", "id=eq."+store.Q(asStr(reg, "id")))
+	}
 	// Preserve the doubles pairing: the sub takes the out player's partner slot.
 	if partnerID != "" {
 		_, _ = s.sb.Update("registrations", "id=eq."+store.Q(sub.ID),

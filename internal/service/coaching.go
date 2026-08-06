@@ -48,6 +48,17 @@ func (s *Service) phoneOf(userID string) string {
 	return ""
 }
 
+// emailOf returns a user's account email (lowercased), or "" if unknown.
+func (s *Service) emailOf(userID string) string {
+	if userID == "" {
+		return ""
+	}
+	if u, err := s.sb.GetAuthUser(userID); err == nil && u != nil {
+		return strings.ToLower(strings.TrimSpace(asStr(u, "email")))
+	}
+	return ""
+}
+
 // Instructor Mode — Phase 1: coach↔student video feedback.
 //
 // A coach keeps a roster (coach_students) and, per student, a thread of clips

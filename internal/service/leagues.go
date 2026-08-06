@@ -75,6 +75,14 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 		}
 		payload["ladder_format"] = format
 	}
+	// Coach-led league (instructor owners only): auto-enroll every registrant as
+	// the owner's coaching student. Gate on the column + the owner actually being
+	// a coach, so a non-instructor can't create dormant enrollments they can't see.
+	if req.CoachLed && s.columnReady("leagues", "coach_led") &&
+		s.IsInstructor(ownerID, s.emailOf(ownerID)) {
+		payload["coach_led"] = true
+		payload["coach_id"] = ownerID
+	}
 	rows, err := s.sb.Insert("leagues", payload)
 	if err != nil {
 		return "", err
@@ -574,7 +582,76 @@ func (s *Service) AddEventToLeague(leagueID, eventID string) error {
 	if len(rows) == 0 {
 		return ErrNotFound
 	}
+	// Coach-led league: enroll the session's existing registrants as the coach's
+	// students (new registrants get enrolled at RegisterPlayer time). Best-effort.
+	if coachID := s.leagueCoach(leagueID); coachID != "" {
+		go s.enrollLeaguePlayersForEvent(coachID, eventID)
+	}
 	return nil
+}
+
+// leagueCoach returns the coach id of a coach-led league, or "" if the league
+// isn't coach-led (or the column doesn't exist yet).
+func (s *Service) leagueCoach(leagueID string) string {
+	if leagueID == "" || !s.columnReady("leagues", "coach_led") {
+		return ""
+	}
+	lg, _ := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=coach_led,coach_id")
+	if lg == nil || !asBool(lg, "coach_led") {
+		return ""
+	}
+	return asStr(lg, "coach_id")
+}
+
+// maybeEnrollLeagueCoachStudent enrolls a single new registrant as a coaching
+// student IF their event belongs to a coach-led league. Called off the register
+// path — best-effort, so a guest with no email/phone simply isn't enrollable.
+func (s *Service) maybeEnrollLeagueCoachStudent(eventID, email, phone, name string) {
+	if !s.coachingReady() || eventID == "" {
+		return
+	}
+	ev, _ := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
+	if ev == nil {
+		return
+	}
+	coachID := s.leagueCoach(asStr(ev, "league_id"))
+	if coachID == "" {
+		return
+	}
+	_, _ = s.AddCoachStudent(coachID, email, phone, name, "")
+}
+
+// enrollLeaguePlayersForEvent enrolls every current registrant of an event as
+// the coach's student (used when a session with players is linked to a coach-led
+// league). Best-effort; AddCoachStudent dedupes and reactivates.
+func (s *Service) enrollLeaguePlayersForEvent(coachID, eventID string) {
+	if !s.coachingReady() || coachID == "" || eventID == "" {
+		return
+	}
+	regs, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&select=player_id")
+	if err != nil {
+		return
+	}
+	ids := make([]string, 0, len(regs))
+	for _, r := range regs {
+		if pid := asStr(r, "player_id"); pid != "" {
+			ids = append(ids, pid)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	players, err := s.sb.Select("players",
+		"id="+store.In(ids)+"&select=full_name,email,phone")
+	if err != nil {
+		return
+	}
+	for _, p := range players {
+		_, _ = s.AddCoachStudent(coachID,
+			asStr(p, "email"), asStr(p, "phone"), asStr(p, "full_name"), "")
+	}
 }
 
 // RemoveEventFromLeague unlinks an event from a league. It only clears the link

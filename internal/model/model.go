@@ -269,6 +269,11 @@ type League struct {
 	Ladder *LadderConfig `json:"ladder,omitempty"`
 	// Location is a free-text venue/place for the league (esp. ladders).
 	Location *string `json:"location,omitempty"`
+	// CoachLed marks a league whose owner (a coach) auto-enrolls every registrant
+	// as a coaching student, so they can give per-player feedback from the Coach
+	// tab. CoachID is that coach (the league owner). CoachLed=false when off.
+	CoachLed bool    `json:"coachLed"`
+	CoachID  *string `json:"coachId,omitempty"`
 }
 
 // CreateLeagueRequest is the create-payload for a league.
@@ -288,6 +293,9 @@ type CreateLeagueRequest struct {
 	Ladder *LadderConfig `json:"ladder,omitempty"`
 	// Location is a free-text venue/place for the league (optional).
 	Location string `json:"location"`
+	// CoachLed makes this a coach-led league (instructor owners only): every
+	// registrant is auto-enrolled as the owner's coaching student.
+	CoachLed bool `json:"coachLed"`
 	// Divisions are the league's brackets (skill/age/DUPR bands). Empty creates
 	// a single "Open" division by default (mirrors event creation).
 	Divisions []LeagueBracketInput `json:"divisions"`

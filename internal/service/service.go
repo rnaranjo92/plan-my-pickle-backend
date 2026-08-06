@@ -4775,6 +4775,9 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	if req.Self {
 		go s.notifyOrganizerNewRegistration(eventID, req.FullName, linkUserID, needsApproval)
 	}
+	// Coach-led league: auto-enroll this registrant as the league coach's student
+	// (no-op unless the event belongs to a coach-led league). Off the request path.
+	go s.maybeEnrollLeagueCoachStudent(eventID, req.Email, req.Phone, req.FullName)
 	return model.Registration{
 		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,

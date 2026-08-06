@@ -18,7 +18,7 @@ func TestServiceFeedAndHelpers(t *testing.T) {
 	_ = s.countRows("registrations", "event_id=eq.e1", "id")
 	_, _ = s.completedMatchCount("e1")
 	_, _ = s.courtIDsByNumber("e1")
-	_, _ = s.bracketRegs("e1", "b1")
+	_, _ = s.bracketRegs("e1", "b1", false)
 	_, _ = s.bracketStarted("b1")
 	_, _ = s.clubOwner("cl1")
 	_, _ = s.PlayerProfile("p1", "")

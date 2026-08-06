@@ -5581,7 +5581,7 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 	total := 0
 	var droppedIDs []string
 	for _, b := range bks {
-		regs, err := s.bracketRegs(eventID, b.ID)
+		regs, err := s.bracketRegs(eventID, b.ID, ev.Perpetual)
 		if err != nil {
 			return model.ScheduleResult{}, err
 		}
@@ -7799,7 +7799,7 @@ func (s *Service) seedTopTeams(ev model.Event, eventID, bracketID, seeding strin
 	if err != nil {
 		return nil, err
 	}
-	regs, err := s.bracketRegs(eventID, bracketID)
+	regs, err := s.bracketRegs(eventID, bracketID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -12882,12 +12882,18 @@ type reg struct {
 	partnerID string
 }
 
-func (s *Service) bracketRegs(eventID, bracketID string) ([]reg, error) {
+func (s *Service) bracketRegs(eventID, bracketID string, checkedInOnly bool) ([]reg, error) {
 	q := "event_id=eq." + store.Q(eventID) + "&bracket_id=eq." + store.Q(bracketID) +
 		"&select=id,player_id,partner_id"
 	// Keep not-yet-approved entries out of the draw (column-guarded for pre-migration).
 	if s.columnReady("registrations", "approved") {
 		q += "&approved=is.true"
+	}
+	// Perpetual (recurring-league) sessions build only from who's CHECKED IN
+	// today — absent members are benched and subs are checked in, so the day's
+	// draw reflects the actual lineup.
+	if checkedInOnly {
+		q += "&checked_in=is.true"
 	}
 	rows, err := s.sb.Select("registrations", q)
 	if err != nil {

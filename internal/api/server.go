@@ -298,6 +298,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
 	mux.HandleFunc("GET /leagues/{id}/videos", s.leagueViewer("id", s.leagueVideos))
 	mux.HandleFunc("POST /leagues/{id}/videos", requireAuth(s.addLeagueVideo))
+	mux.HandleFunc("POST /leagues/{id}/schedule", s.ownerOnly("league", "id", s.setLeagueSchedule))
+	mux.HandleFunc("DELETE /leagues/{id}/schedule", s.ownerOnly("league", "id", s.clearLeagueSchedule))
 	mux.HandleFunc("GET /leagues/{id}/members", s.leagueViewer("id", s.leagueMembers))
 	mux.HandleFunc("POST /leagues/{id}/members", s.ownerOnly("league", "id", s.addLeagueMember))
 	mux.HandleFunc("DELETE /leagues/{id}/members/{memberId}", s.ownerOnly("league", "id", s.removeLeagueMember))
@@ -524,6 +526,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/schedule", s.ownerOnly("event", "id", s.schedule))
 	mux.HandleFunc("POST /events/{id}/manual-game", s.ownerOnly("event", "id", s.manualGame))
 	mux.HandleFunc("POST /events/{id}/format", s.ownerOnly("event", "id", s.changeEventFormat))
+	mux.HandleFunc("POST /events/{id}/substitute", s.ownerOnly("event", "id", s.substituteInSession))
 	mux.HandleFunc("POST /events/{id}/clear-arrangement", s.ownerOnly("event", "id", s.clearArrangement))
 	mux.HandleFunc("POST /events/{id}/auto-schedule", s.ownerOnly("event", "id", s.autoSchedule))
 	mux.HandleFunc("POST /events/{id}/game-duration", s.ownerOnly("event", "id", s.setGameDuration))
@@ -1226,6 +1229,31 @@ func (s *Server) addLeagueVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) setLeagueSchedule(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		StartsAt   string `json:"startsAt"`
+		CourtCount int    `json:"courtCount"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	e, err := s.svc.SetLeagueSchedule(r.PathValue("id"), userID(r),
+		req.StartsAt, req.CourtCount)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
+}
+
+func (s *Server) clearLeagueSchedule(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearLeagueSchedule(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) leagueMembers(w http.ResponseWriter, r *http.Request) {
@@ -3594,6 +3622,27 @@ func (s *Server) changeEventFormat(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Format changed — %d matches", res.Matches), "")
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// substituteInSession swaps one player out of a single session and a sub in for
+// that night (owner only). Powers the league sub flow.
+func (s *Server) substituteInSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OutPlayerId string `json:"outPlayerId"`
+		Name        string `json:"name"`
+		Email       string `json:"email"`
+		Phone       string `json:"phone"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	reg, err := s.svc.SubstituteInSession(r.PathValue("id"), userID(r),
+		req.OutPlayerId, req.Name, req.Email, req.Phone)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reg)
 }
 
 func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {

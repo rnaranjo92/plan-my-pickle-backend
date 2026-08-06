@@ -596,6 +596,118 @@ func (s *Service) AddEventToLeague(leagueID, eventID string) error {
 	return nil
 }
 
+func (s *Service) leagueRecurrenceReady() bool {
+	return s.columnReady("leagues", "recurs")
+}
+
+// SetLeagueSchedule puts a league on a recurring weekly schedule: it creates (or
+// re-times) ONE recurring Round-Robin session anchored at startsAt (RFC3339 UTC),
+// repeating every 7 days, open-ended ("forever"). The recurrence materializer
+// spawns each week's session and auto-rosters the league's members. Owner only.
+func (s *Service) SetLeagueSchedule(leagueID, ownerID, startsAt string, courtCount int) (model.Event, error) {
+	if !s.leagueRecurrenceReady() {
+		return model.Event{}, errors.New("league scheduling isn't available yet")
+	}
+	startsAt = strings.TrimSpace(startsAt)
+	if startsAt == "" {
+		return model.Event{}, errors.New("pick a day and time")
+	}
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=owner_id,name,recur_event_id,court_count")
+	if err != nil {
+		return model.Event{}, err
+	}
+	if lg == nil {
+		return model.Event{}, ErrNotFound
+	}
+	if asStr(lg, "owner_id") != ownerID {
+		return model.Event{}, ErrForbidden
+	}
+	if courtCount <= 0 {
+		courtCount = asInt(lg, "court_count")
+	}
+	if courtCount <= 0 {
+		courtCount = 1
+	}
+	// Re-time the existing recurring session if it's still around.
+	if existing := asStr(lg, "recur_event_id"); existing != "" {
+		if ev, _ := s.sb.SelectOne("events",
+			"id=eq."+store.Q(existing)+"&select=id"); ev != nil {
+			if _, err := s.sb.Update("events", "id=eq."+store.Q(existing),
+				map[string]any{
+					"starts_at":           startsAt,
+					"recur_interval_days": 7,
+					"num_courts":          courtCount,
+				}); err != nil {
+				return model.Event{}, err
+			}
+			_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+				map[string]any{"recurs": true, "recur_start_at": startsAt})
+			e, _ := s.GetEvent(existing)
+			return e, nil
+		}
+	}
+	// Otherwise create the recurring RR session + link it to the league.
+	name := strings.TrimSpace(asStr(lg, "name"))
+	if name == "" {
+		name = "League"
+	}
+	eventID, err := s.CreateEvent(model.CreateEventRequest{
+		Name:              name + " — weekly session",
+		Format:            "doubles",
+		TournamentFormat:  "round_robin",
+		NumCourts:         courtCount,
+		PointsToWin:       11,
+		WinBy:             2,
+		StartsAt:          startsAt,
+		RecurIntervalDays: 7,
+		Brackets:          []model.BracketInput{{Name: "Open", DivisionType: "open"}},
+	}, ownerID)
+	if err != nil {
+		return model.Event{}, err
+	}
+	if err := s.AddEventToLeague(leagueID, eventID); err != nil {
+		return model.Event{}, err
+	}
+	_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID), map[string]any{
+		"recurs":         true,
+		"recur_event_id": eventID,
+		"recur_start_at": startsAt,
+	})
+	e, _ := s.GetEvent(eventID)
+	return e, nil
+}
+
+// ClearLeagueSchedule stops a league's recurring schedule — future weekly
+// sessions stop spawning; past sessions (and their results) are kept. Owner only.
+func (s *Service) ClearLeagueSchedule(leagueID, ownerID string) error {
+	if !s.leagueRecurrenceReady() {
+		return nil
+	}
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=owner_id,recur_event_id")
+	if err != nil {
+		return err
+	}
+	if lg == nil {
+		return ErrNotFound
+	}
+	if asStr(lg, "owner_id") != ownerID {
+		return ErrForbidden
+	}
+	if eid := asStr(lg, "recur_event_id"); eid != "" {
+		// Stop future materialization; keep the sessions already created.
+		_, _ = s.sb.Update("events", "id=eq."+store.Q(eid),
+			map[string]any{"recur_interval_days": 0})
+	}
+	_, err = s.sb.Update("leagues", "id=eq."+store.Q(leagueID), map[string]any{
+		"recurs":         false,
+		"recur_event_id": nil,
+		"recur_start_at": nil,
+	})
+	return err
+}
+
 func (s *Service) leagueVideosReady() bool {
 	return s.columnReady("league_videos", "id")
 }
@@ -619,7 +731,9 @@ func (s *Service) AddLeagueVideo(leagueID, userID, email, videoURL, title string
 	}
 	if asStr(lg, "owner_id") != userID {
 		part, _ := s.IsLeagueParticipant(leagueID, userID, email)
-		if !part {
+		// A league member can post even before their first session (a participant
+		// is derived from having played) — covers the join-once membership model.
+		if !part && !s.isActiveLeagueMember(leagueID, userID, email) {
 			return model.LeagueVideo{}, ErrForbidden
 		}
 	}

@@ -277,6 +277,11 @@ type League struct {
 	// CourtCount is the default number of courts the league's sessions schedule
 	// on (a "New session" seeds its num_courts from this). Nil = per-session.
 	CourtCount *int `json:"courtCount,omitempty"`
+	// Recurs marks a league on a recurring schedule (a weekly RR session auto-
+	// spawns forever). RecurStartAt is the anchor (RFC3339 UTC) — the weekday +
+	// time are derived from it. Nil/false when there's no recurring schedule.
+	Recurs       bool    `json:"recurs"`
+	RecurStartAt *string `json:"recurStartAt,omitempty"`
 }
 
 // LeagueMember is someone who joined a league once and is auto-rostered into

@@ -164,6 +164,31 @@ func (s *Service) ClaimLeagueInvite(userID, token string) (string, error) {
 	return leagueID, nil
 }
 
+// isActiveLeagueMember reports whether the caller is an active member of the
+// league (by linked account id, else by email). Used to let members post to the
+// league video feed even before they've played their first session.
+func (s *Service) isActiveLeagueMember(leagueID, userID, email string) bool {
+	if !s.leagueMembersReady() || leagueID == "" {
+		return false
+	}
+	if userID != "" {
+		if r, _ := s.sb.SelectOne("league_members",
+			"league_id=eq."+store.Q(leagueID)+"&user_id=eq."+store.Q(userID)+
+				"&left_at=is.null&select=id"); r != nil {
+			return true
+		}
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email != "" {
+		if r, _ := s.sb.SelectOne("league_members",
+			"league_id=eq."+store.Q(leagueID)+"&email=eq."+store.Q(email)+
+				"&left_at=is.null&select=id"); r != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // ListLeagueMembers returns a league's active roster, newest first.
 func (s *Service) ListLeagueMembers(leagueID string) ([]model.LeagueMember, error) {
 	if !s.leagueMembersReady() {
@@ -246,6 +271,64 @@ func (s *Service) applyLeagueSessionDefaults(leagueID, eventID string) {
 			TrustedAdd: true,
 		}, "")
 	}
+}
+
+// SubstituteInSession swaps a player OUT of a single session (event) and a
+// substitute IN for that night only — the sub gets their own results, and the
+// absent player simply misses this session (they stay a league member). Doubles
+// partner linkage is preserved (the sub inherits the out player's partner). Owner
+// only. Best used BEFORE the draw is generated; if a draw already exists, the
+// organizer should regenerate it so the new pairing lands in the matches.
+func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email, phone string) (model.Registration, error) {
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=owner_id")
+	if err != nil {
+		return model.Registration{}, err
+	}
+	if ev == nil {
+		return model.Registration{}, ErrNotFound
+	}
+	if asStr(ev, "owner_id") != ownerID {
+		return model.Registration{}, ErrForbidden
+	}
+	if strings.TrimSpace(name) == "" {
+		return model.Registration{}, errors.New("enter the substitute's name")
+	}
+	reg, err := s.sb.SelectOne("registrations",
+		"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(outPlayerID)+
+			"&select=id,bracket_id,partner_id")
+	if err != nil {
+		return model.Registration{}, err
+	}
+	if reg == nil {
+		return model.Registration{}, errors.New("that player isn't in this session")
+	}
+	bracketID := asStr(reg, "bracket_id")
+	partnerID := asStr(reg, "partner_id")
+	sub, err := s.RegisterPlayer(eventID, model.RegisterRequest{
+		FullName:   strings.TrimSpace(name),
+		Email:      strings.TrimSpace(email),
+		Phone:      strings.TrimSpace(phone),
+		BracketID:  bracketID,
+		Self:       false,
+		TrustedAdd: true,
+	}, "")
+	if err != nil {
+		return model.Registration{}, err
+	}
+	// Remove the out player's registration for THIS session only.
+	_ = s.sb.Delete("registrations", "id=eq."+store.Q(asStr(reg, "id")))
+	// Preserve the doubles pairing: the sub takes the out player's partner slot.
+	if partnerID != "" {
+		_, _ = s.sb.Update("registrations", "id=eq."+store.Q(sub.ID),
+			map[string]any{"partner_id": partnerID})
+		if pr, _ := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(partnerID)+
+				"&select=id"); pr != nil {
+			_, _ = s.sb.Update("registrations", "id=eq."+store.Q(asStr(pr, "id")),
+				map[string]any{"partner_id": sub.PlayerID})
+		}
+	}
+	return sub, nil
 }
 
 func (s *Service) sendLeagueInviteSMS(leagueName, phone, token string) {

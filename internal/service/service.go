@@ -1145,6 +1145,11 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	}
 	ev := mapEvent(row)
 	ev.OwnerPremium = s.eventPremiumUnlocked(row)
+	// Perpetual (recurring-league) event: clear any prior-session check-ins before
+	// counting so opening it on a new day shows everyone un-checked-in.
+	if ev.Perpetual {
+		s.resetStaleCheckins(id)
+	}
 	// Organizer display name for the tournament-info tab (best-effort — a lookup
 	// failure just leaves it blank). pmp_profiles is keyed by the auth user id.
 	if ownerID := asStr(row, "owner_id"); ownerID != "" {

@@ -570,6 +570,15 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 		}
 	}
 	detail.Events = events
+	// A recurring/"forever" league runs as ONE ongoing event (the normal
+	// tournament interface). Adopt it (mark perpetual + stop cloning) and hand the
+	// client the event id so it opens the tournament directly instead of a session
+	// list. Idempotent once adopted.
+	if detail.League.Recurs {
+		if eid := s.ensurePerpetualLeagueEvent(events); eid != nil {
+			detail.League.OngoingEventID = eid
+		}
+	}
 	return detail, nil
 }
 

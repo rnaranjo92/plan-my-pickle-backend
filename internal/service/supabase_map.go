@@ -175,6 +175,7 @@ func mapEvent(m map[string]any) model.Event {
 		RecurIntervalDays:          asInt(m, "recur_interval_days"),
 		RecurUntil:                 asStrPtr(m, "recur_until"),
 		SeriesID:                   asStrPtr(m, "series_id"),
+		Perpetual:                  asBool(m, "perpetual"),
 		ID:                         asStr(m, "id"),
 		Name:                       asStr(m, "name"),
 		Format:                     asStr(m, "format"),

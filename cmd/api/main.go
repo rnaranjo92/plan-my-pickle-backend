@@ -195,6 +195,11 @@ func main() {
 			if err := svc.MaterializeRecurringEvents(); err != nil {
 				log.Printf("recurring: materialize pass failed: %v", err)
 			}
+			// Perpetual (single-event) leagues: roll over check-ins so a new day's
+			// session starts with everyone un-checked-in. Hourly is ample.
+			if err := svc.ResetPerpetualCheckins(); err != nil {
+				log.Printf("recurring: perpetual check-in reset failed: %v", err)
+			}
 		}
 	}()
 

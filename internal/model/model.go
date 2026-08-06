@@ -159,6 +159,10 @@ type Event struct {
 	RecurIntervalDays int     `json:"recurIntervalDays,omitempty"`
 	RecurUntil        *string `json:"recurUntil,omitempty"`
 	SeriesID          *string `json:"seriesId,omitempty"`
+	// Perpetual marks the single ongoing event of a recurring/"forever" league —
+	// it does NOT clone weekly (recur_interval_days is 0); instead standings/games
+	// accumulate season-long and check-ins auto-reset each day. Set on adoption.
+	Perpetual bool `json:"perpetual,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
 	DistanceKm *float64 `json:"distanceKm,omitempty"`
 	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the
@@ -282,6 +286,12 @@ type League struct {
 	// time are derived from it. Nil/false when there's no recurring schedule.
 	Recurs       bool    `json:"recurs"`
 	RecurStartAt *string `json:"recurStartAt,omitempty"`
+	// OngoingEventID is the single perpetual event a recurring/"forever" league
+	// runs as — the one ongoing tournament (Feed/Players/Game/Standings…). Set
+	// once the league is adopted into the single-event model; the client opens
+	// this event directly instead of a per-session list. Nil for session-based
+	// leagues.
+	OngoingEventID *string `json:"ongoingEventId,omitempty"`
 }
 
 // LeagueMember is someone who joined a league once and is auto-rostered into

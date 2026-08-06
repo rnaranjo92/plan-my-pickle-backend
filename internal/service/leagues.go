@@ -590,6 +590,79 @@ func (s *Service) AddEventToLeague(leagueID, eventID string) error {
 	return nil
 }
 
+func (s *Service) leagueVideosReady() bool {
+	return s.columnReady("league_videos", "id")
+}
+
+// AddLeagueVideo posts a clip to a league's video feed. The caller must be the
+// league owner or a participant (a player registered in one of its sessions).
+func (s *Service) AddLeagueVideo(leagueID, userID, email, videoURL, title string) (model.LeagueVideo, error) {
+	if !s.leagueVideosReady() {
+		return model.LeagueVideo{}, errors.New("league videos aren't available yet")
+	}
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return model.LeagueVideo{}, errors.New("upload a video first")
+	}
+	lg, err := s.sb.SelectOne("leagues", "id=eq."+store.Q(leagueID)+"&select=owner_id")
+	if err != nil {
+		return model.LeagueVideo{}, err
+	}
+	if lg == nil {
+		return model.LeagueVideo{}, ErrNotFound
+	}
+	if asStr(lg, "owner_id") != userID {
+		part, _ := s.IsLeagueParticipant(leagueID, userID, email)
+		if !part {
+			return model.LeagueVideo{}, ErrForbidden
+		}
+	}
+	name := s.coachingName(userID)
+	ins, err := s.sb.Insert("league_videos", map[string]any{
+		"league_id":     leagueID,
+		"uploaded_by":   userID,
+		"uploader_name": orNull(name),
+		"video_url":     videoURL,
+		"title":         orNull(strings.TrimSpace(title)),
+	})
+	if err != nil {
+		return model.LeagueVideo{}, err
+	}
+	if len(ins) == 0 {
+		return model.LeagueVideo{}, errors.New("could not save the video")
+	}
+	return mapLeagueVideo(ins[0]), nil
+}
+
+// ListLeagueVideos returns a league's video feed, newest first.
+func (s *Service) ListLeagueVideos(leagueID string) ([]model.LeagueVideo, error) {
+	if !s.leagueVideosReady() {
+		return []model.LeagueVideo{}, nil
+	}
+	rows, err := s.sb.Select("league_videos",
+		"league_id=eq."+store.Q(leagueID)+"&order=created_at.desc&limit=500")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.LeagueVideo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapLeagueVideo(r))
+	}
+	return out, nil
+}
+
+func mapLeagueVideo(m map[string]any) model.LeagueVideo {
+	return model.LeagueVideo{
+		ID:           asStr(m, "id"),
+		LeagueID:     asStr(m, "league_id"),
+		UploadedBy:   asStr(m, "uploaded_by"),
+		UploaderName: asStr(m, "uploader_name"),
+		VideoURL:     asStr(m, "video_url"),
+		Title:        asStr(m, "title"),
+		CreatedAt:    asStr(m, "created_at"),
+	}
+}
+
 // leagueCoach returns the coach id of a coach-led league, or "" if the league
 // isn't coach-led (or the column doesn't exist yet).
 func (s *Service) leagueCoach(leagueID string) string {

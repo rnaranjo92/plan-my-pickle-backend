@@ -276,6 +276,17 @@ type League struct {
 	CoachID  *string `json:"coachId,omitempty"`
 }
 
+// LeagueVideo is a clip a league member posted to the league's video feed.
+type LeagueVideo struct {
+	ID           string `json:"id"`
+	LeagueID     string `json:"leagueId"`
+	UploadedBy   string `json:"uploadedBy"`
+	UploaderName string `json:"uploaderName"`
+	VideoURL     string `json:"videoUrl"`
+	Title        string `json:"title,omitempty"`
+	CreatedAt    string `json:"createdAt"`
+}
+
 // CreateLeagueRequest is the create-payload for a league.
 type CreateLeagueRequest struct {
 	Name        string `json:"name"`

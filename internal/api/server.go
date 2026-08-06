@@ -296,6 +296,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
+	mux.HandleFunc("GET /leagues/{id}/videos", s.leagueViewer("id", s.leagueVideos))
+	mux.HandleFunc("POST /leagues/{id}/videos", requireAuth(s.addLeagueVideo))
 	// Set/clear the league banner (the client uploaded the image to Storage; this
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
@@ -1194,6 +1196,32 @@ func (s *Server) leagueStandings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) leagueVideos(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListLeagueVideos(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addLeagueVideo(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VideoURL string `json:"videoUrl"`
+		Title    string `json:"title"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	v, err := s.svc.AddLeagueVideo(r.PathValue("id"), userID(r), userEmail(r),
+		req.VideoURL, req.Title)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // listLadder returns a division's ladder, ordered by position (1 = top). This is

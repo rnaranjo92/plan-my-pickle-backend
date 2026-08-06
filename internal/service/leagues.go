@@ -575,7 +575,7 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 	// client the event id so it opens the tournament directly instead of a session
 	// list. Idempotent once adopted.
 	if detail.League.Recurs {
-		if eid := s.ensurePerpetualLeagueEvent(events); eid != nil {
+		if eid := s.ensurePerpetualLeagueEvent(detail.League, brackets, events); eid != nil {
 			detail.League.OngoingEventID = eid
 		}
 	}

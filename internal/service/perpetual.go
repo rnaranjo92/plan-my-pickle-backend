@@ -1,11 +1,18 @@
 package service
 
 import (
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
+
+// perpetualProvisionMu serializes on-demand creation of a recurring league's
+// ongoing event, so the league-detail poll (which calls GetLeague repeatedly)
+// can't create duplicate events by racing itself.
+var perpetualProvisionMu sync.Mutex
 
 // Perpetual leagues — a recurring/"forever" league runs as ONE ongoing event
 // (the normal tournament interface: Feed/Players/Game/Standings…) instead of
@@ -20,13 +27,17 @@ import (
 // the new day. Comfortably longer than any single session, shorter than a day.
 const perpetualCheckinWindow = 12 * time.Hour
 
-// ensurePerpetualLeagueEvent adopts a recurring league into the single-ongoing-
-// event model: it finds the league's one ongoing event, marks it `perpetual`,
-// and STOPS its weekly cloning (recur_interval_days -> 0). Idempotent — once an
-// event is perpetual it just returns that id without writing. Returns the
-// ongoing event id (nil if the league has no event yet). Pass the league's
-// events (already loaded by the caller); the perpetual flag is set in place.
-func (s *Service) ensurePerpetualLeagueEvent(events []model.Event) *string {
+// ensurePerpetualLeagueEvent makes a recurring league run as ONE ongoing event
+// (the normal tournament interface). It:
+//   - returns the existing perpetual event if already adopted;
+//   - else ADOPTS the league's current session in place (marks it perpetual,
+//     stops cloning, retitles it to the league name);
+//   - else (the league has NO event) CREATES the ongoing event from league
+//     config + members, so opening the league always lands in the tournament UI
+//     instead of an empty session shell.
+// Returns the ongoing event id (nil only if creation genuinely fails). The
+// perpetual flag is set in place on the passed events.
+func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []model.LeagueBracket, events []model.Event) *string {
 	// Already adopted → return the perpetual event.
 	for i := range events {
 		if events[i].Perpetual {
@@ -34,8 +45,8 @@ func (s *Service) ensurePerpetualLeagueEvent(events []model.Event) *string {
 			return &id
 		}
 	}
-	// Otherwise adopt the "current session": the series head (the event the
-	// recurrence was set on), else the earliest event.
+	// Adopt the "current session": the series head (the event the recurrence was
+	// set on), else the earliest event.
 	var head *model.Event
 	for i := range events {
 		e := &events[i]
@@ -48,24 +59,112 @@ func (s *Service) ensurePerpetualLeagueEvent(events []model.Event) *string {
 		head = &events[0]
 	}
 	if head == nil {
-		return nil // no event yet — nothing to adopt
+		// No event at all → provision the ongoing one so the league IS a
+		// tournament from the first open.
+		return s.provisionPerpetualLeagueEvent(league, brackets)
 	}
 	// Mark perpetual and stop the series so no more weekly clones spawn. Clearing
 	// the cursor/until is belt-and-suspenders (recur_interval_days=0 already halts
-	// the materializer).
-	if _, err := s.sb.Update("events", "id=eq."+store.Q(head.ID), map[string]any{
+	// the materializer). Also retitle the one ongoing event to the league's name
+	// (drop the "— weekly session" clone label) since it IS the league now.
+	upd := map[string]any{
 		"perpetual":           true,
 		"recur_interval_days": 0,
 		"recur_until":         nil,
 		"series_cursor":       nil,
-	}); err != nil {
+	}
+	if n := strings.TrimSpace(league.Name); n != "" {
+		upd["name"] = n
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(head.ID), upd); err != nil {
 		// Adoption failed — report no ongoing id so the client falls back to the
 		// session list rather than pointing at an unconverted event.
 		return nil
 	}
 	head.Perpetual = true
+	if n := strings.TrimSpace(league.Name); n != "" {
+		head.Name = n
+	}
 	id := head.ID
 	return &id
+}
+
+// provisionPerpetualLeagueEvent creates the single ongoing event for a recurring
+// league that has none — from the league's divisions + config + members — so the
+// league opens straight into the tournament interface. Serialized + re-checked
+// under a mutex so the league-detail poll can't create duplicates.
+func (s *Service) provisionPerpetualLeagueEvent(league model.League, brackets []model.LeagueBracket) *string {
+	perpetualProvisionMu.Lock()
+	defer perpetualProvisionMu.Unlock()
+	// Re-check under the lock: a concurrent poll may have just created it.
+	if rows, err := s.sb.Select("events",
+		"league_id=eq."+store.Q(league.ID)+"&select=id,perpetual&limit=1"); err == nil && len(rows) > 0 {
+		id := asStr(rows[0], "id")
+		if !asBool(rows[0], "perpetual") {
+			_, _ = s.sb.Update("events", "id=eq."+store.Q(id),
+				map[string]any{"perpetual": true, "recur_interval_days": 0})
+		}
+		return &id
+	}
+	// Divisions from the league; CreateEvent defaults to a single "Open" division
+	// when none are given.
+	binputs := make([]model.BracketInput, 0, len(brackets))
+	for _, b := range brackets {
+		binputs = append(binputs, model.BracketInput{
+			Name:         b.Name,
+			DivisionType: b.DivisionType,
+			MinRating:    b.MinRating,
+			MaxRating:    b.MaxRating,
+			MinAge:       b.MinAge,
+			MaxAge:       b.MaxAge,
+			DuprMin:      b.DuprMin,
+			DuprMax:      b.DuprMax,
+		})
+	}
+	startsAt := ""
+	if league.RecurStartAt != nil {
+		startsAt = *league.RecurStartAt
+	}
+	courts := 1
+	if league.CourtCount != nil && *league.CourtCount > 0 {
+		courts = *league.CourtCount
+	}
+	loc := ""
+	if league.Location != nil {
+		loc = *league.Location
+	}
+	// A social recurring league is a rotating-partner doubles round-robin by
+	// default (the same shape the Never Ending League used).
+	req := model.CreateEventRequest{
+		Name:             strings.TrimSpace(league.Name),
+		Format:           "doubles",
+		PartnerMode:      "rotating",
+		TournamentFormat: "round_robin",
+		ScoringMode:      "wins",
+		NumCourts:        courts,
+		StartsAt:         startsAt,
+		Location:         loc,
+		Brackets:         binputs,
+	}
+	eventID, err := s.CreateEvent(req, league.OwnerID)
+	if err != nil || eventID == "" {
+		return nil
+	}
+	// Link to the league + mark perpetual (so it never clones and rolls check-ins).
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
+		"league_id": league.ID,
+		"perpetual": true,
+	}); err != nil {
+		return nil
+	}
+	// Court count + auto-roster the league's active members into it.
+	s.applyLeagueSessionDefaults(league.ID, eventID)
+	// Point the league at its ongoing event for anyone reading recur_event_id.
+	if s.columnReady("leagues", "recur_event_id") {
+		_, _ = s.sb.Update("leagues", "id=eq."+store.Q(league.ID),
+			map[string]any{"recur_event_id": eventID})
+	}
+	return &eventID
 }
 
 // resetStaleCheckins clears check-ins on a perpetual event that are older than

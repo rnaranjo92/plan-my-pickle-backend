@@ -527,7 +527,7 @@ func mapRoundView(m map[string]any) model.RoundView {
 const matchSelect = "id,bracket_id,stage,bracket_tier,bracket_group,bracket_round,bracket_slot," +
 	"team1_score,team2_score,winning_team,live_team1,live_team2,games,status,result_type,play_order,duration_minutes,scheduled_day,completed_at,line_type," +
 	"court:courts!court_id(court_number)," +
-	"round:rounds!round_id(id,round_number,status,started_at)," +
+	"round:rounds!round_id(id,round_number,status,started_at,created_at)," +
 	"participants:match_participants(team,player_id,player:players!player_id(full_name))"
 
 func mapFeedItem(m map[string]any) model.FeedItem {
@@ -639,6 +639,7 @@ func mapMatch(m map[string]any) model.Match {
 		mt.RoundNumber = asIntPtr(r, "round_number")
 		mt.RoundStatus = asStr(r, "status")
 		mt.RoundStartedAt = asStrPtr(r, "started_at")
+		mt.RoundCreatedAt = asStrPtr(r, "created_at")
 	}
 	return mt
 }

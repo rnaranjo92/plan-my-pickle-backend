@@ -963,6 +963,7 @@ type Match struct {
 	RoundNumber    *int    `json:"roundNumber,omitempty"`
 	RoundStatus    string  `json:"roundStatus,omitempty"`
 	RoundStartedAt *string `json:"roundStartedAt,omitempty"` // when the round went active; for live "time left"
+	RoundCreatedAt *string `json:"roundCreatedAt,omitempty"` // when the round was generated; groups perpetual-league games by session/date
 	CompletedAt    *string `json:"completedAt,omitempty"`    // actual finish time (RFC3339 UTC); null until scored/forfeited
 	LineType       string  `json:"lineType,omitempty"`       // MLP tie line: wd|md|mx1|mx2|dec
 	Sides          []Side  `json:"sides"`

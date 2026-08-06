@@ -94,3 +94,68 @@ func (s *Service) ResetPerpetualCheckins() error {
 	}
 	return nil
 }
+
+// maxRoundNumber returns the highest existing round number for a division (0 if
+// none). Used to append a perpetual league's new session AFTER the accumulated
+// rounds rather than colliding with round 1.
+func (s *Service) maxRoundNumber(eventID, bracketID string) int {
+	rows, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+"&bracket_id=eq."+store.Q(bracketID)+
+			"&select=round_number&order=round_number.desc&limit=1")
+	if err != nil || len(rows) == 0 {
+		return 0
+	}
+	return asInt(rows[0], "round_number")
+}
+
+// generatePerpetualSession appends ONE session's round-robin — for the players
+// CHECKED IN right now — to a perpetual (recurring-league) event, WITHOUT wiping
+// any prior session's rounds/matches/scores. Each division's new rounds are
+// numbered after its existing max, so games and standings accumulate season-long.
+// Matches are placed on courts inline by the round-robin engine (no global
+// re-spread that would disturb completed games).
+func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult, error) {
+	bks, err := s.GetBrackets(ev.ID)
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	courtByNum, err := s.courtIDsByNumber(ev.ID)
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	skill, err := s.playerSkills()
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	total := 0
+	var droppedIDs []string
+	for _, b := range bks {
+		regs, err := s.bracketRegs(ev.ID, b.ID, true) // checked-in players only
+		if err != nil {
+			return model.ScheduleResult{}, err
+		}
+		minPlayers := 2
+		if ev.Format == "doubles" {
+			minPlayers = 4
+		}
+		if len(regs) < minPlayers {
+			continue // not enough checked in for a game in this division
+		}
+		droppedIDs = append(droppedIDs, droppedDoublesPlayers(ev, regs)...)
+		offset := s.maxRoundNumber(ev.ID, b.ID)
+		n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum, skill, offset)
+		if err != nil {
+			return model.ScheduleResult{}, err
+		}
+		total += n
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(ev.ID),
+		map[string]any{"status": "in_progress"}); err != nil {
+		return model.ScheduleResult{}, err
+	}
+	unscheduled, err := s.playerNamesByID(ev.ID, droppedIDs)
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	return model.ScheduleResult{Matches: total, Unscheduled: unscheduled}, nil
+}

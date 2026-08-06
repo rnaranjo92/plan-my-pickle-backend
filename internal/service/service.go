@@ -5536,6 +5536,17 @@ func (s *Service) completedMatchCount(eventID string) (int, error) {
 
 // ---------------------------------------------------------- scheduling
 func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.ScheduleResult, error) {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return model.ScheduleResult{}, err
+	}
+	// Perpetual (recurring-league) round-robin: each "Build schedule" ADDS this
+	// session's games for the checked-in players onto the accumulated history —
+	// never wiping prior sessions (that would reset season-long standings). Routed
+	// to a dedicated path so the normal wipe-and-rebuild flow below is untouched.
+	if ev.Perpetual && ev.TournamentFormat == "round_robin" {
+		return s.generatePerpetualSession(ev)
+	}
 	// Refuse to wipe an in-progress event's scores unless explicitly forced.
 	if !force {
 		done, err := s.completedMatchCount(eventID)
@@ -5546,10 +5557,6 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 			return model.ScheduleResult{Matches: done},
 				fmt.Errorf("%w: %d match(es) already scored", ErrScheduleHasResults, done)
 		}
-	}
-	ev, err := s.GetEvent(eventID)
-	if err != nil {
-		return model.ScheduleResult{}, err
 	}
 	// Team events: NEVER wipe + regenerate from registrations (there are none, so
 	// that would just delete the tie lines). Instead (re)build the ties from the
@@ -5619,7 +5626,7 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 			}
 			total += n
 		} else {
-			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum, skill)
+			n, err := s.persistRoundRobin(ev, b.ID, regs, courtByNum, skill, 0)
 			if err != nil {
 				return model.ScheduleResult{}, err
 			}
@@ -7060,7 +7067,10 @@ func splitPools(units [][]string, skill map[string]float64) [][][]string {
 	return pools
 }
 
-func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg, courtByNum map[int]string, skill map[string]float64) (int, error) {
+// roundOffset shifts every generated round number up by a fixed amount so a
+// perpetual league's new session appends AFTER the accumulated rounds instead of
+// colliding with round 1. Normal (wipe-and-rebuild) events pass 0.
+func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg, courtByNum map[int]string, skill map[string]float64, roundOffset int) (int, error) {
 	format := engine.Doubles
 	if ev.Format == "singles" {
 		format = engine.Singles
@@ -7155,7 +7165,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	for rn := 1; rn <= maxRound; rn++ {
 		roundRows = append(roundRows, map[string]any{
 			"event_id": ev.ID, "bracket_id": bracketID,
-			"round_number": rn,
+			"round_number": rn + roundOffset,
 		})
 	}
 	if len(roundRows) == 0 {
@@ -7175,7 +7185,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 	pending := make([]pend, 0)
 	for _, ps := range schedules {
 		for _, round := range ps.schedule {
-			rid := roundIDByNum[round.RoundNumber]
+			rid := roundIDByNum[round.RoundNumber+roundOffset]
 			for _, m := range round.Matches {
 				matchRows = append(matchRows, map[string]any{
 					"event_id": ev.ID, "bracket_id": bracketID, "round_id": rid,

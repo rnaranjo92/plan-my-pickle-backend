@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -8,6 +9,39 @@ import (
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
+
+// SetRecurringControls updates a perpetual league's schedule controls (owner
+// enforced at the route). startsAt reschedules the weekday/time; paused pauses/
+// resumes; skipUntil skips sessions up to that date ("" clears it). A nil pointer
+// leaves that field unchanged. Returns the refreshed event.
+func (s *Service) SetRecurringControls(eventID string, startsAt *string, paused *bool, skipUntil *string) (model.Event, error) {
+	upd := map[string]any{}
+	if startsAt != nil {
+		if st := strings.TrimSpace(*startsAt); st != "" {
+			if _, err := time.Parse(time.RFC3339, st); err != nil {
+				return model.Event{}, errors.New("start time must be a valid RFC3339 timestamp")
+			}
+			upd["starts_at"] = st
+		}
+	}
+	if paused != nil {
+		upd["recur_paused"] = *paused
+	}
+	if skipUntil != nil {
+		if su := strings.TrimSpace(*skipUntil); su == "" {
+			upd["recur_skip_until"] = nil
+		} else {
+			upd["recur_skip_until"] = su
+		}
+	}
+	if len(upd) == 0 {
+		return s.GetEvent(eventID)
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID), upd); err != nil {
+		return model.Event{}, err
+	}
+	return s.GetEvent(eventID)
+}
 
 // perpetualProvisionMu serializes on-demand creation of a recurring league's
 // ongoing event, so the league-detail poll (which calls GetLeague repeatedly)

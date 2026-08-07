@@ -294,6 +294,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// READS: owner OR participant (leagueViewer). WRITES below stay owner-only.
 	mux.HandleFunc("GET /leagues/{id}", s.leagueViewer("id", s.getLeague))
 	mux.HandleFunc("DELETE /leagues/{id}", s.ownerOnly("league", "id", s.deleteLeague))
+	mux.HandleFunc("POST /events/{id}/recurring", s.ownerOnly("event", "id", s.setRecurringControls))
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
@@ -1193,6 +1194,22 @@ func (s *Server) removeEventFromLeague(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// setRecurringControls updates a perpetual league's schedule (reschedule /
+// pause / skip). Owner-only.
+func (s *Server) setRecurringControls(w http.ResponseWriter, r *http.Request) {
+	var req model.RecurringControlsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	ev, err := s.svc.SetRecurringControls(
+		r.PathValue("id"), req.StartsAt, req.Paused, req.SkipUntil)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ev)
 }
 
 // deleteLeague removes a league and all its events/data (owner-only).

@@ -176,6 +176,8 @@ func mapEvent(m map[string]any) model.Event {
 		RecurUntil:                 asStrPtr(m, "recur_until"),
 		SeriesID:                   asStrPtr(m, "series_id"),
 		Perpetual:                  asBool(m, "perpetual"),
+		RecurPaused:                asBool(m, "recur_paused"),
+		RecurSkipUntil:             asStrPtr(m, "recur_skip_until"),
 		ID:                         asStr(m, "id"),
 		Name:                       asStr(m, "name"),
 		Format:                     asStr(m, "format"),

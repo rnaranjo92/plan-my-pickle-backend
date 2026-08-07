@@ -163,6 +163,11 @@ type Event struct {
 	// it does NOT clone weekly (recur_interval_days is 0); instead standings/games
 	// accumulate season-long and check-ins auto-reset each day. Set on adoption.
 	Perpetual bool `json:"perpetual,omitempty"`
+	// RecurPaused pauses a perpetual league (no play until resumed). RecurSkipUntil
+	// skips sessions up to and including that date (YYYY-MM-DD). Both drive the
+	// header/feed; the weekday+time come from StartsAt (reschedule updates it).
+	RecurPaused    bool    `json:"recurPaused,omitempty"`
+	RecurSkipUntil *string `json:"recurSkipUntil,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
 	DistanceKm *float64 `json:"distanceKm,omitempty"`
 	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the
@@ -2222,6 +2227,14 @@ type FeedItem struct {
 }
 
 // FeedPostRequest is an organizer announcement posted to the feed.
+// RecurringControlsRequest updates a perpetual league's schedule. Any nil field
+// is left unchanged; SkipUntil="" clears the skip.
+type RecurringControlsRequest struct {
+	StartsAt  *string `json:"startsAt,omitempty"`  // RFC3339 — reschedule weekday/time
+	Paused    *bool   `json:"paused,omitempty"`    // pause/resume the league
+	SkipUntil *string `json:"skipUntil,omitempty"` // YYYY-MM-DD — skip up to this date ("" clears)
+}
+
 type FeedPostRequest struct {
 	Text string `json:"text"`
 	// Notify: also push this announcement to the event's registered players

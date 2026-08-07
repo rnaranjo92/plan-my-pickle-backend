@@ -1244,6 +1244,10 @@ type RegisterRequest struct {
 	// an anonymous/self-service registrant can't force-link to a stranger's
 	// account. `Self` (client-controlled) must NOT be used for this.
 	TrustedAdd bool `json:"-"`
+	// SkipCoachEnroll (server-only) suppresses the coach-led auto-enroll for this
+	// registration — set for temporary substitutes, who shouldn't become permanent
+	// coaching students.
+	SkipCoachEnroll bool `json:"-"`
 }
 
 // VideoAnalysis is one paid Match Video Analysis (PB Vision). Status flows

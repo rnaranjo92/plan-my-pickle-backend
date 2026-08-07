@@ -295,6 +295,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /leagues/{id}", s.leagueViewer("id", s.getLeague))
 	mux.HandleFunc("DELETE /leagues/{id}", s.ownerOnly("league", "id", s.deleteLeague))
 	mux.HandleFunc("POST /events/{id}/recurring", s.ownerOnly("event", "id", s.setRecurringControls))
+	mux.HandleFunc("POST /events/{id}/coach-led", s.ownerOnly("event", "id", s.setEventCoachLed))
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
@@ -1205,6 +1206,22 @@ func (s *Server) setRecurringControls(w http.ResponseWriter, r *http.Request) {
 	}
 	ev, err := s.svc.SetRecurringControls(
 		r.PathValue("id"), req.StartsAt, req.Paused, req.SkipUntil)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ev)
+}
+
+// setEventCoachLed toggles coach-led on the event's league (owner-only).
+func (s *Server) setEventCoachLed(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ev, err := s.svc.SetEventCoachLed(r.PathValue("id"), userID(r), req.Enabled)
 	if err != nil {
 		status(w, err)
 		return

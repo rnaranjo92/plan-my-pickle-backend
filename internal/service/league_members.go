@@ -223,10 +223,19 @@ func (s *Service) RemoveLeagueMember(leagueID, memberID, ownerID string) error {
 	if asStr(lg, "owner_id") != ownerID {
 		return ErrForbidden
 	}
-	_, err = s.sb.Update("league_members",
+	// Grab the member's contact before removal so we can un-enroll them from the
+	// coach roster (no-op unless the league is coach-led).
+	m, _ := s.sb.SelectOne("league_members",
+		"id=eq."+store.Q(memberID)+"&league_id=eq."+store.Q(leagueID)+"&select=email,phone")
+	if _, err = s.sb.Update("league_members",
 		"id=eq."+store.Q(memberID)+"&league_id=eq."+store.Q(leagueID),
-		map[string]any{"left_at": now()})
-	return err
+		map[string]any{"left_at": now()}); err != nil {
+		return err
+	}
+	if m != nil {
+		go s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"))
+	}
+	return nil
 }
 
 // applyLeagueSessionDefaults seeds a freshly-created session (event) from its
@@ -318,6 +327,8 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 		BracketID:  bracketID,
 		Self:       false,
 		TrustedAdd: true,
+		// A one-day sub shouldn't become a permanent coaching student.
+		SkipCoachEnroll: true,
 	}, "")
 	if err != nil {
 		return model.Registration{}, err

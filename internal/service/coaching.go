@@ -2413,6 +2413,10 @@ func (s *Service) pbvisionJobsReady() bool {
 // (coach only). The student's email is passed so PB Vision attributes/shares the
 // report to them. On completion the webhook ingests highlights + stats. Returns
 // the PB Vision video id.
+// coachingAnalysisMonthlyCap bounds free coaching PB Vision analyses per student
+// per rolling 30 days (cost guard; coaching analysis is currently platform-billed).
+const coachingAnalysisMonthlyCap = 12
+
 func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID string) (string, error) {
 	if !s.coachingReady() || !s.pbvisionJobsReady() {
 		return "", ErrCoachingUnavailable
@@ -2444,6 +2448,17 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 				"&status=eq.processing&updated_at=gte."+store.Q(fresh)+
 				"&select=id&limit=1"); prev != nil {
 			return "", errors.New("this clip is already being analyzed on PB Vision")
+		}
+	}
+	// Cost cap: coaching PB Vision analysis is currently free (platform-billed), so
+	// bound it per student — at most N runs per rolling 30 days on this thread — so
+	// a coach-led league of many students can't run up an unbounded PB Vision bill.
+	if s.columnReady("coaching_pbvision_jobs", "coach_student_id") {
+		since := time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339)
+		if prior, _ := s.sb.Select("coaching_pbvision_jobs",
+			"coach_student_id=eq."+store.Q(threadID)+
+				"&created_at=gte."+store.Q(since)+"&select=id"); len(prior) >= coachingAnalysisMonthlyCap {
+			return "", errors.New("monthly video-analysis limit reached for this student — try again next month")
 		}
 	}
 	emails := []string{}

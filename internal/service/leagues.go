@@ -599,6 +599,16 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 	if asStr(lg, "owner_id") != ownerID {
 		return ErrForbidden
 	}
+	// Coach-led: un-enroll the league's members from the coach roster BEFORE we
+	// delete the members/league (so leagueCoach still resolves). Best-effort.
+	if s.leagueCoach(leagueID) != "" {
+		if ms, err := s.sb.Select("league_members",
+			"league_id=eq."+store.Q(leagueID)+"&select=email,phone"); err == nil {
+			for _, m := range ms {
+				s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"))
+			}
+		}
+	}
 	// The league's events (cascade removes their matches/rounds/registrations).
 	if rows, err := s.sb.Select("events",
 		"league_id=eq."+store.Q(leagueID)+"&select=id"); err == nil {
@@ -856,7 +866,7 @@ func (s *Service) maybeEnrollLeagueCoachStudent(eventID, email, phone, name stri
 	if !s.coachingReady() || eventID == "" {
 		return
 	}
-	ev, _ := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
+	ev, _ := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id,name")
 	if ev == nil {
 		return
 	}
@@ -864,7 +874,53 @@ func (s *Service) maybeEnrollLeagueCoachStudent(eventID, email, phone, name stri
 	if coachID == "" {
 		return
 	}
-	_, _ = s.AddCoachStudent(coachID, email, phone, name, "")
+	student, err := s.AddCoachStudent(coachID, email, phone, name, "")
+	if err != nil {
+		return // already on the roster / no contact info — nothing new to announce
+	}
+	// Tell the coach a new student joined from the league, so they don't have to
+	// discover it by pull-to-refreshing their roster.
+	who := strings.TrimSpace(name)
+	if who == "" {
+		who = strings.TrimSpace(student.StudentName)
+	}
+	if who == "" {
+		who = "A new player"
+	}
+	body := who + " joined your coaching"
+	if evName := strings.TrimSpace(asStr(ev, "name")); evName != "" {
+		body += " from " + evName
+	}
+	s.notifyUser(coachID, "coaching", "", "", body, "coachstudents")
+}
+
+// unenrollLeagueCoachStudent removes a player from the league coach's roster when
+// they leave the league (or the coach-led league is deleted). No-op unless the
+// league is coach-led and the player matches a coach_students row. Best-effort —
+// reuses RemoveCoachStudent so sessions/threads tear down cleanly.
+func (s *Service) unenrollLeagueCoachStudent(leagueID, email, phone string) {
+	if !s.coachingReady() {
+		return
+	}
+	coachID := s.leagueCoach(leagueID)
+	if coachID == "" {
+		return
+	}
+	e := strings.ToLower(strings.TrimSpace(email))
+	np := normPhone(phone)
+	var filter string
+	if e != "" {
+		filter = "coach_id=eq." + store.Q(coachID) + "&student_email=eq." + store.Q(e)
+	} else if np != "" {
+		filter = "coach_id=eq." + store.Q(coachID) + "&student_phone=eq." + store.Q(np)
+	} else {
+		return
+	}
+	row, _ := s.sb.SelectOne("coach_students", filter+"&select=id")
+	if row == nil {
+		return
+	}
+	_ = s.RemoveCoachStudent(coachID, asStr(row, "id"))
 }
 
 // enrollLeaguePlayersForEvent enrolls every current registrant of an event as
@@ -897,6 +953,55 @@ func (s *Service) enrollLeaguePlayersForEvent(coachID, eventID string) {
 		_, _ = s.AddCoachStudent(coachID,
 			asStr(p, "email"), asStr(p, "phone"), asStr(p, "full_name"), "")
 	}
+}
+
+// SetEventCoachLed toggles coach-led on the event's LEAGUE (owner enforced at the
+// route). Enabling requires the owner to be an instructor and back-enrolls every
+// current player of the league's events as the coach's students. Disabling stops
+// future auto-enroll (existing students are kept — the coach can prune them).
+// Returns the refreshed event so the client sees the new coachLed state.
+func (s *Service) SetEventCoachLed(eventID, ownerID string, enabled bool) (model.Event, error) {
+	if !s.columnReady("leagues", "coach_led") {
+		return model.Event{}, errors.New("coaching isn't available yet")
+	}
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
+	if err != nil {
+		return model.Event{}, err
+	}
+	if ev == nil {
+		return model.Event{}, ErrNotFound
+	}
+	leagueID := asStr(ev, "league_id")
+	if leagueID == "" {
+		return model.Event{}, errors.New("this event isn't part of a league")
+	}
+	lg, _ := s.sb.SelectOne("leagues", "id=eq."+store.Q(leagueID)+"&select=owner_id")
+	if lg == nil {
+		return model.Event{}, ErrNotFound
+	}
+	if asStr(lg, "owner_id") != ownerID {
+		return model.Event{}, ErrForbidden
+	}
+	if enabled {
+		if !s.IsInstructor(ownerID, s.emailOf(ownerID)) {
+			return model.Event{}, errors.New("only instructors can run a coach-led league")
+		}
+		if _, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+			map[string]any{"coach_led": true, "coach_id": ownerID}); err != nil {
+			return model.Event{}, err
+		}
+		// Back-enroll everyone already registered across the league's events.
+		if evs, err := s.sb.Select("events",
+			"league_id=eq."+store.Q(leagueID)+"&select=id"); err == nil {
+			for _, e := range evs {
+				go s.enrollLeaguePlayersForEvent(ownerID, asStr(e, "id"))
+			}
+		}
+	} else if _, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+		map[string]any{"coach_led": false, "coach_id": nil}); err != nil {
+		return model.Event{}, err
+	}
+	return s.GetEvent(eventID)
 }
 
 // RemoveEventFromLeague unlinks an event from a league. It only clears the link

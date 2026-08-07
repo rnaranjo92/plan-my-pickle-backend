@@ -85,10 +85,38 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 		_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID), lupd)
 	}
 
-	// 25 players into the Open division.
+	if err := s.seedPerpetualScenario(eid, lastThu); err != nil {
+		return "", err
+	}
+	return eid, nil
+}
+
+// SeedPerpetualEventSessions seeds the test scenario (25 players, a scored
+// last-Thursday session + an ongoing today session) INTO an existing perpetual
+// event — the league-page "Seed test data" button. Owner-only; QA-gated at the
+// route. Returns the event id.
+func (s *Service) SeedPerpetualEventSessions(eventID, ownerID string) (string, error) {
+	// Ownership is enforced by the ownerOnly route wrapper.
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return "", err
+	}
+	if !ev.Perpetual {
+		return "", errors.New("this isn't a perpetual (recurring-league) event")
+	}
+	if err := s.seedPerpetualScenario(eventID, lastWeekThursdayAt(18, 0)); err != nil {
+		return "", err
+	}
+	return eventID, nil
+}
+
+// seedPerpetualScenario registers 25 players into a perpetual event, checks them
+// in, then lays down a scored session dated lastThu and a fresh ongoing session
+// today. Shared by the from-scratch seeder and the league-page button.
+func (s *Service) seedPerpetualScenario(eid string, lastThu time.Time) error {
 	bks, err := s.GetBrackets(eid)
 	if err != nil || len(bks) == 0 {
-		return "", errors.New("seed: no division to register into")
+		return errors.New("seed: no division to register into")
 	}
 	bid := bks[0].ID
 	for i, nm := range perpetualSeedNames {
@@ -108,7 +136,7 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 
 	// SESSION 1 (last Thursday): generate, backdate the rounds, score them all.
 	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
-		return "", err
+		return err
 	}
 	_, _ = s.sb.Update("rounds", "event_id=eq."+store.Q(eid),
 		map[string]any{"created_at": lastThu.Format(time.RFC3339)})
@@ -126,9 +154,9 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 	// SESSION 2 (today): append a fresh session for the same checked-in players,
 	// left UNSCORED so it reads as ongoing. New rounds default created_at = now.
 	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
-		return "", err
+		return err
 	}
-	return eid, nil
+	return nil
 }
 
 // SetRecurringControls updates a perpetual league's schedule controls (owner

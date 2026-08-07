@@ -1150,6 +1150,11 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	if ev.Perpetual {
 		s.resetStaleCheckins(id)
 	}
+	// Coach-led badge: true when this event's league auto-enrolls players as the
+	// coach's students (resolved from the league; best-effort).
+	if ev.LeagueID != nil && *ev.LeagueID != "" {
+		ev.CoachLed = s.leagueCoach(*ev.LeagueID) != ""
+	}
 	// Organizer display name for the tournament-info tab (best-effort — a lookup
 	// failure just leaves it blank). pmp_profiles is keyed by the auth user id.
 	if ownerID := asStr(row, "owner_id"); ownerID != "" {

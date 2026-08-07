@@ -168,6 +168,10 @@ type Event struct {
 	// header/feed; the weekday+time come from StartsAt (reschedule updates it).
 	RecurPaused    bool    `json:"recurPaused,omitempty"`
 	RecurSkipUntil *string `json:"recurSkipUntil,omitempty"`
+	// CoachLed is true when this event belongs to a coach-led league (its players
+	// auto-enroll as the league coach's students). Resolved on GetEvent from the
+	// league; drives a "Coach-led" badge in the header. Not a stored event column.
+	CoachLed bool `json:"coachLed,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
 	DistanceKm *float64 `json:"distanceKm,omitempty"`
 	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the

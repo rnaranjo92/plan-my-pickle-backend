@@ -610,10 +610,12 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 		}
 	}
 	// The league's events (cascade removes their matches/rounds/registrations).
+	// Route through the DUPR-reversal helper so a sanctioned league's already-
+	// submitted results don't stay live on official ratings after the delete.
 	if rows, err := s.sb.Select("events",
 		"league_id=eq."+store.Q(leagueID)+"&select=id"); err == nil {
 		for _, r := range rows {
-			_ = s.sb.Delete("events", "id=eq."+store.Q(asStr(r, "id")))
+			_ = s.deleteEventWithDuprReversal(asStr(r, "id"))
 		}
 	}
 	// Ladder leagues: clear entrants/challenges under this league's divisions

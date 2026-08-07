@@ -630,6 +630,10 @@ func (s *Service) DeleteSessionRange(eventID, fromUTC, toUTC string) (int, error
 }
 
 func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult, error) {
+	// Serialize appends for this event: the round-offset is a read-modify-write on
+	// the max round number, so two concurrent builds would otherwise both read the
+	// same offset and append two overlapping round-robins for the same session.
+	defer s.lockPerpetualBuild(ev.ID)()
 	bks, err := s.GetBrackets(ev.ID)
 	if err != nil {
 		return model.ScheduleResult{}, err

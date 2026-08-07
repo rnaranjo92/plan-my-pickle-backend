@@ -1356,7 +1356,23 @@ func (s *Service) DeleteEvent(id string) error {
 	if ev == nil {
 		return ErrNotFound
 	}
-	return s.sb.Delete("events", "id=eq."+store.Q(id))
+	return s.deleteEventWithDuprReversal(id)
+}
+
+// deleteEventWithDuprReversal deletes an event AND reverses any of its results
+// already submitted to DUPR — otherwise a mid-season league/event delete leaves
+// real matches live on players' official ratings. wipeAllMatches queues the
+// reversals + clears matches/rounds; we drain the queue SYNCHRONOUSLY before
+// deleting the event so a cascade on the pending-deletes table can't strand a
+// reversal. Shared by DeleteEvent and DeleteLeague's per-event loop.
+func (s *Service) deleteEventWithDuprReversal(eventID string) error {
+	if err := s.wipeAllMatches(eventID); err != nil {
+		return err
+	}
+	if err := s.DrainDuprPendingDeletes(); err != nil {
+		log.Printf("dupr: drain before deleting event %s: %v (reversals will retry via the reconciler if the rows survive)", eventID, err)
+	}
+	return s.sb.Delete("events", "id=eq."+store.Q(eventID))
 }
 
 // DeleteAccount permanently erases a user: the events they organize (FK cascade
@@ -4787,8 +4803,10 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	}
 	// Coach-led league: auto-enroll this registrant as the league coach's student
 	// (no-op unless the event belongs to a coach-led league). Off the request path.
-	// Skipped for temporary substitutes (SkipCoachEnroll).
-	if !req.SkipCoachEnroll {
+	// Skipped for temporary substitutes (SkipCoachEnroll) AND for entries still
+	// pending approval — an unapproved stranger must not land on the coach's
+	// roster. ApproveRegistration fires the enroll once the organizer approves.
+	if !req.SkipCoachEnroll && !needsApproval {
 		go s.maybeEnrollLeagueCoachStudent(eventID, req.Email, req.Phone, req.FullName)
 	}
 	return model.Registration{
@@ -5432,15 +5450,38 @@ func (s *Service) MergeDivision(eventID, fromBracketID, toBracketID string, forc
 // only). The global players row is left intact (it may be used elsewhere); FK
 // cascades clean up this registration's payments/check-ins.
 func (s *Service) DeleteRegistration(regID string) error {
+	// Pull the event + player contact up front so a coach-led league can drop the
+	// removed player from the coach's roster (a player removed mid-league would
+	// otherwise linger on the coach's student list forever).
 	reg, err := s.sb.SelectOne("registrations",
-		"id=eq."+store.Q(regID)+"&select=id")
+		"id=eq."+store.Q(regID)+
+			"&select=id,event_id,player:players!player_id(email,phone)")
 	if err != nil {
 		return err
 	}
 	if reg == nil {
 		return ErrNotFound
 	}
-	return s.sb.Delete("registrations", "id=eq."+store.Q(regID))
+	if err := s.sb.Delete("registrations", "id=eq."+store.Q(regID)); err != nil {
+		return err
+	}
+	// Best-effort coach-roster cleanup (no-op unless the event's league is
+	// coach-led and the player matches a coach_students row).
+	if eventID := asStr(reg, "event_id"); eventID != "" {
+		if ev, _ := s.sb.SelectOne("events",
+			"id=eq."+store.Q(eventID)+"&select=league_id"); ev != nil {
+			leagueID := asStr(ev, "league_id")
+			if leagueID != "" && s.leagueCoach(leagueID) != "" {
+				email, phone := "", ""
+				if p := asMap(reg, "player"); p != nil {
+					email = asStr(p, "email")
+					phone = asStr(p, "phone")
+				}
+				go s.unenrollLeagueCoachStudent(leagueID, email, phone)
+			}
+		}
+	}
+	return nil
 }
 
 // PendingRegistrations returns the self-registrations awaiting organizer approval
@@ -5469,7 +5510,7 @@ func (s *Service) ApproveRegistration(regID string) error {
 	// column), so embed the player via the player_id FK.
 	reg, err := s.sb.SelectOne("registrations",
 		"id=eq."+store.Q(regID)+
-			"&select=id,event_id,bracket_id,approved,player:players!player_id(full_name,email)")
+			"&select=id,event_id,bracket_id,approved,player:players!player_id(full_name,email,phone)")
 	if err != nil {
 		return err
 	}
@@ -5490,10 +5531,16 @@ func (s *Service) ApproveRegistration(regID string) error {
 	// "registered" feed post + the branded confirmation email (best-effort, off
 	// the request path — a mail hiccup never fails the approval).
 	eventID := asStr(reg, "event_id")
-	name, email := "", ""
+	name, email, phone := "", "", ""
 	if p := asMap(reg, "player"); p != nil {
 		name = strings.TrimSpace(asStr(p, "full_name"))
 		email = strings.TrimSpace(asStr(p, "email"))
+		phone = strings.TrimSpace(asStr(p, "phone"))
+	}
+	// Coach-led league: enrollment was deferred at register time for pending
+	// entries — now that they're approved, add them to the coach's roster.
+	if eventID != "" {
+		go s.maybeEnrollLeagueCoachStudent(eventID, email, phone, name)
 	}
 	if eventID != "" && name != "" {
 		s.AddFeedItem(eventID, "registered", name+" registered", regID)
@@ -5967,6 +6014,14 @@ func (s *Service) ChangeEventFormat(eventID, newFormat, ownerID string, arrange 
 	}
 	if ev.TeamSize > 0 {
 		return model.ScheduleResult{}, errors.New("team events don't use a draw format")
+	}
+	// A perpetual (recurring) league IS an accumulating round-robin — changing its
+	// format runs GenerateSchedule(force=true), which wipes EVERY past session and
+	// the whole cumulative Leaderboard. There is no non-destructive reformat, so
+	// refuse it outright.
+	if ev.Perpetual {
+		return model.ScheduleResult{}, errors.New(
+			"a recurring league can't change format — it would erase every past session and the season standings")
 	}
 	// Premium-gate advanced draws, mirroring the create-time gate.
 	if premiumTournamentFormat(newFormat) && !s.IsPremium(ownerID) {
@@ -11293,6 +11348,20 @@ var duprFlushLocks sync.Map // eventID -> *sync.Mutex
 // None of these three paths call each other, so no nested acquisition / deadlock.
 func (s *Service) lockDuprEvent(eventID string) func() {
 	muAny, _ := duprFlushLocks.LoadOrStore(eventID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// perpetualBuildLocks serializes "Build schedule" per perpetual event.
+var perpetualBuildLocks sync.Map // eventID -> *sync.Mutex
+
+// lockPerpetualBuild serializes appending a session to a perpetual league, so a
+// double-tap (or the owner + coach building at once) can't read the same
+// max-round-number and append two overlapping round-robins for the same day —
+// which would double every player's games and standings. `defer s.lockPerpetualBuild(id)()`.
+func (s *Service) lockPerpetualBuild(eventID string) func() {
+	muAny, _ := perpetualBuildLocks.LoadOrStore(eventID, &sync.Mutex{})
 	mu := muAny.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock

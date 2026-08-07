@@ -616,6 +616,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/seed-test", s.ownerOnly("event", "id", s.seedPerpetualEventSessions))
 	mux.HandleFunc("POST /events/{id}/autoscore-session", s.ownerOnly("event", "id", s.autoScoreSession))
 	mux.HandleFunc("POST /events/{id}/roll-session", s.ownerOnly("event", "id", s.rollSession))
+	mux.HandleFunc("POST /events/{id}/reset-checkins", s.ownerOnly("event", "id", s.resetCheckins))
+	mux.HandleFunc("POST /events/{id}/remove-test-player", s.ownerOnly("event", "id", s.removeTestPlayer))
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
@@ -2170,6 +2172,38 @@ func (s *Server) rollSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
+}
+
+// resetCheckins (QA-only) clears every player's check-in so the coach can
+// re-take attendance — exercises the check-in-before-build gate. Owner-gated.
+func (s *Server) resetCheckins(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.ResetCheckins(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"reset": n})
+}
+
+// removeTestPlayer (QA-only) drops one player to simulate a mid-season dropout
+// (their past results stay in History/the Leaderboard). Owner-gated.
+func (s *Server) removeTestPlayer(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	name, err := s.svc.RemoveRandomTestPlayer(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"removed": name})
 }
 
 // seedTestTournament creates a 30/150/80-player TEST tournament (the Profile-tab

@@ -190,6 +190,42 @@ func (s *Service) AutoScoreCurrentSession(eventID string) (int, error) {
 	return n, nil
 }
 
+// ResetCheckins (QA test flow) clears check-in for every player in the event so
+// the coach can re-take attendance — exercises the "check players in before you
+// build a session" gate that gates each new session. Returns how many players
+// were reset.
+func (s *Service) ResetCheckins(eventID string) (int, error) {
+	rows, err := s.sb.Update("registrations",
+		"event_id=eq."+store.Q(eventID)+"&checked_in=eq.true",
+		map[string]any{"checked_in": false, "checked_in_at": nil})
+	if err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
+// RemoveRandomTestPlayer (QA test flow) drops one player from the league to
+// simulate a mid-season dropout. Only the registration is removed — the player's
+// already-played games stay in History and keep counting on the Leaderboard, so
+// this exercises "does a dropout keep their earned results?". Picks the most
+// recently added player (so repeated taps peel players off one at a time).
+// Returns the removed player's name.
+func (s *Service) RemoveRandomTestPlayer(eventID string) (string, error) {
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&order=created_at.desc&limit=1&select=id,full_name")
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", errors.New("no players left to remove")
+	}
+	name := asStr(rows[0], "full_name")
+	if err := s.sb.Delete("registrations", "id=eq."+store.Q(asStr(rows[0], "id"))); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // RollToNextSession (QA test flow) advances a perpetual league by one session
 // without waiting a real day: it scores any leftover games in the current
 // session, backdates that session into History on a free past day, re-checks-in

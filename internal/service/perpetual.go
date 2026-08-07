@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -9,6 +10,126 @@ import (
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
+
+// perpetualSeedNames — 25 players for the perpetual-league test seed.
+var perpetualSeedNames = []string{
+	"Ana Rivera", "Ben Carter", "Cara Lopez", "Dan Patel", "Evan Brooks",
+	"Fae Nguyen", "Gus Holt", "Hana Park", "Iris Cole", "Jay Mercer",
+	"Kira Bose", "Liam Frost", "Mara Quinn", "Nora Vale", "Omar Reed",
+	"Pia Shah", "Quinn Ames", "Ravi Shah", "Sky Tran", "Tom Yorke",
+	"Uma Diaz", "Vic Lane", "Wes Kim", "Xena Ford", "Yara Cruz",
+}
+
+// lastWeekThursdayAt returns last week's Thursday at hour:min (UTC) — a clearly-
+// past session date for the seed. Uses the most recent past Thursday, backing up
+// a week if it's only a day or two ago so it reads as "last week".
+func lastWeekThursdayAt(hour, min int) time.Time {
+	now := time.Now().UTC()
+	d := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, time.UTC)
+	for i := 0; i < 7 && d.Weekday() != time.Thursday; i++ {
+		d = d.AddDate(0, 0, -1)
+	}
+	if !d.Before(now) || now.Sub(d) < 3*24*time.Hour {
+		d = d.AddDate(0, 0, -7)
+	}
+	return d
+}
+
+// SeedPerpetualLeagueDemo (QA-only) stands up a perpetual-league test scenario:
+// a recurring league running as one ongoing event, 25 players, a COMPLETED
+// session dated last Thursday (fully scored), and a fresh ONGOING session today.
+// Returns the ongoing event id. Lets Kim exercise the session history, Game
+// Standings, and Leaderboard in one tap.
+func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
+	lastThu := lastWeekThursdayAt(18, 0)
+
+	leagueID, err := s.CreateLeague(ownerID, model.CreateLeagueRequest{
+		Name:       "TEST · Never-Ending League",
+		LeagueType: "round_robin",
+		Location:   "Test Courts",
+	})
+	if err != nil {
+		return "", err
+	}
+	eid, err := s.CreateEvent(model.CreateEventRequest{
+		Name:             "TEST · Never-Ending League",
+		Format:           "doubles",
+		PartnerMode:      "rotating",
+		TournamentFormat: "round_robin",
+		ScoringMode:      "wins",
+		NumCourts:        4,
+		Location:         "Test Courts",
+		StartsAt:         lastThu.Format(time.RFC3339),
+		Brackets:         []model.BracketInput{{Name: "Open", DivisionType: "open"}},
+	}, ownerID)
+	if err != nil {
+		return "", err
+	}
+	// Link + flag the event as the league's single ongoing perpetual event.
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eid), map[string]any{
+		"league_id": leagueID, "perpetual": true, "recur_interval_days": 0,
+	}); err != nil {
+		return "", err
+	}
+	// Make the league recurring so it opens as a perpetual league, anchored on the
+	// Thursday cadence.
+	lupd := map[string]any{}
+	if s.columnReady("leagues", "recurs") {
+		lupd["recurs"] = true
+		lupd["recur_start_at"] = lastThu.Format(time.RFC3339)
+	}
+	if s.columnReady("leagues", "recur_event_id") {
+		lupd["recur_event_id"] = eid
+	}
+	if len(lupd) > 0 {
+		_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID), lupd)
+	}
+
+	// 25 players into the Open division.
+	bks, err := s.GetBrackets(eid)
+	if err != nil || len(bks) == 0 {
+		return "", errors.New("seed: no division to register into")
+	}
+	bid := bks[0].ID
+	for i, nm := range perpetualSeedNames {
+		_, _ = s.RegisterPlayer(eid, model.RegisterRequest{
+			TrustedAdd:      true,
+			SkipCoachEnroll: true,
+			FullName:        nm,
+			Phone:           fmt.Sprintf("+1555%07d", 2000000+i),
+			BracketID:       bid,
+			SkillLevel:      ratingPtr(3.0 + float64(i%10)*0.05),
+		}, "")
+	}
+	// Check everyone in — a perpetual session builds from checked-in players.
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	_, _ = s.sb.Update("registrations", "event_id=eq."+store.Q(eid),
+		map[string]any{"checked_in": true, "checked_in_at": nowStr})
+
+	// SESSION 1 (last Thursday): generate, backdate the rounds, score them all.
+	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
+		return "", err
+	}
+	_, _ = s.sb.Update("rounds", "event_id=eq."+store.Q(eid),
+		map[string]any{"created_at": lastThu.Format(time.RFC3339)})
+	poolIDs, _ := s.listPoolMatchIDs(eid)
+	for i, mid := range poolIDs {
+		lo := 5 + (i*3)%6 // 5..10, deterministic
+		if i%2 == 0 {
+			_ = s.applyScore(mid, 11, lo)
+		} else {
+			_ = s.applyScore(mid, lo, 11)
+		}
+	}
+	_ = s.reconcileRoundStatuses(eid)
+
+	// SESSION 2 (today): append a fresh session for the same checked-in players,
+	// left UNSCORED so it reads as ongoing. New rounds default created_at = now.
+	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
+		return "", err
+	}
+	return eid, nil
+}
 
 // SetRecurringControls updates a perpetual league's schedule controls (owner
 // enforced at the route). startsAt reschedules the weekday/time; paused pauses/

@@ -611,6 +611,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// the "Load demo" buttons produce events the caller can actually manage.
 	// requireAuth keeps it from being an anonymous data-injection endpoint.
 	mux.HandleFunc("POST /dev/seed", requireAuth(s.seedDemo))
+	mux.HandleFunc("POST /dev/seed-perpetual-league", requireAuth(s.seedPerpetualLeague))
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
@@ -2076,6 +2077,23 @@ func (s *Server) seedDemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.svc.SeedDemo(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
+}
+
+// seedPerpetualLeague (QA-only) stands up a perpetual-league test scenario:
+// a recurring league with 25 players, a scored session dated last Thursday, and a
+// fresh ongoing session today.
+func (s *Server) seedPerpetualLeague(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	id, err := s.svc.SeedPerpetualLeagueDemo(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

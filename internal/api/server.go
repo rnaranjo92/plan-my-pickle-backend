@@ -293,6 +293,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /my-leagues", requireAuth(s.myLeagues))
 	// READS: owner OR participant (leagueViewer). WRITES below stay owner-only.
 	mux.HandleFunc("GET /leagues/{id}", s.leagueViewer("id", s.getLeague))
+	mux.HandleFunc("DELETE /leagues/{id}", s.ownerOnly("league", "id", s.deleteLeague))
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
@@ -1192,6 +1193,15 @@ func (s *Server) removeEventFromLeague(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// deleteLeague removes a league and all its events/data (owner-only).
+func (s *Server) deleteLeague(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteLeague(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // leagueStandings returns the cumulative standings across all the league's

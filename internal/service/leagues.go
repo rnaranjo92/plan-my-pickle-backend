@@ -582,6 +582,49 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 	return detail, nil
 }
 
+// DeleteLeague removes a league and everything under it (owner only): its
+// linked events — each cascade-deletes its own matches/rounds/registrations/
+// brackets — then the league's divisions, members, videos, and finally the
+// league row. Best-effort on the optional sub-tables so a missing one (older
+// DB / non-ladder league) doesn't block the delete.
+func (s *Service) DeleteLeague(leagueID, ownerID string) error {
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=owner_id")
+	if err != nil {
+		return err
+	}
+	if lg == nil {
+		return ErrNotFound
+	}
+	if asStr(lg, "owner_id") != ownerID {
+		return ErrForbidden
+	}
+	// The league's events (cascade removes their matches/rounds/registrations).
+	if rows, err := s.sb.Select("events",
+		"league_id=eq."+store.Q(leagueID)+"&select=id"); err == nil {
+		for _, r := range rows {
+			_ = s.sb.Delete("events", "id=eq."+store.Q(asStr(r, "id")))
+		}
+	}
+	// Ladder leagues: clear entrants/challenges under this league's divisions
+	// before the divisions themselves (they FK to the bracket).
+	if bks, err := s.sb.Select("league_brackets",
+		"league_id=eq."+store.Q(leagueID)+"&select=id"); err == nil && len(bks) > 0 {
+		ids := make([]string, 0, len(bks))
+		for _, b := range bks {
+			ids = append(ids, asStr(b, "id"))
+		}
+		_ = s.sb.Delete("ladder_challenges", "league_bracket_id="+store.In(ids))
+		_ = s.sb.Delete("ladder_entrants", "league_bracket_id="+store.In(ids))
+	}
+	_ = s.sb.Delete("league_brackets", "league_id=eq."+store.Q(leagueID))
+	if s.leagueMembersReady() {
+		_ = s.sb.Delete("league_members", "league_id=eq."+store.Q(leagueID))
+	}
+	_ = s.sb.Delete("league_videos", "league_id=eq."+store.Q(leagueID))
+	return s.sb.Delete("leagues", "id=eq."+store.Q(leagueID))
+}
+
 // AddEventToLeague links an existing event into a league. The caller must own
 // BOTH the league and the event (verified by the HTTP layer). Returns
 // ErrNotFound if the event is missing.

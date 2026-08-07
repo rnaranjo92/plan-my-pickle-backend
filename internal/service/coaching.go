@@ -441,6 +441,49 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 	return mapCoachStudent(ins[0]), nil
 }
 
+// ResendCoachInvite re-sends the join invite (SMS and/or email) to a student who
+// hasn't registered yet. Coach-only (the caller must own the roster row). Errors
+// if the student already has a PlanMyPickle account or has no contact on file.
+func (s *Service) ResendCoachInvite(coachID, id string) error {
+	if !s.coachingReady() {
+		return ErrCoachingUnavailable
+	}
+	row, err := s.sb.SelectOne("coach_students", "id=eq."+store.Q(id)+
+		"&select=coach_id,student_id,student_email,student_phone,student_name,invite_token")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "coach_id") != coachID {
+		return ErrForbidden
+	}
+	if asStr(row, "student_id") != "" {
+		return errors.New("this student is already on PlanMyPickle")
+	}
+	email := asStr(row, "student_email")
+	phone := asStr(row, "student_phone")
+	if email == "" && phone == "" {
+		return errors.New("no email or phone on file to send an invite to")
+	}
+	// Older rows may lack a token — mint one so the claim still binds.
+	token := asStr(row, "invite_token")
+	if token == "" && s.columnReady("coach_students", "invite_token") {
+		token = newID()
+		_, _ = s.sb.Update("coach_students", "id=eq."+store.Q(id),
+			map[string]any{"invite_token": token})
+	}
+	name := asStr(row, "student_name")
+	if email != "" {
+		go s.sendCoachInvite(coachID, email, name, token)
+	}
+	if phone != "" {
+		go s.sendCoachInviteSMS(coachID, phone, token)
+	}
+	return nil
+}
+
 // reactivateLeftStudent revives a coach_students row the student previously LEFT
 // (left_at set → hidden from the roster) instead of erroring "already added". It
 // clears left_at, refreshes name/level/contact, re-links to an account if one

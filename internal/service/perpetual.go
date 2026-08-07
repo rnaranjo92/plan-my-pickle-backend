@@ -159,6 +159,135 @@ func (s *Service) seedPerpetualScenario(eid string, lastThu time.Time) error {
 	return nil
 }
 
+// AutoScoreCurrentSession (QA test flow) fills a deterministic result into every
+// UNSCORED game in the event — which, for a perpetual league, is exactly the
+// current/ongoing session (past sessions are already scored). Byes (completed,
+// no score) are left alone. Returns the number of games scored. Lets Kim watch
+// Game Standings + the Leaderboard update without hand-entering 25 scores.
+func (s *Service) AutoScoreCurrentSession(eventID string) (int, error) {
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,status&order=created_at,id")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for i, r := range rows {
+		if asStr(r, "status") == "completed" { // already scored, or a bye
+			continue
+		}
+		lo := 5 + (i*3)%6 // 5..10, deterministic
+		var e error
+		if i%2 == 0 {
+			e = s.applyScore(asStr(r, "id"), 11, lo)
+		} else {
+			e = s.applyScore(asStr(r, "id"), lo, 11)
+		}
+		if e == nil {
+			n++
+		}
+	}
+	_ = s.reconcileRoundStatuses(eventID)
+	return n, nil
+}
+
+// RollToNextSession (QA test flow) advances a perpetual league by one session
+// without waiting a real day: it scores any leftover games in the current
+// session, backdates that session into History on a free past day, re-checks-in
+// every registered player, and builds a fresh ongoing session for today. Tapping
+// it repeatedly walks the league through its full lifecycle. Returns the event id.
+func (s *Service) RollToNextSession(eventID string) (string, error) {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return "", err
+	}
+	if !ev.Perpetual {
+		return "", errors.New("this isn't a perpetual (recurring-league) event")
+	}
+	// 1. Complete the current session so it reads clean in History.
+	if _, err := s.AutoScoreCurrentSession(eventID); err != nil {
+		return "", err
+	}
+	// 2. Push the current (newest) session's rounds back to a free past day.
+	if err := s.backdateCurrentSession(eventID); err != nil {
+		return "", err
+	}
+	// 3. Re-check-in everyone — a session builds from checked-in players, and
+	//    real sessions reset check-ins each day.
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	_, _ = s.sb.Update("registrations", "event_id=eq."+store.Q(eventID),
+		map[string]any{"checked_in": true, "checked_in_at": nowStr})
+	// 4. Append a fresh session dated today.
+	if _, err := s.GenerateSchedule(eventID, true, true); err != nil {
+		return "", err
+	}
+	return eventID, nil
+}
+
+// backdateCurrentSession moves the newest session's rounds (the current one) to
+// the most recent day BEFORE it that isn't already a session date, so it drops
+// into History as a distinct past session. Day buckets are computed in UTC to
+// match the seeder's backdating.
+func (s *Service) backdateCurrentSession(eventID string) error {
+	rows, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+"&select=id,created_at")
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	day := func(t time.Time) time.Time {
+		u := t.UTC()
+		return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	parse := func(ts string) (time.Time, bool) {
+		if t, e := time.Parse(time.RFC3339, ts); e == nil {
+			return t, true
+		}
+		if t, e := time.Parse("2006-01-02T15:04:05", ts); e == nil {
+			return t, true
+		}
+		return time.Time{}, false
+	}
+	used := map[string]bool{}
+	type rd struct {
+		id  string
+		day time.Time
+	}
+	var parsed []rd
+	var maxDay time.Time
+	for _, r := range rows {
+		t, ok := parse(asStr(r, "created_at"))
+		if !ok {
+			continue
+		}
+		d := day(t)
+		used[d.Format("2006-01-02")] = true
+		parsed = append(parsed, rd{asStr(r, "id"), d})
+		if d.After(maxDay) {
+			maxDay = d
+		}
+	}
+	cur := make([]string, 0)
+	for _, p := range parsed {
+		if p.day.Equal(maxDay) {
+			cur = append(cur, p.id)
+		}
+	}
+	if len(cur) == 0 {
+		return nil
+	}
+	target := maxDay.AddDate(0, 0, -1)
+	for used[target.Format("2006-01-02")] {
+		target = target.AddDate(0, 0, -1)
+	}
+	newTs := time.Date(target.Year(), target.Month(), target.Day(), 18, 0, 0, 0, time.UTC).
+		Format(time.RFC3339)
+	_, err = s.sb.Update("rounds", "id="+store.In(cur),
+		map[string]any{"created_at": newTs})
+	return err
+}
+
 // SetRecurringControls updates a perpetual league's schedule controls (owner
 // enforced at the route). startsAt reschedules the weekday/time; paused pauses/
 // resumes; skipUntil skips sessions up to that date ("" clears it). A nil pointer

@@ -614,6 +614,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /dev/seed", requireAuth(s.seedDemo))
 	mux.HandleFunc("POST /dev/seed-perpetual-league", requireAuth(s.seedPerpetualLeague))
 	mux.HandleFunc("POST /events/{id}/seed-test", s.ownerOnly("event", "id", s.seedPerpetualEventSessions))
+	mux.HandleFunc("POST /events/{id}/autoscore-session", s.ownerOnly("event", "id", s.autoScoreSession))
+	mux.HandleFunc("POST /events/{id}/roll-session", s.ownerOnly("event", "id", s.rollSession))
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
@@ -2130,6 +2132,39 @@ func (s *Server) seedPerpetualEventSessions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	id, err := s.svc.SeedPerpetualEventSessions(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
+}
+
+// autoScoreSession (QA-only) fills a result into every unscored game in the
+// current session — the perpetual-league test flow. Owner-gated at the route.
+func (s *Server) autoScoreSession(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.AutoScoreCurrentSession(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"scored": n})
+}
+
+// rollSession (QA-only) advances a perpetual league one session: score the
+// current one, push it into History, re-check-in everyone, build a fresh
+// ongoing session. Owner-gated at the route.
+func (s *Server) rollSession(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	id, err := s.svc.RollToNextSession(r.PathValue("id"))
 	if err != nil {
 		status(w, err)
 		return

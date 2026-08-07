@@ -295,6 +295,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /leagues/{id}", s.leagueViewer("id", s.getLeague))
 	mux.HandleFunc("DELETE /leagues/{id}", s.ownerOnly("league", "id", s.deleteLeague))
 	mux.HandleFunc("POST /events/{id}/recurring", s.ownerOnly("event", "id", s.setRecurringControls))
+	mux.HandleFunc("DELETE /events/{id}/session", s.ownerOnly("event", "id", s.deleteEventSession))
 	mux.HandleFunc("POST /events/{id}/coach-led", s.ownerOnly("event", "id", s.setEventCoachLed))
 	mux.HandleFunc("POST /leagues/{id}/events", s.ownerOnly("league", "id", s.addEventToLeague))
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
@@ -1230,6 +1231,24 @@ func (s *Server) setEventCoachLed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ev)
+}
+
+// deleteEventSession removes one day's session from a perpetual league — every
+// round (and its matches) created within [from, to). The frontend sends the
+// local day's UTC bounds so we never guess the coach's timezone. Owner-only.
+func (s *Server) deleteEventSession(w http.ResponseWriter, r *http.Request) {
+	from := strings.TrimSpace(r.URL.Query().Get("from"))
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	if from == "" || to == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("from and to are required"))
+		return
+	}
+	n, err := s.svc.DeleteSessionRange(r.PathValue("id"), from, to)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"rounds": n})
 }
 
 // deleteLeague removes a league and all its events/data (owner-only).

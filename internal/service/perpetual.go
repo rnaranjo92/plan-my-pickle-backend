@@ -218,6 +218,7 @@ const perpetualCheckinWindow = 12 * time.Hour
 //   - else (the league has NO event) CREATES the ongoing event from league
 //     config + members, so opening the league always lands in the tournament UI
 //     instead of an empty session shell.
+//
 // Returns the ongoing event id (nil only if creation genuinely fails). The
 // perpetual flag is set in place on the passed events.
 func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []model.LeagueBracket, events []model.Event) *string {
@@ -396,6 +397,73 @@ func (s *Service) maxRoundNumber(eventID, bracketID string) int {
 // numbered after its existing max, so games and standings accumulate season-long.
 // Matches are placed on courts inline by the round-robin engine (no global
 // re-spread that would disturb completed games).
+// DeleteSessionRange removes an entire day's session from a perpetual league —
+// every round whose created_at falls in [fromUTC, toUTC) plus all of its
+// matches. This is the "coach forgot to skip the day" fix: the games were
+// accidentally recorded into history, and because standings are computed live
+// from matches, deleting them pulls the session out of the Leaderboard
+// automatically — no void bookkeeping. History groups sessions by ROUND
+// created_at (the seeder backdates rounds, not matches), so we filter on rounds.
+// Returns the number of rounds removed.
+func (s *Service) DeleteSessionRange(eventID, fromUTC, toUTC string) (int, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" || strings.TrimSpace(fromUTC) == "" || strings.TrimSpace(toUTC) == "" {
+		return 0, errors.New("event id and from/to bounds are required")
+	}
+	defer s.lockDuprEvent(eventID)() // serialize the dupr_submissions delete vs a flush
+	rows, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+
+			"&created_at=gte."+store.Q(fromUTC)+
+			"&created_at=lt."+store.Q(toUTC)+"&select=id")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	roundIDs := make([]string, 0, len(rows))
+	for _, r := range rows {
+		roundIDs = append(roundIDs, asStr(r, "id"))
+	}
+	// Best-effort DUPR reversal for the matches we're about to delete so we never
+	// orphan a real result on official ratings (mirrors the full-event wipe;
+	// usually a no-op for coaching/social leagues that don't submit to DUPR).
+	if matchRows, err := s.sb.Select("matches",
+		"round_id="+store.In(roundIDs)+"&select=id"); err == nil && len(matchRows) > 0 {
+		matchIDs := make([]string, 0, len(matchRows))
+		for _, m := range matchRows {
+			matchIDs = append(matchIDs, asStr(m, "id"))
+		}
+		if subs, err := s.sb.Select("dupr_submissions",
+			"match_id="+store.In(matchIDs)+"&status=eq.submitted&select=match_id,provider_ref,dupr_gen"); err == nil && len(subs) > 0 {
+			var pend []map[string]any
+			for _, sub := range subs {
+				if code := asStr(sub, "provider_ref"); code != "" {
+					pend = append(pend, map[string]any{
+						"event_id":     eventID,
+						"provider_ref": code,
+						"identifier":   duprIdentifier(asStr(sub, "match_id"), asInt(sub, "dupr_gen")),
+					})
+				}
+			}
+			if len(pend) > 0 {
+				if _, err := s.sb.Insert("dupr_pending_deletes", pend); err == nil {
+					go func() { _ = s.DrainDuprPendingDeletes() }()
+				}
+			}
+			_ = s.sb.Delete("dupr_submissions", "match_id="+store.In(matchIDs))
+		}
+	}
+	// Matches carry the FK to rounds, so delete them first, then the rounds.
+	if err := s.sb.Delete("matches", "round_id="+store.In(roundIDs)); err != nil {
+		return 0, err
+	}
+	if err := s.sb.Delete("rounds", "id="+store.In(roundIDs)); err != nil {
+		return 0, err
+	}
+	return len(roundIDs), nil
+}
+
 func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult, error) {
 	bks, err := s.GetBrackets(ev.ID)
 	if err != nil {

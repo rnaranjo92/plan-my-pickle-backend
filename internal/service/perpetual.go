@@ -678,6 +678,20 @@ func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 	if err != nil || len(rows) == 0 {
 		return false, err
 	}
+	// Bucket sessions by the event's LOCAL day (sessions are a local-day concept),
+	// derived from the configured start time-of-day — the same approach
+	// resetStaleCheckins uses. A pure UTC bucket would mis-classify an evening
+	// league's session in any non-UTC timezone and could delete a genuinely-prior
+	// LOCAL session.
+	loc := time.UTC
+	if ev, _ := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=starts_at"); ev != nil {
+		if st := strings.TrimSpace(asStr(ev, "starts_at")); st != "" {
+			if t, e := time.Parse(time.RFC3339, st); e == nil {
+				loc = t.Location()
+			}
+		}
+	}
 	day := func(ts string) (time.Time, bool) {
 		t, e := time.Parse(time.RFC3339, ts)
 		if e != nil {
@@ -685,8 +699,8 @@ func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 				return time.Time{}, false
 			}
 		}
-		u := t.UTC()
-		return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC), true
+		l := t.In(loc)
+		return time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc), true
 	}
 	var maxDay time.Time
 	for _, r := range rows {
@@ -694,14 +708,15 @@ func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 			maxDay = d
 		}
 	}
-	// Only ever clear a RECENT session (today's, or yesterday's for late-evening
-	// leagues whose created_at rolled into the next UTC day). This is a same-day
+	// Only clear TODAY's session (in the event's local day). This is a same-day
 	// substitute helper — it must NEVER delete an older, prior session that was
-	// built but not scored in-app (it's still real data; the sub just applies to
-	// the next build).
-	nowUTC := time.Now().UTC()
-	todayUTC := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 0, 0, 0, 0, time.UTC)
-	if maxDay.Before(todayUTC.AddDate(0, 0, -1)) {
+	// built but not scored (it's real data the app already shows in History; the
+	// sub just applies to the next build). A session that ran across local
+	// midnight is still in_progress/scored and caught by the guards below anyway;
+	// if truly unscored, not clearing is safe (the Build confirm catches a double).
+	nowLocal := time.Now().In(loc)
+	todayLocal := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, loc)
+	if !maxDay.Equal(todayLocal) {
 		return false, nil
 	}
 	cur := make([]string, 0, len(rows))

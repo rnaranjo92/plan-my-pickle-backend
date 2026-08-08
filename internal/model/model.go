@@ -970,6 +970,10 @@ type Match struct {
 	Games      []GameScore `json:"games,omitempty"`
 	Status     string      `json:"status"`
 	ResultType string      `json:"resultType,omitempty"` // normal | forfeit | retire | walkover
+	// CountsForDiff = this result counts toward point differential. False for a
+	// fabricated forfeit/walkover/retire-without-score; the app mirrors it so
+	// per-session standings match the cumulative Leaderboard.
+	CountsForDiff bool `json:"countsForDiff"`
 	// Round context — populated by the event-wide pool-matches query so the
 	// Game tab can group + filter every match from one stream.
 	RoundID        *string `json:"roundId,omitempty"`

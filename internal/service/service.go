@@ -10647,7 +10647,7 @@ func (s *Service) ChampionFeedText(matchID string) (eventID, text string) {
 	}
 	eventID = asStr(row, "event_id")
 	if division != "" {
-		return eventID, fmt.Sprintf("%s win the %s division!", winner, division)
+		return eventID, fmt.Sprintf("%s won the %s division!", winner, division)
 	}
 	return eventID, fmt.Sprintf("%s are the champions!", winner)
 }

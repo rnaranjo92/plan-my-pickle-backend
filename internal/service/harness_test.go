@@ -17,8 +17,8 @@ import (
 // each read method's empty-result path without erroring.
 type fakeSupabase struct {
 	mu     sync.Mutex
-	get    map[string]string                  // table -> JSON array of rows (GET)
-	rpc    map[string]string                  // function -> JSON body
+	get    map[string]string                   // table -> JSON array of rows (GET)
+	rpc    map[string]string                   // function -> JSON body
 	rpcFn  map[string]func(body []byte) string // function -> payload-aware responder
 	reqs   []string                            // "METHOD /path" captured for assertions
 	writes map[string][]map[string]any         // table -> captured insert/update rows

@@ -10,9 +10,9 @@ func TestSmsMonthlyAllowance(t *testing.T) {
 		set  bool
 		want int
 	}{
-		{"", false, 0},   // unset → off
-		{"", true, 0},    // empty → off
-		{"0", true, 0},   // explicit zero → off
+		{"", false, 0}, // unset → off
+		{"", true, 0},  // empty → off
+		{"0", true, 0}, // explicit zero → off
 		{"500", true, 500},
 		{"-5", true, 0},  // negative is nonsense → off (fail open)
 		{"abc", true, 0}, // garbage → off

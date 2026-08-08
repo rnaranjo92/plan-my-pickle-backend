@@ -1362,15 +1362,21 @@ func (s *Service) DeleteEvent(id string) error {
 // deleteEventWithDuprReversal deletes an event AND reverses any of its results
 // already submitted to DUPR — otherwise a mid-season league/event delete leaves
 // real matches live on players' official ratings. wipeAllMatches queues the
-// reversals + clears matches/rounds; we drain the queue SYNCHRONOUSLY before
-// deleting the event so a cascade on the pending-deletes table can't strand a
-// reversal. Shared by DeleteEvent and DeleteLeague's per-event loop.
+// reversals + clears matches/rounds. We then DETACH the queued reversals from
+// the event (event_id → null) so an ON DELETE CASCADE can't wipe them if DUPR is
+// unreachable right now — the 2-minute reconciler drains them by
+// provider_ref/identifier, which don't need the event to exist — and attempt an
+// immediate drain. Shared by DeleteEvent and DeleteLeague's per-event loop.
 func (s *Service) deleteEventWithDuprReversal(eventID string) error {
 	if err := s.wipeAllMatches(eventID); err != nil {
 		return err
 	}
+	// Best-effort detach: on a NOT-NULL column this simply no-ops, leaving us no
+	// worse off; where the FK cascades, it makes the reversal queue durable.
+	_, _ = s.sb.Update("dupr_pending_deletes", "event_id=eq."+store.Q(eventID),
+		map[string]any{"event_id": nil})
 	if err := s.DrainDuprPendingDeletes(); err != nil {
-		log.Printf("dupr: drain before deleting event %s: %v (reversals will retry via the reconciler if the rows survive)", eventID, err)
+		log.Printf("dupr: drain before deleting event %s: %v (detached reversals will retry via the reconciler)", eventID, err)
 	}
 	return s.sb.Delete("events", "id=eq."+store.Q(eventID))
 }
@@ -1410,6 +1416,13 @@ func (s *Service) DeleteAccount(userID string) error {
 	}
 	if err := s.sb.Delete("kudos", "receiver_user_id=eq."+store.Q(userID)); err != nil {
 		log.Printf("DeleteAccount: delete received kudos for %s failed (continuing): %v", userID, err)
+	}
+	// 2c. If they were a coach, drop their coaching roster so a deleted coach
+	//     leaves no orphaned coach_students rows. Best-effort + column-guarded.
+	if s.columnReady("coach_students", "coach_id") {
+		if err := s.sb.Delete("coach_students", "coach_id=eq."+store.Q(userID)); err != nil {
+			log.Printf("DeleteAccount: delete coach_students for %s failed (continuing): %v", userID, err)
+		}
 	}
 	// 3. Erase the login last.
 	return s.sb.DeleteAuthUser(userID)

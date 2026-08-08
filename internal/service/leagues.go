@@ -599,13 +599,34 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 	if asStr(lg, "owner_id") != ownerID {
 		return ErrForbidden
 	}
-	// Coach-led: un-enroll the league's members from the coach roster BEFORE we
-	// delete the members/league (so leagueCoach still resolves). Best-effort.
+	// Coach-led: un-enroll the league's students from the coach roster BEFORE we
+	// delete the members/events/league (so leagueCoach still resolves). Covers
+	// BOTH league_members AND event REGISTRATIONS — a perpetual league's players
+	// exist only as registrations on its ongoing event, not as league_members, so
+	// members-only cleanup would orphan them on the coach's roster. Best-effort.
 	if s.leagueCoach(leagueID) != "" {
 		if ms, err := s.sb.Select("league_members",
 			"league_id=eq."+store.Q(leagueID)+"&select=email,phone"); err == nil {
 			for _, m := range ms {
 				s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"))
+			}
+		}
+		// Registration-based students (perpetual + self-registered): resolve each
+		// registrant's contact via the players FK and unenroll.
+		if evs, err := s.sb.Select("events",
+			"league_id=eq."+store.Q(leagueID)+"&select=id"); err == nil {
+			eids := idList(evs, "id")
+			if len(eids) > 0 {
+				if regs, err := s.sb.Select("registrations",
+					"event_id="+store.In(eids)+
+						"&select=player:players!player_id(email,phone)"); err == nil {
+					for _, r := range regs {
+						if p := asMap(r, "player"); p != nil {
+							s.unenrollLeagueCoachStudent(leagueID,
+								asStr(p, "email"), asStr(p, "phone"))
+						}
+					}
+				}
 			}
 		}
 	}
@@ -928,7 +949,63 @@ func (s *Service) unenrollLeagueCoachStudent(leagueID, email, phone string) {
 	if row == nil {
 		return
 	}
+	// Don't drop a student who is still active in ANOTHER coach-led league run by
+	// the same coach — leaving league A must not unenroll them from league B.
+	if s.playerHasOtherLeagueUnderCoach(coachID, leagueID, email, phone) {
+		return
+	}
 	_ = s.RemoveCoachStudent(coachID, asStr(row, "id"))
+}
+
+// idList pulls a non-empty string column out of a set of rows.
+func idList(rows []map[string]any, key string) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if v := asStr(r, key); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// playerHasOtherLeagueUnderCoach reports whether the player (matched by email or
+// phone) is still registered in some OTHER coach-led league run by [coachID]
+// besides [exceptLeagueID]. Best-effort: on any lookup error it returns false so
+// the caller falls back to unenrolling (the prior behavior).
+func (s *Service) playerHasOtherLeagueUnderCoach(coachID, exceptLeagueID, email, phone string) bool {
+	if !s.columnReady("leagues", "coach_led") {
+		return false
+	}
+	e := strings.ToLower(strings.TrimSpace(email))
+	np := normPhone(phone)
+	var pf string
+	if e != "" {
+		pf = "email=eq." + store.Q(e)
+	} else if np != "" {
+		pf = "phone=eq." + store.Q(np)
+	} else {
+		return false
+	}
+	prows, _ := s.sb.Select("players", pf+"&select=id")
+	pids := idList(prows, "id")
+	if len(pids) == 0 {
+		return false
+	}
+	lrows, _ := s.sb.Select("leagues",
+		"coach_id=eq."+store.Q(coachID)+"&coach_led=is.true"+
+			"&id=neq."+store.Q(exceptLeagueID)+"&select=id")
+	lids := idList(lrows, "id")
+	if len(lids) == 0 {
+		return false
+	}
+	erows, _ := s.sb.Select("events", "league_id="+store.In(lids)+"&select=id")
+	eids := idList(erows, "id")
+	if len(eids) == 0 {
+		return false
+	}
+	reg, _ := s.sb.SelectOne("registrations",
+		"event_id="+store.In(eids)+"&player_id="+store.In(pids)+"&select=id")
+	return reg != nil
 }
 
 // enrollLeaguePlayersForEvent enrolls every current registrant of an event as
@@ -938,8 +1015,14 @@ func (s *Service) enrollLeaguePlayersForEvent(coachID, eventID string) {
 	if !s.coachingReady() || coachID == "" || eventID == "" {
 		return
 	}
-	regs, err := s.sb.Select("registrations",
-		"event_id=eq."+store.Q(eventID)+"&select=player_id")
+	// Never back-enroll one-night substitutes as coaching students (they carry
+	// SkipCoachEnroll at register time; the backfill must honor the same rule).
+	filter := "event_id=eq." + store.Q(eventID) + "&select=player_id"
+	if s.columnReady("registrations", "is_substitute") {
+		filter = "event_id=eq." + store.Q(eventID) +
+			"&is_substitute=is.false&select=player_id"
+	}
+	regs, err := s.sb.Select("registrations", filter)
 	if err != nil {
 		return
 	}

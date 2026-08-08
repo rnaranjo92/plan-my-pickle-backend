@@ -11,11 +11,11 @@ func TestDivisionCourtMapFrom(t *testing.T) {
 	courtByNum := map[int]string{1: "c1", 2: "c2", 3: "c3", 4: "c4"}
 	courtNums := []int{1, 2, 3, 4}
 	brackets := []map[string]any{
-		{"id": "keep", "courts": []any{3.0, 4.0}},          // valid subset
-		{"id": "dup", "courts": []any{1.0, 1.0, 2.0}},      // duplicates -> deduped
-		{"id": "bad", "courts": []any{5.0, 6.0}},           // all invalid -> default all
-		{"id": "mixed", "courts": []any{2.0, 9.0}},         // drop 9 -> [2]
-		{"id": "empty"},                                    // none -> default all
+		{"id": "keep", "courts": []any{3.0, 4.0}},     // valid subset
+		{"id": "dup", "courts": []any{1.0, 1.0, 2.0}}, // duplicates -> deduped
+		{"id": "bad", "courts": []any{5.0, 6.0}},      // all invalid -> default all
+		{"id": "mixed", "courts": []any{2.0, 9.0}},    // drop 9 -> [2]
+		{"id": "empty"}, // none -> default all
 	}
 	got := divisionCourtMapFrom(brackets, courtByNum, courtNums)
 	want := map[string][]int{

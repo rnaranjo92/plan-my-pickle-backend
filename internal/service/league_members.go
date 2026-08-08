@@ -320,6 +320,30 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 	}
 	bracketID := asStr(reg, "bracket_id")
 	partnerID := asStr(reg, "partner_id")
+	// A prior one-night sub with this contact may still be registered (cleanup
+	// only runs at the next build), which would make the RegisterPlayer below
+	// fail with ErrAlreadyRegistered when the SAME person subs again. Expire any
+	// TAGGED substitute registration for this contact in this event first (never
+	// touches a real member who happens to share the number).
+	if s.columnReady("registrations", "is_substitute") {
+		e := strings.ToLower(strings.TrimSpace(email))
+		np := normPhone(phone)
+		var pf string
+		if np != "" {
+			pf = "phone=eq." + store.Q(np)
+		} else if e != "" {
+			pf = "email=eq." + store.Q(e)
+		}
+		if pf != "" {
+			if prows, _ := s.sb.Select("players", pf+"&select=id"); len(prows) > 0 {
+				if pids := idList(prows, "id"); len(pids) > 0 {
+					_ = s.sb.Delete("registrations",
+						"event_id=eq."+store.Q(eventID)+
+							"&player_id="+store.In(pids)+"&is_substitute=is.true")
+				}
+			}
+		}
+	}
 	sub, err := s.RegisterPlayer(eventID, model.RegisterRequest{
 		FullName:   strings.TrimSpace(name),
 		Email:      strings.TrimSpace(email),

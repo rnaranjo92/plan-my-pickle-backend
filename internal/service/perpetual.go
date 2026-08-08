@@ -696,7 +696,17 @@ func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 	if len(cur) == 0 {
 		return false, nil
 	}
-	// Refuse to clear a session that already has a recorded result.
+	// Refuse to clear a session that has any game already STARTED (in_progress) or
+	// SCORED — a sub added mid-play must not wipe live games. Byes (completed with
+	// no score) don't block, so a freshly-built-but-unplayed session still clears.
+	live, err := s.sb.SelectOne("matches",
+		"round_id="+store.In(cur)+"&status=eq.in_progress&select=id")
+	if err != nil {
+		return false, err
+	}
+	if live != nil {
+		return false, nil
+	}
 	scored, err := s.sb.SelectOne("matches",
 		"round_id="+store.In(cur)+"&status=eq.completed&team1_score=not.is.null&select=id")
 	if err != nil {
@@ -727,16 +737,26 @@ func (s *Service) cleanupStaleSubstitutes(eventID, partnerMode string) {
 	subs, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+
 			"&is_substitute=eq.true&checked_in=eq.false"+
-			"&select=id,partner_id,substitute_for")
+			"&select=id,player_id,partner_id,substitute_for")
 	if err != nil || len(subs) == 0 {
 		return
 	}
 	fixed := partnerMode == "fixed"
+	// Map each sub's player_id → the member they stood in for, so a pairing whose
+	// partner is ITSELF a departing sub restores to the real member, not the sub
+	// (both members of a pair subbed the same night would otherwise cross-wire).
+	subFor := map[string]string{}
+	for _, sub := range subs {
+		subFor[asStr(sub, "player_id")] = asStr(sub, "substitute_for")
+	}
 	for _, sub := range subs {
 		if fixed {
 			member := asStr(sub, "substitute_for")
 			partner := asStr(sub, "partner_id")
-			if member != "" && partner != "" {
+			if real, ok := subFor[partner]; ok && real != "" {
+				partner = real // partner was a sub too → restore to its real member
+			}
+			if member != "" && partner != "" && member != partner {
 				if mr, _ := s.sb.SelectOne("registrations",
 					"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(member)+"&select=id"); mr != nil {
 					_, _ = s.sb.Update("registrations", "id=eq."+store.Q(asStr(mr, "id")),

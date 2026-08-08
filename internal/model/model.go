@@ -195,6 +195,10 @@ type Event struct {
 	SponsorWatermarkOpacity  float64 `json:"sponsorWatermarkOpacity"`
 	SponsorWatermarkPosition string  `json:"sponsorWatermarkPosition,omitempty"`
 	SponsorWatermarkScale    float64 `json:"sponsorWatermarkScale"`
+	// OwnerID is the event owner's user id, so the app can gate the organizer
+	// dashboard to a read-only view for non-owners regardless of how the event
+	// screen was opened (club events, notifications, deep links).
+	OwnerID string `json:"ownerId,omitempty"`
 	// OwnerPremium = the event owner has an active Premium plan. Set on single
 	// reads (GetEvent) so public views can hide the free-tier house-brand mark.
 	OwnerPremium bool `json:"ownerPremium"`

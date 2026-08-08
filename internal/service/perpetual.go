@@ -387,6 +387,13 @@ const perpetualCheckinWindow = 12 * time.Hour
 // Returns the ongoing event id (nil only if creation genuinely fails). The
 // perpetual flag is set in place on the passed events.
 func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []model.LeagueBracket, events []model.Event) *string {
+	// The perpetual (one ongoing round-robin event) model applies ONLY to a
+	// standard league. Ladder / team / flex leagues keep their own structures, so
+	// never adopt or provision a perpetual event for them (even if flagged
+	// recurring by legacy data).
+	if lt := league.LeagueType; lt == "ladder" || lt == "team" || lt == "flex" {
+		return nil
+	}
 	// Already adopted → return the perpetual event.
 	for i := range events {
 		if events[i].Perpetual {

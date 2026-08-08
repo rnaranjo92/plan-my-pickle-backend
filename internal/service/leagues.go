@@ -608,7 +608,7 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 		if ms, err := s.sb.Select("league_members",
 			"league_id=eq."+store.Q(leagueID)+"&select=email,phone"); err == nil {
 			for _, m := range ms {
-				s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"))
+				s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"), true)
 			}
 		}
 		// Registration-based students (perpetual + self-registered): resolve each
@@ -623,7 +623,7 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 					for _, r := range regs {
 						if p := asMap(r, "player"); p != nil {
 							s.unenrollLeagueCoachStudent(leagueID,
-								asStr(p, "email"), asStr(p, "phone"))
+								asStr(p, "email"), asStr(p, "phone"), true)
 						}
 					}
 				}
@@ -698,7 +698,7 @@ func (s *Service) SetLeagueSchedule(leagueID, ownerID, startsAt string, courtCou
 		return model.Event{}, errors.New("pick a day and time")
 	}
 	lg, err := s.sb.SelectOne("leagues",
-		"id=eq."+store.Q(leagueID)+"&select=owner_id,name,recur_event_id,court_count")
+		"id=eq."+store.Q(leagueID)+"&select=owner_id,name,recur_event_id,court_count,league_type")
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -707,6 +707,11 @@ func (s *Service) SetLeagueSchedule(leagueID, ownerID, startsAt string, courtCou
 	}
 	if asStr(lg, "owner_id") != ownerID {
 		return model.Event{}, ErrForbidden
+	}
+	// The recurring "one ongoing round-robin session" model applies ONLY to a
+	// standard league. Ladder / team / flex leagues have their own structures.
+	if lt := asStr(lg, "league_type"); lt == "ladder" || lt == "team" || lt == "flex" {
+		return model.Event{}, errors.New("a recurring weekly session is only available for round-robin leagues")
 	}
 	if courtCount <= 0 {
 		courtCount = asInt(lg, "court_count")
@@ -927,7 +932,14 @@ func (s *Service) maybeEnrollLeagueCoachStudent(eventID, email, phone, name stri
 // they leave the league (or the coach-led league is deleted). No-op unless the
 // league is coach-led and the player matches a coach_students row. Best-effort —
 // reuses RemoveCoachStudent so sessions/threads tear down cleanly.
-func (s *Service) unenrollLeagueCoachStudent(leagueID, email, phone string) {
+// unenrollLeagueCoachStudent drops a player from a coach-led league's coach
+// roster. [wholeLeague] distinguishes the caller: true when the ENTIRE league is
+// being deleted (its registrations still exist, so the retention check must
+// EXCLUDE this league); false when a single registration/member was removed (it
+// is already gone, so the check looks across ALL the coach's events — including
+// this league's other sessions). Either way, keep the student if they remain in
+// any of the coach's other coach-led events.
+func (s *Service) unenrollLeagueCoachStudent(leagueID, email, phone string, wholeLeague bool) {
 	if !s.coachingReady() {
 		return
 	}
@@ -949,9 +961,11 @@ func (s *Service) unenrollLeagueCoachStudent(leagueID, email, phone string) {
 	if row == nil {
 		return
 	}
-	// Don't drop a student who is still active in ANOTHER coach-led league run by
-	// the same coach — leaving league A must not unenroll them from league B.
-	if s.playerHasOtherLeagueUnderCoach(coachID, leagueID, email, phone) {
+	excludeLeague := ""
+	if wholeLeague {
+		excludeLeague = leagueID
+	}
+	if s.playerHasRegUnderCoach(coachID, email, phone, excludeLeague) {
 		return
 	}
 	_ = s.RemoveCoachStudent(coachID, asStr(row, "id"))
@@ -968,11 +982,12 @@ func idList(rows []map[string]any, key string) []string {
 	return out
 }
 
-// playerHasOtherLeagueUnderCoach reports whether the player (matched by email or
-// phone) is still registered in some OTHER coach-led league run by [coachID]
-// besides [exceptLeagueID]. Best-effort: on any lookup error it returns false so
-// the caller falls back to unenrolling (the prior behavior).
-func (s *Service) playerHasOtherLeagueUnderCoach(coachID, exceptLeagueID, email, phone string) bool {
+// playerHasRegUnderCoach reports whether the player (matched by email or phone)
+// is still registered in ANY coach-led league run by [coachID], optionally
+// excluding [excludeLeagueID]. SUBSTITUTE registrations don't count (a one-night
+// sub never made them a real student). Best-effort: on any lookup error it
+// returns false so the caller falls back to unenrolling (the prior behavior).
+func (s *Service) playerHasRegUnderCoach(coachID, email, phone, excludeLeagueID string) bool {
 	if !s.columnReady("leagues", "coach_led") {
 		return false
 	}
@@ -991,9 +1006,11 @@ func (s *Service) playerHasOtherLeagueUnderCoach(coachID, exceptLeagueID, email,
 	if len(pids) == 0 {
 		return false
 	}
-	lrows, _ := s.sb.Select("leagues",
-		"coach_id=eq."+store.Q(coachID)+"&coach_led=is.true"+
-			"&id=neq."+store.Q(exceptLeagueID)+"&select=id")
+	lq := "coach_id=eq." + store.Q(coachID) + "&coach_led=is.true"
+	if excludeLeagueID != "" {
+		lq += "&id=neq." + store.Q(excludeLeagueID)
+	}
+	lrows, _ := s.sb.Select("leagues", lq+"&select=id")
 	lids := idList(lrows, "id")
 	if len(lids) == 0 {
 		return false
@@ -1003,8 +1020,11 @@ func (s *Service) playerHasOtherLeagueUnderCoach(coachID, exceptLeagueID, email,
 	if len(eids) == 0 {
 		return false
 	}
-	reg, _ := s.sb.SelectOne("registrations",
-		"event_id="+store.In(eids)+"&player_id="+store.In(pids)+"&select=id")
+	rq := "event_id=" + store.In(eids) + "&player_id=" + store.In(pids)
+	if s.columnReady("registrations", "is_substitute") {
+		rq += "&is_substitute=is.false"
+	}
+	reg, _ := s.sb.SelectOne("registrations", rq+"&select=id")
 	return reg != nil
 }
 

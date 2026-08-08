@@ -1372,12 +1372,12 @@ func (s *Service) deleteEventWithDuprReversal(eventID string) error {
 		return err
 	}
 	// Best-effort detach: on a NOT-NULL column this simply no-ops, leaving us no
-	// worse off; where the FK cascades, it makes the reversal queue durable.
+	// worse off; where the FK cascades, it makes the reversal queue durable. With
+	// the rows detached, wipeAllMatches's async drain + the 2-minute reconciler
+	// handle the actual reversals — we do NOT drain synchronously here, so a slow
+	// or down DUPR never blocks a delete (which, in DeleteLeague, loops events).
 	_, _ = s.sb.Update("dupr_pending_deletes", "event_id=eq."+store.Q(eventID),
 		map[string]any{"event_id": nil})
-	if err := s.DrainDuprPendingDeletes(); err != nil {
-		log.Printf("dupr: drain before deleting event %s: %v (detached reversals will retry via the reconciler)", eventID, err)
-	}
 	return s.sb.Delete("events", "id=eq."+store.Q(eventID))
 }
 
@@ -1422,6 +1422,14 @@ func (s *Service) DeleteAccount(userID string) error {
 	if s.columnReady("coach_students", "coach_id") {
 		if err := s.sb.Delete("coach_students", "coach_id=eq."+store.Q(userID)); err != nil {
 			log.Printf("DeleteAccount: delete coach_students for %s failed (continuing): %v", userID, err)
+		}
+	}
+	// 2d. Clear coach-led flags on any leagues this user coached, so a league is
+	//     not left flagged coach-led pointing at a now-deleted coach.
+	if s.columnReady("leagues", "coach_led") {
+		if _, err := s.sb.Update("leagues", "coach_id=eq."+store.Q(userID),
+			map[string]any{"coach_led": false, "coach_id": nil}); err != nil {
+			log.Printf("DeleteAccount: clear coach-led leagues for %s failed (continuing): %v", userID, err)
 		}
 	}
 	// 3. Erase the login last.
@@ -5490,7 +5498,7 @@ func (s *Service) DeleteRegistration(regID string) error {
 					email = asStr(p, "email")
 					phone = asStr(p, "phone")
 				}
-				go s.unenrollLeagueCoachStudent(leagueID, email, phone)
+				go s.unenrollLeagueCoachStudent(leagueID, email, phone, false)
 			}
 		}
 	}

@@ -233,7 +233,7 @@ func (s *Service) RemoveLeagueMember(leagueID, memberID, ownerID string) error {
 		return err
 	}
 	if m != nil {
-		go s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"))
+		go s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"), false)
 	}
 	return nil
 }

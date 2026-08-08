@@ -714,11 +714,52 @@ func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 	return true, nil
 }
 
+// cleanupStaleSubstitutes expires one-night substitutes from PRIOR sessions at
+// the next session build: a tagged sub who isn't checked in for the new session
+// is removed from the roster (their played games + standings line survive, since
+// matches carry player_id). For fixed-partner leagues, the benched member they
+// stood in for is re-paired with the sub's partner. No-op before the migration
+// (column-guarded) or when there are no stale subs.
+func (s *Service) cleanupStaleSubstitutes(eventID, partnerMode string) {
+	if !s.columnReady("registrations", "is_substitute") {
+		return
+	}
+	subs, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&is_substitute=eq.true&checked_in=eq.false"+
+			"&select=id,partner_id,substitute_for")
+	if err != nil || len(subs) == 0 {
+		return
+	}
+	fixed := partnerMode == "fixed"
+	for _, sub := range subs {
+		if fixed {
+			member := asStr(sub, "substitute_for")
+			partner := asStr(sub, "partner_id")
+			if member != "" && partner != "" {
+				if mr, _ := s.sb.SelectOne("registrations",
+					"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(member)+"&select=id"); mr != nil {
+					_, _ = s.sb.Update("registrations", "id=eq."+store.Q(asStr(mr, "id")),
+						map[string]any{"partner_id": partner})
+				}
+				if pr, _ := s.sb.SelectOne("registrations",
+					"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(partner)+"&select=id"); pr != nil {
+					_, _ = s.sb.Update("registrations", "id=eq."+store.Q(asStr(pr, "id")),
+						map[string]any{"partner_id": member})
+				}
+			}
+		}
+		_ = s.sb.Delete("registrations", "id=eq."+store.Q(asStr(sub, "id")))
+	}
+}
+
 func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult, error) {
 	// Serialize appends for this event: the round-offset is a read-modify-write on
 	// the max round number, so two concurrent builds would otherwise both read the
 	// same offset and append two overlapping round-robins for the same session.
 	defer s.lockPerpetualBuild(ev.ID)()
+	// Expire last session's one-night substitutes before seeding this session.
+	s.cleanupStaleSubstitutes(ev.ID, ev.PartnerMode)
 	bks, err := s.GetBrackets(ev.ID)
 	if err != nil {
 		return model.ScheduleResult{}, err

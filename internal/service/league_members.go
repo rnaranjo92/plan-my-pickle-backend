@@ -333,6 +333,14 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 	if err != nil {
 		return model.Registration{}, err
 	}
+	// Tag the sub so it can be auto-expired at the next session build (its played
+	// games/standings survive) and, for fixed partners, its slot restored to the
+	// benched member. Column-guarded: a pre-migration DB simply skips the tag and
+	// the sub stays a normal registration (the prior behaviour).
+	if s.columnReady("registrations", "is_substitute") {
+		_, _ = s.sb.Update("registrations", "id=eq."+store.Q(sub.ID),
+			map[string]any{"is_substitute": true, "substitute_for": outPlayerID})
+	}
 	if perpetual {
 		// Bench the member for today (stay rostered) and mark the sub present so
 		// the day's schedule includes them. Clear the member's partner link since

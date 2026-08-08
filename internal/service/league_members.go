@@ -233,7 +233,10 @@ func (s *Service) RemoveLeagueMember(leagueID, memberID, ownerID string) error {
 		return err
 	}
 	if m != nil {
-		go s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"), false)
+		// The member is LEAVING this league (left_at set), but their registrations
+		// in it may persist — so exclude this league from the retention check
+		// (wholeLeague=true) or they'd never be unenrolled.
+		go s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"), true)
 	}
 	return nil
 }

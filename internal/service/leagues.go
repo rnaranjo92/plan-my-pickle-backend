@@ -605,10 +605,22 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 	// exist only as registrations on its ongoing event, not as league_members, so
 	// members-only cleanup would orphan them on the coach's roster. Best-effort.
 	if s.leagueCoach(leagueID) != "" {
+		// Collect UNIQUE contacts from members + registrations first, so a player
+		// in several of the league's sessions/divisions is unenrolled once (not
+		// once per registration — which was O(regs) sequential lookups).
+		seenContact := map[string]bool{}
+		unenroll := func(email, phone string) {
+			key := strings.ToLower(strings.TrimSpace(email)) + "|" + normPhone(phone)
+			if key == "|" || seenContact[key] {
+				return
+			}
+			seenContact[key] = true
+			s.unenrollLeagueCoachStudent(leagueID, email, phone, true)
+		}
 		if ms, err := s.sb.Select("league_members",
 			"league_id=eq."+store.Q(leagueID)+"&select=email,phone"); err == nil {
 			for _, m := range ms {
-				s.unenrollLeagueCoachStudent(leagueID, asStr(m, "email"), asStr(m, "phone"), true)
+				unenroll(asStr(m, "email"), asStr(m, "phone"))
 			}
 		}
 		// Registration-based students (perpetual + self-registered): resolve each
@@ -622,8 +634,7 @@ func (s *Service) DeleteLeague(leagueID, ownerID string) error {
 						"&select=player:players!player_id(email,phone)"); err == nil {
 					for _, r := range regs {
 						if p := asMap(r, "player"); p != nil {
-							s.unenrollLeagueCoachStudent(leagueID,
-								asStr(p, "email"), asStr(p, "phone"), true)
+							unenroll(asStr(p, "email"), asStr(p, "phone"))
 						}
 					}
 				}

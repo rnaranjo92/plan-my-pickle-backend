@@ -694,6 +694,16 @@ func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 			maxDay = d
 		}
 	}
+	// Only ever clear a RECENT session (today's, or yesterday's for late-evening
+	// leagues whose created_at rolled into the next UTC day). This is a same-day
+	// substitute helper — it must NEVER delete an older, prior session that was
+	// built but not scored in-app (it's still real data; the sub just applies to
+	// the next build).
+	nowUTC := time.Now().UTC()
+	todayUTC := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 0, 0, 0, 0, time.UTC)
+	if maxDay.Before(todayUTC.AddDate(0, 0, -1)) {
+		return false, nil
+	}
 	cur := make([]string, 0, len(rows))
 	for _, r := range rows {
 		if d, ok := day(asStr(r, "created_at")); ok && d.Equal(maxDay) {

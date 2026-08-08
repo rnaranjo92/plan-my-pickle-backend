@@ -696,13 +696,19 @@ func (s *Service) SetLeagueSchedule(leagueID, ownerID, startsAt string, courtCou
 	// Re-time the existing recurring session if it's still around.
 	if existing := asStr(lg, "recur_event_id"); existing != "" {
 		if ev, _ := s.sb.SelectOne("events",
-			"id=eq."+store.Q(existing)+"&select=id"); ev != nil {
+			"id=eq."+store.Q(existing)+"&select=id,perpetual"); ev != nil {
+			upd := map[string]any{
+				"starts_at":  startsAt,
+				"num_courts": courtCount,
+			}
+			// A perpetual (adopted) league runs as ONE ongoing event — never
+			// re-arm weekly cloning (recur_interval_days>0 would spawn orphan
+			// session events alongside it). Only a not-yet-adopted event clones.
+			if !asBool(ev, "perpetual") {
+				upd["recur_interval_days"] = 7
+			}
 			if _, err := s.sb.Update("events", "id=eq."+store.Q(existing),
-				map[string]any{
-					"starts_at":           startsAt,
-					"recur_interval_days": 7,
-					"num_courts":          courtCount,
-				}); err != nil {
+				upd); err != nil {
 				return model.Event{}, err
 			}
 			_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID),

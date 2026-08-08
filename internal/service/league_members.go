@@ -359,6 +359,13 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 				map[string]any{"partner_id": sub.PlayerID})
 		}
 	}
+	// If today's session was ALREADY built (unscored), clear it so the organizer's
+	// follow-up "Build schedule" re-seeds one clean session with the sub — a plain
+	// append would otherwise DOUBLE the session. If today's games are already
+	// scored, this is a no-op and the sub takes effect on the next build.
+	if perpetual {
+		_, _ = s.clearCurrentUnscoredSession(eventID)
+	}
 	return sub, nil
 }
 

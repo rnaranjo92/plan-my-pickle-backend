@@ -523,7 +523,35 @@ func (s *Service) resetStaleCheckins(eventID string) {
 	if eventID == "" {
 		return
 	}
-	cutoff := time.Now().UTC().Add(-perpetualCheckinWindow).Format(time.RFC3339)
+	// Anchor "stale" to the current session's START boundary — the most recent
+	// occurrence of the event's configured session time-of-day — rather than a
+	// flat age. This handles sessions less than the window apart (e.g. a Friday
+	// evening + Saturday morning block), where a fixed 12h age would leave the
+	// prior night's roster checked in. Falls back to the fixed window when the
+	// event has no usable start time. The boundary is clamped to be at least
+	// [perpetualCheckinWindow/6 ≈ 2h] in the past so it never clears check-ins
+	// from a session that only just started.
+	cut := time.Now().UTC().Add(-perpetualCheckinWindow)
+	if ev, _ := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=starts_at"); ev != nil {
+		if st := strings.TrimSpace(asStr(ev, "starts_at")); st != "" {
+			if t, err := time.Parse(time.RFC3339, st); err == nil {
+				loc := t.Location()
+				now := time.Now().In(loc)
+				b := time.Date(now.Year(), now.Month(), now.Day(),
+					t.Hour(), t.Minute(), 0, 0, loc)
+				if b.After(now) {
+					b = b.AddDate(0, 0, -1) // today's session hasn't started yet
+				}
+				floor := time.Now().Add(-perpetualCheckinWindow / 6)
+				if b.After(floor) {
+					b = floor // don't clear a session that only just began
+				}
+				cut = b.UTC()
+			}
+		}
+	}
+	cutoff := cut.Format(time.RFC3339)
 	_, _ = s.sb.Update("registrations",
 		"event_id=eq."+store.Q(eventID)+"&checked_in=eq.true&checked_in_at=lt."+store.Q(cutoff),
 		map[string]any{"checked_in": false, "checked_in_at": nil})
@@ -627,6 +655,63 @@ func (s *Service) DeleteSessionRange(eventID, fromUTC, toUTC string) (int, error
 		return 0, err
 	}
 	return len(roundIDs), nil
+}
+
+// clearCurrentUnscoredSession removes the CURRENT session's rounds + matches
+// (the newest date bucket) IF none of them are scored — so a substitution made
+// after the day's schedule was already built can be re-seeded by a plain "Build
+// schedule" (which appends) without duplicating the session. No-op when there's
+// no session, or when the current session already has a recorded score (you
+// can't re-draw played games — the sub takes effect on the next build instead).
+// Returns whether it cleared anything.
+func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
+	defer s.lockPerpetualBuild(eventID)() // serialize vs a concurrent Build
+	rows, err := s.sb.Select("rounds",
+		"event_id=eq."+store.Q(eventID)+"&select=id,created_at")
+	if err != nil || len(rows) == 0 {
+		return false, err
+	}
+	day := func(ts string) (time.Time, bool) {
+		t, e := time.Parse(time.RFC3339, ts)
+		if e != nil {
+			if t, e = time.Parse("2006-01-02T15:04:05", ts); e != nil {
+				return time.Time{}, false
+			}
+		}
+		u := t.UTC()
+		return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC), true
+	}
+	var maxDay time.Time
+	for _, r := range rows {
+		if d, ok := day(asStr(r, "created_at")); ok && d.After(maxDay) {
+			maxDay = d
+		}
+	}
+	cur := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if d, ok := day(asStr(r, "created_at")); ok && d.Equal(maxDay) {
+			cur = append(cur, asStr(r, "id"))
+		}
+	}
+	if len(cur) == 0 {
+		return false, nil
+	}
+	// Refuse to clear a session that already has a recorded result.
+	scored, err := s.sb.SelectOne("matches",
+		"round_id="+store.In(cur)+"&status=eq.completed&team1_score=not.is.null&select=id")
+	if err != nil {
+		return false, err
+	}
+	if scored != nil {
+		return false, nil
+	}
+	if err := s.sb.Delete("matches", "round_id="+store.In(cur)); err != nil {
+		return false, err
+	}
+	if err := s.sb.Delete("rounds", "id="+store.In(cur)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult, error) {

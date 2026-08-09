@@ -955,6 +955,50 @@ func (s *Service) cleanupStaleSubstitutes(eventID, partnerMode string) {
 	}
 }
 
+// cancelStalePerpetualGames marks any still-live (in_progress) game from a PRIOR
+// session as "not played" (canceled) — a game that was started but never scored
+// or forfeited before the next session began. Scoped by the round's created_at
+// day in the venue's local zone, so TODAY's live games (a re-build within the
+// same session) are never touched. Best-effort; a parse/query failure just leaves
+// the game as-is (the organizer can still resolve it by hand).
+func (s *Service) cancelStalePerpetualGames(ev model.Event) {
+	// Venue-local start of today (same zone logic the session-date cadence uses).
+	loc := time.UTC
+	if ev.StartsAt != nil {
+		if st, err := time.Parse(time.RFC3339, *ev.StartsAt); err == nil {
+			loc = st.Location()
+		}
+	}
+	now := time.Now().In(loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(ev.ID)+"&status=eq.in_progress"+
+			"&select=id,round:rounds!round_id(created_at)")
+	if err != nil {
+		return
+	}
+	for _, r := range rows {
+		cat := roundCreatedAt(r)
+		if cat == "" {
+			continue // no round timestamp → can't tell it's stale; leave it
+		}
+		t, perr := time.Parse(time.RFC3339, cat)
+		if perr != nil || !t.Before(todayStart) {
+			continue // today's (current-session) game, or unparseable → leave it
+		}
+		// Status-guarded so we never clobber a game that just got scored/started.
+		_, _ = s.sb.Update("matches",
+			"id=eq."+store.Q(asStr(r, "id"))+"&status=eq.in_progress",
+			map[string]any{
+				"status": "canceled",
+				"team1_score": nil, "team2_score": nil, "winning_team": nil,
+				"live_team1": nil, "live_team2": nil,
+				"result_type": nil, "completed_at": nil,
+			})
+	}
+}
+
 func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult, error) {
 	// Serialize appends for this event: the round-offset is a read-modify-write on
 	// the max round number, so two concurrent builds would otherwise both read the
@@ -962,6 +1006,10 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 	defer s.lockPerpetualBuild(ev.ID)()
 	// Expire last session's one-night substitutes before seeding this session.
 	s.cleanupStaleSubstitutes(ev.ID, ev.PartnerMode)
+	// Close any game left LIVE by a PRIOR session (never scored or forfeited) so a
+	// new session doesn't run alongside a stale in-progress game — which otherwise
+	// lingers on the court scorer + steals the stream overlay.
+	s.cancelStalePerpetualGames(ev)
 	bks, err := s.GetBrackets(ev.ID)
 	if err != nil {
 		return model.ScheduleResult{}, err

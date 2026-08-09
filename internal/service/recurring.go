@@ -183,7 +183,7 @@ var eventCloneCols = []string{
 	"owner_id", "listed", "player_scoring", "score_confirm_minutes", "poster_url",
 	"venue_name", "venue_address", "venue_phone", "venue_website", "venue_lat",
 	"venue_lng", "description", "venue_notes", "waiver_url", "min_pool_rounds",
-	"max_pool_rounds", "county", "state",
+	"max_pool_rounds", "rounds_per_session", "county", "state",
 	// Scheduling + presentation config the auto-scheduler/TV board rely on — must
 	// carry to each occurrence or matches book through breaks/past close times and
 	// the board reverts to the default theme.

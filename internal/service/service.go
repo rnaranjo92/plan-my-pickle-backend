@@ -689,6 +689,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.MaxPoolRounds > 0 {
 		payload["max_pool_rounds"] = req.MaxPoolRounds
 	}
+	// rounds_per_session ships in add_rounds_per_session.sql. Gate on the column
+	// existing (not >0) so the organizer can also clear it back to auto (0).
+	if s.columnReady("events", "rounds_per_session") {
+		payload["rounds_per_session"] = req.RoundsPerSession
+	}
 	// Recurring-social columns ship in add_recurring_events.sql — only reference
 	// when set, so a normal one-off create still works before the migration runs.
 	if req.RecurIntervalDays > 0 {
@@ -1792,6 +1797,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	}
 	if req.MaxPoolRounds > 0 {
 		upd["max_pool_rounds"] = req.MaxPoolRounds
+	}
+	// rounds_per_session: gate on the column so it can be set OR cleared (0=auto).
+	if s.columnReady("events", "rounds_per_session") {
+		upd["rounds_per_session"] = req.RoundsPerSession
 	}
 	// Auto-geocode on edit: ONLY when the event has no coords yet (a map-picked
 	// venue is left untouched — we can't distinguish it from a prior geocode, so
@@ -7174,6 +7183,14 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 		schedule []engine.RoundSpec
 	}
 	var schedules []poolSched
+	// Optional exact "rounds per session": when the organizer pins a round count,
+	// force it as both the floor and ceiling so EVERY format lands on exactly that
+	// many rounds — a full round-robin is truncated, a short one repeats matchups.
+	// 0 = unset, so the derived per-format count + pool-rounds min/max still apply.
+	minR, maxR := ev.MinPoolRounds, ev.MaxPoolRounds
+	if ev.RoundsPerSession > 0 {
+		minR, maxR = ev.RoundsPerSession, ev.RoundsPerSession
+	}
 	if ev.TournamentFormat == "pools_playoff" && ev.Format == "singles" {
 		units := sidesForBracket(ev, regs) // one player per unit
 		pools := splitPools(units, skill)
@@ -7187,7 +7204,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 				g = ""
 			}
 			schedules = append(schedules, poolSched{g,
-				engine.GenerateSchedule(ids, format, partner, ev.NumCourts, nil, 7, ev.MinPoolRounds, ev.MaxPoolRounds)})
+				engine.GenerateSchedule(ids, format, partner, ev.NumCourts, nil, 7, minR, maxR)})
 		}
 	} else if ev.TournamentFormat == "pools_playoff" && format == engine.Doubles && partner == engine.Fixed {
 		units := pairsFromRegs(regs)
@@ -7202,7 +7219,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 				g = ""
 			}
 			schedules = append(schedules, poolSched{g,
-				engine.GenerateSchedule(ids, format, partner, ev.NumCourts, pool, 7, ev.MinPoolRounds, ev.MaxPoolRounds)})
+				engine.GenerateSchedule(ids, format, partner, ev.NumCourts, pool, 7, minR, maxR)})
 		}
 	} else {
 		var fixedPairs [][]string
@@ -7228,7 +7245,7 @@ func (s *Service) persistRoundRobin(ev model.Event, bracketID string, regs []reg
 			}
 		}
 		schedules = append(schedules, poolSched{"",
-			engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds, ev.MinPoolRounds, ev.MaxPoolRounds)})
+			engine.GenerateSchedule(ids, format, partner, ev.NumCourts, fixedPairs, rounds, minR, maxR)})
 	}
 
 	// Batch every insert (rounds, matches, participants) into 3 bulk calls

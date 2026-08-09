@@ -192,6 +192,7 @@ func mapEvent(m map[string]any) model.Event {
 		GameDurationMinutes:        asInt(m, "game_duration_minutes"),
 		MinPoolRounds:              asInt(m, "min_pool_rounds"),
 		MaxPoolRounds:              asInt(m, "max_pool_rounds"),
+		RoundsPerSession:           asInt(m, "rounds_per_session"),
 		RegistrationFeeCents:       asInt(m, "registration_fee_cents"),
 		ExtraDivisionFeeMode:       asStr(m, "extra_division_fee_mode"),
 		AdditionalDivisionFeeCents: asInt(m, "additional_division_fee_cents"),

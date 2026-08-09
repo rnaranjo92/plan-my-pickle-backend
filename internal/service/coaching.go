@@ -2920,6 +2920,48 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 	return vid, nil
 }
 
+// ShareVideoToLeagueCoach posts a feed video (public match-videos URL) to the
+// coach LEADING the event's league, as a coaching clip on the sharer's own
+// student thread. Reuses AddThreadVideo (membership check + coach notification).
+// The public URL plays fine — coaching signing leaves non-coaching-bucket URLs
+// as-is. Errors clearly when the league isn't coach-led or the player isn't yet
+// on the coach's roster.
+func (s *Service) ShareVideoToLeagueCoach(eventID, userID, email, videoURL, title string) error {
+	if strings.TrimSpace(videoURL) == "" {
+		return errors.New("no video to share")
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=league_id")
+	if err != nil || ev == nil {
+		return errors.New("event not found")
+	}
+	leagueID := asStr(ev, "league_id")
+	if leagueID == "" {
+		return errors.New("this event isn't part of a league")
+	}
+	coach := s.leagueCoach(leagueID)
+	if coach == "" {
+		return errors.New("this league isn't coach-led")
+	}
+	threads, err := s.ListStudentThreads(userID, email)
+	if err != nil {
+		return err
+	}
+	var threadID string
+	for _, t := range threads {
+		if t.CoachID == coach {
+			threadID = t.ID
+			break
+		}
+	}
+	if threadID == "" {
+		return errors.New("you're not on the league coach's roster yet")
+	}
+	_, err = s.AddThreadVideo(threadID, userID, email,
+		model.CoachingVideoRequest{VideoURL: videoURL, Title: title})
+	return err
+}
+
 // AddVideoFeedback adds a comment to a clip, then notifies the counterpart.
 func (s *Service) AddVideoFeedback(videoID, userID, email string, req model.CoachingFeedbackRequest) (model.CoachingFeedback, error) {
 	if !s.coachingReady() {

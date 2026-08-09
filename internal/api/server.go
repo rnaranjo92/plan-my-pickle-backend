@@ -559,6 +559,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Owner OR a registered player may post (the handler enforces it; only the
 	// owner can trigger a push).
 	mux.HandleFunc("POST /events/{id}/feed", requireAuth(s.feedPost))
+	// Share a feed video to the coach leading this event's league (coaching clip).
+	mux.HandleFunc("POST /events/{id}/share-to-coach",
+		requireAuth(s.shareVideoToLeagueCoach))
 	mux.HandleFunc("DELETE /feed/{id}", s.ownerOnly("feed_item", "id", s.feedDelete))
 	// Feed social — any signed-in user may react/comment (not just the owner).
 	mux.HandleFunc("POST /feed/{id}/react", requireAuth(s.feedReact))
@@ -5558,6 +5561,24 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+// shareVideoToLeagueCoach posts a feed video to the coach leading this event's
+// league, as a coaching clip on the sharer's thread.
+func (s *Server) shareVideoToLeagueCoach(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VideoURL string `json:"videoUrl"`
+		Title    string `json:"title"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.ShareVideoToLeagueCoach(
+		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.Title); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // feedDelete removes a feed item (owner-only).

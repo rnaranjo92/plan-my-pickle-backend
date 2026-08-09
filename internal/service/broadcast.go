@@ -25,8 +25,15 @@ type broadcastSmsRecip struct {
 // is read here but enforced at send time so the count reflects real reach.
 func (s *Service) broadcastSmsRecipients(ev model.Event, segment string) ([]broadcastSmsRecip, error) {
 	filter := "event_id=eq." + store.Q(ev.ID)
-	if segment == "checkedIn" {
+	switch segment {
+	case "checkedIn":
 		filter += "&checked_in=eq.true"
+	case "all", "":
+		// no extra filter — every registered player
+	default:
+		// Unknown segment (incl. "waitlist", which has no phone/consent) must NOT
+		// fall through to the whole roster — fail CLOSED with zero recipients.
+		return nil, nil
 	}
 	rows, err := s.sb.SelectAll("registrations",
 		filter+"&select=player_id,player:players!player_id(full_name,phone,sms_consent)")
@@ -165,6 +172,11 @@ func (s *Service) SendCustomSmsTest(userID, message string) (string, error) {
 	}
 	if phone == "" {
 		return "", errors.New("no phone on file — add one in your profile first")
+	}
+	// Keep the "every send path gates on SmsReachable" invariant — don't attempt
+	// (and get billed for) a guaranteed carrier failure on a non-US/CA number.
+	if !gateway.SmsReachable(phone) {
+		return phone, errors.New("your phone isn't in a texting region we support (US/Canada)")
 	}
 	body := fmt.Sprintf("PlanMyPickle: %s Reply STOP to opt out.", message)
 	if _, err := s.Sms.Send(phone, body); err != nil {

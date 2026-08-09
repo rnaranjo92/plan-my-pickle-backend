@@ -650,10 +650,17 @@ func (s *Service) provisionPerpetualLeagueEvent(league model.League, brackets []
 		return nil
 	}
 	// Link to the league + mark perpetual (so it never clones and rolls check-ins).
-	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{
+	// League signups are FREE + require-approval by default: free signups flow into
+	// the organizer's approval queue rather than auto-joining. The organizer can
+	// turn approval off in Edit league; this only sets the default at provision.
+	link := map[string]any{
 		"league_id": league.ID,
 		"perpetual": true,
-	}); err != nil {
+	}
+	if s.columnReady("events", "require_approval") {
+		link["require_approval"] = true
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID), link); err != nil {
 		return nil
 	}
 	// Court count + auto-roster the league's active members into it.

@@ -22,8 +22,11 @@ type Event struct {
 	// schedule is built (0 = unset → derive per format). Overrides the min/max
 	// bounds above when > 0. Mainly for recurring leagues that want a fixed
 	// "N rounds a week".
-	RoundsPerSession     int `json:"roundsPerSession"`
-	RegistrationFeeCents int `json:"registrationFeeCents"`
+	RoundsPerSession int `json:"roundsPerSession"`
+	// RsvpEnabled turns on the "Playing Thursday?" RSVP strip on a recurring
+	// league's feed (organizer opt-in).
+	RsvpEnabled          bool `json:"rsvpEnabled"`
+	RegistrationFeeCents int  `json:"registrationFeeCents"`
 	// Multi-division pricing: how the entry fee applies to a player's ADDITIONAL
 	// divisions (their first division always pays the full fee). "discount"
 	// (default) charges AdditionalDivisionFeeCents; "free" charges 0; "full"
@@ -1148,6 +1151,7 @@ type CreateEventRequest struct {
 	MinPoolRounds        int    `json:"minPoolRounds"`
 	MaxPoolRounds        int    `json:"maxPoolRounds"`
 	RoundsPerSession     int    `json:"roundsPerSession"`
+	RsvpEnabled          bool   `json:"rsvpEnabled"`
 	RegistrationFeeCents int    `json:"registrationFeeCents"`
 	// Currency the fees are collected in (ISO-4217, e.g. USD/CAD/PHP/GBP/AUD).
 	// Empty on update = leave unchanged; empty on create defaults to USD.

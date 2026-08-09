@@ -694,6 +694,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if s.columnReady("events", "rounds_per_session") {
 		payload["rounds_per_session"] = req.RoundsPerSession
 	}
+	// rsvp_enabled ships in add_session_rsvps.sql — gate so it works pre-migration.
+	if s.columnReady("events", "rsvp_enabled") {
+		payload["rsvp_enabled"] = req.RsvpEnabled
+	}
 	// Recurring-social columns ship in add_recurring_events.sql — only reference
 	// when set, so a normal one-off create still works before the migration runs.
 	if req.RecurIntervalDays > 0 {
@@ -1801,6 +1805,10 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// rounds_per_session: gate on the column so it can be set OR cleared (0=auto).
 	if s.columnReady("events", "rounds_per_session") {
 		upd["rounds_per_session"] = req.RoundsPerSession
+	}
+	// rsvp_enabled: organizer toggle for the league RSVP strip (set or clear).
+	if s.columnReady("events", "rsvp_enabled") {
+		upd["rsvp_enabled"] = req.RsvpEnabled
 	}
 	// Auto-geocode on edit: ONLY when the event has no coords yet (a map-picked
 	// venue is left untouched — we can't distinguish it from a prior geocode, so

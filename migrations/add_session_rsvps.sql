@@ -17,3 +17,9 @@ create table if not exists session_rsvps (
 
 create index if not exists session_rsvps_event_date_idx
   on session_rsvps (event_id, session_date);
+
+-- Organizer opt-in: the RSVP strip only shows when the league toggles it on in
+-- the edit form. Default off (opt-in), so enabling the feature is a deliberate
+-- per-league choice.
+alter table events
+  add column if not exists rsvp_enabled boolean not null default false;

@@ -96,10 +96,25 @@ func (s *Service) nextSessionForEvent(eventID string) (string, time.Weekday, boo
 		asStr(row, "recur_skip_until"), asBool(row, "recur_paused"))
 }
 
+// eventRsvpEnabled reports whether the organizer turned the RSVP strip on for
+// this event. Opt-in: a missing column (pre-migration) or unset flag = off.
+func (s *Service) eventRsvpEnabled(eventID string) bool {
+	if !s.columnReady("events", "rsvp_enabled") {
+		return false
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=rsvp_enabled")
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "rsvp_enabled")
+}
+
 // GetSessionRsvp returns the RSVP poll for the event's upcoming session (counts +
-// the caller's own status). Disabled (Enabled=false) until the migration runs.
+// the caller's own status). Disabled (Enabled=false) until the migration runs
+// AND the organizer opts in via the edit form.
 func (s *Service) GetSessionRsvp(eventID, userID string) SessionRsvp {
-	if !s.columnReady("session_rsvps", "status") {
+	if !s.columnReady("session_rsvps", "status") || !s.eventRsvpEnabled(eventID) {
 		return SessionRsvp{}
 	}
 	date, wd, ok := s.nextSessionForEvent(eventID)
@@ -132,8 +147,8 @@ func (s *Service) GetSessionRsvp(eventID, userID string) SessionRsvp {
 // SetSessionRsvp records the caller's RSVP for the upcoming session and returns
 // the refreshed poll. Owner or a registered player only.
 func (s *Service) SetSessionRsvp(eventID, userID, status string) (SessionRsvp, error) {
-	if !s.columnReady("session_rsvps", "status") {
-		return SessionRsvp{}, errors.New("RSVP isn't enabled yet")
+	if !s.columnReady("session_rsvps", "status") || !s.eventRsvpEnabled(eventID) {
+		return SessionRsvp{}, errors.New("RSVP isn't enabled for this league")
 	}
 	if userID == "" {
 		return SessionRsvp{}, ErrForbidden

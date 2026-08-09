@@ -11418,7 +11418,49 @@ func isDuprIdentifierConflict(errMsg string) bool {
 // SubmitPendingToDupr flushes queued results to DUPR for a sanctioned event —
 // the organizer-initiated "Import to DUPR" action. (#11)
 func (s *Service) SubmitPendingToDupr(eventID string) (DuprImportSummary, error) {
+	// Back-fill first so a manual import also covers games scored BEFORE the event
+	// was flipped DUPR-sanctioned (those never auto-queued a submission row).
+	s.backfillDuprSubmissions(eventID)
 	return s.flushDuprSubmissions(eventID, false, nil)
+}
+
+// backfillDuprSubmissions queues a pending dupr_submissions row for every
+// completed, DUPR-eligible match of the event that lacks one — so a manual
+// import doesn't silently skip games that predate sanctioning. Eligibility (all
+// players have a dupr_id, non-bye) is still enforced at flush. Best-effort.
+func (s *Service) backfillDuprSubmissions(eventID string) {
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=dupr_sanctioned")
+	if err != nil || ev == nil || !asBool(ev, "dupr_sanctioned") {
+		return
+	}
+	rows, err := s.sb.Select("matches",
+		"event_id=eq."+store.Q(eventID)+
+			"&status=eq.completed&select=id,line_type,result_type")
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	existing := map[string]bool{}
+	if subs, e := s.sb.Select("dupr_submissions",
+		"event_id=eq."+store.Q(eventID)+"&select=match_id"); e == nil {
+		for _, r := range subs {
+			existing[asStr(r, "match_id")] = true
+		}
+	}
+	for _, m := range rows {
+		id := asStr(m, "id")
+		if id == "" || existing[id] {
+			continue
+		}
+		// DreamBreaker deciders never go to DUPR; only real played results do.
+		if asStr(m, "line_type") == "dec" {
+			continue
+		}
+		if rt := asStr(m, "result_type"); rt != "" && rt != "normal" {
+			continue
+		}
+		_ = s.queueDuprSubmission(id, eventID)
+	}
 }
 
 // flushDuprSubmissions submits an event's due, still-pending DUPR rows. When

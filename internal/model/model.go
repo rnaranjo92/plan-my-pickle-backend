@@ -16,8 +16,13 @@ type Event struct {
 	// MinPoolRounds / MaxPoolRounds bound the pool-play round-robin length
 	// (0 = unset). Max caps a full RR (partial round-robin); min tops it up by
 	// repeating matchups so everyone gets a guaranteed number of games.
-	MinPoolRounds        int `json:"minPoolRounds"`
-	MaxPoolRounds        int `json:"maxPoolRounds"`
+	MinPoolRounds int `json:"minPoolRounds"`
+	MaxPoolRounds int `json:"maxPoolRounds"`
+	// RoundsPerSession pins an EXACT number of rounds generated each time the
+	// schedule is built (0 = unset → derive per format). Overrides the min/max
+	// bounds above when > 0. Mainly for recurring leagues that want a fixed
+	// "N rounds a week".
+	RoundsPerSession     int `json:"roundsPerSession"`
 	RegistrationFeeCents int `json:"registrationFeeCents"`
 	// Multi-division pricing: how the entry fee applies to a player's ADDITIONAL
 	// divisions (their first division always pays the full fee). "discount"
@@ -1142,6 +1147,7 @@ type CreateEventRequest struct {
 	GameDurationMinutes  int    `json:"gameDurationMinutes"`
 	MinPoolRounds        int    `json:"minPoolRounds"`
 	MaxPoolRounds        int    `json:"maxPoolRounds"`
+	RoundsPerSession     int    `json:"roundsPerSession"`
 	RegistrationFeeCents int    `json:"registrationFeeCents"`
 	// Currency the fees are collected in (ISO-4217, e.g. USD/CAD/PHP/GBP/AUD).
 	// Empty on update = leave unchanged; empty on create defaults to USD.

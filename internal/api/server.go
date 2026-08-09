@@ -562,6 +562,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Share a feed video to the coach leading this event's league (coaching clip).
 	mux.HandleFunc("POST /events/{id}/share-to-coach",
 		requireAuth(s.shareVideoToLeagueCoach))
+	// League session RSVP ("coming Thursday?"): read the poll, set your status.
+	mux.HandleFunc("GET /events/{id}/rsvp", optionalAuth(s.getSessionRsvp))
+	mux.HandleFunc("POST /events/{id}/rsvp", requireAuth(s.setSessionRsvp))
 	mux.HandleFunc("DELETE /feed/{id}", s.ownerOnly("feed_item", "id", s.feedDelete))
 	// Feed social — any signed-in user may react/comment (not just the owner).
 	mux.HandleFunc("POST /feed/{id}/react", requireAuth(s.feedReact))
@@ -5572,6 +5575,28 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+// getSessionRsvp returns the RSVP poll for the event's upcoming league session.
+func (s *Server) getSessionRsvp(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK,
+		s.svc.GetSessionRsvp(r.PathValue("id"), userID(r)))
+}
+
+// setSessionRsvp records the caller's RSVP (going|maybe|out) for the next session.
+func (s *Server) setSessionRsvp(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	res, err := s.svc.SetSessionRsvp(r.PathValue("id"), userID(r), req.Status)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // shareVideoToLeagueCoach posts a feed video to the coach leading this event's

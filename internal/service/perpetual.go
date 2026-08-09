@@ -35,6 +35,130 @@ func lastWeekThursdayAt(hour, min int) time.Time {
 	return d
 }
 
+// ---- League session RSVP ("coming Thursday?") ----
+
+// SessionRsvp is the RSVP poll for a league's upcoming session.
+type SessionRsvp struct {
+	Enabled     bool   `json:"enabled"`     // false until the migration is run
+	SessionDate string `json:"sessionDate"` // YYYY-MM-DD of the next session; "" if none
+	Weekday     string `json:"weekday"`     // e.g. "Thursday" for the UI label
+	MyStatus    string `json:"myStatus"`    // going | maybe | out | ""
+	Going       int    `json:"going"`
+	Maybe       int    `json:"maybe"`
+	Out         int    `json:"out"`
+}
+
+var rsvpStatuses = map[string]bool{"going": true, "maybe": true, "out": true}
+
+// nextSessionDate derives the date (YYYY-MM-DD) of a perpetual league's upcoming
+// session from the recurring cadence on starts_at (its weekday), taking the next
+// occurrence >= today and honoring skip-until/pause. ok=false when there's no
+// upcoming session.
+func nextSessionDate(startsAt, skipUntil string, paused bool) (string, time.Weekday, bool) {
+	if paused || strings.TrimSpace(startsAt) == "" {
+		return "", 0, false
+	}
+	st, err := time.Parse(time.RFC3339, startsAt)
+	if err != nil {
+		st, err = time.Parse("2006-01-02T15:04:05", strings.TrimSuffix(startsAt, "Z"))
+		if err != nil {
+			return "", 0, false
+		}
+	}
+	wd := st.Weekday()
+	now := time.Now().UTC()
+	d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 7 && d.Weekday() != wd; i++ {
+		d = d.AddDate(0, 0, 1)
+	}
+	if len(skipUntil) >= 10 {
+		if su, e := time.Parse("2006-01-02", skipUntil[:10]); e == nil {
+			for d.Before(su) {
+				d = d.AddDate(0, 0, 7)
+			}
+		}
+	}
+	return d.Format("2006-01-02"), wd, true
+}
+
+func (s *Service) nextSessionForEvent(eventID string) (string, time.Weekday, bool) {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+
+			"&select=starts_at,recur_skip_until,recur_paused,perpetual")
+	if err != nil || row == nil || !asBool(row, "perpetual") {
+		return "", 0, false
+	}
+	return nextSessionDate(asStr(row, "starts_at"),
+		asStr(row, "recur_skip_until"), asBool(row, "recur_paused"))
+}
+
+// GetSessionRsvp returns the RSVP poll for the event's upcoming session (counts +
+// the caller's own status). Disabled (Enabled=false) until the migration runs.
+func (s *Service) GetSessionRsvp(eventID, userID string) SessionRsvp {
+	if !s.columnReady("session_rsvps", "status") {
+		return SessionRsvp{}
+	}
+	date, wd, ok := s.nextSessionForEvent(eventID)
+	out := SessionRsvp{Enabled: true, SessionDate: date, Weekday: wd.String()}
+	if !ok {
+		return out
+	}
+	rows, err := s.sb.Select("session_rsvps",
+		"event_id=eq."+store.Q(eventID)+"&session_date=eq."+store.Q(date)+
+			"&select=user_id,status")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		switch asStr(r, "status") {
+		case "going":
+			out.Going++
+		case "maybe":
+			out.Maybe++
+		case "out":
+			out.Out++
+		}
+		if userID != "" && asStr(r, "user_id") == userID {
+			out.MyStatus = asStr(r, "status")
+		}
+	}
+	return out
+}
+
+// SetSessionRsvp records the caller's RSVP for the upcoming session and returns
+// the refreshed poll. Owner or a registered player only.
+func (s *Service) SetSessionRsvp(eventID, userID, status string) (SessionRsvp, error) {
+	if !s.columnReady("session_rsvps", "status") {
+		return SessionRsvp{}, errors.New("RSVP isn't enabled yet")
+	}
+	if userID == "" {
+		return SessionRsvp{}, ErrForbidden
+	}
+	status = strings.ToLower(strings.TrimSpace(status))
+	if !rsvpStatuses[status] {
+		return SessionRsvp{}, errors.New("invalid RSVP status")
+	}
+	// Owner or registered player.
+	if userID != s.eventOwnerID(eventID) && !s.IsRegisteredInEvent(eventID, userID) {
+		return SessionRsvp{}, ErrForbidden
+	}
+	date, _, ok := s.nextSessionForEvent(eventID)
+	if !ok {
+		return SessionRsvp{}, errors.New("no upcoming session to RSVP for")
+	}
+	if _, err := s.sb.Upsert("session_rsvps", "event_id,user_id,session_date",
+		map[string]any{
+			"event_id":     eventID,
+			"user_id":      userID,
+			"session_date": date,
+			"status":       status,
+			"updated_at":   now(),
+		}); err != nil {
+		return SessionRsvp{}, err
+	}
+	return s.GetSessionRsvp(eventID, userID), nil
+}
+
 // SeedPerpetualLeagueDemo (QA-only) stands up a perpetual-league test scenario:
 // a recurring league running as one ongoing event, 25 players, a COMPLETED
 // session dated last Thursday (fully scored), and a fresh ONGOING session today.

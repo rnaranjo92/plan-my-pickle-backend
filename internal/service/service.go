@@ -58,8 +58,9 @@ type Service struct {
 	brandingCols bool
 	// Serializes custom-email blasts per event so a double-click / retry can't
 	// stack concurrent goroutines that each walk the whole segment.
-	customEmailMu       sync.Mutex
-	customEmailInFlight map[string]bool
+	customEmailMu        sync.Mutex
+	customEmailInFlight  map[string]bool
+	broadcastSmsInFlight map[string]bool // guarded by customEmailMu
 	// colProbe caches "table.column exists" (probed once each, only cached on
 	// success) so a write that references a column added by an unapplied migration
 	// is skipped rather than failing. Same self-healing pattern as brandingReady.

@@ -468,6 +468,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/email-schedule", s.ownerOnly("event", "id", s.emailSchedule))
 	mux.HandleFunc("POST /events/{id}/instructions", s.ownerOnly("event", "id", s.emailInstructions))
 	mux.HandleFunc("POST /events/{id}/email", s.ownerOnly("event", "id", s.emailCustom))
+	mux.HandleFunc("POST /events/{id}/sms", s.ownerOnly("event", "id", s.smsCustom))
 
 	// Behind-schedule flag: owner-only status read-out, acknowledge, and a
 	// notify that messages ONLY the players still waiting on an unfinished match.
@@ -3591,6 +3592,38 @@ func (s *Server) emailCustom(w http.ResponseWriter, r *http.Request) {
 	}
 	queued, err := s.svc.SendCustomEmail(
 		r.PathValue("id"), req.Subject, req.Body, req.Segment)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+}
+
+// smsCustom texts a free-form organizer message to a segment of the roster
+// (owner-only). test=true sends one copy to the organizer's own phone.
+func (s *Server) smsCustom(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Body    string `json:"body"`
+		Segment string `json:"segment"`
+		Test    bool   `json:"test"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("message is required"))
+		return
+	}
+	if req.Test {
+		to, err := s.svc.SendCustomSmsTest(userID(r), req.Body)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"queued": 1, "test": true, "to": to})
+		return
+	}
+	queued, err := s.svc.SendCustomSms(r.PathValue("id"), req.Body, req.Segment)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

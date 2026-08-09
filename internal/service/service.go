@@ -10414,32 +10414,10 @@ func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, med
 	if userID == s.eventOwnerID(eventID) {
 		return s.PostAnnouncement(eventID, text, "Organizer", notify, mediaURL, mediaType)
 	}
-	// A registered player has a players row for this event linked to their account.
-	rows, err := s.sb.Select("players",
-		"event_id=eq."+store.Q(eventID)+"&user_id=eq."+store.Q(userID)+
-			"&select=id,full_name&limit=1")
-	if err != nil {
-		return model.FeedItem{}, err
-	}
-	if len(rows) == 0 {
+	name, ok := s.approvedPlayerName(eventID, userID)
+	if !ok {
 		return model.FeedItem{}, ErrForbidden
 	}
-	// Approval gate: self-registration creates the players row immediately, but an
-	// approval-gated event keeps the REGISTRATION pending (approved=false). A
-	// pending entrant must NOT be able to post to the public feed.
-	if s.columnReady("registrations", "approved") {
-		playerID := asStr(rows[0], "id")
-		reg, rerr := s.sb.Select("registrations",
-			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
-				"&approved=is.true&select=id&limit=1")
-		if rerr != nil {
-			return model.FeedItem{}, rerr
-		}
-		if len(reg) == 0 {
-			return model.FeedItem{}, ErrForbidden
-		}
-	}
-	name := strings.TrimSpace(asStr(rows[0], "full_name"))
 	if name == "" {
 		name = "Player"
 	}
@@ -10450,6 +10428,39 @@ func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, med
 	}
 	// Players never trigger a mass push — force notify off regardless of request.
 	return s.PostAnnouncement(eventID, text, name, false, mediaURL, mediaType)
+}
+
+// approvedPlayerName returns the caller's display name and whether they are a
+// registered player of the event — AND, for approval-gated events, an APPROVED
+// one (self-registration creates the players row immediately while the
+// registration stays pending). Owner is handled by the caller separately.
+func (s *Service) approvedPlayerName(eventID, userID string) (string, bool) {
+	if userID == "" {
+		return "", false
+	}
+	rows, err := s.sb.Select("players",
+		"event_id=eq."+store.Q(eventID)+"&user_id=eq."+store.Q(userID)+
+			"&select=id,full_name&limit=1")
+	if err != nil || len(rows) == 0 {
+		return "", false
+	}
+	if s.columnReady("registrations", "approved") {
+		playerID := asStr(rows[0], "id")
+		reg, rerr := s.sb.Select("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+				"&approved=is.true&select=id&limit=1")
+		if rerr != nil || len(reg) == 0 {
+			return "", false
+		}
+	}
+	return strings.TrimSpace(asStr(rows[0], "full_name")), true
+}
+
+// IsRegisteredInEvent reports whether userID is an approved player of the event
+// (used to decide whether to show the feed composer to a non-owner viewer).
+func (s *Service) IsRegisteredInEvent(eventID, userID string) bool {
+	_, ok := s.approvedPlayerName(eventID, userID)
+	return ok
 }
 
 func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {

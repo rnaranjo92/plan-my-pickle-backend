@@ -167,7 +167,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// "you paid $X" message. Anonymous because a player paying an entry fee needn't
 	// be signed in; session ids are unguessable single-use tokens.
 	mux.HandleFunc("GET /checkout/session/{id}", s.checkoutSessionSummary)
-	mux.HandleFunc("GET /events/{id}", s.getEvent)
+	mux.HandleFunc("GET /events/{id}", optionalAuth(s.getEvent))
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
@@ -2081,6 +2081,11 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status(w, err)
 		return
+	}
+	// Whether the signed-in caller is an approved player — the client gates the
+	// feed composer on owner-or-registered. Anonymous callers get false.
+	if uid := userID(r); uid != "" {
+		e.ViewerRegistered = s.svc.IsRegisteredInEvent(r.PathValue("id"), uid)
 	}
 	writeJSON(w, http.StatusOK, e)
 }

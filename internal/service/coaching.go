@@ -2927,8 +2927,22 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 // as-is. Errors clearly when the league isn't coach-led or the player isn't yet
 // on the coach's roster.
 func (s *Service) ShareVideoToLeagueCoach(eventID, userID, email, videoURL, title string) error {
-	if strings.TrimSpace(videoURL) == "" {
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
 		return errors.New("no video to share")
+	}
+	// Only an uploaded MATCH VIDEO may be shared (not an arbitrary URL or a photo)
+	// — else it renders as a broken player on the coach's side.
+	low := videoURL
+	if i := strings.IndexByte(low, '?'); i >= 0 {
+		low = low[:i]
+	}
+	low = strings.ToLower(low)
+	if !strings.Contains(low, "/match-videos/") ||
+		strings.HasSuffix(low, ".jpg") || strings.HasSuffix(low, ".jpeg") ||
+		strings.HasSuffix(low, ".png") || strings.HasSuffix(low, ".webp") ||
+		strings.HasSuffix(low, ".heic") || strings.HasSuffix(low, ".gif") {
+		return errors.New("only an uploaded match video can be shared to a coach")
 	}
 	ev, err := s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+"&select=league_id")

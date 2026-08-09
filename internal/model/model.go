@@ -202,6 +202,10 @@ type Event struct {
 	// OwnerPremium = the event owner has an active Premium plan. Set on single
 	// reads (GetEvent) so public views can hide the free-tier house-brand mark.
 	OwnerPremium bool `json:"ownerPremium"`
+	// ViewerRegistered = the authenticated caller is an approved player of this
+	// event. Set on single reads (GetEvent, optionalAuth) so the client can show
+	// the feed composer to registered players (not to random spectators).
+	ViewerRegistered bool `json:"viewerRegistered,omitempty"`
 	// OrganizerName is the event owner's display name (from pmp_profiles), set on
 	// single reads (GetEvent) for the tournament-info tab. Empty when unknown.
 	OrganizerName string `json:"organizerName,omitempty"`

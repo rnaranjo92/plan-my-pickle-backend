@@ -6039,7 +6039,7 @@ func (s *Server) addCoachStudent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	cs, err := s.svc.AddCoachStudent(userID(r), req.Email, req.Phone, req.Name, req.Level)
+	cs, err := s.svc.AddCoachStudent(userID(r), req.Email, req.Phone, req.Name, req.Level, false)
 	if err != nil {
 		status(w, err)
 		return

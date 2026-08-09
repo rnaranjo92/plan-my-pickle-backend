@@ -944,7 +944,7 @@ func (s *Service) maybeEnrollLeagueCoachStudent(eventID, email, phone, name stri
 	if coachID == "" {
 		return
 	}
-	student, err := s.AddCoachStudent(coachID, email, phone, name, "")
+	student, err := s.AddCoachStudent(coachID, email, phone, name, "", true)
 	if err != nil {
 		return // already on the roster / no contact info — nothing new to announce
 	}
@@ -993,8 +993,21 @@ func (s *Service) unenrollLeagueCoachStudent(leagueID, email, phone string, whol
 	} else {
 		return
 	}
-	row, _ := s.sb.SelectOne("coach_students", filter+"&select=id")
+	sel := "id"
+	fromLeagueReady := s.columnReady("coach_students", "from_league")
+	if fromLeagueReady {
+		sel = "id,from_league"
+	}
+	row, _ := s.sb.SelectOne("coach_students", filter+"&select="+sel)
 	if row == nil {
+		return
+	}
+	// ONLY tear down a row that a league auto-enroll created. A manually-added
+	// (or manually-claimed) student shares the same (coach,contact) row; removing
+	// it would cascade-delete the coach's own clip/feedback history. When the
+	// from_league column isn't migrated yet we can't tell them apart, so we skip
+	// cleanup entirely (fail safe — never destroy data).
+	if !fromLeagueReady || !asBool(row, "from_league") {
 		return
 	}
 	excludeLeague := ""
@@ -1037,7 +1050,15 @@ func (s *Service) playerHasRegUnderCoach(coachID, email, phone, excludeLeagueID 
 	} else {
 		return false
 	}
-	prows, _ := s.sb.Select("players", pf+"&select=id")
+	// Fail CLOSED: a swallowed query error here used to read as "not registered"
+	// → the caller un-enrolls and (for a league-created row) cascade-deletes the
+	// player's clips. Since this guards irreversible data loss, any real error
+	// must instead KEEP the student (return true). Only a genuine empty result
+	// (no rows, no error) means "not registered under this coach".
+	prows, perr := s.sb.Select("players", pf+"&select=id")
+	if perr != nil {
+		return true
+	}
 	pids := idList(prows, "id")
 	if len(pids) == 0 {
 		return false
@@ -1046,12 +1067,18 @@ func (s *Service) playerHasRegUnderCoach(coachID, email, phone, excludeLeagueID 
 	if excludeLeagueID != "" {
 		lq += "&id=neq." + store.Q(excludeLeagueID)
 	}
-	lrows, _ := s.sb.Select("leagues", lq+"&select=id")
+	lrows, lerr := s.sb.Select("leagues", lq+"&select=id")
+	if lerr != nil {
+		return true
+	}
 	lids := idList(lrows, "id")
 	if len(lids) == 0 {
 		return false
 	}
-	erows, _ := s.sb.Select("events", "league_id="+store.In(lids)+"&select=id")
+	erows, eerr := s.sb.Select("events", "league_id="+store.In(lids)+"&select=id")
+	if eerr != nil {
+		return true
+	}
 	eids := idList(erows, "id")
 	if len(eids) == 0 {
 		return false
@@ -1060,7 +1087,10 @@ func (s *Service) playerHasRegUnderCoach(coachID, email, phone, excludeLeagueID 
 	if s.columnReady("registrations", "is_substitute") {
 		rq += "&is_substitute=is.false"
 	}
-	reg, _ := s.sb.SelectOne("registrations", rq+"&select=id")
+	reg, rerr := s.sb.SelectOne("registrations", rq+"&select=id")
+	if rerr != nil {
+		return true
+	}
 	return reg != nil
 }
 
@@ -1098,7 +1128,7 @@ func (s *Service) enrollLeaguePlayersForEvent(coachID, eventID string) {
 	}
 	for _, p := range players {
 		_, _ = s.AddCoachStudent(coachID,
-			asStr(p, "email"), asStr(p, "phone"), asStr(p, "full_name"), "")
+			asStr(p, "email"), asStr(p, "phone"), asStr(p, "full_name"), "", true)
 	}
 }
 

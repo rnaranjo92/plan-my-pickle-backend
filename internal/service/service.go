@@ -12126,28 +12126,20 @@ func sameSet(a, b []string) bool {
 func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Standing, error) {
 	// Pool standings are a GROUP BY aggregation PostgREST can't express, so they
 	// live in the pmp_standings SQL function (see 0002_rpc.sql). It returns rows
-	// unordered; we apply the wins-vs-points sort here.
-	payload := map[string]any{"p_event_id": eventID}
-	if bracketID != "" {
-		payload["p_bracket_id"] = bracketID
-	}
-	body, err := s.sb.RPC("pmp_standings", payload)
+	// unordered; we apply the wins-vs-points sort here. For a perpetual league
+	// running a SEASON (season_started_at set), the box score is instead computed
+	// in Go scoped to that season's rounds — see standingRowsSince.
+	since := s.seasonStartFor(eventID)
+	out, err := s.standingRowsSince(eventID, bracketID, since)
 	if err != nil {
 		return nil, err
-	}
-	var rows []map[string]any
-	if err := json.Unmarshal(body, &rows); err != nil {
-		return nil, err
-	}
-	out := make([]model.Standing, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, mapStanding(r))
 	}
 
 	// Head-to-head map for breaking ties when the box-score stats are equal —
 	// the USAP convention (whoever won the meeting ranks higher). Best-effort:
-	// on any error h2h is nil and we fall back to the stat-only order.
-	h2h, _ := s.headToHead(eventID, bracketID)
+	// on any error h2h is nil and we fall back to the stat-only order. Scoped to
+	// the same season window when one is active.
+	h2h, _ := s.headToHead(eventID, bracketID, since)
 
 	// h2hCmp: +1 if a beat b head-to-head more, -1 if b did, 0 if even/none.
 	// Pairwise (resolves the common 2-way tie; multi-way groups fall through).
@@ -12235,10 +12227,10 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 // player a's team beat player b's team (event-wide, or scoped to a bracket).
 // Used only to break standings ties; pairwise, which resolves the common 2-way
 // tie correctly (multi-way ties fall back to stable stat order).
-func (s *Service) headToHead(eventID, bracketID string) (map[string]map[string]int, error) {
+func (s *Service) headToHead(eventID, bracketID, since string) (map[string]map[string]int, error) {
 	q := "event_id=eq." + store.Q(eventID) +
 		"&stage=eq.pool&status=eq.completed" +
-		"&select=winning_team,participants:match_participants(player_id,team)"
+		"&select=winning_team,round:rounds!round_id(created_at),participants:match_participants(player_id,team)"
 	if bracketID != "" {
 		q += "&bracket_id=eq." + store.Q(bracketID)
 	}
@@ -12250,6 +12242,10 @@ func (s *Service) headToHead(eventID, bracketID string) (map[string]map[string]i
 	}
 	h := map[string]map[string]int{}
 	for _, r := range rows {
+		// Season scope: skip meetings from before the current season started.
+		if since != "" && roundCreatedAt(r) < since {
+			continue
+		}
 		wt := asInt(r, "winning_team")
 		if wt != 1 && wt != 2 {
 			continue

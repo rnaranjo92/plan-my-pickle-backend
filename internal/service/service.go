@@ -10417,15 +10417,35 @@ func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, med
 	// A registered player has a players row for this event linked to their account.
 	rows, err := s.sb.Select("players",
 		"event_id=eq."+store.Q(eventID)+"&user_id=eq."+store.Q(userID)+
-			"&select=full_name&limit=1")
+			"&select=id,full_name&limit=1")
 	if err != nil {
 		return model.FeedItem{}, err
 	}
 	if len(rows) == 0 {
 		return model.FeedItem{}, ErrForbidden
 	}
+	// Approval gate: self-registration creates the players row immediately, but an
+	// approval-gated event keeps the REGISTRATION pending (approved=false). A
+	// pending entrant must NOT be able to post to the public feed.
+	if s.columnReady("registrations", "approved") {
+		playerID := asStr(rows[0], "id")
+		reg, rerr := s.sb.Select("registrations",
+			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+				"&approved=is.true&select=id&limit=1")
+		if rerr != nil {
+			return model.FeedItem{}, rerr
+		}
+		if len(reg) == 0 {
+			return model.FeedItem{}, ErrForbidden
+		}
+	}
 	name := strings.TrimSpace(asStr(rows[0], "full_name"))
 	if name == "" {
+		name = "Player"
+	}
+	// Don't let a player impersonate the organizer: the owner branch posts as the
+	// literal "Organizer", so a player whose name is "Organizer" is rewritten.
+	if strings.EqualFold(name, "Organizer") {
 		name = "Player"
 	}
 	// Players never trigger a mass push — force notify off regardless of request.

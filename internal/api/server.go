@@ -5554,6 +5554,12 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// Throttle like the other social writes (comment/react) so a registered
+	// player can't loop the endpoint and flood the public feed.
+	if !s.socialLimiter.allow("feed:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("slow down"))
+		return
+	}
 	item, err := s.svc.PostToEventFeed(
 		r.PathValue("id"), userID(r), req.Text, req.Notify, req.MediaURL, req.MediaType)
 	if err != nil {

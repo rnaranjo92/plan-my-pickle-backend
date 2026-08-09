@@ -10210,8 +10210,18 @@ func (s *Service) SetMyBasicInfo(userID, fullName, phone string) error {
 			upd["phone_verified"] = false
 		}
 	}
-	_, err := s.sb.Upsert("pmp_profiles", "user_id", upd)
-	return err
+	if _, err := s.sb.Upsert("pmp_profiles", "user_id", upd); err != nil {
+		return err
+	}
+	// Social/feed DISPLAY names live on players.full_name (pmp_profiles is
+	// photo-only) — feed authors, comments, @-search, followers, rosters all read
+	// it. Keep the caller's player rows in sync so a name edit shows everywhere,
+	// not just on the profile. Best-effort: a failure here shouldn't fail the save.
+	if fullName != "" {
+		_, _ = s.sb.Update("players", "user_id=eq."+store.Q(userID),
+			map[string]any{"full_name": fullName})
+	}
+	return nil
 }
 
 // MarkOnboarded records that the caller has seen the first-run questionnaire, so

@@ -3450,6 +3450,16 @@ func (s *Server) courtScore(w http.ResponseWriter, r *http.Request) {
 			errors.New("too many score submissions, slow down"))
 		return
 	}
+	// Optional scorekeeper-passcode gate (organizer setting): a valid court token
+	// alone isn't enough when the event requires the passcode.
+	if s.svc.CourtScoreNeedsPasscode(r.PathValue("id")) {
+		code := strings.TrimSpace(r.Header.Get("X-Event-Passcode"))
+		if ok, _ := s.svc.VerifyAdminPasscode(r.PathValue("id"), code); !ok {
+			writeErr(w, http.StatusForbidden,
+				errors.New("enter the scorekeeper passcode to score this court"))
+			return
+		}
+	}
 	if err := s.svc.RecordCourtScore(
 		r.PathValue("id"), court, req.Token, req.Team1Score, req.Team2Score); err != nil {
 		status(w, err)
@@ -3506,6 +3516,16 @@ func (s *Server) courtLiveScore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests,
 			errors.New("too many score updates, slow down"))
 		return
+	}
+	// Same passcode gate as the final-score path (the court page collects it once
+	// before showing the scorer, so every +/− carries the header).
+	if s.svc.CourtScoreNeedsPasscode(r.PathValue("id")) {
+		code := strings.TrimSpace(r.Header.Get("X-Event-Passcode"))
+		if ok, _ := s.svc.VerifyAdminPasscode(r.PathValue("id"), code); !ok {
+			writeErr(w, http.StatusForbidden,
+				errors.New("enter the scorekeeper passcode to score this court"))
+			return
+		}
 	}
 	if err := s.svc.SetCourtLiveScore(
 		r.PathValue("id"), court, req.Token, req.Team1, req.Team2); err != nil {

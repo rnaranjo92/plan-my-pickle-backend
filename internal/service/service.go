@@ -679,6 +679,9 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if s.columnReady("events", "require_approval") {
 		payload["require_approval"] = req.RequireApproval
 	}
+	if req.CourtScorePasscode != nil && s.columnReady("events", "court_score_passcode") {
+		payload["court_score_passcode"] = *req.CourtScorePasscode
+	}
 	if req.RegistrationCode != nil && strings.TrimSpace(*req.RegistrationCode) != "" &&
 		s.columnReady("events", "registration_code") {
 		payload["registration_code"] = strings.TrimSpace(*req.RegistrationCode)
@@ -1790,6 +1793,9 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// a code the form didn't re-send.
 	if s.columnReady("events", "require_approval") {
 		upd["require_approval"] = req.RequireApproval
+	}
+	if req.CourtScorePasscode != nil && s.columnReady("events", "court_score_passcode") {
+		upd["court_score_passcode"] = *req.CourtScorePasscode
 	}
 	if req.RegistrationCode != nil && s.columnReady("events", "registration_code") {
 		upd["registration_code"] = strings.TrimSpace(*req.RegistrationCode)
@@ -8614,6 +8620,23 @@ type DuprImportSummary struct {
 // DISABLED — only the event owner's JWT can score — so an unset passcode must
 // NOT grant access (returning true here was an auth bypass: any anonymous caller
 // could score any event that never set a passcode, which is the default).
+// CourtScoreNeedsPasscode reports whether court-QR scoring must present the
+// scorekeeper passcode: the per-event setting is on AND a passcode is actually
+// configured. When no passcode is set there's nothing to check, so scoring stays
+// token-only (never bricked). Missing column (pre-migration) reads as off.
+func (s *Service) CourtScoreNeedsPasscode(eventID string) bool {
+	if !s.columnReady("events", "court_score_passcode") {
+		return false
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=court_score_passcode,admin_passcode")
+	if err != nil || ev == nil {
+		return false
+	}
+	return asBool(ev, "court_score_passcode") &&
+		strings.TrimSpace(asStr(ev, "admin_passcode")) != ""
+}
+
 func (s *Service) VerifyAdminPasscode(eventID, code string) (bool, error) {
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=admin_passcode")
 	if err != nil {

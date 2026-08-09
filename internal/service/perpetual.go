@@ -234,6 +234,104 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 	return eid, nil
 }
 
+// coachLedSeedNames are the 8 students seeded into the coach-led league test.
+var coachLedSeedNames = []string{
+	"Test Student Ana", "Test Student Ben", "Test Student Cara", "Test Student Dan",
+	"Test Student Eve", "Test Student Finn", "Test Student Gia", "Test Student Hugo",
+}
+
+// SeedCoachLedLeagueDemo (QA test flow) stands up a COMPLETE coach-led league so
+// the whole flow can be exercised in one tap: the caller becomes a coach, a
+// coach-led recurring league is created (owner = coach), 8 students are
+// registered (each auto-enrolls onto the coach's roster), everyone's checked in,
+// and one ongoing session of games is built. Open it → Coach tab shows the
+// roster; leave/remove a student → they un-enroll (once the migration is run).
+// Returns the ongoing event id.
+func (s *Service) SeedCoachLedLeagueDemo(ownerID, ownerEmail string) (string, error) {
+	if !s.coachingReady() {
+		return "", errors.New("coaching isn't enabled yet — run the coaching migrations first")
+	}
+	// Make the caller a coach so the Coach tab + roster are available in-app.
+	_, _ = s.AddInstructor(strings.ToLower(strings.TrimSpace(ownerEmail)), "")
+
+	lastThu := lastWeekThursdayAt(18, 0)
+	leagueID, err := s.CreateLeague(ownerID, model.CreateLeagueRequest{
+		Name:       "TEST · Coach-Led League",
+		LeagueType: "round_robin",
+		Location:   "Test Courts",
+		CoachLed:   true,
+	})
+	if err != nil {
+		return "", err
+	}
+	// Force the coach-led flags so the seed is deterministic regardless of the
+	// IsInstructor gate (the AddInstructor above may not be visible to CreateLeague
+	// within the same request).
+	if s.columnReady("leagues", "coach_led") {
+		_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+			map[string]any{"coach_led": true, "coach_id": ownerID})
+	}
+	eid, err := s.CreateEvent(model.CreateEventRequest{
+		Name:             "TEST · Coach-Led League",
+		Format:           "doubles",
+		PartnerMode:      "rotating",
+		TournamentFormat: "round_robin",
+		ScoringMode:      "wins",
+		NumCourts:        2,
+		Location:         "Test Courts",
+		StartsAt:         lastThu.Format(time.RFC3339),
+		Brackets:         []model.BracketInput{{Name: "Open", DivisionType: "open"}},
+	}, ownerID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eid), map[string]any{
+		"league_id": leagueID, "perpetual": true, "recur_interval_days": 0,
+	}); err != nil {
+		return "", err
+	}
+	lupd := map[string]any{}
+	if s.columnReady("leagues", "recurs") {
+		lupd["recurs"] = true
+		lupd["recur_start_at"] = lastThu.Format(time.RFC3339)
+	}
+	if s.columnReady("leagues", "recur_event_id") {
+		lupd["recur_event_id"] = eid
+	}
+	if len(lupd) > 0 {
+		_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID), lupd)
+	}
+
+	// Register 8 students WITH emails (so they become real coach_students, not just
+	// phone rows). SkipCoachEnroll stays false → each auto-enrolls onto the roster.
+	bks, err := s.GetBrackets(eid)
+	if err != nil || len(bks) == 0 {
+		return "", errors.New("seed: no division to register into")
+	}
+	bid := bks[0].ID
+	for i, nm := range coachLedSeedNames {
+		_, _ = s.RegisterPlayer(eid, model.RegisterRequest{
+			TrustedAdd: true,
+			FullName:   nm,
+			Email:      fmt.Sprintf("clstudent%d@test.planmypickle.com", i+1),
+			Phone:      fmt.Sprintf("+1555%07d", 3000000+i),
+			BracketID:  bid,
+			SkillLevel: ratingPtr(3.0 + float64(i%8)*0.05),
+		}, "")
+	}
+	// The per-registrant auto-enroll runs async (best-effort goroutine), so also
+	// enroll synchronously here for a deterministic roster (idempotent — dedups).
+	s.enrollLeaguePlayersForEvent(ownerID, eid)
+
+	// Check everyone in + build one ongoing (unscored) session so there are games.
+	_, _ = s.sb.Update("registrations", "event_id=eq."+store.Q(eid),
+		map[string]any{"checked_in": true, "checked_in_at": now()})
+	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
+		return "", err
+	}
+	return eid, nil
+}
+
 // SeedPerpetualEventSessions seeds the test scenario (25 players, a scored
 // last-Thursday session + an ongoing today session) INTO an existing perpetual
 // event — the league-page "Seed test data" button. Owner-only; QA-gated at the

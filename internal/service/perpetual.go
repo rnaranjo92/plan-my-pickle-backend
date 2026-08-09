@@ -65,14 +65,18 @@ func nextSessionDate(startsAt, skipUntil string, paused bool) (string, time.Week
 			return "", 0, false
 		}
 	}
+	// Compute the next occurrence in the VENUE's local zone (from starts_at's
+	// offset). Using UTC would roll a west-of-UTC league to next week on game
+	// night once local evening crosses UTC midnight.
+	loc := st.Location()
 	wd := st.Weekday()
-	now := time.Now().UTC()
-	d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	now := time.Now().In(loc)
+	d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	for i := 0; i < 7 && d.Weekday() != wd; i++ {
 		d = d.AddDate(0, 0, 1)
 	}
 	if len(skipUntil) >= 10 {
-		if su, e := time.Parse("2006-01-02", skipUntil[:10]); e == nil {
+		if su, e := time.ParseInLocation("2006-01-02", skipUntil[:10], loc); e == nil {
 			for d.Before(su) {
 				d = d.AddDate(0, 0, 7)
 			}

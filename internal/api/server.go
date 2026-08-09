@@ -596,6 +596,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /matches/{id}/forfeit", s.ownerOnly("match", "id", s.forfeitMatch))
 	mux.HandleFunc("POST /matches/{id}/start", s.ownerOnly("match", "id", s.startMatch))
 	mux.HandleFunc("POST /matches/{id}/unstart", s.ownerOnly("match", "id", s.unstartMatch))
+	mux.HandleFunc("POST /matches/{id}/cancel", s.ownerOnly("match", "id", s.cancelMatch))
+	mux.HandleFunc("POST /matches/{id}/restore", s.ownerOnly("match", "id", s.restoreMatch))
 	mux.HandleFunc("POST /matches/{id}/swap", s.ownerOnly("match", "id", s.swapMatchPlayer))
 	// Cross-match swap spans two matches, so ownerOnly (one path id) won't fit:
 	// requireAuth + verify the caller owns both matches' events in the handler.
@@ -5816,6 +5818,22 @@ func (s *Server) removeMatchFromDupr(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) unstartMatch(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.UnstartMatch(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) cancelMatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CancelMatch(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) restoreMatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RestoreMatch(r.PathValue("id")); err != nil {
 		status(w, err)
 		return
 	}

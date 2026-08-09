@@ -11084,6 +11084,61 @@ func (s *Service) UnstartMatch(matchID string) error {
 	}
 }
 
+// CancelMatch marks a scheduled (or accidentally-started) game as "not played" —
+// a game that was on the schedule but never happened (rained out, ran out of
+// time, players left). Unlike a forfeit/walkover it has NO winner and NO
+// fabricated score, so it never counts toward standings, DUPR, or games-played:
+// standings only aggregate status=completed, and 'canceled' is excluded from the
+// schedule-completion + affected-players math. A COMPLETED match keeps its
+// result (reset the score to undo that instead). Reversible via RestoreMatch.
+func (s *Service) CancelMatch(matchID string) error {
+	if !s.columnReady("matches", "status") { // status always exists; cheap sanity
+		return errors.New("match status not available")
+	}
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=status")
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return ErrNotFound
+	}
+	if asStr(m, "status") == "completed" {
+		return errors.New("this match already has a result — reset the score before marking it not played")
+	}
+	// Clear any live scores from an accidental in-progress start; a canceled game
+	// carries no score, winner, or result_type.
+	_, err = s.sb.Update("matches",
+		"id=eq."+store.Q(matchID)+"&status=in.(scheduled,in_progress)",
+		map[string]any{
+			"status":      "canceled",
+			"team1_score": nil, "team2_score": nil, "winning_team": nil,
+			"live_team1": nil, "live_team2": nil,
+			"result_type": nil, "completed_at": nil,
+		})
+	return err
+}
+
+// RestoreMatch puts a "not played" (canceled) game back on the schedule so it can
+// be started/scored again — the inverse of CancelMatch.
+func (s *Service) RestoreMatch(matchID string) error {
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=status")
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return ErrNotFound
+	}
+	if asStr(m, "status") != "canceled" {
+		return nil // only a canceled game needs restoring
+	}
+	_, err = s.sb.Update("matches",
+		"id=eq."+store.Q(matchID)+"&status=eq.canceled",
+		map[string]any{"status": "scheduled"})
+	return err
+}
+
 // eventSmsEnabled reports whether an event opted into the premium SMS "both
 // channels" add-on (sms_notifications). Best-effort: a missing column (before
 // add_sms_notifications.sql runs) or any error reads as OFF (push-first default).

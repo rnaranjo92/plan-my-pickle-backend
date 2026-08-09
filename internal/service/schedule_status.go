@@ -38,11 +38,17 @@ func (s *Service) ScheduleStatus(eventID string) (model.ScheduleStatus, error) {
 	if err != nil {
 		return st, err
 	}
-	st.Total = len(rows)
+	// A 'canceled' game (marked "not played") is neither pending nor completed —
+	// exclude it from the total so completion % and the remaining/behind math
+	// don't treat a game that will never be played as still-to-play.
 	for _, r := range rows {
-		if asStr(r, "status") == "completed" {
+		switch asStr(r, "status") {
+		case "canceled":
+			continue
+		case "completed":
 			st.Completed++
 		}
+		st.Total++
 	}
 	st.Remaining = st.Total - st.Completed
 
@@ -132,7 +138,7 @@ func (s *Service) AcknowledgeSchedule(eventID string) error {
 // the distinct player count. These are the people a delay actually affects.
 func (s *Service) scheduleAffected(eventID string) (userIDs, phones []string, count int, err error) {
 	rows, err := s.sb.SelectAll("matches",
-		"event_id=eq."+store.Q(eventID)+"&status=neq.completed"+
+		"event_id=eq."+store.Q(eventID)+"&status=in.(scheduled,in_progress)"+
 			"&select=match_participants(player:players!player_id(id,phone,user_id,sms_consent))")
 	if err != nil {
 		return nil, nil, 0, err

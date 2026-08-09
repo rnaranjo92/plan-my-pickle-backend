@@ -69,7 +69,7 @@ func (s *Service) standingRowsSince(eventID, bracketID, since string) ([]model.S
 func (s *Service) seasonStandingRows(eventID, bracketID, since string) ([]model.Standing, error) {
 	q := "event_id=eq." + store.Q(eventID) +
 		"&stage=eq.pool&status=eq.completed" +
-		"&select=team1_score,team2_score,winning_team," +
+		"&select=team1_score,team2_score,winning_team,counts_for_diff," +
 		"round:rounds!round_id(created_at)," +
 		"participants:match_participants(team,player:players!player_id(id,full_name))"
 	if bracketID != "" {
@@ -82,6 +82,17 @@ func (s *Service) seasonStandingRows(eventID, bracketID, since string) ([]model.
 	byPlayer := map[string]*model.Standing{}
 	for _, r := range rows {
 		if since != "" && roundCreatedAt(r) < since {
+			continue
+		}
+		// Mirror the app-wide box-score convention (see the lifetime profile
+		// aggregation and gamesPlayedForUser): a bye is a completed match with
+		// NULL scores — not a game; a forfeit/walkover fabricates a
+		// points_to_win–0 score with counts_for_diff=false — it decides the
+		// match but must not inflate games played, points, or differential.
+		if asIntPtr(r, "team1_score") == nil || asIntPtr(r, "team2_score") == nil {
+			continue
+		}
+		if cd := r["counts_for_diff"]; cd != nil && cd == false {
 			continue
 		}
 		wt := asInt(r, "winning_team")
@@ -160,7 +171,13 @@ func (s *Service) RollSeason(eventID string) (int, error) {
 	if strings.TrimSpace(ev.SeasonStartedAt) != "" {
 		snap["started_at"] = ev.SeasonStartedAt
 	}
-	if _, err := s.sb.Insert("league_season_snapshots", snap); err != nil {
+	// Upsert (not Insert) on (event_id, season_number): the snapshot write and the
+	// events season bump below are two non-transactional HTTP calls. If the bump
+	// fails after the snapshot lands, season_number stays at N and a retry re-reads
+	// N — a plain Insert would then collide with the unique(event_id, season_number)
+	// row and wedge the league forever. Merge-duplicates makes the retry overwrite
+	// the same-season snapshot instead, so RollSeason is safely repeatable.
+	if _, err := s.sb.Upsert("league_season_snapshots", "event_id,season_number", []map[string]any{snap}); err != nil {
 		return 0, err
 	}
 	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID), map[string]any{

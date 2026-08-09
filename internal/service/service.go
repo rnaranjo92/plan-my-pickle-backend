@@ -10403,6 +10403,35 @@ func (s *Service) AccountExists(email string) bool {
 // PostAnnouncement adds an organizer announcement to the feed. When notify is
 // true, it also pushes the announcement to the event's registered players (off
 // the request path).
+// PostToEventFeed lets the event OWNER or a REGISTERED PLAYER post to the feed.
+// The owner posts as "Organizer" and may push a notification; a registered
+// player posts under their own name and can NEVER trigger a push (only the
+// organizer may blast every player). A caller who is neither is rejected.
+func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
+	if userID == "" {
+		return model.FeedItem{}, ErrForbidden
+	}
+	if userID == s.eventOwnerID(eventID) {
+		return s.PostAnnouncement(eventID, text, "Organizer", notify, mediaURL, mediaType)
+	}
+	// A registered player has a players row for this event linked to their account.
+	rows, err := s.sb.Select("players",
+		"event_id=eq."+store.Q(eventID)+"&user_id=eq."+store.Q(userID)+
+			"&select=full_name&limit=1")
+	if err != nil {
+		return model.FeedItem{}, err
+	}
+	if len(rows) == 0 {
+		return model.FeedItem{}, ErrForbidden
+	}
+	name := strings.TrimSpace(asStr(rows[0], "full_name"))
+	if name == "" {
+		name = "Player"
+	}
+	// Players never trigger a mass push — force notify off regardless of request.
+	return s.PostAnnouncement(eventID, text, name, false, mediaURL, mediaType)
+}
+
 func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)
 	mediaURL = strings.TrimSpace(mediaURL)

@@ -47,6 +47,11 @@ type Server struct {
 	// otpLimiter throttles phone-OTP SMS sends per user so nobody can burn the
 	// Twilio budget by spamming "resend" (the service adds a 30s resend gap too).
 	otpLimiter *rateLimiter
+	// liveLimiter throttles running-scorebug pushes. These arrive at rally pace —
+	// roughly one per point per court — so they need a far higher ceiling than the
+	// signup-shaped regLimiter, and a PER-COURT key: four courts sharing one
+	// per-event bucket exhausted it mid-game and silently froze the overlay.
+	liveLimiter *rateLimiter
 	// captcha verifies a Turnstile token on PUBLIC (anonymous) self-registration.
 	// Active only when TURNSTILE_SECRET is set; otherwise it skips (fail-open).
 	captcha *gateway.Captcha
@@ -64,6 +69,7 @@ func NewServer(svc *service.Service) http.Handler {
 		createLimiter:     newRateLimiter(20, 60),  // 20 event/league creates/min per user
 		sessionLimiter:    newRateLimiter(600, 60), // 600 checkout-session Stripe lookups/min (global, cache-miss only)
 		otpLimiter:        newRateLimiter(5, 600),  // 5 OTP sends / 10 min per user
+		liveLimiter:       newRateLimiter(240, 60), // 240 scorebug pushes/min per court (~4/sec)
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
@@ -550,7 +556,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/register-dupr-testers", s.ownerOnly("event", "id", s.registerDuprTesters))
 	// Reverse an event's submitted results on DUPR (the delete leg of the round-trip).
 	mux.HandleFunc("POST /events/{id}/dupr/remove", s.ownerOnly("event", "id", s.removeFromDupr))
-	mux.HandleFunc("POST /events/{id}/feed", s.ownerOnly("event", "id", s.feedPost))
+	// Owner OR a registered player may post (the handler enforces it; only the
+	// owner can trigger a push).
+	mux.HandleFunc("POST /events/{id}/feed", requireAuth(s.feedPost))
 	mux.HandleFunc("DELETE /feed/{id}", s.ownerOnly("feed_item", "id", s.feedDelete))
 	// Feed social — any signed-in user may react/comment (not just the owner).
 	mux.HandleFunc("POST /feed/{id}/react", requireAuth(s.feedReact))
@@ -3444,7 +3452,9 @@ func (s *Server) liveScore(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if !s.regLimiter.allow("livescore:" + r.PathValue("id")) {
+	// Keyed per match, on the scorebug limiter — a running score arrives once per
+	// rally, which the signup-shaped regLimiter is far too tight for.
+	if !s.liveLimiter.allow("livescore:" + r.PathValue("id")) {
 		writeErr(w, http.StatusTooManyRequests,
 			errors.New("too many score updates, slow down"))
 		return
@@ -3472,7 +3482,10 @@ func (s *Server) courtLiveScore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid court number"))
 		return
 	}
-	if !s.regLimiter.allow("courtlivescore:" + r.PathValue("id")) {
+	// Per COURT, not per event: every court on an event scores at the same time,
+	// so a shared bucket drains in seconds and the overlay stalls mid-game.
+	if !s.liveLimiter.allow(
+		"courtlivescore:" + r.PathValue("id") + ":" + strconv.Itoa(court)) {
 		writeErr(w, http.StatusTooManyRequests,
 			errors.New("too many score updates, slow down"))
 		return
@@ -5538,7 +5551,8 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	item, err := s.svc.PostAnnouncement(r.PathValue("id"), req.Text, "Organizer", req.Notify, req.MediaURL, req.MediaType)
+	item, err := s.svc.PostToEventFeed(
+		r.PathValue("id"), userID(r), req.Text, req.Notify, req.MediaURL, req.MediaType)
 	if err != nil {
 		status(w, err)
 		return

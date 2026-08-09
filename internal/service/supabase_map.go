@@ -2,6 +2,7 @@ package service
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 )
@@ -250,6 +251,8 @@ func mapEvent(m map[string]any) model.Event {
 		RegistrationCloseAt:        asStrPtr(m, "registration_close_at"),
 		RoundStartMinutes:          mapIntMap(m, "round_start_minutes"),
 		PosterURL:                  asStrPtr(m, "poster_url"),
+		CourtScorePasscode: asBool(m, "court_score_passcode") &&
+			strings.TrimSpace(asStr(m, "admin_passcode")) != "",
 		SponsorWatermarkURL:        asStr(m, "sponsor_watermark_url"),
 		SponsorWatermarkOpacity:    asFloatOr(m, "sponsor_watermark_opacity", 0.08),
 		SponsorWatermarkPosition:   asStr(m, "sponsor_watermark_position"),

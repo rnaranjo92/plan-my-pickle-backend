@@ -148,6 +148,11 @@ type Event struct {
 	// until the organizer approves it — pending entries stay out of the roster
 	// counts and the draw. Organizer-added players are always approved.
 	RequireApproval bool `json:"requireApproval"`
+	// CourtScorePasscode reports whether court-QR scoring REQUIRES the scorekeeper
+	// passcode (the per-event setting is on AND a passcode is set). Derived so the
+	// court page shows the passcode gate exactly when the backend enforces it; the
+	// passcode value itself is never returned.
+	CourtScorePasscode bool `json:"courtScorePasscode"`
 	// RequiresRegistrationCode reports whether the event has an invite code set,
 	// so the public form knows to ask for one. The code VALUE itself is never
 	// returned (write-only secret, like AdminPasscode).
@@ -1233,6 +1238,10 @@ type CreateEventRequest struct {
 	PosterURL           string         `json:"posterUrl"`
 	// RequireApproval gates self-registrations behind organizer approval.
 	RequireApproval bool `json:"requireApproval"`
+	// CourtScorePasscode toggles requiring the scorekeeper passcode on court-QR
+	// scoring. Pointer so an omitting client keeps the DB default (on) on create
+	// and leaves it unchanged on update.
+	CourtScorePasscode *bool `json:"courtScorePasscode"`
 	// RegistrationCode is the invite code self-registrants must supply. Pointer so
 	// edit can distinguish the three cases: nil (omitted) = keep the current code,
 	// "" = clear it (open registration), any value = set it.

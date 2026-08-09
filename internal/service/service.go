@@ -9906,6 +9906,19 @@ func (s *Service) feedItemOwner(feedItemID string) string {
 // resolveDisplayName picks a friendly author name for a commenter: their linked
 // player's full name, else the email's local part, else "Player".
 func (s *Service) resolveDisplayName(userID, email string) string {
+	// Account-level name (pmp_profiles.full_name) is the canonical, user-editable
+	// source and must win. It's what the profile editor writes; a players row can
+	// hold a stale/typo'd name from an old registration, so preferring players
+	// showed the wrong name on comments/feed even after the user fixed their
+	// profile. Best-effort: a pre-0066 DB (no full_name column) just falls through.
+	if userID != "" {
+		if pr, err := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(userID)+"&select=full_name&limit=1"); err == nil && pr != nil {
+			if n := strings.TrimSpace(asStr(pr, "full_name")); n != "" {
+				return n
+			}
+		}
+	}
 	if row, err := s.sb.SelectOne("players",
 		"user_id=eq."+store.Q(userID)+"&select=full_name&limit=1"); err == nil && row != nil {
 		if n := strings.TrimSpace(asStr(row, "full_name")); n != "" {
@@ -10414,9 +10427,16 @@ func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, med
 	if userID == s.eventOwnerID(eventID) {
 		return s.PostAnnouncement(eventID, text, "Organizer", notify, mediaURL, mediaType)
 	}
-	name, ok := s.approvedPlayerName(eventID, userID)
+	pname, ok := s.approvedPlayerName(eventID, userID)
 	if !ok {
 		return model.FeedItem{}, ErrForbidden
+	}
+	// approvedPlayerName is the approval gate; take the DISPLAY name from
+	// resolveDisplayName so it uses the canonical account-level name (pmp_profiles)
+	// rather than a possibly-stale players row.
+	name := s.resolveDisplayName(userID, "")
+	if name == "" || name == "Player" {
+		name = strings.TrimSpace(pname)
 	}
 	if name == "" {
 		name = "Player"

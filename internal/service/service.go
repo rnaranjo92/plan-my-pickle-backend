@@ -11685,20 +11685,21 @@ func (s *Service) flushDuprSubmissions(eventID string, retryOnly bool, onlyIDs m
 				sum.Submitted++ // newly created
 			}
 		} else if res.Permanent && existingCode == "" && isDuprIdentifierConflict(res.Error) {
-			// "Identifier already exists" on a CREATE = this match is already on DUPR
-			// under the current generation's identifier, but we lost its matchCode
-			// (drift, e.g. a create whose local write failed). Bump the generation and
-			// keep it retryable so the next import creates cleanly with a FRESH
-			// identifier rather than dead-ending on the collision.
-			if _, err := s.sb.Update("dupr_submissions", "id=eq."+store.Q(subID),
-				map[string]any{
-					"status": "pending", "attempts": 0, "next_attempt_at": nil,
-					"error": orNull(res.Error), "dupr_gen": asInt(p, "dupr_gen") + 1,
-				}); err != nil {
-				log.Printf("dupr: gen-bump write failed for %s: %v", subID, err)
-			}
-			sum.Failed++
-			sum.Details = append(sum.Details, res.Error+" — will re-create with a fresh identifier on the next import")
+			// "Identifier already exists" on a CREATE = this match is ALREADY on DUPR
+			// under this identifier (an earlier create succeeded but its local
+			// provider_ref write was lost). The DUPR match still EXISTS, so bumping
+			// the generation and re-creating under a fresh identifier would DUPLICATE
+			// a result on official ratings — and we can't delete it (its matchCode was
+			// never stored). So mark it a terminal, non-retryable "orphaned" (excluded
+			// from the pending/failed flush filter, never re-selected as a create). The
+			// result stays correctly on DUPR; re-linking its matchCode needs manual
+			// reconciliation, but no duplicate is ever created.
+			_ = s.markSubmission(subID, "orphaned", "",
+				"already on DUPR — the local record was lost; reconcile manually (not "+
+					"re-created, to avoid duplicating the result on official ratings)")
+			sum.Skipped++
+			sum.Details = append(sum.Details,
+				"skipped: already on DUPR (local record lost — needs manual reconciliation)")
 		} else if res.Permanent {
 			// A DUPR 4xx (bad payload, invalid dupr_id) won't fix itself — go terminal
 			// now instead of burning 10 retries. PRESERVE provider_ref (an update that

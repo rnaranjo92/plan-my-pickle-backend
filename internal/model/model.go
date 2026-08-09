@@ -176,6 +176,12 @@ type Event struct {
 	// header/feed; the weekday+time come from StartsAt (reschedule updates it).
 	RecurPaused    bool    `json:"recurPaused,omitempty"`
 	RecurSkipUntil *string `json:"recurSkipUntil,omitempty"`
+	// SeasonNumber / SeasonStartedAt scope a perpetual league's live standings to
+	// the CURRENT season. SeasonStartedAt (ISO, empty = all-time/season 1) is the
+	// cutoff: only rounds created on/after it count. "Start new season" archives
+	// the standings and bumps these. See season.go.
+	SeasonNumber    int    `json:"seasonNumber,omitempty"`
+	SeasonStartedAt string `json:"seasonStartedAt,omitempty"`
 	// CoachLed is true when this event belongs to a coach-led league (its players
 	// auto-enroll as the league coach's students). Resolved on GetEvent from the
 	// league; drives a "Coach-led" badge in the header. Not a stored event column.
@@ -1063,6 +1069,15 @@ type Standing struct {
 	PointsFor     int    `json:"pointsFor"`
 	PointsAgainst int    `json:"pointsAgainst"`
 	PointDiff     int    `json:"pointDiff"`
+}
+
+// SeasonSnapshot is a perpetual league's archived season: the frozen final
+// standings plus the window it covered. Standings is empty in list responses.
+type SeasonSnapshot struct {
+	SeasonNumber int        `json:"seasonNumber"`
+	StartedAt    string     `json:"startedAt,omitempty"`
+	EndedAt      string     `json:"endedAt,omitempty"`
+	Standings    []Standing `json:"standings,omitempty"`
 }
 
 // ---- request DTOs ----

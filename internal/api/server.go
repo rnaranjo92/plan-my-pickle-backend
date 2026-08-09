@@ -469,6 +469,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/instructions", s.ownerOnly("event", "id", s.emailInstructions))
 	mux.HandleFunc("POST /events/{id}/email", s.ownerOnly("event", "id", s.emailCustom))
 	mux.HandleFunc("POST /events/{id}/sms", s.ownerOnly("event", "id", s.smsCustom))
+	mux.HandleFunc("POST /events/{id}/season/roll", s.ownerOnly("event", "id", s.rollSeason))
+	mux.HandleFunc("GET /events/{id}/seasons", s.listSeasons)
+	mux.HandleFunc("GET /events/{id}/seasons/{n}", s.getSeason)
 
 	// Behind-schedule flag: owner-only status read-out, acknowledge, and a
 	// notify that messages ONLY the players still waiting on an unfinished match.
@@ -3629,6 +3632,38 @@ func (s *Server) smsCustom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+}
+
+// rollSeason archives a perpetual league's current standings and starts a fresh
+// season (owner-only). Returns the season number that was archived.
+func (s *Server) rollSeason(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.RollSeason(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"archivedSeason": n})
+}
+
+// listSeasons returns a league's archived seasons (metadata only). Public read.
+func (s *Server) listSeasons(w http.ResponseWriter, r *http.Request) {
+	snaps, err := s.svc.ListSeasonSnapshots(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snaps)
+}
+
+// getSeason returns one archived season's frozen standings. Public read.
+func (s *Server) getSeason(w http.ResponseWriter, r *http.Request) {
+	n, _ := strconv.Atoi(r.PathValue("n"))
+	snap, err := s.svc.GetSeasonSnapshot(r.PathValue("id"), n)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 func (s *Server) vendorRecap(w http.ResponseWriter, r *http.Request) {

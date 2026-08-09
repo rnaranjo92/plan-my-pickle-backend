@@ -337,10 +337,14 @@ func (s *Service) applyUnread(userID string, rows []model.CoachStudent) {
 // AddCoachStudent adds a student to a coach's roster by email. Idempotent-ish: a
 // duplicate (same coach + email) is rejected by the unique index, surfaced as a
 // friendly error.
-func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (model.CoachStudent, error) {
+// fromLeague marks the row as league-created (auto-enroll) vs a manual add, so a
+// later league-leave only ever removes rows it created — never a coach's manual
+// (or manually-claimed) student, whose clip history would cascade away with it.
+func (s *Service) AddCoachStudent(coachID, email, phone, name, level string, fromLeague bool) (model.CoachStudent, error) {
 	if !s.coachingReady() {
 		return model.CoachStudent{}, ErrCoachingUnavailable
 	}
+	fromLeagueReady := s.columnReady("coach_students", "from_league")
 	email = strings.ToLower(strings.TrimSpace(email))
 	name = strings.TrimSpace(name)
 	level = strings.TrimSpace(level)
@@ -373,6 +377,9 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 	if leftReady {
 		dupSel += ",left_at"
 	}
+	if fromLeagueReady {
+		dupSel += ",from_league"
+	}
 	var dup map[string]any
 	if email != "" {
 		dup, _ = s.sb.SelectOne("coach_students",
@@ -384,9 +391,16 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 	}
 	if dup != nil {
 		if !leftReady || asStr(dup, "left_at") == "" {
+			// Active duplicate. A MANUAL add "claims" the student — make sure the
+			// row is protected from league auto-removal (it may have originated as
+			// a league auto-enroll) before reporting the duplicate.
+			if !fromLeague && fromLeagueReady && asBool(dup, "from_league") {
+				_, _ = s.sb.Update("coach_students", "id=eq."+store.Q(asStr(dup, "id")),
+					map[string]any{"from_league": false})
+			}
 			return model.CoachStudent{}, errors.New("that student is already on your roster")
 		}
-		return s.reactivateLeftStudent(coachID, dup, email, np, rawPhone, name, level, phoneReady)
+		return s.reactivateLeftStudent(coachID, dup, email, np, rawPhone, name, level, phoneReady, fromLeague)
 	}
 	row := map[string]any{
 		"coach_id":      coachID,
@@ -395,6 +409,9 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string) (mo
 	}
 	if phoneReady {
 		row["student_phone"] = orNull(np)
+	}
+	if fromLeagueReady {
+		row["from_league"] = fromLeague
 	}
 	if level != "" && s.columnReady("coach_students", "skill_level") {
 		row["skill_level"] = level
@@ -489,9 +506,15 @@ func (s *Service) ResendCoachInvite(coachID, id string) error {
 // clears left_at, refreshes name/level/contact, re-links to an account if one
 // exists now, and re-fires the invite so the student is pinged again.
 func (s *Service) reactivateLeftStudent(coachID string, row map[string]any,
-	email, np, rawPhone, name, level string, phoneReady bool) (model.CoachStudent, error) {
+	email, np, rawPhone, name, level string, phoneReady, fromLeague bool) (model.CoachStudent, error) {
 	id := asStr(row, "id")
 	patch := map[string]any{"left_at": nil}
+	// A MANUAL re-add always protects the thread (from_league=false). A league
+	// re-enroll must NOT downgrade a row that was already manual/protected — only
+	// leave a genuinely league-originated row as league-owned.
+	if s.columnReady("coach_students", "from_league") && !fromLeague {
+		patch["from_league"] = false
+	}
 	if name != "" {
 		patch["student_name"] = name
 	}

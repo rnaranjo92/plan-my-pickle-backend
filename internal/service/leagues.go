@@ -451,11 +451,20 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		ids[i] = l.ID
 	}
 	rows, err := s.sb.Select("events",
-		"league_id="+store.In(ids)+"&select=league_id,starts_at,ends_at")
+		"league_id="+store.In(ids)+"&select=league_id,starts_at,ends_at,poster_url,perpetual")
 	if err != nil {
 		return err
 	}
-	type span struct{ first, last string }
+	// posterURL captures a banner to fall back to when the league has none of its
+	// own: the "Edit league" form edits the underlying (perpetual) EVENT and saves
+	// events.poster_url, while the league card reads leagues.poster_url — so a
+	// perpetual league's edited banner would never show without this fallback.
+	// Prefer the perpetual (ongoing) event's poster; otherwise any session's.
+	type span struct {
+		first, last string
+		posterURL   string
+		posterFixed bool // true once a perpetual event's poster locked it in
+	}
 	byLeague := map[string]*span{}
 	for _, r := range rows {
 		lid := asStr(r, "league_id")
@@ -479,6 +488,16 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		if end != "" && (sp.last == "" || end > sp.last) {
 			sp.last = end
 		}
+		if p := asStr(r, "poster_url"); p != "" {
+			// A perpetual event's poster wins and is sticky; otherwise take the
+			// first non-empty session poster seen.
+			if asBool(r, "perpetual") {
+				sp.posterURL = p
+				sp.posterFixed = true
+			} else if !sp.posterFixed && sp.posterURL == "" {
+				sp.posterURL = p
+			}
+		}
 	}
 	for i := range leagues {
 		sp := byLeague[leagues[i].ID]
@@ -492,6 +511,12 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		if sp.last != "" {
 			l := sp.last
 			leagues[i].LastSessionAt = &l
+		}
+		// Fallback banner: only when the league has no poster of its own.
+		if sp.posterURL != "" &&
+			(leagues[i].PosterURL == nil || *leagues[i].PosterURL == "") {
+			p := sp.posterURL
+			leagues[i].PosterURL = &p
 		}
 	}
 	return nil

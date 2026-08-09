@@ -251,6 +251,17 @@ func (s *Service) SeedCoachLedLeagueDemo(ownerID, ownerEmail string) (string, er
 	if !s.coachingReady() {
 		return "", errors.New("coaching isn't enabled yet — run the coaching migrations first")
 	}
+	// Idempotent: replace (don't stack). Delete any TEST coach-led league(s) this
+	// owner already seeded so re-tapping the button gives a single fresh instance
+	// instead of duplicates. DeleteLeague cascades events/matches/registrations
+	// and un-enrolls the seeded students.
+	if rows, err := s.sb.Select("leagues",
+		"owner_id=eq."+store.Q(ownerID)+
+			"&name=eq."+store.Q("TEST · Coach-Led League")+"&select=id"); err == nil {
+		for _, r := range rows {
+			_ = s.DeleteLeague(asStr(r, "id"), ownerID)
+		}
+	}
 	// Make the caller a coach so the Coach tab + roster are available in-app.
 	_, _ = s.AddInstructor(strings.ToLower(strings.TrimSpace(ownerEmail)), "")
 

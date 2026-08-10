@@ -5486,7 +5486,15 @@ func (s *Server) playerProfile(w http.ResponseWriter, r *http.Request) {
 // feedList returns an event's activity feed (public — like the scoreboard).
 // optionalAuth so a signed-in caller's own reactions come back flagged.
 func (s *Server) feedList(w http.ResponseWriter, r *http.Request) {
-	items, err := s.svc.ListFeed(r.PathValue("id"), userID(r))
+	eventID := r.PathValue("id")
+	// The Feed is private to people IN the event — the owner and its registered
+	// (approved) players. A non-registered viewer gets an empty feed (the app
+	// shows a "register to join the conversation" state).
+	if !s.svc.CanViewEventFeed(eventID, userID(r), userEmail(r)) {
+		writeJSON(w, http.StatusOK, []model.FeedItem{})
+		return
+	}
+	items, err := s.svc.ListFeed(eventID, userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -5520,6 +5528,12 @@ func (s *Server) feedItemGet(w http.ResponseWriter, r *http.Request) {
 	item, err := s.svc.GetFeedItem(r.PathValue("id"), userID(r))
 	if err != nil {
 		status(w, err)
+		return
+	}
+	// Single posts are as private as the feed they belong to: owner + registered
+	// players only. (A deep link/notification only reaches those people anyway.)
+	if !s.svc.CanViewEventFeed(item.EventID, userID(r), userEmail(r)) {
+		status(w, service.ErrForbidden)
 		return
 	}
 	writeJSON(w, http.StatusOK, item)

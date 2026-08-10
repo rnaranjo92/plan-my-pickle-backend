@@ -367,11 +367,21 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string, fro
 		}
 		return model.CoachStudent{}, errors.New("enter the student's email or phone")
 	}
-	// Already on this coach's roster? Match by email or phone. A row the student
-	// LEFT (left_at set) is HIDDEN from the roster (see activeStudentFilter), so a
-	// plain "already added" error would strand the coach with an invisible
-	// duplicate they can never re-add. Reactivate that left row instead; only an
-	// ACTIVE match is a genuine duplicate.
+	// Resolve to an existing account (by email, else phone) up front so we can
+	// also de-dupe by the ACCOUNT, not just the exact contact string.
+	resolved := s.userIDByEmail(email)
+	if resolved == "" && np != "" {
+		resolved = s.userIDByPhone(np)
+	}
+	// Already on this coach's roster? Match by email or phone — AND by resolved
+	// account id, so a student who's already this coach's student under one
+	// contact (e.g. the original coach↔player thread) doesn't get a SECOND row
+	// when they later enroll via a coach-led league using a different
+	// email/phone. Same account → one row. A row the student LEFT (left_at set)
+	// is HIDDEN from the roster (see activeStudentFilter), so a plain "already
+	// added" error would strand the coach with an invisible duplicate they can
+	// never re-add. Reactivate that left row instead; only an ACTIVE match is a
+	// genuine duplicate.
 	leftReady := s.columnReady("coach_students", "left_at")
 	dupSel := "id,student_id,invite_token,student_email,student_phone,student_name"
 	if leftReady {
@@ -388,6 +398,10 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string, fro
 	if dup == nil && np != "" {
 		dup, _ = s.sb.SelectOne("coach_students",
 			"coach_id=eq."+store.Q(coachID)+"&student_phone=eq."+store.Q(np)+"&select="+dupSel)
+	}
+	if dup == nil && resolved != "" {
+		dup, _ = s.sb.SelectOne("coach_students",
+			"coach_id=eq."+store.Q(coachID)+"&student_id=eq."+store.Q(resolved)+"&select="+dupSel)
 	}
 	if dup != nil {
 		if !leftReady || asStr(dup, "left_at") == "" {
@@ -416,12 +430,8 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string, fro
 	if level != "" && s.columnReady("coach_students", "skill_level") {
 		row["skill_level"] = level
 	}
-	// Resolve to an existing account (by email, else phone) so a registered
-	// student links immediately and we skip the invite.
-	resolved := s.userIDByEmail(email)
-	if resolved == "" && np != "" {
-		resolved = s.userIDByPhone(np)
-	}
+	// resolved (computed above) links a registered student immediately so we can
+	// skip the invite.
 	if resolved != "" {
 		row["student_id"] = resolved
 	}

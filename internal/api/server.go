@@ -398,6 +398,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// derived from these), so it is OWNER-gated, unlike /report.
 	mux.HandleFunc("POST /rotation-sessions/{id}/scores",
 		s.rotationSessionOwner("id", s.setRotationScore))
+	mux.HandleFunc("POST /rotation-sessions/{id}/scorecard/rounds",
+		s.rotationSessionOwner("id", s.addScorecardRound))
+	mux.HandleFunc("DELETE /rotation-sessions/{id}/scorecard/rounds/{round}",
+		s.rotationSessionOwner("id", s.deleteScorecardRound))
 	mux.HandleFunc("POST /rotation-sessions/{id}/advance",
 		s.rotationSessionActor("id", s.advanceRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/end",

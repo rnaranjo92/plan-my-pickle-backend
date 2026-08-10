@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/service"
@@ -283,6 +284,31 @@ func (s *Server) setRotationScore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// addScorecardRound appends an empty column to the ladder scorecard.
+func (s *Server) addScorecardRound(w http.ResponseWriter, r *http.Request) {
+	round, err := s.svc.AddScorecardRound(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"round": round})
+}
+
+// deleteScorecardRound removes an added column and its scores. Rounds the
+// engine has already played are refused by the service.
+func (s *Server) deleteScorecardRound(w http.ResponseWriter, r *http.Request) {
+	round, err := strconv.Atoi(r.PathValue("round"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid round"))
+		return
+	}
+	if err := s.svc.DeleteScorecardRound(r.PathValue("id"), round); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // advanceRotation closes the current round and opens the next. The optional

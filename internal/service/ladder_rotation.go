@@ -219,14 +219,23 @@ func (s *Service) rotationScorecard(sessionID string, currentRound int) (model.R
 		return card, totals
 	}
 	card.Enabled = true
-	// Columns: every round played so far, including the one in progress.
-	for r := 1; r <= currentRound; r++ {
-		card.Rounds = append(card.Rounds, r)
-	}
 	rows, err := s.sb.Select("rotation_round_scores",
 		"session_id=eq."+store.Q(sessionID)+"&select=round,rotation_player_id,score")
 	if err != nil {
 		return card, totals
+	}
+	// Columns run to whichever is further along: the round the ENGINE is on, or
+	// the furthest round the organizer has created on the scorecard. A row with a
+	// NULL score is exactly that marker — "this column exists but is blank" —
+	// which is how "Add round" persists an empty column without its own table.
+	maxRound := currentRound
+	for _, r := range rows {
+		if rd := asInt(r, "round"); rd > maxRound {
+			maxRound = rd
+		}
+	}
+	for r := 1; r <= maxRound; r++ {
+		card.Rounds = append(card.Rounds, r)
 	}
 	for _, r := range rows {
 		pid := asStr(r, "rotation_player_id")
@@ -242,6 +251,82 @@ func (s *Service) rotationScorecard(sessionID string, currentRound int) (model.R
 		totals[pid] += score
 	}
 	return card, totals
+}
+
+// AddScorecardRound appends an empty column to the scorecard and returns the new
+// round number. Persisted as one NULL-score row per player, which the loader
+// reads as "this column exists but is blank". Owner-gated at the route.
+func (s *Service) AddScorecardRound(sessionID string) (int, error) {
+	if !s.rotationScoresReady() {
+		return 0, ErrCoachingUnavailable
+	}
+	srow, err := s.sb.SelectOne("rotation_sessions", "id=eq."+store.Q(sessionID))
+	if err != nil {
+		return 0, err
+	}
+	if srow == nil {
+		return 0, ErrNotFound
+	}
+	next := asInt(srow, "current_round")
+	rows, err := s.sb.Select("rotation_round_scores",
+		"session_id=eq."+store.Q(sessionID)+"&select=round")
+	if err != nil {
+		return 0, err
+	}
+	for _, r := range rows {
+		if rd := asInt(r, "round"); rd > next {
+			next = rd
+		}
+	}
+	next++
+	players, _, err := s.rotationPlayers(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if len(players) == 0 {
+		return 0, errors.New("add players before adding a round")
+	}
+	batch := make([]map[string]any, 0, len(players))
+	for _, p := range players {
+		batch = append(batch, map[string]any{
+			"session_id":         sessionID,
+			"round":              next,
+			"rotation_player_id": p.ID,
+			"score":              nil,
+			"updated_at":         nowRFC3339(),
+		})
+	}
+	if _, err := s.sb.Upsert("rotation_round_scores",
+		"session_id,round,rotation_player_id", batch); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+// DeleteScorecardRound removes a column and every score in it. Refuses to touch
+// a round the ENGINE is still on or has already played (<= current_round): those
+// rounds have real games and standings behind them, so only an extra column the
+// organizer added can be deleted. Owner-gated at the route.
+func (s *Service) DeleteScorecardRound(sessionID string, round int) error {
+	if !s.rotationScoresReady() {
+		return ErrCoachingUnavailable
+	}
+	if round < 1 {
+		return errors.New("invalid round")
+	}
+	srow, err := s.sb.SelectOne("rotation_sessions", "id=eq."+store.Q(sessionID))
+	if err != nil {
+		return err
+	}
+	if srow == nil {
+		return ErrNotFound
+	}
+	if cur := asInt(srow, "current_round"); round <= cur {
+		return fmt.Errorf(
+			"round %d has been played — clear its scores instead of deleting it", round)
+	}
+	return s.sb.Delete("rotation_round_scores",
+		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round))
 }
 
 // SetRotationScore upserts ONE cell of the scorecard (a player's score for a

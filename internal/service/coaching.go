@@ -1005,11 +1005,20 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 			}
 		}
 	}
-	if np != "" {
+	// A phone match only counts when the account's phone is VERIFIED. The profile
+	// phone is self-set with no OTP (SetMyBasicInfo), so without this anyone could
+	// type a stranger's number and pick up their coaching threads — threadMembership
+	// already requires PhoneVerified for exactly this reason; mirror it here.
+	phoneMatched := map[string]bool{}
+	if np != "" && s.PhoneVerified(studentID) {
 		if rows, e := s.sb.Select("coach_students",
 			"student_phone=eq."+store.Q(np)+af+"&order=created_at.desc"); e == nil {
 			for _, r := range rows {
-				byID[asStr(r, "id")] = r
+				id := asStr(r, "id")
+				if _, already := byID[id]; !already {
+					phoneMatched[id] = true // matched ONLY by phone
+				}
+				byID[id] = r
 			}
 		}
 	}
@@ -1020,8 +1029,12 @@ func (s *Service) ListStudentThreads(studentID, email string) ([]model.CoachStud
 	out := make([]model.CoachStudent, 0, len(rows))
 	for _, r := range rows {
 		cs := mapCoachStudent(r)
-		// Backfill the account link the first time we see this student logged in.
-		if cs.StudentID == "" && studentID != "" {
+		// Backfill the account link the first time we see this student logged in —
+		// but NEVER off a phone-only match (even a verified one is a weaker claim
+		// than an account/email match; a phone-invited student links via their
+		// invite token in ClaimCoachInvite). Writing student_id is permanent: it
+		// grants full thread membership from then on, bypassing later checks.
+		if cs.StudentID == "" && studentID != "" && !phoneMatched[cs.ID] {
 			if _, uerr := s.sb.Update("coach_students", "id=eq."+store.Q(cs.ID),
 				map[string]any{"student_id": studentID}); uerr == nil {
 				cs.StudentID = studentID

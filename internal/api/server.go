@@ -4112,6 +4112,10 @@ func (s *Server) mlpStandings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mlpSetLineup(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.MatchInEvent(r.PathValue("matchId"), r.PathValue("id")) {
+		status(w, service.ErrNotFound)
+		return
+	}
 	var req model.SetLineupRequest
 	if !decode(w, r, &req) {
 		return

@@ -32,6 +32,15 @@ func validateAnalysisVideoURL(userID, videoURL string) error {
 	if !strings.HasPrefix(low, "https://") {
 		return errors.New("upload your match video first")
 	}
+	// HOST ALLOWLIST: the clip must live on OUR Supabase storage, not just any
+	// URL that happens to contain "/match-videos/" — otherwise an attacker-hosted
+	// (arbitrarily long) video would pass and we'd pay PB Vision to ingest it.
+	if host := strings.ToLower(strings.TrimSpace(os.Getenv("SUPABASE_URL"))); host != "" {
+		host = strings.TrimSuffix(host, "/")
+		if !strings.HasPrefix(low, host+"/") {
+			return errors.New("upload your match video first")
+		}
+	}
 	const marker = "/match-videos/"
 	i := strings.Index(low, marker)
 	if i < 0 {

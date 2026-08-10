@@ -173,6 +173,29 @@ func (s *Service) TeamInEvent(teamID, eventID string) bool {
 	return err == nil && row != nil
 }
 
+// MatchInEvent reports whether a tie-line match belongs to eventID (match ->
+// tie -> event). The lineup route is owner-gated on the EVENT id only, so
+// without this an organizer could pass ANOTHER event's matchId and rewrite that
+// tie's lineup — misattributing results, standings, and DUPR submissions.
+// Fails CLOSED (an unparented match never passes).
+func (s *Service) MatchInEvent(matchID, eventID string) bool {
+	if strings.TrimSpace(matchID) == "" || strings.TrimSpace(eventID) == "" {
+		return false
+	}
+	m, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=tie_id")
+	if err != nil || m == nil {
+		return false
+	}
+	tieID := strings.TrimSpace(asStr(m, "tie_id"))
+	if tieID == "" {
+		return false
+	}
+	t, err := s.sb.SelectOne("team_ties",
+		"id=eq."+store.Q(tieID)+"&event_id=eq."+store.Q(eventID)+"&select=id")
+	return err == nil && t != nil
+}
+
 // TeamMemberInEvent reports whether a team-member row belongs to eventID (via
 // its team). Same cross-event IDOR guard as TeamInEvent; fails closed.
 func (s *Service) TeamMemberInEvent(memberID, eventID string) bool {

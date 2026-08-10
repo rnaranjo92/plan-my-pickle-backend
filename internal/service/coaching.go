@@ -1105,12 +1105,18 @@ func (s *Service) threadMembership(threadID, userID, email string) (model.CoachS
 	// unverified, so matching on it would let anyone who knows a phone-invited
 	// student's number take over their thread. Unverified phone-invited students
 	// link securely via the coach's invite token (ClaimCoachInvite) instead.
+	phoneOnlyMatch := false
 	if !studentMatch && cs.StudentPhone != "" && userID != "" && s.PhoneVerified(userID) {
 		studentMatch = normPhone(s.phoneOf(userID)) == cs.StudentPhone
+		phoneOnlyMatch = studentMatch
 	}
 	if studentMatch {
-		// Backfill the account link opportunistically.
-		if cs.StudentID == "" && userID != "" {
+		// Backfill the account link opportunistically — but NEVER off a phone-only
+		// match. Writing student_id is permanent and grants membership from then
+		// on with no further checks; a recycled/reassigned number would inherit a
+		// stranger's thread forever. Phone-invited students bind via their invite
+		// token (ClaimCoachInvite) instead.
+		if cs.StudentID == "" && userID != "" && !phoneOnlyMatch {
 			if _, uerr := s.sb.Update("coach_students", "id=eq."+store.Q(cs.ID),
 				map[string]any{"student_id": userID}); uerr == nil {
 				cs.StudentID = userID
@@ -4609,6 +4615,16 @@ func ownCoachingPath(userID, v string) error {
 		return errors.New("no video uploaded")
 	}
 	if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+		// A full URL is fine ONLY if it isn't secretly a coaching-videos object
+		// path — otherwise the caller could smuggle another user's private clip
+		// past this check and have the backend sign it for them.
+		low := strings.ToLower(v)
+		if i := strings.Index(low, "/coaching-videos/"); i >= 0 {
+			rest := v[i+len("/coaching-videos/"):]
+			if strings.Contains(rest, "..") || !strings.HasPrefix(rest, userID+"/") {
+				return ErrForbidden
+			}
+		}
 		return nil
 	}
 	if strings.Contains(v, "..") || !strings.HasPrefix(v, userID+"/") {

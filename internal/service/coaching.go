@@ -2744,8 +2744,16 @@ func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, 
 				upd["stats"] = stats
 			}
 		}
-		_, _ = s.sb.Update("coaching_pbvision_jobs",
-			"id=eq."+store.Q(asStr(job, "id")), upd)
+		// ATOMIC claim: guard the transition on status=eq.processing so only the
+		// caller that actually flips processing→ready/failed proceeds to ingest +
+		// notify. A concurrent webhook / immediate-pull that lost the race updates
+		// ZERO rows and skips — so redelivery AND the goroutine can't double-notify
+		// (the earlier read-then-update guard alone was racy).
+		claimed, _ := s.sb.Update("coaching_pbvision_jobs",
+			"id=eq."+store.Q(asStr(job, "id"))+"&status=eq.processing", upd)
+		if len(claimed) == 0 {
+			continue
+		}
 		if !failed {
 			s.ingestPBVisionHighlights(threadID, insights)
 		}

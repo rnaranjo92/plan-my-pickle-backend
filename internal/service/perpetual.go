@@ -146,7 +146,7 @@ func (s *Service) GetSessionRsvp(eventID, userID string) SessionRsvp {
 
 // SetSessionRsvp records the caller's RSVP for the upcoming session and returns
 // the refreshed poll. Owner or a registered player only.
-func (s *Service) SetSessionRsvp(eventID, userID, status string) (SessionRsvp, error) {
+func (s *Service) SetSessionRsvp(eventID, userID, email, status string) (SessionRsvp, error) {
 	if !s.columnReady("session_rsvps", "status") || !s.eventRsvpEnabled(eventID) {
 		return SessionRsvp{}, errors.New("RSVP isn't enabled for this league")
 	}
@@ -158,7 +158,7 @@ func (s *Service) SetSessionRsvp(eventID, userID, status string) (SessionRsvp, e
 		return SessionRsvp{}, errors.New("invalid RSVP status")
 	}
 	// Owner or registered player.
-	if userID != s.eventOwnerID(eventID) && !s.IsRegisteredInEvent(eventID, userID) {
+	if userID != s.eventOwnerID(eventID) && !s.IsRegisteredInEvent(eventID, userID, email) {
 		return SessionRsvp{}, ErrForbidden
 	}
 	date, _, ok := s.nextSessionForEvent(eventID)

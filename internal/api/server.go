@@ -2095,7 +2095,7 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
 	// Whether the signed-in caller is an approved player — the client gates the
 	// feed composer on owner-or-registered. Anonymous callers get false.
 	if uid := userID(r); uid != "" {
-		e.ViewerRegistered = s.svc.IsRegisteredInEvent(r.PathValue("id"), uid)
+		e.ViewerRegistered = s.svc.IsRegisteredInEvent(r.PathValue("id"), uid, userEmail(r))
 	}
 	writeJSON(w, http.StatusOK, e)
 }
@@ -5677,7 +5677,7 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.svc.PostToEventFeed(
-		r.PathValue("id"), userID(r), req.Text, req.Notify, req.MediaURL, req.MediaType)
+		r.PathValue("id"), userID(r), userEmail(r), req.Text, req.Notify, req.MediaURL, req.MediaType)
 	if err != nil {
 		status(w, err)
 		return
@@ -5699,7 +5699,7 @@ func (s *Server) setSessionRsvp(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	res, err := s.svc.SetSessionRsvp(r.PathValue("id"), userID(r), req.Status)
+	res, err := s.svc.SetSessionRsvp(r.PathValue("id"), userID(r), userEmail(r), req.Status)
 	if err != nil {
 		status(w, err)
 		return

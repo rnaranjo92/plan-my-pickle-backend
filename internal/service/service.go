@@ -61,12 +61,22 @@ type Service struct {
 	customEmailMu        sync.Mutex
 	customEmailInFlight  map[string]bool
 	broadcastSmsInFlight map[string]bool // guarded by customEmailMu
-	// colProbe caches "table.column exists" (probed once each, only cached on
-	// success) so a write that references a column added by an unapplied migration
-	// is skipped rather than failing. Same self-healing pattern as brandingReady.
-	colProbeMu sync.Mutex
-	colProbe   map[string]bool
+	// colProbe caches "table.column exists" (probed once each) so a write that
+	// references a column added by an unapplied migration is skipped rather than
+	// failing. Positives cache forever; negatives cache with a short cooldown
+	// (colProbeNeg) so a missing column is re-probed at most once per cooldown
+	// instead of on EVERY call — otherwise a hot path floods Postgres logs with
+	// 42703 "column does not exist" until the migration runs. Still self-heals
+	// (auto-detects a newly-applied migration within the cooldown, no restart).
+	colProbeMu  sync.Mutex
+	colProbe    map[string]bool
+	colProbeNeg map[string]time.Time
 }
+
+// columnProbeCooldown bounds how often a missing column is re-probed (see
+// columnReady) — long enough to keep 42703 log spam near zero, short enough that
+// a freshly-run migration is picked up without a restart.
+const columnProbeCooldown = 2 * time.Minute
 
 // columnReady reports whether table.column exists (migration applied). Probed via
 // a cheap one-column select; cached only on success and re-probed while false, so
@@ -78,11 +88,22 @@ func (s *Service) columnReady(table, column string) bool {
 	if s.colProbe == nil {
 		s.colProbe = map[string]bool{}
 	}
+	if s.colProbeNeg == nil {
+		s.colProbeNeg = map[string]time.Time{}
+	}
 	if s.colProbe[key] {
 		return true
 	}
+	// Recently probed as missing → don't re-hit the DB (avoids 42703 log spam on
+	// hot paths when a migration hasn't been applied yet).
+	if last, ok := s.colProbeNeg[key]; ok && time.Since(last) < columnProbeCooldown {
+		return false
+	}
 	if _, err := s.sb.SelectOne(table, "select="+column+"&limit=1"); err == nil {
 		s.colProbe[key] = true
+		delete(s.colProbeNeg, key)
+	} else {
+		s.colProbeNeg[key] = time.Now()
 	}
 	return s.colProbe[key]
 }

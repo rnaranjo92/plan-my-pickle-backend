@@ -9587,7 +9587,8 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 			}
 			fEvents := map[string]struct{}{}
 			if regs, err := s.sb.Select("registrations",
-				"player_id="+store.In(fpids)+"&select=event_id&order=created_at.desc&limit=100"); err == nil {
+				"player_id="+store.In(fpids)+s.approvedRegFilter()+
+					"&select=event_id&order=created_at.desc&limit=100"); err == nil {
 				for _, r := range regs {
 					if id := asStr(r, "event_id"); id != "" {
 						if _, mine := idSet[id]; !mine { // my events are already in
@@ -9601,25 +9602,34 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 				for id := range fEvents {
 					fids = append(fids, id)
 				}
-				fIn := store.In(fids)
-				if rows, err := s.sb.Select("events", "id="+fIn+"&select=id,name,poster_url"); err == nil {
+				// Only PUBLICLY LISTED events may surface through the follow graph —
+				// an unlisted/private event a followee plays in must not advertise
+				// itself to strangers. Prune to listed ids before the feed query.
+				listedIDs := make([]string, 0, len(fids))
+				if rows, err := s.sb.Select("events",
+					"id="+store.In(fids)+"&listed=is.true&select=id,name,poster_url"); err == nil {
 					for _, r := range rows {
-						names[asStr(r, "id")] = asStr(r, "name")
-						posters[asStr(r, "id")] = asStr(r, "poster_url")
+						id := asStr(r, "id")
+						names[id] = asStr(r, "name")
+						posters[id] = asStr(r, "poster_url")
+						listedIDs = append(listedIDs, id)
 					}
 				}
 				// PRIVACY: these are events my FOLLOWEES play in but I do NOT —
 				// their conversation (announcements/posts/scores) is private to
 				// their participants. Only the public `event`-type discovery card
-				// ("this event exists") may surface here.
-				if frows, err := s.sb.Select("feed_items",
-					"event_id="+fIn+"&type=eq.event&select=*&order=created_at.desc&limit=10"); err == nil {
-					for _, r := range frows {
-						fi := mapFeedItem(r)
-						fi.ReactionCounts = map[string]int{}
-						fi.MyReactions = []string{}
-						fi.EventName = names[fi.EventID]
-						out = append(out, fi)
+				// ("this event exists"), and only for LISTED events, may surface.
+				if len(listedIDs) > 0 {
+					if frows, err := s.sb.Select("feed_items",
+						"event_id="+store.In(listedIDs)+
+							"&type=eq.event&select=*&order=created_at.desc&limit=10"); err == nil {
+						for _, r := range frows {
+							fi := mapFeedItem(r)
+							fi.ReactionCounts = map[string]int{}
+							fi.MyReactions = []string{}
+							fi.EventName = names[fi.EventID]
+							out = append(out, fi)
+						}
 					}
 				}
 			}
@@ -10700,7 +10710,37 @@ func (s *Service) CanViewEventFeed(eventID, userID, email string) bool {
 	if userID != "" && userID == s.eventOwnerID(eventID) {
 		return true
 	}
-	return s.IsRegisteredInEvent(eventID, userID, email)
+	if s.IsRegisteredInEvent(eventID, userID, email) {
+		return true
+	}
+	// TEAM (MLP) events have no `registrations` rows — their players live on
+	// event_teams -> event_team_members. Without this branch the feed gate locked
+	// a team event's OWN players out of their feed.
+	return s.isTeamMemberOfEvent(eventID, userID, email)
+}
+
+// isTeamMemberOfEvent reports whether the caller is on any team roster of a
+// team-format event. Fails closed on a lookup error.
+func (s *Service) isTeamMemberOfEvent(eventID, userID, email string) bool {
+	if userID == "" && email == "" {
+		return false
+	}
+	pids, err := s.playerIDsForUser(userID, email)
+	if err != nil || len(pids) == 0 {
+		return false
+	}
+	teams, err := s.sb.Select("event_teams",
+		"event_id=eq."+store.Q(eventID)+"&select=id")
+	if err != nil || len(teams) == 0 {
+		return false
+	}
+	tids := idList(teams, "id")
+	if len(tids) == 0 {
+		return false
+	}
+	row, err := s.sb.SelectOne("event_team_members",
+		"team_id="+store.In(tids)+"&player_id="+store.In(pids)+"&select=id")
+	return err == nil && row != nil
 }
 
 // CanAccessFeedItem resolves a feed item to its event and applies the same
@@ -10713,9 +10753,15 @@ func (s *Service) CanAccessFeedItem(feedItemID, userID, email string) bool {
 		return false
 	}
 	row, err := s.sb.SelectOne("feed_items",
-		"id=eq."+store.Q(feedItemID)+"&select=event_id")
+		"id=eq."+store.Q(feedItemID)+"&select=event_id,type")
 	if err != nil || row == nil {
 		return false
+	}
+	// The `event` DISCOVERY CARD is public by design — it's how an event
+	// advertises itself on the NewsFeed. Gating it broke liking/commenting/
+	// opening those cards. Real conversation posts stay private.
+	if asStr(row, "type") == "event" {
+		return true
 	}
 	return s.CanViewEventFeed(strings.TrimSpace(asStr(row, "event_id")), userID, email)
 }

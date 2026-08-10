@@ -207,6 +207,58 @@ func teamPoints(scoreOf map[string]int, team [2]string) (int, bool) {
 	return total, complete
 }
 
+// persistScorecardWinners derives each court's winner for a round from the
+// scorecard and writes it to rotation_round_courts. Both the ADVANCE and the END
+// paths call this: the tally RPCs only credit a win when winner is 'a'/'b', so
+// without it the final round of a scorecard session recorded zero wins (points
+// counted, wins didn't — and wins is the tiebreak). Returns the derived winners
+// by court so the caller can reuse them. Best-effort.
+func (s *Service) persistScorecardWinners(sessionID string, round int) map[int]string {
+	out := map[int]string{}
+	if !s.rotationScoresReady() {
+		return out
+	}
+	srows, serr := s.sb.SelectAll("rotation_round_scores",
+		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+
+			"&select=rotation_player_id,score")
+	if serr != nil || len(srows) == 0 {
+		return out
+	}
+	scoreOf := map[string]int{}
+	for _, r := range srows {
+		if r["score"] == nil {
+			continue
+		}
+		scoreOf[asStr(r, "rotation_player_id")] = asInt(r, "score")
+	}
+	courts, cerr := s.sb.Select("rotation_round_courts",
+		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round))
+	if cerr != nil {
+		return out
+	}
+	for _, r := range courts {
+		teamA := [2]string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")}
+		teamB := [2]string{asStr(r, "team_b_p1"), asStr(r, "team_b_p2")}
+		aPts, aFull := teamPoints(scoreOf, teamA)
+		bPts, bFull := teamPoints(scoreOf, teamB)
+		if !aFull || !bFull || (aPts == 0 && bPts == 0) || aPts == bPts {
+			continue // incomplete or tied → leave undecided
+		}
+		w := "a"
+		if bPts > aPts {
+			w = "b"
+		}
+		court := asInt(r, "court")
+		out[court] = w
+		_, _ = s.sb.Update("rotation_round_courts",
+			"session_id=eq."+store.Q(sessionID)+
+				"&round=eq."+fmt.Sprint(round)+
+				"&court=eq."+fmt.Sprint(court),
+			map[string]any{"winner": w, "reported_at": nowRFC3339()})
+	}
+	return out
+}
+
 // maxScorecardRounds bounds the scorecard's column count. The grid renders one
 // column per round from 1..max, so an unbounded round would brick the board.
 const maxScorecardRounds = 60
@@ -292,7 +344,7 @@ func (s *Service) AddScorecardRound(sessionID string) (int, error) {
 		return 0, ErrNotFound
 	}
 	next := asInt(srow, "current_round")
-	rows, err := s.sb.Select("rotation_round_scores",
+	rows, err := s.sb.SelectAll("rotation_round_scores",
 		"session_id=eq."+store.Q(sessionID)+"&select=round")
 	if err != nil {
 		return 0, err
@@ -925,6 +977,12 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 // status flip so End never hard-fails during the deploy window — the RPC path
 // takes over the moment the migration is applied.
 func (s *Service) EndRotationSession(sessionID string) error {
+	// Derive + persist the FINAL round's winners before the tally RPC runs —
+	// otherwise the last round of every scorecard session credits zero wins.
+	if srow, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=current_round"); err == nil && srow != nil {
+		s.persistScorecardWinners(sessionID, asInt(srow, "current_round"))
+	}
 	if !s.columnReady("rotation_sessions", "auto_advance") {
 		_, err := s.sb.Update("rotation_sessions",
 			"id=eq."+store.Q(sessionID)+"&status=in.(live,paused)",

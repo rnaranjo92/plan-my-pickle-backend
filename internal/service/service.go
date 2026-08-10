@@ -9560,6 +9560,15 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 				if fi.Type == "event" && publicFeedTestName.MatchString(fi.Text) {
 					continue
 				}
+				// PRIVACY: an event's feed belongs to that event's people. A post
+				// a followee wrote INSIDE an event must not reach a follower who
+				// isn't in that event — only their community posts (no event) and
+				// posts in events I'm already part of.
+				if eid := strings.TrimSpace(fi.EventID); eid != "" {
+					if _, mine := idSet[eid]; !mine && fi.Type != "event" {
+						continue
+					}
+				}
 				fi.ReactionCounts = map[string]int{}
 				fi.MyReactions = []string{}
 				out = append(out, fi)
@@ -9596,8 +9605,12 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 						posters[asStr(r, "id")] = asStr(r, "poster_url")
 					}
 				}
+				// PRIVACY: these are events my FOLLOWEES play in but I do NOT —
+				// their conversation (announcements/posts/scores) is private to
+				// their participants. Only the public `event`-type discovery card
+				// ("this event exists") may surface here.
 				if frows, err := s.sb.Select("feed_items",
-					"event_id="+fIn+"&select=*&order=created_at.desc&limit=10"); err == nil {
+					"event_id="+fIn+"&type=eq.event&select=*&order=created_at.desc&limit=10"); err == nil {
 					for _, r := range frows {
 						fi := mapFeedItem(r)
 						fi.ReactionCounts = map[string]int{}
@@ -10676,10 +10689,32 @@ func (s *Service) IsRegisteredInEvent(eventID, userID, email string) bool {
 // is private to the people IN the event: the OWNER and its FULLY-REGISTERED
 // (approved) players — never the anonymous public or a non-registered viewer.
 func (s *Service) CanViewEventFeed(eventID, userID, email string) bool {
+	if strings.TrimSpace(eventID) == "" {
+		// Not an event post (e.g. a community/NewsFeed post) — no event privacy
+		// to enforce; those are public by design.
+		return true
+	}
 	if userID != "" && userID == s.eventOwnerID(eventID) {
 		return true
 	}
 	return s.IsRegisteredInEvent(eventID, userID, email)
+}
+
+// CanAccessFeedItem resolves a feed item to its event and applies the same
+// privacy rule as the feed itself — so a post's COMMENTS and its reaction/
+// comment writes can't be used to read or scribble on a private event's
+// conversation by guessing the item id. A community post (no event_id) stays
+// public. Fails closed on a lookup error.
+func (s *Service) CanAccessFeedItem(feedItemID, userID, email string) bool {
+	if strings.TrimSpace(feedItemID) == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("feed_items",
+		"id=eq."+store.Q(feedItemID)+"&select=event_id")
+	if err != nil || row == nil {
+		return false
+	}
+	return s.CanViewEventFeed(strings.TrimSpace(asStr(row, "event_id")), userID, email)
 }
 
 func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {

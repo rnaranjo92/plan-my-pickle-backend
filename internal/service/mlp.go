@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -157,6 +158,33 @@ func (s *Service) SetMemberCheckedIn(memberID string, checkedIn bool) error {
 	_, err := s.sb.Update("event_team_members", "id=eq."+store.Q(memberID),
 		map[string]any{"checked_in": checkedIn})
 	return err
+}
+
+// TeamInEvent reports whether teamID belongs to eventID. The team routes are
+// owner-gated on the EVENT id only, so without this an organizer could pass
+// another event's teamId/memberId and mutate a stranger's roster (cross-event
+// IDOR). Fails CLOSED: any lookup error or missing row = not in this event.
+func (s *Service) TeamInEvent(teamID, eventID string) bool {
+	if strings.TrimSpace(teamID) == "" || strings.TrimSpace(eventID) == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("event_teams",
+		"id=eq."+store.Q(teamID)+"&event_id=eq."+store.Q(eventID)+"&select=id")
+	return err == nil && row != nil
+}
+
+// TeamMemberInEvent reports whether a team-member row belongs to eventID (via
+// its team). Same cross-event IDOR guard as TeamInEvent; fails closed.
+func (s *Service) TeamMemberInEvent(memberID, eventID string) bool {
+	if strings.TrimSpace(memberID) == "" || strings.TrimSpace(eventID) == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("event_team_members",
+		"id=eq."+store.Q(memberID)+"&select=team_id")
+	if err != nil || row == nil {
+		return false
+	}
+	return s.TeamInEvent(asStr(row, "team_id"), eventID)
 }
 
 // ListTeams returns an event's teams with their rosters attached.

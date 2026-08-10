@@ -4019,6 +4019,10 @@ func (s *Server) mlpCreateTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mlpRemoveTeam(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.TeamInEvent(r.PathValue("teamId"), r.PathValue("id")) {
+		status(w, service.ErrNotFound)
+		return
+	}
 	if err := s.svc.RemoveEventTeam(r.PathValue("teamId")); err != nil {
 		status(w, err)
 		return
@@ -4027,6 +4031,10 @@ func (s *Server) mlpRemoveTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mlpRenameTeam(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.TeamInEvent(r.PathValue("teamId"), r.PathValue("id")) {
+		status(w, service.ErrNotFound)
+		return
+	}
 	var req model.CreateTeamRequest
 	if !decode(w, r, &req) {
 		return
@@ -4039,6 +4047,10 @@ func (s *Server) mlpRenameTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mlpAddTeamMember(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.TeamInEvent(r.PathValue("teamId"), r.PathValue("id")) {
+		status(w, service.ErrNotFound)
+		return
+	}
 	var req model.AddTeamMemberRequest
 	if !decode(w, r, &req) {
 		return
@@ -4052,6 +4064,10 @@ func (s *Server) mlpAddTeamMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mlpRemoveTeamMember(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.TeamMemberInEvent(r.PathValue("memberId"), r.PathValue("id")) {
+		status(w, service.ErrNotFound)
+		return
+	}
 	if err := s.svc.RemoveTeamMember(r.PathValue("memberId")); err != nil {
 		status(w, err)
 		return
@@ -4112,6 +4128,10 @@ func (s *Server) mlpCheckinMember(w http.ResponseWriter, r *http.Request) {
 		CheckedIn bool `json:"checkedIn"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if !s.svc.TeamMemberInEvent(r.PathValue("memberId"), r.PathValue("id")) {
+		status(w, service.ErrNotFound)
 		return
 	}
 	if err := s.svc.SetMemberCheckedIn(r.PathValue("memberId"), req.CheckedIn); err != nil {
@@ -5504,6 +5524,10 @@ func (s *Server) feedList(w http.ResponseWriter, r *http.Request) {
 
 // feedReact toggles the signed-in user's reaction on a feed item.
 func (s *Server) feedReact(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.CanAccessFeedItem(r.PathValue("id"), userID(r), userEmail(r)) {
+		status(w, service.ErrForbidden)
+		return
+	}
 	var req model.ReactionRequest
 	if !decode(w, r, &req) {
 		return
@@ -5532,7 +5556,7 @@ func (s *Server) feedItemGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Single posts are as private as the feed they belong to: owner + registered
 	// players only. (A deep link/notification only reaches those people anyway.)
-	if !s.svc.CanViewEventFeed(item.EventID, userID(r), userEmail(r)) {
+	if !s.svc.CanViewEventFeed(strings.TrimSpace(item.EventID), userID(r), userEmail(r)) {
 		status(w, service.ErrForbidden)
 		return
 	}
@@ -5540,6 +5564,10 @@ func (s *Server) feedItemGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) commentList(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.CanAccessFeedItem(r.PathValue("id"), userID(r), userEmail(r)) {
+		status(w, service.ErrForbidden)
+		return
+	}
 	items, err := s.svc.ListComments(r.PathValue("id"), userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -5550,6 +5578,10 @@ func (s *Server) commentList(w http.ResponseWriter, r *http.Request) {
 
 // commentAdd posts a comment as the signed-in user.
 func (s *Server) commentAdd(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.CanAccessFeedItem(r.PathValue("id"), userID(r), userEmail(r)) {
+		status(w, service.ErrForbidden)
+		return
+	}
 	var req model.CommentRequest
 	if !decode(w, r, &req) {
 		return

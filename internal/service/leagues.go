@@ -75,11 +75,13 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 		}
 		payload["ladder_format"] = format
 	}
-	// Coach-led league (instructor owners only): auto-enroll every registrant as
-	// the owner's coaching student. Gate on the column + the owner actually being
-	// a coach, so a non-instructor can't create dormant enrollments they can't see.
-	if req.CoachLed && s.columnReady("leagues", "coach_led") &&
-		s.IsInstructor(ownerID, s.emailOf(ownerID)) {
+	// Coach-led league: auto-enroll every registrant as the owner's coaching
+	// student. Turning it on makes the OWNER the coach — enroll them as an
+	// instructor (idempotent, best-effort) so it works even if they weren't one.
+	if req.CoachLed && s.columnReady("leagues", "coach_led") {
+		if em := strings.TrimSpace(s.emailOf(ownerID)); em != "" {
+			_, _ = s.AddInstructor(strings.ToLower(em), "")
+		}
 		payload["coach_led"] = true
 		payload["coach_id"] = ownerID
 	}
@@ -1160,8 +1162,11 @@ func (s *Service) SetEventCoachLed(eventID, ownerID string, enabled bool) (model
 		return model.Event{}, ErrForbidden
 	}
 	if enabled {
-		if !s.IsInstructor(ownerID, s.emailOf(ownerID)) {
-			return model.Event{}, errors.New("only instructors can run a coach-led league")
+		// Turning coach-led ON makes the OWNER the coach — enroll them as an
+		// instructor (idempotent, best-effort) so it never fails on "not an
+		// instructor" and the Coach tab / roster become available to them.
+		if em := strings.TrimSpace(s.emailOf(ownerID)); em != "" {
+			_, _ = s.AddInstructor(strings.ToLower(em), "")
 		}
 		if _, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
 			map[string]any{"coach_led": true, "coach_id": ownerID}); err != nil {

@@ -10474,14 +10474,14 @@ func (s *Service) AccountExists(email string) bool {
 // The owner posts as "Organizer" and may push a notification; a registered
 // player posts under their own name and can NEVER trigger a push (only the
 // organizer may blast every player). A caller who is neither is rejected.
-func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
+func (s *Service) PostToEventFeed(eventID, userID, email, text string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
 	if userID == "" {
 		return model.FeedItem{}, ErrForbidden
 	}
 	if userID == s.eventOwnerID(eventID) {
 		return s.PostAnnouncement(eventID, text, "Organizer", notify, mediaURL, mediaType)
 	}
-	pname, ok := s.approvedPlayerName(eventID, userID)
+	pname, ok := s.approvedPlayerName(eventID, userID, email)
 	if !ok {
 		return model.FeedItem{}, ErrForbidden
 	}
@@ -10506,34 +10506,43 @@ func (s *Service) PostToEventFeed(eventID, userID, text string, notify bool, med
 
 // approvedPlayerName returns the caller's display name and whether they are a
 // registered player of the event — AND, for approval-gated events, an APPROVED
-// one (self-registration creates the players row immediately while the
-// registration stays pending). Owner is handled by the caller separately.
-func (s *Service) approvedPlayerName(eventID, userID string) (string, bool) {
-	if userID == "" {
+// one (a pending self-registration shouldn't get the composer yet). Owner is
+// handled by the caller separately.
+//
+// Matches the SAME "what is mine" rule that decides whether the event shows
+// under "Registered": the caller's account-level player rows are resolved by
+// user_id OR the verified account email OR phone+name (playerIDsForUser), then
+// checked against the registrations table. (players rows are account-level with
+// no event_id — registrations is what ties a player to THIS event — so the old
+// players.event_id match never fired for anyone who registered by email/phone or
+// wasn't signed in at registration time.)
+func (s *Service) approvedPlayerName(eventID, userID, email string) (string, bool) {
+	if userID == "" && email == "" {
 		return "", false
 	}
-	rows, err := s.sb.Select("players",
-		"event_id=eq."+store.Q(eventID)+"&user_id=eq."+store.Q(userID)+
-			"&select=id,full_name&limit=1")
-	if err != nil || len(rows) == 0 {
+	pidList, err := s.playerIDsForUser(userID, email)
+	if err != nil || len(pidList) == 0 {
 		return "", false
 	}
+	q := "event_id=eq." + store.Q(eventID) + "&player_id=" + store.In(pidList) +
+		"&select=id"
 	if s.columnReady("registrations", "approved") {
-		playerID := asStr(rows[0], "id")
-		reg, rerr := s.sb.Select("registrations",
-			"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
-				"&approved=is.true&select=id&limit=1")
-		if rerr != nil || len(reg) == 0 {
-			return "", false
-		}
+		q += "&approved=is.true"
 	}
-	return strings.TrimSpace(asStr(rows[0], "full_name")), true
+	q += "&limit=1"
+	reg, rerr := s.sb.Select("registrations", q)
+	if rerr != nil || len(reg) == 0 {
+		return "", false
+	}
+	return strings.TrimSpace(s.resolveDisplayName(userID, email)), true
 }
 
-// IsRegisteredInEvent reports whether userID is an approved player of the event
-// (used to decide whether to show the feed composer to a non-owner viewer).
-func (s *Service) IsRegisteredInEvent(eventID, userID string) bool {
-	_, ok := s.approvedPlayerName(eventID, userID)
+// IsRegisteredInEvent reports whether the caller is an approved player of the
+// event (used to decide whether to show the feed composer to a non-owner
+// viewer). Pass the caller's verified account email so an email/phone-based
+// registration counts, not just one linked to the auth user id.
+func (s *Service) IsRegisteredInEvent(eventID, userID, email string) bool {
+	_, ok := s.approvedPlayerName(eventID, userID, email)
 	return ok
 }
 

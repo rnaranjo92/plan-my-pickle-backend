@@ -667,6 +667,7 @@ func mapRegistration(m map[string]any) model.Registration {
 		BracketID:     asStrPtr(m, "bracket_id"),
 		PaymentStatus: asStr(m, "payment_status"),
 		CheckedIn:     asBool(m, "checked_in"),
+		IsSubstitute:  asBool(m, "is_substitute"),
 		AddonTee:      asBool(m, "addon_tee"),
 		AddonGrips:    asBool(m, "addon_grips"),
 		CheckInToken:  asStrPtr(m, "check_in_token"),

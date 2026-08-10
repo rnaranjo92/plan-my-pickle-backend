@@ -869,7 +869,10 @@ type Registration struct {
 	AddonGrips   bool    `json:"addonGrips,omitempty"`
 	CheckedIn    bool    `json:"checkedIn"`
 	CheckInToken *string `json:"checkInToken,omitempty"`
-	Phone        string  `json:"phone"`
+	// IsSubstitute marks a one-night substitute (benched a member for a session);
+	// shown with a "Substitute" badge and expired at the next session build.
+	IsSubstitute bool   `json:"isSubstitute,omitempty"`
+	Phone        string `json:"phone"`
 	// PhotoURL is the registrant's account profile photo (pmp_profiles via the
 	// linked user_id), used as their roster avatar; empty for name-only players
 	// (the UI falls back to initials).

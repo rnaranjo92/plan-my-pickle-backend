@@ -2565,6 +2565,17 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 	if videoURL == "" {
 		return "", errors.New("a video URL is required")
 	}
+	// The clip being analyzed MUST live in this (the caller's) own thread. Never
+	// trust a caller-supplied videoID pointing at another user's private clip —
+	// copyClipToThread would otherwise copy that clip's stored URL into the
+	// caller's threads on a share (an IDOR / private-video leak).
+	if videoID != "" {
+		clip, _ := s.sb.SelectOne("coaching_videos",
+			"id=eq."+store.Q(videoID)+"&select=coach_student_id")
+		if clip == nil || asStr(clip, "coach_student_id") != threadID {
+			return "", ErrForbidden
+		}
+	}
 	// Guard against an accidental double-submit of the SAME clip: if a RECENT
 	// analysis for this clip is still in flight, don't spend another PB Vision
 	// run. A stale (>60-min) "processing" job is treated as dead so the student

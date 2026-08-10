@@ -972,6 +972,15 @@ func (s *Service) DeleteSessionRange(eventID, fromUTC, toUTC string) (int, error
 // Returns whether it cleared anything.
 func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 	defer s.lockPerpetualBuild(eventID)() // serialize vs a concurrent Build
+	return s.clearCurrentUnscoredSessionLocked(eventID)
+}
+
+// clearCurrentUnscoredSessionLocked is clearCurrentUnscoredSession WITHOUT taking
+// the build lock — the caller MUST already hold lockPerpetualBuild(eventID). This
+// lets generatePerpetualSession clear-and-rebuild atomically under one lock, so a
+// timed-out-then-retried Build rebuilds today's unscored session instead of
+// appending a duplicate round-robin (idempotent Build).
+func (s *Service) clearCurrentUnscoredSessionLocked(eventID string) (bool, error) {
 	rows, err := s.sb.Select("rounds",
 		"event_id=eq."+store.Q(eventID)+"&select=id,created_at")
 	if err != nil || len(rows) == 0 {
@@ -1110,6 +1119,12 @@ func (s *Service) cleanupStaleSubstitutes(eventID, partnerMode string) {
 // day in the venue's local zone, so TODAY's live games (a re-build within the
 // same session) are never touched. Best-effort; a parse/query failure just leaves
 // the game as-is (the organizer can still resolve it by hand).
+// staleGameGrace is how recent an in-progress game may be before we refuse to
+// treat it as a leftover from a PRIOR session — long enough to cover a real
+// session that started in the evening and ran past local midnight, short enough
+// that the next day's build still closes genuinely-abandoned games.
+const staleGameGrace = 12 * time.Hour
+
 func (s *Service) cancelStalePerpetualGames(ev model.Event) {
 	// Venue-local start of today (same zone logic the session-date cadence uses).
 	loc := time.UTC
@@ -1120,6 +1135,13 @@ func (s *Service) cancelStalePerpetualGames(ev model.Event) {
 	}
 	now := time.Now().In(loc)
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	// Grace against wiping a LIVE session that crossed local midnight: a session
+	// built last evening and still being played just after midnight is only a few
+	// hours old. Treat a game as stale only when it's BOTH on a prior local day AND
+	// older than this grace — so building after midnight never cancels/​nulls the
+	// current across-midnight session's in-progress games + scores (data loss),
+	// while a genuinely-old straggler (> grace) is still closed.
+	graceCutoff := now.Add(-staleGameGrace)
 
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(ev.ID)+"&status=eq.in_progress"+
@@ -1133,8 +1155,14 @@ func (s *Service) cancelStalePerpetualGames(ev model.Event) {
 			continue // no round timestamp → can't tell it's stale; leave it
 		}
 		t, perr := time.Parse(time.RFC3339, cat)
-		if perr != nil || !t.Before(todayStart) {
-			continue // today's (current-session) game, or unparseable → leave it
+		if perr != nil {
+			continue // unparseable → leave it
+		}
+		if !t.In(loc).Before(todayStart) {
+			continue // today's (current-session) game → leave it
+		}
+		if t.After(graceCutoff) {
+			continue // recent → a session that crossed local midnight, still live
 		}
 		// Status-guarded so we never clobber a game that just got scored/started.
 		_, _ = s.sb.Update("matches",
@@ -1153,6 +1181,15 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 	// the max round number, so two concurrent builds would otherwise both read the
 	// same offset and append two overlapping round-robins for the same session.
 	defer s.lockPerpetualBuild(ev.ID)()
+	// Idempotent Build: if TODAY's session was already built but not yet scored
+	// (e.g. a build that timed out client-side but committed here, then got tapped
+	// again), clear it first so we rebuild rather than APPEND a second identical
+	// round-robin (which would double the night's games, standings, and DUPR).
+	// Runs under the lock we just took, so clear+rebuild is atomic. No-op when
+	// there's no today-session or it already has a live/scored game.
+	if _, err := s.clearCurrentUnscoredSessionLocked(ev.ID); err != nil {
+		return model.ScheduleResult{}, err
+	}
 	// Expire last session's one-night substitutes before seeding this session.
 	s.cleanupStaleSubstitutes(ev.ID, ev.PartnerMode)
 	// Close any game left LIVE by a PRIOR session (never scored or forfeited) so a

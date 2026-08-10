@@ -152,38 +152,24 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 	// Scorecard (name × round grid): the organizer enters scores here and the
 	// totals drive the standings. Inert until the migration runs.
 	card, totals := s.rotationScorecard(sessionID, session.CurrentRound)
-	lastCourt := s.rotationLastCourt(sessionID)
 	for i := range players {
 		players[i].Points = totals[players[i].ID]
-		players[i].Court = lastCourt[players[i].ID]
 	}
 
 	standings := append([]model.RotationPlayer(nil), players...)
 	sort.SliceStable(standings, func(i, j int) bool {
 		a, b := standings[i], standings[j]
-		// PRIMARY: the court you ended on. This is the ladder — winners climb
-		// toward court 1 — so court 1 outranks court 2, and so on. A raw point
-		// total is the wrong primary rank here: point totals aren't comparable
-		// across courts (the top court plays tight games, the bottom court has
-		// blowouts) and they quietly reward whoever sat out fewest rounds.
-		ca, cb := a.Court, b.Court
-		if ca == 0 {
-			ca = 1 << 30 // never seated → last
-		}
-		if cb == 0 {
-			cb = 1 << 30
-		}
-		if ca != cb {
-			return ca < cb
-		}
-		// Then wins, then points (the scorecard breaks ties within a court).
-		if a.Wins != b.Wins {
-			return a.Wins > b.Wins
-		}
+		// SCORES are the ladder's scoreboard here, by design: the organizer only
+		// tracks points, and which court someone happened to be on is not part of
+		// the standings. (Courts still drive PAIRING inside the engine — winners
+		// move up, losers down — they're just not ranked or shown.)
 		if card.Enabled && a.Points != b.Points {
 			return a.Points > b.Points
 		}
-		return a.Games < b.Games // fewer games = better rate at equal everything
+		if a.Wins != b.Wins {
+			return a.Wins > b.Wins
+		}
+		return a.Games < b.Games
 	})
 
 	// Players sitting out the current round (the bench), resolved to roster order.
@@ -202,36 +188,6 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 		Byes:      byes,
 		Scorecard: card,
 	}, nil
-}
-
-// rotationLastCourt maps each player to the court they occupied in the LATEST
-// round they were seated in — i.e. where they ended up. In "up and down the
-// river" the whole game is climbing toward court 1, so this (not a point total)
-// is what the ladder actually measures. Benched players keep their last court.
-// Best-effort: on a read failure everyone simply has no court.
-func (s *Service) rotationLastCourt(sessionID string) map[string]int {
-	out := map[string]int{}
-	seen := map[string]int{} // player -> the round that court came from
-	rows, err := s.sb.SelectAll("rotation_round_courts",
-		"session_id=eq."+store.Q(sessionID)+"&select=round,court,team_a_p1,team_a_p2,team_b_p1,team_b_p2")
-	if err != nil {
-		return out
-	}
-	for _, r := range rows {
-		round := asInt(r, "round")
-		court := asInt(r, "court")
-		for _, k := range []string{"team_a_p1", "team_a_p2", "team_b_p1", "team_b_p2"} {
-			pid := asStr(r, k)
-			if pid == "" {
-				continue
-			}
-			if prev, ok := seen[pid]; !ok || round > prev {
-				seen[pid] = round
-				out[pid] = court
-			}
-		}
-	}
-	return out
 }
 
 // teamPoints sums a doubles team's entered scores for a round.

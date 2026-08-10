@@ -187,7 +187,7 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 	lastThu := lastWeekThursdayAt(18, 0)
 
 	leagueID, err := s.CreateLeague(ownerID, model.CreateLeagueRequest{
-		Name:       "TEST · Never-Ending League",
+		Name:       "TEST Never-Ending League",
 		LeagueType: "round_robin",
 		Location:   "Test Courts",
 	})
@@ -195,7 +195,7 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 		return "", err
 	}
 	eid, err := s.CreateEvent(model.CreateEventRequest{
-		Name:             "TEST · Never-Ending League",
+		Name:             "TEST Never-Ending League",
 		Format:           "doubles",
 		PartnerMode:      "rotating",
 		TournamentFormat: "round_robin",
@@ -257,7 +257,7 @@ func (s *Service) SeedCoachLedLeagueDemo(ownerID, ownerEmail string) (string, er
 	// and un-enrolls the seeded students.
 	if rows, err := s.sb.Select("leagues",
 		"owner_id=eq."+store.Q(ownerID)+
-			"&name=eq."+store.Q("TEST · Coach-Led League")+"&select=id"); err == nil {
+			"&name=eq."+store.Q("TEST Coach-Led League")+"&select=id"); err == nil {
 		for _, r := range rows {
 			_ = s.DeleteLeague(asStr(r, "id"), ownerID)
 		}
@@ -267,7 +267,7 @@ func (s *Service) SeedCoachLedLeagueDemo(ownerID, ownerEmail string) (string, er
 
 	lastThu := lastWeekThursdayAt(18, 0)
 	leagueID, err := s.CreateLeague(ownerID, model.CreateLeagueRequest{
-		Name:       "TEST · Coach-Led League",
+		Name:       "TEST Coach-Led League",
 		LeagueType: "round_robin",
 		Location:   "Test Courts",
 		CoachLed:   true,
@@ -283,7 +283,7 @@ func (s *Service) SeedCoachLedLeagueDemo(ownerID, ownerEmail string) (string, er
 			map[string]any{"coach_led": true, "coach_id": ownerID})
 	}
 	eid, err := s.CreateEvent(model.CreateEventRequest{
-		Name:             "TEST · Coach-Led League",
+		Name:             "TEST Coach-Led League",
 		Format:           "doubles",
 		PartnerMode:      "rotating",
 		TournamentFormat: "round_robin",

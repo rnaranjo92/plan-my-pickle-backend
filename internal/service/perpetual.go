@@ -499,10 +499,21 @@ func (s *Service) RollToNextSession(eventID string) (string, error) {
 	if err := s.backdateCurrentSession(eventID); err != nil {
 		return "", err
 	}
-	// 3. Re-check-in everyone — a session builds from checked-in players, and
-	//    real sessions reset check-ins each day.
+	// 3. Re-check-in the REAL members — a session builds from checked-in players,
+	//    and real sessions reset check-ins each day. EXCLUDE one-night subs and
+	//    un-check them, so they DON'T carry into the next session: the build below
+	//    (cleanupStaleSubstitutes) expires any is_substitute row that's checked
+	//    out, restoring the member they stood in for.
 	nowStr := time.Now().UTC().Format(time.RFC3339)
-	_, _ = s.sb.Update("registrations", "event_id=eq."+store.Q(eventID),
+	memberFilter := ""
+	if s.columnReady("registrations", "is_substitute") {
+		memberFilter = "&is_substitute=is.false"
+		_, _ = s.sb.Update("registrations",
+			"event_id=eq."+store.Q(eventID)+"&is_substitute=is.true",
+			map[string]any{"checked_in": false, "checked_in_at": nil})
+	}
+	_, _ = s.sb.Update("registrations",
+		"event_id=eq."+store.Q(eventID)+memberFilter,
 		map[string]any{"checked_in": true, "checked_in_at": nowStr})
 	// 4. Append a fresh session dated today.
 	if _, err := s.GenerateSchedule(eventID, true, true); err != nil {

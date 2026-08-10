@@ -4979,6 +4979,11 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	if s.columnReady("registrations", "approved") {
 		approvedCol = "approved,"
 	}
+	// is_substitute is migration-guarded (a one-night sub badge) — include it only
+	// once the column exists so the roster read never breaks pre-migration.
+	if s.columnReady("registrations", "is_substitute") {
+		approvedCol += "is_substitute,"
+	}
 	base := "event_id=eq." + store.Q(eventID) +
 		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,addon_tee,addon_grips," + approvedCol + "%s" +
 		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level,user_id)," +

@@ -203,6 +203,15 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 	}
 	eventURL := "https://app.planmypickle.com/?event=" + ev.ID
 
+	// Coach-led leagues: surface the coach's name so the player knows who's
+	// running it (best-effort; blank for non-coach-led events).
+	coach := ""
+	if ev.CoachLed && ev.LeagueID != nil && *ev.LeagueID != "" {
+		if cid := s.leagueCoach(*ev.LeagueID); cid != "" {
+			coach = strings.TrimSpace(s.coachingName(cid))
+		}
+	}
+
 	// Organizer overrides (optional): a custom subject and a personal note added
 	// to the top of the confirmation. Empty/unset → the branded defaults. Sanitized
 	// again at send time (clamp + strip CRLF) so a stale/direct-DB value can never
@@ -218,7 +227,7 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 		customMsg = sanitizeEmailField(*ev.ConfirmEmailMessage, 1000, false)
 	}
 	htmlBody, textBody := registrationEmailBody(
-		brandFor(ev), fullName, ev.Name, when, where, division, eventURL, ev.OwnerPremium, customMsg)
+		brandFor(ev), fullName, ev.Name, when, where, division, coach, eventURL, ev.OwnerPremium, customMsg)
 	if err := s.Email.SendEmail(email, subject, htmlBody, textBody); err != nil {
 		log.Printf("email: registration confirm to %s failed: %v", email, err)
 	}
@@ -227,7 +236,7 @@ func (s *Service) SendRegistrationEmail(eventID, email, fullName, bracketID stri
 // registrationEmailBody renders the branded confirmation (HTML + plain text).
 // Free-tier events carry the "Powered by PlanMyPickle" footer; Premium
 // organizers' emails are unbranded (same rule as the app views / TV board).
-func registrationEmailBody(brand emailBrand, fullName, eventName, when, where, division, eventURL string,
+func registrationEmailBody(brand emailBrand, fullName, eventName, when, where, division, coach, eventURL string,
 	ownerPremium bool, customMessage string) (string, string) {
 	esc := html.EscapeString
 	firstName := fullName
@@ -262,13 +271,16 @@ func registrationEmailBody(brand emailBrand, fullName, eventName, when, where, d
       %s
       <p style="margin:12px 0 0;font-size:12.5px;color:#5b6b80;text-align:center">On game day you'll check in with a QR code — no clipboard, no line.</p>`,
 		esc(firstName), noteHTML,
-		row("When", when), row("Where", where), row("Division", division),
+		row("Coach", coach)+row("When", when), row("Where", where), row("Division", division),
 		brand.button("Open the event — schedule & live scores", eventURL))
 	htmlBody := brand.shell("YOU'RE REGISTERED", eventName, bodyHTML, ownerPremium)
 
 	var tb strings.Builder
 	fmt.Fprintf(&tb, "You're registered — %s\n\nHi %s, you're locked in.\n\n", eventName, firstName)
 	tb.WriteString(noteText)
+	if coach != "" {
+		fmt.Fprintf(&tb, "Coach: %s\n", coach)
+	}
 	if when != "" {
 		fmt.Fprintf(&tb, "When: %s\n", when)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -61,6 +62,36 @@ func validateAnalysisVideoURL(userID, videoURL string) error {
 	return nil
 }
 
+// maxAnalysisVideoBytes is a blunt backstop on what we'll submit for a FLAT-fee
+// analysis. PB Vision bills by DURATION, which we can't measure server-side
+// without downloading the file, so this bounds the pathological case (someone
+// API-posting a multi-hour dump) rather than pretending to be a duration check.
+// ~40 min of 1080p phone footage lands well under this; a 2h 4K dump does not.
+const maxAnalysisVideoBytes = 3 << 30 // 3 GiB
+
+// analysisVideoSizeOK rejects an absurdly large clip before we pay to analyze it.
+// Deliberately fails OPEN when the size can't be determined (HEAD error, no
+// Content-Length): a storage hiccup must not block a paying customer's purchase.
+// It only refuses when the server actually reports a size over the ceiling.
+func analysisVideoSizeOK(videoURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, videoURL, nil)
+	if err != nil {
+		return nil // can't check → allow
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil // can't check → allow
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength > 0 && resp.ContentLength > maxAnalysisVideoBytes {
+		return errors.New(
+			"that video is too large to analyze — trim it to the match and try again")
+	}
+	return nil
+}
+
 // analysisAvailable reports whether the paid Match Video Analysis feature is live:
 // the table exists (migration ran) and the PB Vision partner API is configured.
 func (s *Service) analysisAvailable() bool {
@@ -108,6 +139,9 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 	// cap can be bypassed by calling the API directly; this is the server-side
 	// half. Uploads land at ".../match-videos/<uid>/match-<ts>.<ext>".
 	if err := validateAnalysisVideoURL(userID, videoURL); err != nil {
+		return "", false, err
+	}
+	if err := analysisVideoSizeOK(videoURL); err != nil {
 		return "", false, err
 	}
 

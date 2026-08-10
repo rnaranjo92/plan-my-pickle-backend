@@ -1098,15 +1098,31 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 	if len(pidList) == 0 {
 		return []model.Event{}, nil
 	}
-	regs, err := s.sb.Select("registrations",
-		"player_id="+store.In(pidList)+"&select=event_id")
+	// Track approval per event. A PENDING registrant must still SEE the event here
+	// (so they know their entry is in), but must not receive its feed content —
+	// attachActivity copies the newest post's TEXT onto the event, which is
+	// exactly what the feed gate withholds from them.
+	approvedReady := s.columnReady("registrations", "approved")
+	sel := "player_id=" + store.In(pidList) + "&select=event_id"
+	if approvedReady {
+		sel += ",approved"
+	}
+	regs, err := s.sb.Select("registrations", sel)
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(regs))
 	seen := map[string]bool{}
+	approvedIn := map[string]bool{}
 	for _, r := range regs {
-		if eid := asStr(r, "event_id"); eid != "" && !seen[eid] {
+		eid := asStr(r, "event_id")
+		if eid == "" {
+			continue
+		}
+		if !approvedReady || asBool(r, "approved") {
+			approvedIn[eid] = true
+		}
+		if !seen[eid] {
 			seen[eid] = true
 			ids = append(ids, eid)
 		}
@@ -1124,6 +1140,16 @@ func (s *Service) MyEvents(userID, email string) ([]model.Event, error) {
 		out = append(out, mapEvent(r))
 	}
 	s.attachActivity(out)
+	// Strip the feed preview from events the caller isn't approved in (owners of
+	// their own events keep it).
+	for i := range out {
+		if approvedIn[out[i].ID] || out[i].OwnerID == userID {
+			continue
+		}
+		out[i].LastActivity = nil
+		out[i].LastActivityType = nil
+		out[i].LastActivityAt = nil
+	}
 	return out, nil
 }
 

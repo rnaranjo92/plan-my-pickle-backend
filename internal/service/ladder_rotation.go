@@ -2,9 +2,11 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/engine"
@@ -147,8 +149,20 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 		return model.RotationBoard{}, err
 	}
 
+	// Scorecard (name × round grid): the organizer enters scores here and the
+	// totals drive the standings. Inert until the migration runs.
+	card, totals := s.rotationScorecard(sessionID, session.CurrentRound)
+	for i := range players {
+		players[i].Points = totals[players[i].ID]
+	}
+
 	standings := append([]model.RotationPlayer(nil), players...)
 	sort.SliceStable(standings, func(i, j int) bool {
+		// Once scores are being kept, TOTAL POINTS is the ranking; wins stay as the
+		// tiebreak (and remain the sole ranking on pre-scorecard sessions).
+		if card.Enabled && standings[i].Points != standings[j].Points {
+			return standings[i].Points > standings[j].Points
+		}
 		if standings[i].Wins != standings[j].Wins {
 			return standings[i].Wins > standings[j].Wins
 		}
@@ -169,7 +183,100 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 		Courts:    courts,
 		Standings: standings,
 		Byes:      byes,
+		Scorecard: card,
 	}, nil
+}
+
+// teamPoints sums a doubles team's entered scores for a round. The bool reports
+// whether EITHER seat had a score, so a court with nothing entered can be told
+// apart from one legitimately scored 0.
+func teamPoints(scoreOf map[string]int, team [2]string) (int, bool) {
+	total, any := 0, false
+	for _, pid := range team {
+		if v, ok := scoreOf[pid]; ok {
+			total += v
+			any = true
+		}
+	}
+	return total, any
+}
+
+// rotationScoresReady reports whether add_rotation_round_scores.sql has run.
+func (s *Service) rotationScoresReady() bool {
+	return s.columnReady("rotation_round_scores", "id")
+}
+
+// rotationScorecard loads the whole session's grid plus each player's total.
+// Best-effort: a read failure yields an empty (disabled) card rather than
+// failing the board, so the session stays usable.
+func (s *Service) rotationScorecard(sessionID string, currentRound int) (model.RotationScorecard, map[string]int) {
+	totals := map[string]int{}
+	card := model.RotationScorecard{
+		Rounds: []int{},
+		Scores: map[string]map[int]int{},
+	}
+	if !s.rotationScoresReady() {
+		return card, totals
+	}
+	card.Enabled = true
+	// Columns: every round played so far, including the one in progress.
+	for r := 1; r <= currentRound; r++ {
+		card.Rounds = append(card.Rounds, r)
+	}
+	rows, err := s.sb.Select("rotation_round_scores",
+		"session_id=eq."+store.Q(sessionID)+"&select=round,rotation_player_id,score")
+	if err != nil {
+		return card, totals
+	}
+	for _, r := range rows {
+		pid := asStr(r, "rotation_player_id")
+		if pid == "" || r["score"] == nil {
+			continue // blank cell
+		}
+		round := asInt(r, "round")
+		score := asInt(r, "score")
+		if card.Scores[pid] == nil {
+			card.Scores[pid] = map[int]int{}
+		}
+		card.Scores[pid][round] = score
+		totals[pid] += score
+	}
+	return card, totals
+}
+
+// SetRotationScore upserts ONE cell of the scorecard (a player's score for a
+// round). A nil score clears the cell. Owner-gated at the route.
+func (s *Service) SetRotationScore(sessionID string, round int, playerID string, score *int) error {
+	if !s.rotationScoresReady() {
+		return ErrCoachingUnavailable // migration not run yet
+	}
+	if round < 1 || strings.TrimSpace(playerID) == "" {
+		return errors.New("round and player are required")
+	}
+	// The player must belong to THIS session — otherwise an organizer could write
+	// a score onto someone else's session by passing a foreign player id.
+	own, err := s.sb.SelectOne("rotation_players",
+		"id=eq."+store.Q(playerID)+"&session_id=eq."+store.Q(sessionID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if own == nil {
+		return ErrNotFound
+	}
+	row := map[string]any{
+		"session_id":         sessionID,
+		"round":              round,
+		"rotation_player_id": playerID,
+		"updated_at":         nowRFC3339(),
+	}
+	if score != nil {
+		row["score"] = *score
+	} else {
+		row["score"] = nil
+	}
+	_, err = s.sb.Upsert("rotation_round_scores",
+		"session_id,round,rotation_player_id", row)
+	return err
 }
 
 // autoAdvanceOf reads a session row's auto_advance flag, defaulting to true when
@@ -564,18 +671,48 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	if len(rows) == 0 {
 		return fmt.Errorf("no courts for round %d", round)
 	}
+	// Scorecard-driven results: the organizer now records a SCORE per player per
+	// round, so a court's winner is DERIVED by comparing the two teams' totals
+	// rather than read from a who-won tap. Falls back to the stored winner when
+	// no scores were entered (or the scorecard migration hasn't run).
+	scoreOf := map[string]int{} // rotation_player_id -> this round's score
+	if s.rotationScoresReady() {
+		if srows, serr := s.sb.Select("rotation_round_scores",
+			"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+
+				"&select=rotation_player_id,score"); serr == nil {
+			for _, r := range srows {
+				if r["score"] == nil {
+					continue
+				}
+				scoreOf[asStr(r, "rotation_player_id")] = asInt(r, "score")
+			}
+		}
+	}
 	cur := make([]engine.RotCourt, 0, len(rows))
 	results := make([]engine.RotResult, 0, len(rows))
 	for _, r := range rows {
 		court := asInt(r, "court")
-		cur = append(cur, engine.RotCourt{
-			Court: court,
-			TeamA: [2]string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")},
-			TeamB: [2]string{asStr(r, "team_b_p1"), asStr(r, "team_b_p2")},
-		})
-		w := asStr(r, "winner")
+		teamA := [2]string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")}
+		teamB := [2]string{asStr(r, "team_b_p1"), asStr(r, "team_b_p2")}
+		cur = append(cur, engine.RotCourt{Court: court, TeamA: teamA, TeamB: teamB})
+
+		w := ""
+		// Prefer the scorecard. Only decide when at least one side was scored, and
+		// leave a tie undecided so it falls through to the existing default.
+		aPts, aHas := teamPoints(scoreOf, teamA)
+		bPts, bHas := teamPoints(scoreOf, teamB)
+		if aHas || bHas {
+			if aPts > bPts {
+				w = "a"
+			} else if bPts > aPts {
+				w = "b"
+			}
+		}
 		if w == "" {
-			// Unreported court → default team A UP for MOVEMENT only. (The RPC
+			w = asStr(r, "winner") // legacy who-won tap, if it was used
+		}
+		if w == "" {
+			// Nothing recorded → default team A UP for MOVEMENT only. (The RPC
 			// tally credits games to all four but a win only to a reported team,
 			// so an unreported court awards no phantom win.)
 			w = "a"

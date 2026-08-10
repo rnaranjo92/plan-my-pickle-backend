@@ -570,6 +570,23 @@ type RotationPlayer struct {
 	Wins        int     `json:"wins"`
 	Games       int     `json:"games"`
 	Active      bool    `json:"active"`
+	// Points is the player's TOTAL across every round of the scorecard (the sum
+	// of RotationScorecard cells). Standings rank by this once the organizer is
+	// entering scores; 0 when the scorecard table isn't live yet.
+	Points int `json:"points"`
+}
+
+// RotationScorecard is the organizer's grid: players down the side, rounds
+// across the top. Scores[playerID][round] holds the entered value; a missing
+// entry means that cell is still blank.
+type RotationScorecard struct {
+	// Rounds played so far (1..currentRound), for the column headers.
+	Rounds []int `json:"rounds"`
+	// playerID -> round -> score.
+	Scores map[string]map[int]int `json:"scores"`
+	// Enabled is false until add_rotation_round_scores.sql has been run — the
+	// app hides the scorecard rather than showing an empty grid that can't save.
+	Enabled bool `json:"enabled"`
 }
 
 // RotationCourt is one court in one round: the four players as two teams (a/b),
@@ -600,6 +617,9 @@ type RotationBoard struct {
 	// Byes are the players sitting out the CURRENT round (the bench), in rotation
 	// order — empty when everyone plays (roster ≤ courts×4).
 	Byes []RotationPlayer `json:"byes"`
+	// Scorecard is the organizer's name × round grid (the primary way results are
+	// recorded — the court winner is derived from these scores).
+	Scorecard RotationScorecard `json:"scorecard"`
 }
 
 // CreateRotationSessionRequest opens a new session under a ladder division.

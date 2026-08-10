@@ -265,6 +265,26 @@ func (s *Server) reportRotationCourt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reported"})
 }
 
+// setRotationScore upserts one cell of the ladder scorecard: a player's score
+// for a round. A null score clears the cell. Owner-gated at the route — the
+// organizer is the only one entering scores.
+func (s *Server) setRotationScore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Round    int    `json:"round"`
+		PlayerID string `json:"playerId"`
+		Score    *int   `json:"score"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationScore(
+		r.PathValue("id"), req.Round, req.PlayerID, req.Score); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
 // advanceRotation closes the current round and opens the next. The optional
 // `round` in the body is the round the caller believes is current; the service
 // no-ops if it no longer matches (so a "Ring now" racing the auto-advance can't

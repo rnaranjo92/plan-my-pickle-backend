@@ -571,9 +571,13 @@ type RotationPlayer struct {
 	Games       int     `json:"games"`
 	Active      bool    `json:"active"`
 	// Points is the player's TOTAL across every round of the scorecard (the sum
-	// of RotationScorecard cells). Standings rank by this once the organizer is
-	// entering scores; 0 when the scorecard table isn't live yet.
+	// of RotationScorecard cells). 0 when the scorecard isn't in use.
 	Points int `json:"points"`
+	// Court is the court they ENDED on — the court they occupied in the latest
+	// round they played. This is what an "up and down the river" ladder actually
+	// measures (winners climb toward court 1), so it is the primary standings
+	// rank. 0 = never seated (no court yet).
+	Court int `json:"court"`
 }
 
 // RotationScorecard is the organizer's grid: players down the side, rounds

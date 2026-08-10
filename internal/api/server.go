@@ -393,6 +393,11 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.startRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/report",
 		s.rotationSessionActor("id", s.reportRotationCourt))
+	// Ladder scorecard: the organizer types a score per player per round. This is
+	// the primary way a rotation ladder records results (the court winner is
+	// derived from these), so it is OWNER-gated, unlike /report.
+	mux.HandleFunc("POST /rotation-sessions/{id}/scores",
+		s.rotationSessionOwner("id", s.setRotationScore))
 	mux.HandleFunc("POST /rotation-sessions/{id}/advance",
 		s.rotationSessionActor("id", s.advanceRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/end",

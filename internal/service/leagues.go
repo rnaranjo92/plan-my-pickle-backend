@@ -1044,12 +1044,7 @@ func (s *Service) playerHasRegUnderCoach(coachID, email, phone, excludeLeagueID 
 	}
 	e := strings.ToLower(strings.TrimSpace(email))
 	np := normPhone(phone)
-	var pf string
-	if e != "" {
-		pf = "email=eq." + store.Q(e)
-	} else if np != "" {
-		pf = "phone=eq." + store.Q(np)
-	} else {
+	if e == "" && np == "" {
 		return false
 	}
 	// Fail CLOSED: a swallowed query error here used to read as "not registered"
@@ -1057,13 +1052,49 @@ func (s *Service) playerHasRegUnderCoach(coachID, email, phone, excludeLeagueID 
 	// player's clips. Since this guards irreversible data loss, any real error
 	// must instead KEEP the student (return true). Only a genuine empty result
 	// (no rows, no error) means "not registered under this coach".
-	prows, perr := s.sb.Select("players", pf+"&select=id")
-	if perr != nil {
-		return true
+	//
+	// Contacts are stored RAW on players (the app sends "(619) 555-0100" and
+	// mixed-case emails), while coach_students holds them normalized — so an
+	// exact eq. match missed nearly every phone-only player and any odd-case
+	// email, silently taking the delete path. Match case-insensitively on email,
+	// and for phone compare NORMALIZED values in Go over a bounded candidate set
+	// (last-7-digit prefix filter), mirroring CheckInByPhone.
+	pidSet := map[string]bool{}
+	if e != "" {
+		if prows, perr := s.sb.Select("players",
+			"email=ilike."+store.Q(escapeLike(e))+"&select=id"); perr != nil {
+			return true
+		} else {
+			for _, id := range idList(prows, "id") {
+				pidSet[id] = true
+			}
+		}
 	}
-	pids := idList(prows, "id")
+	if np != "" {
+		tail := np
+		if len(tail) > 7 {
+			tail = tail[len(tail)-7:]
+		}
+		if prows, perr := s.sb.Select("players",
+			"phone=ilike."+store.Q("%"+escapeLike(tail)+"%")+"&select=id,phone"); perr != nil {
+			return true
+		} else {
+			for _, r := range prows {
+				if normPhone(asStr(r, "phone")) == np {
+					pidSet[asStr(r, "id")] = true
+				}
+			}
+		}
+	}
+	pids := make([]string, 0, len(pidSet))
+	for id := range pidSet {
+		pids = append(pids, id)
+	}
 	if len(pids) == 0 {
-		return false
+		// We could not resolve this contact to ANY player row — but they were
+		// just registered, so this is a lookup/normalization miss, not proof
+		// they're unregistered. Keep the student (irreversible-delete guard).
+		return true
 	}
 	lq := "coach_id=eq." + store.Q(coachID) + "&coach_led=is.true"
 	if excludeLeagueID != "" {

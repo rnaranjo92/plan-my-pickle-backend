@@ -972,15 +972,25 @@ func (s *Service) DeleteSessionRange(eventID, fromUTC, toUTC string) (int, error
 // Returns whether it cleared anything.
 func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 	defer s.lockPerpetualBuild(eventID)() // serialize vs a concurrent Build
-	return s.clearCurrentUnscoredSessionLocked(eventID)
+	// Substitute path: an explicit organizer action on today's session — no age
+	// limit (0), the in_progress/scored guards are the protection there.
+	return s.clearCurrentUnscoredSessionLocked(eventID, 0)
 }
+
+// buildRetryWindow bounds the automatic clear-then-rebuild inside a perpetual
+// Build: only a session built within this window is treated as a duplicate from
+// a timed-out retry. Anything older is a real, possibly-played session and is
+// APPENDED to instead of replaced.
+const buildRetryWindow = 10 * time.Minute
 
 // clearCurrentUnscoredSessionLocked is clearCurrentUnscoredSession WITHOUT taking
 // the build lock — the caller MUST already hold lockPerpetualBuild(eventID). This
 // lets generatePerpetualSession clear-and-rebuild atomically under one lock, so a
 // timed-out-then-retried Build rebuilds today's unscored session instead of
 // appending a duplicate round-robin (idempotent Build).
-func (s *Service) clearCurrentUnscoredSessionLocked(eventID string) (bool, error) {
+// maxAge > 0 restricts clearing to a session built within that window (see the
+// AGE GUARD below); 0 means no age restriction.
+func (s *Service) clearCurrentUnscoredSessionLocked(eventID string, maxAge time.Duration) (bool, error) {
 	rows, err := s.sb.Select("rounds",
 		"event_id=eq."+store.Q(eventID)+"&select=id,created_at")
 	if err != nil || len(rows) == 0 {
@@ -1028,12 +1038,30 @@ func (s *Service) clearCurrentUnscoredSessionLocked(eventID string) (bool, error
 		return false, nil
 	}
 	cur := make([]string, 0, len(rows))
+	var newestBuilt time.Time
 	for _, r := range rows {
 		if d, ok := day(asStr(r, "created_at")); ok && d.Equal(maxDay) {
 			cur = append(cur, asStr(r, "id"))
+			if t, e := time.Parse(time.RFC3339, asStr(r, "created_at")); e == nil {
+				if t.After(newestBuilt) {
+					newestBuilt = t
+				}
+			}
 		}
 	}
 	if len(cur) == 0 {
+		return false, nil
+	}
+	// AGE GUARD (maxAge > 0): only clear a session that was built MOMENTS ago —
+	// i.e. the "my build timed out, let me tap again" case. A session built hours
+	// ago has been PLAYED even if nothing is marked in_progress/scored: a match
+	// only turns in_progress when someone taps Start, so a club playing off the
+	// printed draw and entering scores at the end of the night still has every
+	// match at 'scheduled'. Clearing that would delete the night's games (and the
+	// rows their paper scores must go into). When the session is older than
+	// maxAge we refuse, and the caller APPENDS instead — matching what the app's
+	// "Add more games" confirm promises.
+	if maxAge > 0 && (newestBuilt.IsZero() || time.Since(newestBuilt) > maxAge) {
 		return false, nil
 	}
 	// Refuse to clear a session that has any game already STARTED (in_progress) or
@@ -1187,7 +1215,7 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 	// round-robin (which would double the night's games, standings, and DUPR).
 	// Runs under the lock we just took, so clear+rebuild is atomic. No-op when
 	// there's no today-session or it already has a live/scored game.
-	if _, err := s.clearCurrentUnscoredSessionLocked(ev.ID); err != nil {
+	if _, err := s.clearCurrentUnscoredSessionLocked(ev.ID, buildRetryWindow); err != nil {
 		return model.ScheduleResult{}, err
 	}
 	// Expire last session's one-night substitutes before seeding this session.

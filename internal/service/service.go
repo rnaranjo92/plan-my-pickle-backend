@@ -5047,6 +5047,34 @@ func (s *Service) photosByUser(userIDs []string) map[string]string {
 	return out
 }
 
+// namesByUser batch-loads account display names (pmp_profiles.full_name) for a
+// set of user ids — so a list (e.g. RSVPs) can show who without N lookups.
+func (s *Service) namesByUser(userIDs []string) map[string]string {
+	out := map[string]string{}
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(userIDs))
+	for _, u := range userIDs {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			uniq = append(uniq, u)
+		}
+	}
+	if len(uniq) == 0 {
+		return out
+	}
+	rows, err := s.sb.Select("pmp_profiles",
+		"user_id="+store.In(uniq)+"&select=user_id,full_name")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		if n := strings.TrimSpace(asStr(r, "full_name")); n != "" {
+			out[asStr(r, "user_id")] = n
+		}
+	}
+	return out
+}
+
 // eventHasMatches reports whether a schedule has already been generated for the
 // event (any match row). Used to warn that changing a pairing leaves the live
 // schedule stale until it's regenerated.

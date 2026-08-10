@@ -10621,16 +10621,13 @@ func (s *Service) notifyEventAudience(eventID, feedItemID, excludeUID, content s
 	if r := []rune(content); len(r) > 160 {
 		content = string(r[:157]) + "…"
 	}
-	// Deep-link to the specific post when we have its id, else fall back to the
-	// event's Feed tab.
-	pushURL := "https://app.planmypickle.com/?event=" + eventID + "&tab=feed"
-	bellLink := "playevent:" + eventID
-	if feedItemID != "" {
-		pushURL = "https://app.planmypickle.com/?feed=" + feedItemID
-		bellLink = "feed:" + feedItemID
-	}
-	_ = s.sendPush(uids, heading, content, pushURL)
-	s.recordNotifications(uids, "announcement", content, bellLink)
+	// A new-post notification opens the league's FEED (full context), not the
+	// isolated single post — the Feed tab of the player view. (feedItemID is kept
+	// for a possible future scroll-to-post, but the destination is the feed.)
+	_ = feedItemID
+	_ = s.sendPush(uids, heading, content,
+		"https://app.planmypickle.com/?event="+eventID+"&tab=feed")
+	s.recordNotifications(uids, "announcement", content, "playevent:"+eventID)
 }
 
 // approvedPlayerName returns the caller's display name and whether they are a

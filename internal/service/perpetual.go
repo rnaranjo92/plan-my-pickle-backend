@@ -972,9 +972,14 @@ func (s *Service) DeleteSessionRange(eventID, fromUTC, toUTC string) (int, error
 // Returns whether it cleared anything.
 func (s *Service) clearCurrentUnscoredSession(eventID string) (bool, error) {
 	defer s.lockPerpetualBuild(eventID)() // serialize vs a concurrent Build
-	// Substitute path: an explicit organizer action on today's session — no age
-	// limit (0), the in_progress/scored guards are the protection there.
-	return s.clearCurrentUnscoredSessionLocked(eventID, 0)
+	// Substitute path: bounded by the SAME window as a build retry. "Unscored" is
+	// not "unplayed" — a club that plays off the printed draw and keys scores in
+	// at the end of the night has every match still at 'scheduled', so the
+	// in_progress/scored guards alone would let a substitution silently delete a
+	// fully-played session. With the bound, a sub added into an hours-old session
+	// leaves it intact and takes effect on the NEXT build, which is exactly what
+	// this function's doc comment already promises.
+	return s.clearCurrentUnscoredSessionLocked(eventID, buildRetryWindow)
 }
 
 // buildRetryWindow bounds the automatic clear-then-rebuild inside a perpetual
@@ -1037,31 +1042,34 @@ func (s *Service) clearCurrentUnscoredSessionLocked(eventID string, maxAge time.
 	if !maxDay.Equal(todayLocal) {
 		return false, nil
 	}
+	// AGE GUARD (maxAge > 0): only clear rounds built MOMENTS ago — the "my build
+	// timed out, let me tap again" case. A block built hours ago has been PLAYED
+	// even if nothing is marked in_progress/scored: a match only turns in_progress
+	// when someone taps Start, so a club playing off the printed draw and entering
+	// scores at the end of the night still has every match at 'scheduled'. Wiping
+	// that would delete the night's games AND the rows their paper scores must go
+	// into.
+	//
+	// CRITICAL: the age test and the DELETE must cover the SAME rounds. Filtering
+	// only by local day and then age-testing the newest round let one more Build
+	// within the window take an older, already-played block of the same day with
+	// it (a day legitimately holds several blocks, because a refused clear makes
+	// the caller APPEND). So filter round-by-round on each round's OWN age.
 	cur := make([]string, 0, len(rows))
-	var newestBuilt time.Time
 	for _, r := range rows {
-		if d, ok := day(asStr(r, "created_at")); ok && d.Equal(maxDay) {
-			cur = append(cur, asStr(r, "id"))
-			if t, e := time.Parse(time.RFC3339, asStr(r, "created_at")); e == nil {
-				if t.After(newestBuilt) {
-					newestBuilt = t
-				}
+		d, ok := day(asStr(r, "created_at"))
+		if !ok || !d.Equal(maxDay) {
+			continue
+		}
+		if maxAge > 0 {
+			t, e := time.Parse(time.RFC3339, asStr(r, "created_at"))
+			if e != nil || time.Since(t) > maxAge {
+				continue // older (or unreadable) → leave it; caller appends
 			}
 		}
+		cur = append(cur, asStr(r, "id"))
 	}
 	if len(cur) == 0 {
-		return false, nil
-	}
-	// AGE GUARD (maxAge > 0): only clear a session that was built MOMENTS ago —
-	// i.e. the "my build timed out, let me tap again" case. A session built hours
-	// ago has been PLAYED even if nothing is marked in_progress/scored: a match
-	// only turns in_progress when someone taps Start, so a club playing off the
-	// printed draw and entering scores at the end of the night still has every
-	// match at 'scheduled'. Clearing that would delete the night's games (and the
-	// rows their paper scores must go into). When the session is older than
-	// maxAge we refuse, and the caller APPENDS instead — matching what the app's
-	// "Add more games" confirm promises.
-	if maxAge > 0 && (newestBuilt.IsZero() || time.Since(newestBuilt) > maxAge) {
 		return false, nil
 	}
 	// Refuse to clear a session that has any game already STARTED (in_progress) or

@@ -2294,8 +2294,12 @@ type RecurringControlsRequest struct {
 
 type FeedPostRequest struct {
 	Text string `json:"text"`
-	// Notify: also push this announcement to the event's registered players
-	// (linked accounts). Off = the post only appears in the Feed tab.
+	// Announcement: mark this as an official ANNOUNCEMENT. Only honored for the
+	// event owner (organizer) — a player's post is always a regular post. An
+	// announcement is chip-marked and reads as the organizer's official voice.
+	Announcement bool `json:"announcement"`
+	// Notify is deprecated — every feed post now pushes + bells the event
+	// audience (players + owner) except the poster. Kept for old clients.
 	Notify bool `json:"notify"`
 	// MediaURL + MediaType attach an uploaded video (or image) to the post. A
 	// post may be media-only (empty Text). MediaType is "video" or "image".

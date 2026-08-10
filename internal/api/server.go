@@ -5677,7 +5677,7 @@ func (s *Server) feedPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.svc.PostToEventFeed(
-		r.PathValue("id"), userID(r), userEmail(r), req.Text, req.Notify, req.MediaURL, req.MediaType)
+		r.PathValue("id"), userID(r), userEmail(r), req.Text, req.Announcement, req.MediaURL, req.MediaType)
 	if err != nil {
 		status(w, err)
 		return

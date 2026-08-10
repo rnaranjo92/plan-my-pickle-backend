@@ -46,6 +46,11 @@ type SessionRsvp struct {
 	Going       int    `json:"going"`
 	Maybe       int    `json:"maybe"`
 	Out         int    `json:"out"`
+	// Who responded — display names per status, so the organizer (and players)
+	// can see who's coming, not just the tallies.
+	GoingNames []string `json:"goingNames"`
+	MaybeNames []string `json:"maybeNames"`
+	OutNames   []string `json:"outNames"`
 }
 
 var rsvpStatuses = map[string]bool{"going": true, "maybe": true, "out": true}
@@ -128,19 +133,41 @@ func (s *Service) GetSessionRsvp(eventID, userID string) SessionRsvp {
 	if err != nil {
 		return out
 	}
+	var goingIDs, maybeIDs, outIDs []string
 	for _, r := range rows {
+		uid := asStr(r, "user_id")
 		switch asStr(r, "status") {
 		case "going":
 			out.Going++
+			goingIDs = append(goingIDs, uid)
 		case "maybe":
 			out.Maybe++
+			maybeIDs = append(maybeIDs, uid)
 		case "out":
 			out.Out++
+			outIDs = append(outIDs, uid)
 		}
-		if userID != "" && asStr(r, "user_id") == userID {
+		if userID != "" && uid == userID {
 			out.MyStatus = asStr(r, "status")
 		}
 	}
+	// Resolve display names once for everyone who responded, so the card can
+	// show WHO — not just the counts.
+	names := s.namesByUser(append(append(append([]string{}, goingIDs...), maybeIDs...), outIDs...))
+	toNames := func(ids []string) []string {
+		ns := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if n := strings.TrimSpace(names[id]); n != "" {
+				ns = append(ns, n)
+			} else {
+				ns = append(ns, "A player")
+			}
+		}
+		return ns
+	}
+	out.GoingNames = toNames(goingIDs)
+	out.MaybeNames = toNames(maybeIDs)
+	out.OutNames = toNames(outIDs)
 	return out
 }
 

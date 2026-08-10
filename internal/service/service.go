@@ -10474,34 +10474,105 @@ func (s *Service) AccountExists(email string) bool {
 // The owner posts as "Organizer" and may push a notification; a registered
 // player posts under their own name and can NEVER trigger a push (only the
 // organizer may blast every player). A caller who is neither is rejected.
-func (s *Service) PostToEventFeed(eventID, userID, email, text string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
+func (s *Service) PostToEventFeed(eventID, userID, email, text string, announcement bool, mediaURL, mediaType string) (model.FeedItem, error) {
 	if userID == "" {
 		return model.FeedItem{}, ErrForbidden
 	}
-	if userID == s.eventOwnerID(eventID) {
-		return s.PostAnnouncement(eventID, text, "Organizer", notify, mediaURL, mediaType)
+	isOwner := userID == s.eventOwnerID(eventID)
+	var name string
+	if isOwner {
+		// Post under the organizer's real name (friendlier, esp. for coach-led
+		// leagues). Fall back to "Organizer" if we can't resolve a name.
+		name = strings.TrimSpace(s.resolveDisplayName(userID, email))
+		if name == "" || strings.EqualFold(name, "Player") {
+			name = "Organizer"
+		}
+	} else {
+		pname, ok := s.approvedPlayerName(eventID, userID, email)
+		if !ok {
+			return model.FeedItem{}, ErrForbidden
+		}
+		// Prefer the canonical account-level name (pmp_profiles) over a possibly
+		// stale players row.
+		name = strings.TrimSpace(s.resolveDisplayName(userID, email))
+		if name == "" || name == "Player" {
+			name = strings.TrimSpace(pname)
+		}
+		if name == "" {
+			name = "Player"
+		}
+		// Don't let a player impersonate the organizer.
+		if strings.EqualFold(name, "Organizer") {
+			name = "Player"
+		}
 	}
-	pname, ok := s.approvedPlayerName(eventID, userID, email)
-	if !ok {
-		return model.FeedItem{}, ErrForbidden
+	// Only the ORGANIZER can post an ANNOUNCEMENT (the official, chip-marked
+	// post); a player's post is always a regular "post".
+	isAnnouncement := announcement && isOwner
+	postType := "post"
+	if isAnnouncement {
+		postType = "announcement"
 	}
-	// approvedPlayerName is the approval gate; take the DISPLAY name from
-	// resolveDisplayName so it uses the canonical account-level name (pmp_profiles)
-	// rather than a possibly-stale players row.
-	name := s.resolveDisplayName(userID, "")
-	if name == "" || name == "Player" {
-		name = strings.TrimSpace(pname)
+	item, err := s.insertFeedItem(eventID, postType, text, name, mediaURL, mediaType)
+	if err != nil {
+		return model.FeedItem{}, err
 	}
-	if name == "" {
-		name = "Player"
+	// Every feed post pings the event audience (registered players + owner) —
+	// push + in-app bell — EXCEPT whoever posted. An announcement reads as the
+	// update itself; a regular post is prefixed with who posted it.
+	content := strings.TrimSpace(text)
+	if isAnnouncement {
+		if content == "" {
+			content = "Posted a video"
+		}
+	} else if content != "" {
+		content = name + ": " + content
+	} else {
+		content = name + " posted"
 	}
-	// Don't let a player impersonate the organizer: the owner branch posts as the
-	// literal "Organizer", so a player whose name is "Organizer" is rewritten.
-	if strings.EqualFold(name, "Organizer") {
-		name = "Player"
+	go s.notifyEventAudience(eventID, userID, content)
+	return item, nil
+}
+
+// notifyEventAudience pushes + files a bell notification for an event's approved
+// players AND its owner, skipping excludeUID (the person who triggered it). Used
+// for feed posts so a poster is never notified of their own post.
+func (s *Service) notifyEventAudience(eventID, excludeUID, content string) {
+	rows, err := s.sb.SelectAll("registrations",
+		"event_id=eq."+store.Q(eventID)+s.approvedRegFilter()+
+			"&select=player:players!player_id(user_id)")
+	if err != nil {
+		return
 	}
-	// Players never trigger a mass push — force notify off regardless of request.
-	return s.PostAnnouncement(eventID, text, name, false, mediaURL, mediaType)
+	seen := map[string]bool{}
+	uids := make([]string, 0, len(rows)+1)
+	add := func(uid string) {
+		uid = strings.TrimSpace(uid)
+		if uid == "" || uid == excludeUID || seen[uid] {
+			return
+		}
+		seen[uid] = true
+		uids = append(uids, uid)
+	}
+	for _, r := range rows {
+		if p := asMap(r, "player"); p != nil {
+			add(asStr(p, "user_id"))
+		}
+	}
+	add(s.eventOwnerID(eventID)) // the organizer hears about player posts too
+	if len(uids) == 0 {
+		return
+	}
+	heading := "Event update"
+	if ev, err := s.GetEvent(eventID); err == nil && strings.TrimSpace(ev.Name) != "" {
+		heading = ev.Name
+	}
+	if r := []rune(content); len(r) > 160 {
+		content = string(r[:157]) + "…"
+	}
+	_ = s.sendPush(uids, heading, content,
+		"https://app.planmypickle.com/?event="+eventID)
+	s.recordNotifications(uids, "announcement", content, "playevent:"+eventID)
 }
 
 // approvedPlayerName returns the caller's display name and whether they are a
@@ -10547,6 +10618,26 @@ func (s *Service) IsRegisteredInEvent(eventID, userID, email string) bool {
 }
 
 func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
+	item, err := s.insertFeedItem(eventID, "announcement", text, actorName, mediaURL, mediaType)
+	if err != nil {
+		return model.FeedItem{}, err
+	}
+	if notify {
+		// Media-only posts still ping players with a sensible line.
+		push := strings.TrimSpace(text)
+		if push == "" {
+			push = "Posted a video"
+		}
+		go s.notifyEventPlayers(eventID, push)
+	}
+	return item, nil
+}
+
+// insertFeedItem writes one feed_items row of the given post type (e.g.
+// "announcement" or "post") and returns it. Shared by PostAnnouncement and
+// PostToEventFeed so validation + the media envelope live in one place. It does
+// NOT notify — callers decide who to ping.
+func (s *Service) insertFeedItem(eventID, postType, text, actorName, mediaURL, mediaType string) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)
 	mediaURL = strings.TrimSpace(mediaURL)
 	// A post needs either words or an attachment.
@@ -10558,7 +10649,7 @@ func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool,
 	}
 	row := map[string]any{
 		"event_id":   eventID,
-		"type":       "announcement",
+		"type":       postType,
 		"text":       text,
 		"actor_name": orNull(actorName),
 	}
@@ -10574,14 +10665,6 @@ func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool,
 	}
 	if len(rows) == 0 {
 		return model.FeedItem{}, errors.New("feed insert returned no row")
-	}
-	if notify {
-		// Media-only posts still ping players with a sensible line.
-		push := text
-		if push == "" {
-			push = "Posted a video"
-		}
-		go s.notifyEventPlayers(eventID, push)
 	}
 	return mapFeedItem(rows[0]), nil
 }

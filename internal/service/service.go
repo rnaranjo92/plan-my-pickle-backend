@@ -10672,6 +10672,16 @@ func (s *Service) IsRegisteredInEvent(eventID, userID, email string) bool {
 	return ok
 }
 
+// CanViewEventFeed reports whether the caller may see an event's Feed. The feed
+// is private to the people IN the event: the OWNER and its FULLY-REGISTERED
+// (approved) players — never the anonymous public or a non-registered viewer.
+func (s *Service) CanViewEventFeed(eventID, userID, email string) bool {
+	if userID != "" && userID == s.eventOwnerID(eventID) {
+		return true
+	}
+	return s.IsRegisteredInEvent(eventID, userID, email)
+}
+
 func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
 	item, err := s.insertFeedItem(eventID, "announcement", text, actorName, "", mediaURL, mediaType)
 	if err != nil {

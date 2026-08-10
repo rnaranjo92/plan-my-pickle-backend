@@ -1009,12 +1009,13 @@ func coachingAnalysisAllowed(email string) bool {
 // organizerAllowed (so the Organize tab + create endpoints are reachable), but
 // ladderOnly() blocks everything except a ladder. TEMPORARY — revisit when
 // subscriptions launch (SUBSCRIPTIONS_ENABLED). Overridden by LADDER_ONLY_ALLOWLIST.
-const ladderOnlyGrants = "michellecruzsd@gmail.com"
+// (empty — michellecruzsd@gmail.com was promoted to FULL organizer 2026-08-10)
+const ladderOnlyGrants = ""
 
 // organizerGrants: individually comped FULL-organizer accounts (Organize tab +
 // create tournaments/leagues), beyond QA. TEMPORARY — revisit at subscription
 // launch. Also add these emails to the frontend _organizerEmails set.
-const organizerGrants = "motofreak26@hotmail.com"
+const organizerGrants = "motofreak26@hotmail.com,michellecruzsd@gmail.com"
 
 func organizerAllowed(email string) bool {
 	// Organizing is FREE and OPEN to everyone at full launch (2026-07-25) — the

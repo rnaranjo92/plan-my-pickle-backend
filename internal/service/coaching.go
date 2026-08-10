@@ -2483,7 +2483,69 @@ func (s *Service) pbvisionJobsReady() bool {
 // per rolling 30 days (cost guard; coaching analysis is currently platform-billed).
 const coachingAnalysisMonthlyCap = 12
 
-func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID string) (string, error) {
+// upsertPBVisionJob creates (or refreshes to processing) the job row tying a PB
+// Vision video (vid) to a coach thread. Manual upsert (select-then-write) so it
+// never depends on the jobs unique constraint — safe before AND after the
+// multi-coach migration. sourceVideoID (a coaching_videos id) links the clip for
+// dedup/recheck; "" to skip.
+func (s *Service) upsertPBVisionJob(vid, threadID, sourceVideoID string) error {
+	set := map[string]any{"status": "processing", "updated_at": now()}
+	if sourceVideoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
+		set["source_video_id"] = sourceVideoID
+	}
+	existing, _ := s.sb.SelectOne("coaching_pbvision_jobs",
+		"vid=eq."+store.Q(vid)+"&coach_student_id=eq."+store.Q(threadID)+"&select=id")
+	if existing != nil {
+		_, err := s.sb.Update("coaching_pbvision_jobs",
+			"id=eq."+store.Q(asStr(existing, "id")), set)
+		return err
+	}
+	set["vid"] = vid
+	set["coach_student_id"] = threadID
+	_, err := s.sb.Insert("coaching_pbvision_jobs", set)
+	return err
+}
+
+// copyClipToThread duplicates the source coaching clip into another coach thread
+// (so a shared analysis shows the video there too) and returns the new clip id
+// ("" on failure or no URL). Best-effort.
+func (s *Service) copyClipToThread(sourceVideoID, threadID, uploaderID, videoURL string) string {
+	title := "Shared clip"
+	if sourceVideoID != "" {
+		if src, _ := s.sb.SelectOne("coaching_videos",
+			"id=eq."+store.Q(sourceVideoID)+"&select=title,video_url"); src != nil {
+			if t := strings.TrimSpace(asStr(src, "title")); t != "" {
+				title = t
+			}
+			if u := strings.TrimSpace(asStr(src, "video_url")); u != "" {
+				videoURL = u
+			}
+		}
+	}
+	if strings.TrimSpace(videoURL) == "" {
+		return ""
+	}
+	row := map[string]any{
+		"coach_student_id": threadID,
+		"uploaded_by":      uploaderID,
+		"uploader_role":    "student",
+		"video_url":        videoURL,
+		"title":            title,
+	}
+	if s.columnReady("coaching_videos", "source") {
+		row["source"] = "upload"
+	}
+	ins, err := s.sb.Insert("coaching_videos", row)
+	if err != nil || len(ins) == 0 {
+		return ""
+	}
+	return asStr(ins[0], "id")
+}
+
+// shareThreadIDs are the caller's OTHER coach threads to also share this one
+// analysis with (they picked "all my coaches"). PB Vision is called ONCE; each
+// extra thread gets its own job row referencing the same vid + a copy of the clip.
+func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID string, shareThreadIDs []string) (string, error) {
 	if !s.coachingReady() || !s.pbvisionJobsReady() {
 		return "", ErrCoachingUnavailable
 	}
@@ -2540,20 +2602,33 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 	if err != nil {
 		return "", err
 	}
-	job := map[string]any{
-		"vid":              vid,
-		"coach_student_id": threadID,
-		"status":           "processing",
-		"updated_at":       now(),
-	}
-	if videoID != "" && s.columnReady("coaching_pbvision_jobs", "source_video_id") {
-		job["source_video_id"] = videoID
-	}
-	_, err = s.sb.Upsert("coaching_pbvision_jobs", "vid", job)
-	if err != nil {
+	// Primary job (this coach's thread). Manual upsert so it never depends on the
+	// jobs unique constraint — works before AND after the multi-coach migration.
+	if err := s.upsertPBVisionJob(vid, threadID, videoID); err != nil {
 		return "", err
 	}
 	s.bumpThreadActivity(threadID)
+
+	// Fan out to the student's OTHER selected coaches: the SAME analysis (one PB
+	// Vision run, billed once) becomes viewable in each thread. Only threads where
+	// the CALLER is the student. Best-effort per thread. Extra job rows share the
+	// vid — the (vid, coach_student_id) unique index (multi-coach migration) lets
+	// them coexist; before that migration the old vid-unique blocks them (no-op).
+	seen := map[string]bool{threadID: true}
+	for _, extra := range shareThreadIDs {
+		extra = strings.TrimSpace(extra)
+		if extra == "" || seen[extra] {
+			continue
+		}
+		seen[extra] = true
+		if _, erole, eerr := s.threadMembership(extra, userID, email); eerr != nil || erole != "student" {
+			continue
+		}
+		// Copy the source clip into that coach's thread so they see the video too.
+		clipID := s.copyClipToThread(videoID, extra, userID, videoURL)
+		_ = s.upsertPBVisionJob(vid, extra, clipID)
+		s.bumpThreadActivity(extra)
+	}
 
 	// Best-effort: if PB Vision already has this video processed (a duplicate
 	// URL), its completion webhook won't fire again — pull the result now so the
@@ -2626,42 +2701,49 @@ func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, 
 	if !s.pbvisionJobsReady() {
 		return
 	}
-	job, _ := s.sb.SelectOne("coaching_pbvision_jobs",
-		"vid=eq."+store.Q(vid)+"&select=id,coach_student_id")
-	if job == nil {
+	// ALL threads this analysis was shared to (one job row per coach). Fan the
+	// result out to each — per-thread job update + highlights + notify.
+	jobs, _ := s.sb.Select("coaching_pbvision_jobs",
+		"vid=eq."+store.Q(vid)+"&select=id,coach_student_id,status")
+	if len(jobs) == 0 {
 		return
 	}
-	threadID := asStr(job, "coach_student_id")
-	upd := map[string]any{"updated_at": now()}
-	if strings.TrimSpace(errReason) != "" {
-		upd["status"] = "failed"
-		upd["error"] = errReason
-	} else {
-		upd["status"] = "ready"
-		if webpage != "" {
-			upd["report_url"] = webpage
-		}
-		if len(insights) > 0 {
-			upd["insights"] = insights
-		}
-		if len(stats) > 0 {
-			upd["stats"] = stats
-		}
-	}
-	_, _ = s.sb.Update("coaching_pbvision_jobs",
-		"id=eq."+store.Q(asStr(job, "id")), upd)
 	failed := strings.TrimSpace(errReason) != ""
-	if !failed {
-		// TODO(pbvision-parser): with a real insights/stats payload, parse here —
-		//   stats            -> coaching_pbvision (+ coaching_pbvision_reports)
-		//   insights.highlights -> coaching_videos (source='pbvision', external_ref,
-		//                          video_url=clip, title="Long Rally #1" etc.)
-		//   insights.players -> map to a student (coach_students.pbvision_player_id)
-		s.ingestPBVisionHighlights(threadID, insights)
-	}
-	s.bumpThreadActivity(threadID)
-	// Push + bell to BOTH the coach and the student, on success or failure.
-	if cs, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID)); cs != nil {
+	for _, job := range jobs {
+		// Idempotency: PB Vision may REDELIVER the completion webhook. Only act on
+		// a job that's still processing so redelivery never re-notifies the coach +
+		// student (the paid analysis path guards this; the coaching path did not).
+		if asStr(job, "status") != "processing" {
+			continue
+		}
+		threadID := asStr(job, "coach_student_id")
+		upd := map[string]any{"updated_at": now()}
+		if failed {
+			upd["status"] = "failed"
+			upd["error"] = errReason
+		} else {
+			upd["status"] = "ready"
+			if webpage != "" {
+				upd["report_url"] = webpage
+			}
+			if len(insights) > 0 {
+				upd["insights"] = insights
+			}
+			if len(stats) > 0 {
+				upd["stats"] = stats
+			}
+		}
+		_, _ = s.sb.Update("coaching_pbvision_jobs",
+			"id=eq."+store.Q(asStr(job, "id")), upd)
+		if !failed {
+			s.ingestPBVisionHighlights(threadID, insights)
+		}
+		s.bumpThreadActivity(threadID)
+		// Push + bell to BOTH the coach and the student, on success or failure.
+		cs, _ := s.sb.SelectOne("coach_students", "id=eq."+store.Q(threadID))
+		if cs == nil {
+			continue
+		}
 		coachID := asStr(cs, "coach_id")
 		sid := asStr(cs, "student_id")
 		who := s.coachingName(sid)
@@ -2671,7 +2753,6 @@ func (s *Service) handleCoachingPBVisionCallback(vid, webpage string, insights, 
 		if strings.TrimSpace(who) == "" {
 			who = "A student"
 		}
-		// Coach body names the student whose analysis it is; student body is their own.
 		coachBody, studentBody := who+"'s PB Vision analysis is ready — review highlights",
 			"Your PB Vision highlights are ready"
 		if failed {

@@ -6279,14 +6279,16 @@ func (s *Server) analyzeThreadVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		VideoURL string `json:"videoUrl"`
-		VideoID  string `json:"videoId"`
+		VideoURL       string   `json:"videoUrl"`
+		VideoID        string   `json:"videoId"`
+		ShareThreadIDs []string `json:"shareThreadIds"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	vid, err := s.svc.AnalyzeThreadVideo(
-		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.VideoID)
+		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.VideoID,
+		req.ShareThreadIDs)
 	if err != nil {
 		status(w, err)
 		return

@@ -234,15 +234,17 @@ func (s *Service) SeedPerpetualLeagueDemo(ownerID string) (string, error) {
 	return eid, nil
 }
 
-// coachLedSeedNames are the 8 students seeded into the coach-led league test.
+// coachLedSeedNames are the 7 students seeded into the coach-led league test.
+// Kept at 7 (not 8) on purpose so there's an open slot to test registering a
+// real player into the league.
 var coachLedSeedNames = []string{
 	"Test Student Ana", "Test Student Ben", "Test Student Cara", "Test Student Dan",
-	"Test Student Eve", "Test Student Finn", "Test Student Gia", "Test Student Hugo",
+	"Test Student Eve", "Test Student Finn", "Test Student Gia",
 }
 
 // SeedCoachLedLeagueDemo (QA test flow) stands up a COMPLETE coach-led league so
 // the whole flow can be exercised in one tap: the caller becomes a coach, a
-// coach-led recurring league is created (owner = coach), 8 students are
+// coach-led recurring league is created (owner = coach), 7 students are
 // registered (each auto-enrolls onto the coach's roster), everyone's checked in,
 // and one ongoing session of games is built. Open it → Coach tab shows the
 // roster; leave/remove a student → they un-enroll (once the migration is run).
@@ -313,7 +315,7 @@ func (s *Service) SeedCoachLedLeagueDemo(ownerID, ownerEmail string) (string, er
 		_, _ = s.sb.Update("leagues", "id=eq."+store.Q(leagueID), lupd)
 	}
 
-	// Register 8 students WITH emails (so they become real coach_students, not just
+	// Register 7 students WITH emails (so they become real coach_students, not just
 	// phone rows). SkipCoachEnroll stays false → each auto-enrolls onto the roster.
 	bks, err := s.GetBrackets(eid)
 	if err != nil || len(bks) == 0 {

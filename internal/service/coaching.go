@@ -3023,6 +3023,12 @@ func (s *Service) AddThreadVideo(threadID, userID, email string, req model.Coach
 	if url == "" {
 		return model.CoachingVideo{}, errors.New("upload a clip first")
 	}
+	// A bare object path must live under the caller's own upload folder —
+	// otherwise they could attach (and get signed URLs for) someone else's
+	// private clip by guessing its path.
+	if err := ownCoachingPath(userID, url); err != nil {
+		return model.CoachingVideo{}, err
+	}
 	cs, role, err := s.threadMembership(threadID, userID, email)
 	if err != nil {
 		return model.CoachingVideo{}, err
@@ -4591,6 +4597,26 @@ func (s *Service) introVideoReady() bool {
 	return s.columnReady("coach_profiles", "intro_video_url")
 }
 
+// ownCoachingPath validates a caller-supplied coaching-videos OBJECT PATH before
+// we store it. The bucket is private and the backend signs whatever path it has
+// with the service key, so an unvalidated path lets a caller point at ANOTHER
+// user's private clip and receive a signed URL for it. Uploads always land under
+// "<uid>/…", so require that prefix and reject traversal. Full http(s) URLs are
+// left alone (public match-video / shared links go through other checks).
+func ownCoachingPath(userID, v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return errors.New("no video uploaded")
+	}
+	if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+		return nil
+	}
+	if strings.Contains(v, "..") || !strings.HasPrefix(v, userID+"/") {
+		return ErrForbidden
+	}
+	return nil
+}
+
 // SetMyCoachIntroVideo saves the coach's intro-clip object path (already uploaded
 // to the coaching-videos bucket) on their profile.
 func (s *Service) SetMyCoachIntroVideo(userID, path string) error {
@@ -4603,6 +4629,9 @@ func (s *Service) SetMyCoachIntroVideo(userID, path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return errors.New("no video uploaded")
+	}
+	if err := ownCoachingPath(userID, path); err != nil {
+		return err
 	}
 	_, err := s.sb.Upsert("coach_profiles", "user_id", map[string]any{
 		"user_id":         userID,

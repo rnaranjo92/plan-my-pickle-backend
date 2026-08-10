@@ -18,6 +18,40 @@ import (
 // Analysis. PB Vision bills us ~$8/hr of HD footage; this covers that plus margin.
 const analysisPriceCents = 1299 // $12.99
 
+// validateAnalysisVideoURL enforces that a paid analysis can only be run on a
+// clip the caller uploaded to OUR match-videos bucket. Without this, the flat
+// $12.99 fee could be pointed at any URL on the internet — including a
+// multi-hour video that costs us far more than the sale (PB Vision bills per
+// hour), or another user's media.
+func validateAnalysisVideoURL(userID, videoURL string) error {
+	u := videoURL
+	if i := strings.IndexByte(u, '?'); i >= 0 {
+		u = u[:i]
+	}
+	low := strings.ToLower(u)
+	if !strings.HasPrefix(low, "https://") {
+		return errors.New("upload your match video first")
+	}
+	const marker = "/match-videos/"
+	i := strings.Index(low, marker)
+	if i < 0 {
+		return errors.New("upload your match video first")
+	}
+	// Not an image — PB Vision needs actual footage.
+	for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif"} {
+		if strings.HasSuffix(low, ext) {
+			return errors.New("that's a photo — upload a match video")
+		}
+	}
+	// Uploads are namespaced per account: match-videos/<uid>/match-<ts>.<ext>.
+	if userID != "" {
+		if !strings.HasPrefix(u[i+len(marker):], userID+"/") {
+			return ErrForbidden
+		}
+	}
+	return nil
+}
+
 // analysisAvailable reports whether the paid Match Video Analysis feature is live:
 // the table exists (migration ran) and the PB Vision partner API is configured.
 func (s *Service) analysisAvailable() bool {
@@ -57,6 +91,15 @@ func (s *Service) StartAnalysisCheckout(userID, email string, req model.Analysis
 	videoURL := strings.TrimSpace(req.VideoURL)
 	if videoURL == "" {
 		return "", false, errors.New("a video is required")
+	}
+	// COST GUARD: we charge a FLAT fee but PB Vision bills by video length, so the
+	// submitted URL must be a clip the caller actually uploaded to our own
+	// match-videos bucket — not an arbitrary internet URL (which could be a
+	// multi-hour file, or someone else's private media). The client-side length
+	// cap can be bypassed by calling the API directly; this is the server-side
+	// half. Uploads land at ".../match-videos/<uid>/match-<ts>.<ext>".
+	if err := validateAnalysisVideoURL(userID, videoURL); err != nil {
+		return "", false, err
 	}
 
 	// PB Vision shares the hosted report with the emails we pass (up to 4). Always

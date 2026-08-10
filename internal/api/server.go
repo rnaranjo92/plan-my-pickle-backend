@@ -5556,7 +5556,9 @@ func (s *Server) feedItemGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Single posts are as private as the feed they belong to: owner + registered
 	// players only. (A deep link/notification only reaches those people anyway.)
-	if !s.svc.CanViewEventFeed(strings.TrimSpace(item.EventID), userID(r), userEmail(r)) {
+	// `event` discovery cards are public by design (NewsFeed advertising).
+	if item.Type != "event" &&
+		!s.svc.CanViewEventFeed(strings.TrimSpace(item.EventID), userID(r), userEmail(r)) {
 		status(w, service.ErrForbidden)
 		return
 	}

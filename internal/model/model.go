@@ -584,9 +584,12 @@ type RotationScorecard struct {
 	Rounds []int `json:"rounds"`
 	// playerID -> round -> score.
 	Scores map[string]map[int]int `json:"scores"`
-	// Enabled is false until add_rotation_round_scores.sql has been run — the
-	// app hides the scorecard rather than showing an empty grid that can't save.
-	Enabled bool `json:"enabled"`
+	// Available means the scorecard TABLE exists (migration run). Enabled means
+	// THIS session is actually using it (it has scorecard rows). The split keeps
+	// existing sessions on their original who-won flow instead of flipping every
+	// session into scorecard mode the moment the migration lands.
+	Available bool `json:"available"`
+	Enabled   bool `json:"enabled"`
 }
 
 // RotationCourt is one court in one round: the four players as two teams (a/b),

@@ -187,19 +187,29 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 	}, nil
 }
 
-// teamPoints sums a doubles team's entered scores for a round. The bool reports
-// whether EITHER seat had a score, so a court with nothing entered can be told
-// apart from one legitimately scored 0.
+// teamPoints sums a doubles team's entered scores for a round.
+// The bool reports whether EVERY seat on the team has a score — a partially
+// entered team must NOT be compared against a fully entered one, or half a
+// team's points lose to the opponent's full total and the winner inverts.
 func teamPoints(scoreOf map[string]int, team [2]string) (int, bool) {
-	total, any := 0, false
+	total, complete := 0, true
 	for _, pid := range team {
-		if v, ok := scoreOf[pid]; ok {
-			total += v
-			any = true
+		if pid == "" {
+			continue // empty seat (odd roster) — not a missing score
 		}
+		v, ok := scoreOf[pid]
+		if !ok {
+			complete = false
+			continue
+		}
+		total += v
 	}
-	return total, any
+	return total, complete
 }
+
+// maxScorecardRounds bounds the scorecard's column count. The grid renders one
+// column per round from 1..max, so an unbounded round would brick the board.
+const maxScorecardRounds = 60
 
 // rotationScoresReady reports whether add_rotation_round_scores.sql has run.
 func (s *Service) rotationScoresReady() bool {
@@ -218,12 +228,26 @@ func (s *Service) rotationScorecard(sessionID string, currentRound int) (model.R
 	if !s.rotationScoresReady() {
 		return card, totals
 	}
-	card.Enabled = true
-	rows, err := s.sb.Select("rotation_round_scores",
+	card.Available = true
+	// SelectAll (Range-paginated): PostgREST truncates a plain Select at ~1000
+	// rows, which a long session (players × rounds) can exceed — a truncated read
+	// would silently under-count totals.
+	rows, err := s.sb.SelectAll("rotation_round_scores",
 		"session_id=eq."+store.Q(sessionID)+"&select=round,rotation_player_id,score")
 	if err != nil {
+		// Leave Enabled=false on a read failure: standings then fall back to wins
+		// rather than presenting an all-zero leaderboard as if it were real.
 		return card, totals
 	}
+	// PER-SESSION opt-in. Enabled must NOT mean merely "the table exists" — that
+	// flipped every existing rotation session into scorecard mode the moment the
+	// migration ran, stripping their who-won taps and zeroing their standings. A
+	// session is in scorecard mode only once it actually has scorecard rows (the
+	// organizer tapped "Add round" or entered a score).
+	if len(rows) == 0 {
+		return card, totals
+	}
+	card.Enabled = true
 	// Columns run to whichever is further along: the round the ENGINE is on, or
 	// the furthest round the organizer has created on the scorecard. A row with a
 	// NULL score is exactly that marker — "this column exists but is blank" —
@@ -279,6 +303,19 @@ func (s *Service) AddScorecardRound(sessionID string) (int, error) {
 		}
 	}
 	next++
+	if next > maxScorecardRounds {
+		return 0, fmt.Errorf("a scorecard can hold at most %d rounds", maxScorecardRounds)
+	}
+	// Never upsert onto an existing round: the merge would overwrite real scores
+	// with NULLs. next is max+1 so this should be impossible — it guards a race
+	// between two organizers tapping "Add round" at once.
+	if dup, derr := s.sb.SelectOne("rotation_round_scores",
+		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(next)+
+			"&select=id"); derr != nil {
+		return 0, derr
+	} else if dup != nil {
+		return 0, errors.New("that round already exists — refresh and try again")
+	}
 	players, _, err := s.rotationPlayers(sessionID)
 	if err != nil {
 		return 0, err
@@ -335,7 +372,11 @@ func (s *Service) SetRotationScore(sessionID string, round int, playerID string,
 	if !s.rotationScoresReady() {
 		return ErrCoachingUnavailable // migration not run yet
 	}
-	if round < 1 || strings.TrimSpace(playerID) == "" {
+	// Bound the round HARD. The board renders a column for every round from 1 to
+	// the max stored, so an unbounded value (round=100000) would build a column
+	// list that size on every board read — bricking the session and chewing
+	// memory. No real ladder night runs anywhere near this many rounds.
+	if round < 1 || round > maxScorecardRounds || strings.TrimSpace(playerID) == "" {
 		return errors.New("round and player are required")
 	}
 	// The player must belong to THIS session — otherwise an organizer could write
@@ -782,15 +823,28 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		cur = append(cur, engine.RotCourt{Court: court, TeamA: teamA, TeamB: teamB})
 
 		w := ""
-		// Prefer the scorecard. Only decide when at least one side was scored, and
-		// leave a tie undecided so it falls through to the existing default.
-		aPts, aHas := teamPoints(scoreOf, teamA)
-		bPts, bHas := teamPoints(scoreOf, teamB)
-		if aHas || bHas {
+		// Decide from the scorecard ONLY when BOTH teams are fully entered — a
+		// half-typed court would otherwise compare one player's points against two
+		// and hand the win to the wrong side. A tie stays undecided and falls
+		// through to the default below.
+		aPts, aFull := teamPoints(scoreOf, teamA)
+		bPts, bFull := teamPoints(scoreOf, teamB)
+		if aFull && bFull && (aPts > 0 || bPts > 0) {
 			if aPts > bPts {
 				w = "a"
 			} else if bPts > aPts {
 				w = "b"
+			}
+			// PERSIST it: the tally RPC only credits a win when
+			// rotation_round_courts.winner is 'a'/'b'. Without this the scorecard
+			// drove movement but every player finished the session with 0 wins, so
+			// the documented tiebreak was dead and the UI showed a false "0W".
+			if w != "" {
+				_, _ = s.sb.Update("rotation_round_courts",
+					"session_id=eq."+store.Q(sessionID)+
+						"&round=eq."+fmt.Sprint(round)+
+						"&court=eq."+fmt.Sprint(court),
+					map[string]any{"winner": w, "reported_at": nowRFC3339()})
 			}
 		}
 		if w == "" {

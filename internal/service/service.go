@@ -10513,7 +10513,7 @@ func (s *Service) PostToEventFeed(eventID, userID, email, text string, announcem
 	if isAnnouncement {
 		postType = "announcement"
 	}
-	item, err := s.insertFeedItem(eventID, postType, text, name, mediaURL, mediaType)
+	item, err := s.insertFeedItem(eventID, postType, text, name, userID, mediaURL, mediaType)
 	if err != nil {
 		return model.FeedItem{}, err
 	}
@@ -10571,7 +10571,7 @@ func (s *Service) notifyEventAudience(eventID, excludeUID, content string) {
 		content = string(r[:157]) + "…"
 	}
 	_ = s.sendPush(uids, heading, content,
-		"https://app.planmypickle.com/?event="+eventID)
+		"https://app.planmypickle.com/?event="+eventID+"&tab=feed")
 	s.recordNotifications(uids, "announcement", content, "playevent:"+eventID)
 }
 
@@ -10618,7 +10618,7 @@ func (s *Service) IsRegisteredInEvent(eventID, userID, email string) bool {
 }
 
 func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool, mediaURL, mediaType string) (model.FeedItem, error) {
-	item, err := s.insertFeedItem(eventID, "announcement", text, actorName, mediaURL, mediaType)
+	item, err := s.insertFeedItem(eventID, "announcement", text, actorName, "", mediaURL, mediaType)
 	if err != nil {
 		return model.FeedItem{}, err
 	}
@@ -10637,7 +10637,7 @@ func (s *Service) PostAnnouncement(eventID, text, actorName string, notify bool,
 // "announcement" or "post") and returns it. Shared by PostAnnouncement and
 // PostToEventFeed so validation + the media envelope live in one place. It does
 // NOT notify — callers decide who to ping.
-func (s *Service) insertFeedItem(eventID, postType, text, actorName, mediaURL, mediaType string) (model.FeedItem, error) {
+func (s *Service) insertFeedItem(eventID, postType, text, actorName, authorID, mediaURL, mediaType string) (model.FeedItem, error) {
 	text = strings.TrimSpace(text)
 	mediaURL = strings.TrimSpace(mediaURL)
 	// A post needs either words or an attachment.
@@ -10652,6 +10652,9 @@ func (s *Service) insertFeedItem(eventID, postType, text, actorName, mediaURL, m
 		"type":       postType,
 		"text":       text,
 		"actor_name": orNull(actorName),
+		// author_id ties the post to the poster's account so the feed can attach
+		// their profile photo (attachActorPhotos). Empty for system posts.
+		"author_id": orNull(authorID),
 	}
 	if mediaURL != "" {
 		if mediaType != "video" && mediaType != "image" {
@@ -10704,7 +10707,7 @@ func (s *Service) notifyEventPlayers(eventID, text string) {
 		content = string(r[:157]) + "…"
 	}
 	_ = s.sendPush(uids, heading, content,
-		"https://app.planmypickle.com/?event="+eventID)
+		"https://app.planmypickle.com/?event="+eventID+"&tab=feed")
 	// File the organizer's announcement in each player's bell.
 	s.recordNotifications(uids, "announcement", content, "playevent:"+eventID)
 }

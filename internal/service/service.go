@@ -10530,14 +10530,16 @@ func (s *Service) PostToEventFeed(eventID, userID, email, text string, announcem
 	} else {
 		content = name + " posted"
 	}
-	go s.notifyEventAudience(eventID, userID, content)
+	go s.notifyEventAudience(eventID, item.ID, userID, content)
 	return item, nil
 }
 
 // notifyEventAudience pushes + files a bell notification for an event's approved
 // players AND its owner, skipping excludeUID (the person who triggered it). Used
-// for feed posts so a poster is never notified of their own post.
-func (s *Service) notifyEventAudience(eventID, excludeUID, content string) {
+// for feed posts so a poster is never notified of their own post. feedItemID,
+// when set, deep-links straight to that specific post (both the push URL and the
+// in-app bell open the single-post view, not just the Feed tab).
+func (s *Service) notifyEventAudience(eventID, feedItemID, excludeUID, content string) {
 	rows, err := s.sb.SelectAll("registrations",
 		"event_id=eq."+store.Q(eventID)+s.approvedRegFilter()+
 			"&select=player:players!player_id(user_id)")
@@ -10570,9 +10572,16 @@ func (s *Service) notifyEventAudience(eventID, excludeUID, content string) {
 	if r := []rune(content); len(r) > 160 {
 		content = string(r[:157]) + "…"
 	}
-	_ = s.sendPush(uids, heading, content,
-		"https://app.planmypickle.com/?event="+eventID+"&tab=feed")
-	s.recordNotifications(uids, "announcement", content, "playevent:"+eventID)
+	// Deep-link to the specific post when we have its id, else fall back to the
+	// event's Feed tab.
+	pushURL := "https://app.planmypickle.com/?event=" + eventID + "&tab=feed"
+	bellLink := "playevent:" + eventID
+	if feedItemID != "" {
+		pushURL = "https://app.planmypickle.com/?feed=" + feedItemID
+		bellLink = "feed:" + feedItemID
+	}
+	_ = s.sendPush(uids, heading, content, pushURL)
+	s.recordNotifications(uids, "announcement", content, bellLink)
 }
 
 // approvedPlayerName returns the caller's display name and whether they are a

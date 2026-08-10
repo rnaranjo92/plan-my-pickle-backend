@@ -329,22 +329,44 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 	// TAGGED substitute registration for this contact in this event first (never
 	// touches a real member who happens to share the number).
 	if s.columnReady("registrations", "is_substitute") {
+		// Contacts are stored RAW on players (the app sends "(619) 555-0100" and
+		// mixed-case emails), so an exact eq. on the NORMALIZED value matched
+		// nothing and this cleanup silently no-opped — the very next
+		// RegisterPlayer then failed with "already registered" mid-session.
+		// Match email case-insensitively and compare normalized phones in Go.
 		e := strings.ToLower(strings.TrimSpace(email))
 		np := normPhone(phone)
-		var pf string
+		pidSet := map[string]bool{}
 		if np != "" {
-			pf = "phone=eq." + store.Q(np)
-		} else if e != "" {
-			pf = "email=eq." + store.Q(e)
-		}
-		if pf != "" {
-			if prows, _ := s.sb.Select("players", pf+"&select=id"); len(prows) > 0 {
-				if pids := idList(prows, "id"); len(pids) > 0 {
-					_ = s.sb.Delete("registrations",
-						"event_id=eq."+store.Q(eventID)+
-							"&player_id="+store.In(pids)+"&is_substitute=is.true")
+			tail := np
+			if len(tail) > 7 {
+				tail = tail[len(tail)-7:]
+			}
+			if prows, _ := s.sb.Select("players",
+				"phone=ilike."+store.Q("%"+escapeLike(tail)+"%")+"&select=id,phone"); len(prows) > 0 {
+				for _, r := range prows {
+					if normPhone(asStr(r, "phone")) == np {
+						pidSet[asStr(r, "id")] = true
+					}
 				}
 			}
+		}
+		if len(pidSet) == 0 && e != "" {
+			if prows, _ := s.sb.Select("players",
+				"email=ilike."+store.Q(escapeLike(e))+"&select=id"); len(prows) > 0 {
+				for _, id := range idList(prows, "id") {
+					pidSet[id] = true
+				}
+			}
+		}
+		if len(pidSet) > 0 {
+			pids := make([]string, 0, len(pidSet))
+			for id := range pidSet {
+				pids = append(pids, id)
+			}
+			_ = s.sb.Delete("registrations",
+				"event_id=eq."+store.Q(eventID)+
+					"&player_id="+store.In(pids)+"&is_substitute=is.true")
 		}
 	}
 	sub, err := s.RegisterPlayer(eventID, model.RegisterRequest{

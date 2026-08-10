@@ -9496,8 +9496,11 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 			}
 		}
 		if len(pids) > 0 {
+			// APPROVED registrations only — otherwise a pending registrant is
+			// denied the event's feed on GET /events/{id}/feed but handed the same
+			// posts here in their NewsFeed.
 			if regs, err := s.sb.Select("registrations",
-				"player_id="+store.In(pids)+"&select=event_id"); err == nil {
+				"player_id="+store.In(pids)+s.approvedRegFilter()+"&select=event_id"); err == nil {
 				for _, r := range regs {
 					if id := asStr(r, "event_id"); id != "" {
 						idSet[id] = struct{}{}

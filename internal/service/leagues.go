@@ -1136,11 +1136,14 @@ func (s *Service) enrollLeaguePlayersForEvent(coachID, eventID string) {
 	}
 	// Never back-enroll one-night substitutes as coaching students (they carry
 	// SkipCoachEnroll at register time; the backfill must honor the same rule).
-	filter := "event_id=eq." + store.Q(eventID) + "&select=player_id"
+	// APPROVED registrations only — the live register path defers coach enrollment
+	// for pending entries ("an unapproved stranger must not land on the coach's
+	// roster"); this backfill must honor the same approval queue.
+	filter := "event_id=eq." + store.Q(eventID) + s.approvedRegFilter()
 	if s.columnReady("registrations", "is_substitute") {
-		filter = "event_id=eq." + store.Q(eventID) +
-			"&is_substitute=is.false&select=player_id"
+		filter += "&is_substitute=is.false"
 	}
+	filter += "&select=player_id"
 	regs, err := s.sb.Select("registrations", filter)
 	if err != nil {
 		return

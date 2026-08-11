@@ -295,10 +295,46 @@ func (s *Service) PublicLeagueByID(id string) (model.PublicLeague, []model.Event
 //     player_id matches one of the caller's player rows → league_bracket →
 //     league.
 //
-// Returns a deduped set keyed by league id. An empty caller (no player rows)
-// yields an empty set.
+//   - an ACTIVE member of the league's roster (league_members), i.e. the
+//     organizer invited them. This one is deliberately NOT player-row based —
+//     see below.
+//
+// Returns a deduped set keyed by league id.
 func (s *Service) leagueIDsForUser(userID, email string) (map[string]bool, error) {
 	out := map[string]bool{}
+
+	// (0) INVITED — an active league_members row. This MUST run before the
+	// no-player-rows early return below: an invited member has no players row
+	// until they're put in a bracket or registered for an event, so bailing
+	// early hid every invite-only league from MyLeagues. The league was still
+	// readable by link (IsLeagueMember gates that), just invisible in the list.
+	//
+	// Match on user_id OR email, exactly like isActiveLeagueMember — the list
+	// and the read gate must agree, or a league appears and then 403s. Phone
+	// needs no branch: AddLeagueMember resolves a known phone to user_id at
+	// insert, and ClaimLeagueInvite binds user_id when the invite is claimed.
+	if s.leagueMembersReady() {
+		filters := []string{}
+		if userID != "" {
+			filters = append(filters, "user_id=eq."+store.Q(userID))
+		}
+		if e := strings.ToLower(strings.TrimSpace(email)); e != "" {
+			filters = append(filters, "email=eq."+store.Q(e))
+		}
+		for _, f := range filters {
+			rows, err := s.sb.Select("league_members",
+				f+"&left_at=is.null&select=league_id")
+			if err != nil {
+				return nil, err
+			}
+			for _, r := range rows {
+				if lid := asStr(r, "league_id"); lid != "" {
+					out[lid] = true
+				}
+			}
+		}
+	}
+
 	pidList, err := s.playerIDsForUser(userID, email)
 	if err != nil {
 		return nil, err

@@ -10317,31 +10317,42 @@ func (s *Service) UserOwnsEvent(uid, eventID string) bool {
 func (s *Service) accountForContact(email, phone, name string) string {
 	email = strings.TrimSpace(email)
 	phone = strings.TrimSpace(phone)
-	name = strings.TrimSpace(name)
-	// 1) A known account identified by email. pmp_profiles holds no email, but a
-	// player row already tied to an account carries the email it registered with.
-	if email != "" {
-		if r, _ := s.sb.SelectOne("players",
-			"user_id=not.is.null&email=ilike."+store.Q(escapeLike(email))+"&select=user_id"); r != nil {
-			if uid := asStr(r, "user_id"); uid != "" {
+	_ = name // deliberately unused — see below.
+
+	// 1) Ask the DB, which can see auth.users (this Go code cannot) and compares
+	// phones on their last 10 digits. This is the ONLY branch that can find an
+	// account that has never registered for an event, and the only one immune to
+	// phone formatting ("(619) 555-0100" vs "6195550100" — raw string equality
+	// never matched those). It returns a match ONLY when it is unambiguous.
+	//
+	// The NAME is intentionally unused. Organizers type nicknames and
+	// misspellings — a real roster row read "Kay" for an account whose name is
+	// "Kim Naranji" — so requiring the name to match silently refused to link
+	// people who WERE correctly identified by email or phone. Email and phone are
+	// identifiers; a name is not, and matching on a name alone would attach
+	// strangers to each other's accounts.
+	if email != "" || phone != "" {
+		args := map[string]any{}
+		if email != "" {
+			args["p_email"] = email
+		}
+		if phone != "" {
+			args["p_phone"] = phone
+		}
+		if body, err := s.sb.RPC("pmp_account_by_contact", args); err == nil {
+			if uid := strings.Trim(strings.TrimSpace(string(body)), `"`); uid != "" &&
+				uid != "null" {
 				return uid
 			}
 		}
 	}
-	if phone != "" && name != "" {
-		// 2) An account matched by phone + name on pmp_profiles — covers a player
-		// who has an account (and photo) but has never registered for an event.
-		if r, _ := s.sb.SelectOne("pmp_profiles",
-			"phone=eq."+store.Q(phone)+"&full_name=ilike."+store.Q(escapeLike(name))+
-				"&select=user_id"); r != nil {
-			if uid := asStr(r, "user_id"); uid != "" {
-				return uid
-			}
-		}
-		// 3) Or a player row already linked to an account with the same phone+name.
+
+	// 2) Fallback for the pre-migration window, and for a player row whose
+	// REGISTRATION email differs from the address on the account: an
+	// account-linked players row carrying this email.
+	if email != "" {
 		if r, _ := s.sb.SelectOne("players",
-			"user_id=not.is.null&phone=eq."+store.Q(phone)+
-				"&full_name=ilike."+store.Q(escapeLike(name))+"&select=user_id"); r != nil {
+			"user_id=not.is.null&email=ilike."+store.Q(escapeLike(email))+"&select=user_id"); r != nil {
 			if uid := asStr(r, "user_id"); uid != "" {
 				return uid
 			}

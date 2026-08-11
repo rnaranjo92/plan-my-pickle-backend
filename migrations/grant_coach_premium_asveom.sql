@@ -1,31 +1,26 @@
--- Grant ASveom@lt.life BOTH coach access and Premium.
+-- Coach + Premium for ASveom@lt.life, using their known account id directly.
+-- user_id: 28f2f7ea-384c-4982-9108-3879dae9cfb1
 --
--- NOTE: block 0 creates the `instructors` table, which had NEVER been run in
--- production. Until now coach access was effectively owners-only (the two
--- founding-owner emails are coaches in code); the "Manage coaches" screen and
--- POST /admin/instructors silently no-opped because the backend probes for this
--- table via columnReady and falls back when it's missing. Running this once
--- turns that whole feature on.
+-- Using the UID avoids depending on a subquery against auth.users, which the
+-- SQL editor may return 0 rows for depending on schema access.
 --
--- Two independent grants, stored in different places:
---   1. COACH ACCESS -> a row in `instructors`, matched by EMAIL by
---      Service.IsInstructor(). Unlocks the "Coach" tab / instructor mode.
---      The email MUST be stored LOWERCASE: IsInstructor lowercases the caller's
---      email and does an exact match, so "ASveom@lt.life" would never match.
---   2. PREMIUM -> pmp_profiles.premium, read by Service.IsPremium().
+-- Coach access is matched BY EMAIL (Service.IsInstructor), so the email MUST be
+-- stored lowercase — a stored "ASveom@lt.life" would silently never match and
+-- they'd see no Coach tab with no error. user_id is informational but worth
+-- setting. Premium is keyed by user_id (Service.IsPremium reads
+-- pmp_profiles.premium) and only matters once SUBSCRIPTIONS_ENABLED is on.
 --
--- The coach half works even before they sign up (it matches on email). The
--- Premium half needs an auth.users row — if they're new, re-run block 2 after
--- they create their account.
---
--- HOW TO RUN: Supabase dashboard -> SQL Editor -> paste -> Run.
+-- Safe to re-run. HOW TO RUN: Supabase dashboard -> SQL Editor -> paste -> Run.
+-- Allow ~2 min before testing: the backend negative-caches a missing table for
+-- two minutes, so it may briefly still think `instructors` is absent.
 
--- 0) CREATE THE COACH ALLOWLIST TABLE (migrations/add_instructors.sql) ---------
+-- 0) Coach allowlist table (had never been run in prod, which is why
+--    "Manage coaches" silently did nothing) --------------------------------
 create table if not exists instructors (
   id         uuid primary key default gen_random_uuid(),
   email      text not null,
   name       text,
-  user_id    uuid,               -- resolved account id when known (informational)
+  user_id    uuid,
   created_at timestamptz not null default now()
 );
 create unique index if not exists instructors_email_idx on instructors (lower(email));
@@ -34,12 +29,16 @@ alter table instructors enable row level security;
 
 -- 1) COACH ACCESS -------------------------------------------------------------
 insert into instructors (email, name, user_id)
-select lower('ASveom@lt.life'),
-       null,
-       (select id from auth.users where lower(email) = lower('ASveom@lt.life'))
+select lower('ASveom@lt.life'), null, '28f2f7ea-384c-4982-9108-3879dae9cfb1'::uuid
 where not exists (
   select 1 from instructors where lower(email) = lower('ASveom@lt.life')
 );
+
+-- If a row already existed without the account link, attach it now.
+update instructors
+   set user_id = '28f2f7ea-384c-4982-9108-3879dae9cfb1'::uuid
+ where lower(email) = lower('ASveom@lt.life')
+   and user_id is null;
 
 -- 2) PREMIUM ------------------------------------------------------------------
 alter table pmp_profiles
@@ -47,26 +46,17 @@ alter table pmp_profiles
 alter table pmp_profiles
   add column if not exists subscription_status text;
 
-with target as (
-  select id as user_id
-  from auth.users
-  where lower(email) = lower('ASveom@lt.life')
-)
 insert into pmp_profiles (user_id, premium, subscription_status)
-select user_id, true, 'comped' from target
+values ('28f2f7ea-384c-4982-9108-3879dae9cfb1'::uuid, true, 'comped')
 on conflict (user_id) do update
   set premium = true,
       subscription_status = 'comped';
 
--- 3) VERIFY -------------------------------------------------------------------
--- Coach row: expect 1 row, email stored lowercase.
-select 'coach' as grant, email, user_id is not null as linked_to_account
+-- 3) VERIFY — expect one row from each ----------------------------------------
+select 'coach' as grant, email, user_id
 from instructors
 where lower(email) = lower('ASveom@lt.life');
 
--- Premium row: expect 1 row with premium = true. ZERO rows just means they
--- haven't signed up yet — the coach grant still works; re-run block 2 later.
-select 'premium' as grant, u.email, p.premium, p.subscription_status
-from pmp_profiles p
-join auth.users u on u.id = p.user_id
-where lower(u.email) = lower('ASveom@lt.life');
+select 'premium' as grant, user_id, premium, subscription_status
+from pmp_profiles
+where user_id = '28f2f7ea-384c-4982-9108-3879dae9cfb1'::uuid;

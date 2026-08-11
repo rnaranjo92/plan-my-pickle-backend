@@ -1070,16 +1070,24 @@ func (s *Service) playerIDsForUser(userID, email string) ([]string, error) {
 			playerIDs[asStr(p, "id")] = true
 		}
 	}
-	// Also include GUEST registrations made by phone (no email): match rows on
-	// phone AND name (name required — a bare phone can be a shared household
-	// number). Mirrors LinkRegistrationsToAccount's conservative rule. Read-only:
-	// this surfaces the events without mutating any player/registration rows.
+	// Also include GUEST registrations made by phone (no email). The phone is
+	// compared on its LAST 10 DIGITS via pmp_player_ids_by_phone: both sides
+	// store whatever a human typed, and the two humans differ (organizer vs
+	// player), so the old `phone=eq.<raw>` matched only when the formatting
+	// happened to be identical — "(619) 555-0100" never matched "6195550100".
+	//
+	// The NAME is still required here, unlike the organizer-add path. This is a
+	// READ that decides which registrations are YOURS, and a phone can be shared
+	// (a couple on one number) — matching on it alone would show one spouse the
+	// other's events and private event feeds. namesLooselyMatch tolerates the
+	// realistic variation (case, punctuation, "Kay" vs "Kay Naranjo") without
+	// opening that door.
 	if phone != "" && name != "" {
-		if pls, err := s.sb.Select("players",
-			"phone=eq."+store.Q(phone)+"&full_name=ilike."+store.Q(escapeLike(name))+
-				"&select=id"); err == nil {
-			for _, p := range pls {
-				playerIDs[asStr(p, "id")] = true
+		for _, pid := range s.playerIDsByPhone(phone, false) {
+			if pl, _ := s.sb.SelectOne("players",
+				"id=eq."+store.Q(pid)+"&select=full_name"); pl != nil &&
+				namesLooselyMatch(name, asStr(pl, "full_name")) {
+				playerIDs[pid] = true
 			}
 		}
 	}
@@ -10271,13 +10279,109 @@ func (s *Service) LinkRegistrationsToAccount(userID, email, tokenPhone, tokenNam
 	if e := strings.TrimSpace(email); e != "" {
 		promote("email=ilike." + store.Q(escapeLike(e)))
 	}
+	// Phone claim: last-10-digit comparison (see playerIDsByPhone) instead of the
+	// old `phone=eq.<raw>`, which required the guest row and the account to have
+	// been typed in the SAME format and so almost never fired. Name still
+	// required — a shared household number must not let one person claim the
+	// other's guest registrations — but compared loosely.
 	if phone != "" && name != "" {
-		promote("phone=eq." + store.Q(phone) + "&full_name=ilike." + store.Q(escapeLike(name)))
+		for _, pid := range s.playerIDsByPhone(phone, true) {
+			if hasCanonical {
+				break
+			}
+			if pl, _ := s.sb.SelectOne("players",
+				"id=eq."+store.Q(pid)+"&select=full_name"); pl != nil &&
+				namesLooselyMatch(name, asStr(pl, "full_name")) {
+				promote("id=eq." + store.Q(pid))
+			}
+		}
 	}
 	if linked > 0 {
 		log.Printf("link: promoted a guest player to account %s", userID)
 	}
 	return linked
+}
+
+// playerIDsByPhone returns the player rows whose phone matches, comparing the
+// LAST 10 DIGITS so formatting never decides the outcome. Both players.phone and
+// pmp_profiles.phone hold the number exactly as some human typed it, and the two
+// humans differ (organizer vs player) — so raw string equality, which every one
+// of these lookups used to use, failed on punctuation alone.
+//
+// unlinkedOnly restricts to guest rows for the signup claimer; a row already
+// tied to an account belongs to someone else. Returns nil on any error or before
+// the migration has run, which keeps every caller at its previous behavior
+// rather than guessing.
+func (s *Service) playerIDsByPhone(phone string, unlinkedOnly bool) []string {
+	if len(normPhone(phone)) < 10 {
+		return nil
+	}
+	body, err := s.sb.RPC("pmp_player_ids_by_phone", map[string]any{
+		"p_phone":         phone,
+		"p_unlinked_only": unlinkedOnly,
+	})
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	if json.Unmarshal(body, &ids) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// namesLooselyMatch compares two human-entered names for the phone-match checks.
+// It ignores case, punctuation and extra spaces, and treats a single given name
+// as matching a fuller one ("Kay" ≈ "Kay Naranjo") — organizers and players type
+// names inconsistently, and an exact compare rejected obviously-same people.
+//
+// It deliberately stays STRICT about the first name: "Kay" must not match "Kim
+// Naranji". These callers use the name as the guard that keeps a shared
+// household phone number from letting one person claim another's registrations,
+// so loosening it further would trade a real privacy boundary for convenience.
+func namesLooselyMatch(a, b string) bool {
+	norm := func(s string) []string {
+		var sb strings.Builder
+		for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+			switch {
+			case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+				sb.WriteRune(r)
+			case r == '\'' || r == '’':
+				// Apostrophes are DROPPED, not split on, so "O'Brien" normalizes to
+				// one token matching "OBrien". Splitting there produced "o"+"brien"
+				// and rejected the same person.
+			default:
+				// Hyphens, commas, periods etc. separate: "Mary-Jane" == "Mary Jane".
+				sb.WriteRune(' ')
+			}
+		}
+		return strings.Fields(sb.String())
+	}
+	fa, fb := norm(a), norm(b)
+	if len(fa) == 0 || len(fb) == 0 {
+		return false
+	}
+	// Compare the token SET, so "Naranjo, Kay" matches "Kay Naranjo" — rosters and
+	// CSV imports routinely carry surname-first. Comparing sets (not just the
+	// first token) keeps "Anne Manalili" and "Anne Coloso" apart.
+	sa, sb2 := append([]string(nil), fa...), append([]string(nil), fb...)
+	sort.Strings(sa)
+	sort.Strings(sb2)
+	if strings.Join(sa, " ") == strings.Join(sb2, " ") {
+		return true
+	}
+	// One side is just a given name (or a nickname-length fragment) — accept it
+	// only when the FIRST names agree.
+	if (len(fa) == 1 || len(fb) == 1) && fa[0] == fb[0] {
+		return true
+	}
+	return false
 }
 
 // accountForContact resolves the account (user_id) that a manually-registered

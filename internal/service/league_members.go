@@ -124,11 +124,18 @@ func (s *Service) AddLeagueMember(leagueID, ownerID, callerEmail, name, email, p
 		"email":     orNull(email),
 		"phone":     orNull(np),
 	}
-	// Resolve to an account so a registered player links immediately.
-	resolved := s.userIDByEmail(email)
-	if resolved == "" && np != "" {
-		resolved = s.userIDByPhone(np)
-	}
+	// Resolve to an account so an existing player links immediately instead of
+	// being texted an invite they don't need.
+	//
+	// Uses the shared accountForContact resolver (auth.users by email, last-10
+	// digits by phone). The old pair of helpers this replaced both missed real
+	// accounts: userIDByEmail searched only `players`, so anyone who had an
+	// account but had never registered for an event was invisible; and
+	// userIDByPhone pre-filtered with `phone=like.*<digits>` against numbers
+	// stored as "(619) 889-0619", which cannot match. Members is the invite flow,
+	// so a miss here is the difference between a player being linked on the spot
+	// and being sent a signup link they shouldn't need.
+	resolved := s.accountForContact(email, np, name)
 	if resolved != "" {
 		row["user_id"] = resolved
 	}

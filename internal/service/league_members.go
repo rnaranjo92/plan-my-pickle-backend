@@ -48,23 +48,47 @@ func mapLeagueMember(m map[string]any) model.LeagueMember {
 	}
 }
 
-// AddLeagueMember adds someone to a league's roster and invites them (owner
-// only). Resolves an existing account by email/phone so a registered player
-// links immediately; otherwise mints an invite token + texts/emails a join link.
-func (s *Service) AddLeagueMember(leagueID, ownerID, name, email, phone string) (model.LeagueMember, error) {
-	if !s.leagueMembersReady() {
-		return model.LeagueMember{}, errors.New("league membership isn't available yet")
-	}
+// staff reports whether this caller holds the support/QA super-user grant and so
+// may act as the owner of any entity. See Service.IsStaffEmail.
+//
+// Ownership is normally enforced up in the API layer (ownerOnly/ladderOwnerOK),
+// which already honors the grant. The handful of service methods that ALSO check
+// owner_id themselves were invisible to it, so a super user passed the route gate
+// and then hit a 403 from inside the service — which is exactly what stopped a
+// support account from adding members to another organizer's league.
+func (s *Service) staff(email string) bool {
+	return s.IsStaffEmail != nil && s.IsStaffEmail(email)
+}
+
+// canManageLeague returns the league row when the caller may WRITE to it — its
+// owner, or a super user — and ErrForbidden otherwise. ErrNotFound for a missing
+// league, so callers keep their existing not-found behavior.
+func (s *Service) canManageLeague(leagueID, callerID, callerEmail string) (map[string]any, error) {
 	lg, err := s.sb.SelectOne("leagues",
 		"id=eq."+store.Q(leagueID)+"&select=owner_id,name")
 	if err != nil {
-		return model.LeagueMember{}, err
+		return nil, err
 	}
 	if lg == nil {
-		return model.LeagueMember{}, ErrNotFound
+		return nil, ErrNotFound
 	}
-	if asStr(lg, "owner_id") != ownerID {
-		return model.LeagueMember{}, ErrForbidden
+	if asStr(lg, "owner_id") != callerID && !s.staff(callerEmail) {
+		return nil, ErrForbidden
+	}
+	return lg, nil
+}
+
+// AddLeagueMember adds someone to a league's roster and invites them (owner, or a
+// super user doing field support). Resolves an existing account by email/phone so
+// a registered player links immediately; otherwise mints an invite token +
+// texts/emails a join link.
+func (s *Service) AddLeagueMember(leagueID, ownerID, callerEmail, name, email, phone string) (model.LeagueMember, error) {
+	if !s.leagueMembersReady() {
+		return model.LeagueMember{}, errors.New("league membership isn't available yet")
+	}
+	lg, err := s.canManageLeague(leagueID, ownerID, callerEmail)
+	if err != nil {
+		return model.LeagueMember{}, err
 	}
 	leagueName := asStr(lg, "name")
 
@@ -207,27 +231,23 @@ func (s *Service) ListLeagueMembers(leagueID string) ([]model.LeagueMember, erro
 	return out, nil
 }
 
-// RemoveLeagueMember soft-removes a member (owner only) — they stop being
-// auto-rostered into future sessions; past results stay on the leaderboard.
-func (s *Service) RemoveLeagueMember(leagueID, memberID, ownerID string) error {
+// RemoveLeagueMember soft-removes a member (owner, or a super user doing field
+// support) — they stop being auto-rostered into future sessions; past results
+// stay on the leaderboard. Reversible and history-preserving, which is why it
+// sits on the allowed side of the super-user delete boundary (removing the whole
+// LEAGUE never is).
+func (s *Service) RemoveLeagueMember(leagueID, memberID, ownerID, callerEmail string) error {
 	if !s.leagueMembersReady() {
 		return errors.New("league membership isn't available yet")
 	}
-	lg, err := s.sb.SelectOne("leagues", "id=eq."+store.Q(leagueID)+"&select=owner_id")
-	if err != nil {
+	if _, err := s.canManageLeague(leagueID, ownerID, callerEmail); err != nil {
 		return err
-	}
-	if lg == nil {
-		return ErrNotFound
-	}
-	if asStr(lg, "owner_id") != ownerID {
-		return ErrForbidden
 	}
 	// Grab the member's contact before removal so we can un-enroll them from the
 	// coach roster (no-op unless the league is coach-led).
 	m, _ := s.sb.SelectOne("league_members",
 		"id=eq."+store.Q(memberID)+"&league_id=eq."+store.Q(leagueID)+"&select=email,phone")
-	if _, err = s.sb.Update("league_members",
+	if _, err := s.sb.Update("league_members",
 		"id=eq."+store.Q(memberID)+"&league_id=eq."+store.Q(leagueID),
 		map[string]any{"left_at": now()}); err != nil {
 		return err
@@ -290,9 +310,10 @@ func (s *Service) applyLeagueSessionDefaults(leagueID, eventID string) {
 // substitute IN for that night only — the sub gets their own results, and the
 // absent player simply misses this session (they stay a league member). Doubles
 // partner linkage is preserved (the sub inherits the out player's partner). Owner
-// only. Best used BEFORE the draw is generated; if a draw already exists, the
-// organizer should regenerate it so the new pairing lands in the matches.
-func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email, phone string) (model.Registration, error) {
+// or super user. Best used BEFORE the draw is generated; if a draw already
+// exists, the organizer should regenerate it so the new pairing lands in the
+// matches.
+func (s *Service) SubstituteInSession(eventID, ownerID, callerEmail, outPlayerID, name, email, phone string) (model.Registration, error) {
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=owner_id,perpetual")
 	if err != nil {
 		return model.Registration{}, err
@@ -300,7 +321,7 @@ func (s *Service) SubstituteInSession(eventID, ownerID, outPlayerID, name, email
 	if ev == nil {
 		return model.Registration{}, ErrNotFound
 	}
-	if asStr(ev, "owner_id") != ownerID {
+	if asStr(ev, "owner_id") != ownerID && !s.staff(callerEmail) {
 		return model.Registration{}, ErrForbidden
 	}
 	// A perpetual (recurring-league) event is ONE ongoing tournament, so the

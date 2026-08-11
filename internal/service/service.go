@@ -47,6 +47,15 @@ type Service struct {
 	// PBV is the PB Vision partner-API gateway for paid Match Video Analysis.
 	// nil unless PBVISION_API_KEY is set — the feature stays dormant until then.
 	PBV *gateway.PBVision
+	// IsStaffEmail reports whether a caller may act as the OWNER of any entity —
+	// the support/QA super-user grant. Injected by the API layer, which owns the
+	// allowlist (superUserGrants + SUPERUSER_ALLOWLIST), so the few service
+	// methods that enforce ownership THEMSELVES can honor the same grant without
+	// duplicating the list and letting the two definitions drift apart.
+	//
+	// nil in tests and any caller that doesn't set it → staff() is false, i.e.
+	// strict ownership, which is the safe default.
+	IsStaffEmail func(email string) bool
 	// Serializes DrainDuprPendingDeletes (reconciler tick vs post-wipe kick).
 	duprDeleteDrain sync.Mutex
 	// brandingMu/brandingCols cache whether add_email_branding.sql has been applied

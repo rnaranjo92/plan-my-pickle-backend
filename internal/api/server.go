@@ -59,6 +59,10 @@ type Server struct {
 
 // NewServer wires the routes and returns the HTTP handler.
 func NewServer(svc *service.Service) http.Handler {
+	// Let the service honor the SAME super-user grant the route gates use. A few
+	// service methods check owner_id themselves (league members, session subs);
+	// without this they 403 a support account that ownerOnly just waved through.
+	svc.IsStaffEmail = isSuperUser
 	s := &Server{
 		svc:               svc,
 		phoneCheckin:      newRateLimiter(60, 60),
@@ -1425,7 +1429,7 @@ func (s *Server) addLeagueMember(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	m, err := s.svc.AddLeagueMember(r.PathValue("id"), userID(r),
+	m, err := s.svc.AddLeagueMember(r.PathValue("id"), userID(r), userEmail(r),
 		req.FullName, req.Email, req.Phone)
 	if err != nil {
 		status(w, err)
@@ -1436,7 +1440,7 @@ func (s *Server) addLeagueMember(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) removeLeagueMember(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.RemoveLeagueMember(r.PathValue("id"),
-		r.PathValue("memberId"), userID(r)); err != nil {
+		r.PathValue("memberId"), userID(r), userEmail(r)); err != nil {
 		status(w, err)
 		return
 	}
@@ -3996,7 +4000,7 @@ func (s *Server) substituteInSession(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	reg, err := s.svc.SubstituteInSession(r.PathValue("id"), userID(r),
+	reg, err := s.svc.SubstituteInSession(r.PathValue("id"), userID(r), userEmail(r),
 		req.OutPlayerId, req.Name, req.Email, req.Phone)
 	if err != nil {
 		status(w, err)

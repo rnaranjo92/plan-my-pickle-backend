@@ -6079,13 +6079,16 @@ func isOwnerInstructor(email string) bool {
 	return ownerInstructorEmails[strings.ToLower(strings.TrimSpace(email))]
 }
 
-// founderCoachEmails are the accounts that always get the COACH view (Coach tab).
-// Kept separate from the owner set so the two roles can diverge, but currently
-// both founding owners are coaches. Everyone else becomes a coach via the
-// instructors table.
-var founderCoachEmails = map[string]bool{
-	"krizhia_roxas29@yahoo.com": true,
-}
+// founderCoachEmails are accounts that ALWAYS get the COACH view (Coach tab),
+// independent of the instructors table. Kept separate from the owner set so the
+// two roles can diverge — being an owner/admin does not make you a coach.
+//
+// EMPTY as of 2026-08-11: krizhia_roxas29@yahoo.com was removed at the owner's
+// request, so coach access now comes ONLY from the instructors table (grant it
+// via Profile -> Manage coaches). Note she remains an OWNER for admin gates
+// (ownerInstructorEmails) and a super user for event editing — those are
+// separate roles and are unaffected.
+var founderCoachEmails = map[string]bool{}
 
 func isFounderCoach(email string) bool {
 	return founderCoachEmails[strings.ToLower(strings.TrimSpace(email))]

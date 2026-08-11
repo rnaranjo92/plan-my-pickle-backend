@@ -1026,6 +1026,19 @@ const ladderOnlyGrants = ""
 // launch. Also add these emails to the frontend _organizerEmails set.
 const organizerGrants = "motofreak26@hotmail.com,michellecruzsd@gmail.com"
 
+// superUserGrants: accounts that may EDIT ANY event, league, ladder or rotation
+// session as if they owned it — a staff/admin capability for running support and
+// QA across other organizers' events. This is a real privilege escalation, so it
+// is a short, explicit, auditable list: every owner-gated route honors it (see
+// ownerOnly + ladderOwnerOK). Overridable via SUPERUSER_ALLOWLIST; set that to a
+// bogus value to revoke instantly without a deploy.
+const superUserGrants = "krizhia_roxas29@yahoo.com"
+
+// isSuperUser reports whether this account may act as owner of ANY event.
+func isSuperUser(email string) bool {
+	return emailInAllowlist(email, os.Getenv("SUPERUSER_ALLOWLIST"), superUserGrants)
+}
+
 func organizerAllowed(email string) bool {
 	// Organizing is FREE and OPEN to everyone at full launch (2026-07-25) — the
 	// default is "*" (all signed-in users; POST /events + /leagues are requireAuth,
@@ -5993,7 +6006,7 @@ func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.Han
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		if owner == "" || owner != userID(r) {
+		if owner == "" || (owner != userID(r) && !isSuperUser(userEmail(r))) {
 			writeErr(w, http.StatusForbidden, errForbidden)
 			return
 		}
@@ -7505,7 +7518,7 @@ func ladderOwnerOK(w http.ResponseWriter, r *http.Request, owner string, err err
 		writeErr(w, http.StatusInternalServerError, err)
 		return false
 	}
-	if owner == "" || owner != userID(r) {
+	if owner == "" || (owner != userID(r) && !isSuperUser(userEmail(r))) {
 		writeErr(w, http.StatusForbidden, errForbidden)
 		return false
 	}

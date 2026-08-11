@@ -1034,6 +1034,43 @@ const organizerGrants = "motofreak26@hotmail.com,michellecruzsd@gmail.com"
 // bogus value to revoke instantly without a deploy.
 const superUserGrants = "krizhia_roxas29@yahoo.com"
 
+// superUserAllowed reports whether a SUPER USER may perform this request. They
+// get EDIT rights everywhere — that's the point of the support account — but
+// never the power to destroy a whole event, league, session, round or match.
+// Those deletes are irreversible and take history (scores, standings, payments)
+// with them, so they stay with the real owner.
+//
+// Routine support deletes are deliberately still allowed: removing a bad
+// registration, a roster member, a waitlist entry, a feed post, a finance line.
+// That IS the field work this account exists for.
+func superUserAllowed(r *http.Request) bool {
+	if r.Method != http.MethodDelete {
+		return true
+	}
+	seg := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	n := len(seg)
+	switch {
+	// Whole entities: /events/{id}, /leagues/{id}, /rotation-sessions/{id},
+	// /rounds/{id}, /matches/{id}, /teams/{id}, /flex-teams/{id}
+	case n == 2:
+		switch seg[0] {
+		case "events", "leagues", "rotation-sessions", "rounds", "matches",
+			"teams", "flex-teams":
+			return false
+		}
+	// /events/{id}/session — a whole league session
+	case n == 3 && seg[0] == "events" && seg[2] == "session":
+		return false
+	// /leagues/{id}/schedule — wipes the schedule
+	case n == 3 && seg[0] == "leagues" && seg[2] == "schedule":
+		return false
+	// /leagues/{id}/events/{eventId} — pulls an event out of a league
+	case n == 4 && seg[0] == "leagues" && seg[2] == "events":
+		return false
+	}
+	return true
+}
+
 // isSuperUser reports whether this account may act as owner of ANY event.
 func isSuperUser(email string) bool {
 	return emailInAllowlist(email, os.Getenv("SUPERUSER_ALLOWLIST"), superUserGrants)
@@ -6006,7 +6043,9 @@ func (s *Server) ownerOnly(kind, idParam string, next http.HandlerFunc) http.Han
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		if owner == "" || (owner != userID(r) && !isSuperUser(userEmail(r))) {
+		if owner == "" ||
+			(owner != userID(r) &&
+				!(isSuperUser(userEmail(r)) && superUserAllowed(r))) {
 			writeErr(w, http.StatusForbidden, errForbidden)
 			return
 		}
@@ -7518,7 +7557,9 @@ func ladderOwnerOK(w http.ResponseWriter, r *http.Request, owner string, err err
 		writeErr(w, http.StatusInternalServerError, err)
 		return false
 	}
-	if owner == "" || (owner != userID(r) && !isSuperUser(userEmail(r))) {
+	if owner == "" ||
+		(owner != userID(r) &&
+			!(isSuperUser(userEmail(r)) && superUserAllowed(r))) {
 		writeErr(w, http.StatusForbidden, errForbidden)
 		return false
 	}

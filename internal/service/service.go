@@ -5077,6 +5077,7 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	for i := range out {
 		if uids[i] != "" {
 			out[i].PhotoURL = photos[uids[i]]
+			out[i].HasAccount = true
 		}
 	}
 	return out, nil

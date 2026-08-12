@@ -500,3 +500,175 @@ func (s *Service) sendLeagueInvite(leagueName, email, name, token string) {
 		log.Printf("league: invite email to %s failed: %v", email, err)
 	}
 }
+
+// InviteRegistrant texts/emails a roster player a link to get into the app, and
+// reports which channels were used.
+//
+// Why this exists: adding someone to an event roster sends them NOTHING. An
+// organizer can fill a roster from a paper signup sheet and every one of those
+// players is invisible to the app — no invite, no account, and no way for them
+// to see the event they were told they're in. The only flow that ever sent an
+// invite was League -> Members, which is a different screen entirely (and on a
+// perpetual league, was unreachable). This closes that gap from the roster,
+// where the organizer already is.
+//
+// For a LEAGUE event it reuses the league_members invite so the link makes them
+// a member of the whole league, not just today's session — same token flow,
+// so claiming binds their account no matter which email/phone they sign up with.
+// A standalone tournament gets a plain link to the event.
+//
+// Refuses when the player is already on an account (nothing to invite them to)
+// or has no contact details at all (nothing to send to) — both are states the
+// caller should surface rather than silently swallow.
+func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string) (sms bool, email bool, err error) {
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=owner_id,name,league_id")
+	if err != nil {
+		return false, false, err
+	}
+	if ev == nil {
+		return false, false, ErrNotFound
+	}
+	if asStr(ev, "owner_id") != callerID && !s.staff(callerEmail) {
+		return false, false, ErrForbidden
+	}
+
+	reg, err := s.sb.SelectOne("registrations",
+		"id=eq."+store.Q(regID)+"&event_id=eq."+store.Q(eventID)+"&select=player_id")
+	if err != nil {
+		return false, false, err
+	}
+	if reg == nil {
+		return false, false, ErrNotFound
+	}
+	p, err := s.sb.SelectOne("players",
+		"id=eq."+store.Q(asStr(reg, "player_id"))+"&select=full_name,email,phone,user_id")
+	if err != nil {
+		return false, false, err
+	}
+	if p == nil {
+		return false, false, ErrNotFound
+	}
+	if asStr(p, "user_id") != "" {
+		return false, false, errors.New("they're already on the app")
+	}
+	name := strings.TrimSpace(asStr(p, "full_name"))
+	toEmail := strings.ToLower(strings.TrimSpace(asStr(p, "email")))
+	toPhone := strings.TrimSpace(asStr(p, "phone"))
+	if toEmail == "" && len(normPhone(toPhone)) < 10 {
+		return false, false, errors.New("add their email or phone first, then invite")
+	}
+
+	// LEAGUE event → a league membership invite, so the link joins them to every
+	// session rather than this one night.
+	if leagueID := asStr(ev, "league_id"); leagueID != "" && s.leagueMembersReady() {
+		leagueName := ""
+		if lg, _ := s.sb.SelectOne("leagues",
+			"id=eq."+store.Q(leagueID)+"&select=name"); lg != nil {
+			leagueName = asStr(lg, "name")
+		}
+		token, terr := s.leagueInviteTokenFor(leagueID, name, toEmail, toPhone)
+		if terr != nil {
+			return false, false, terr
+		}
+		if token == "" {
+			// Resolved to a real account while we looked — nothing to invite.
+			return false, false, errors.New("they're already on the app")
+		}
+		if len(normPhone(toPhone)) >= 10 && s.Sms != nil {
+			s.sendLeagueInviteSMS(leagueName, toPhone, token)
+			sms = true
+		}
+		if toEmail != "" && s.Email != nil && s.Email.Live() {
+			s.sendLeagueInvite(leagueName, toEmail, name, token)
+			email = true
+		}
+		return sms, email, nil
+	}
+
+	// Standalone event → point them at the event itself.
+	eventName := strings.TrimSpace(asStr(ev, "name"))
+	if eventName == "" {
+		eventName = "an event"
+	}
+	link := "https://app.planmypickle.com/?event=" + eventID
+	if len(normPhone(toPhone)) >= 10 && s.Sms != nil {
+		body := fmt.Sprintf(
+			"You're on the roster for %s. See the schedule and your matches on PlanMyPickle: %s",
+			eventName, s.ShortLink(link))
+		if r, serr := s.Sms.Send(toPhone, body); serr == nil && r.OK {
+			sms = true
+		}
+	}
+	if toEmail != "" && s.Email != nil && s.Email.Live() {
+		esc := html.EscapeString
+		subject := "You're on the roster for " + eventName
+		htmlBody := fmt.Sprintf(`<div style="background:#f6faf1;padding:28px 16px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e7eedd">
+    <div style="background:#16245c;padding:22px 26px">
+      <p style="margin:0;color:#8dc63f;font-size:12px;font-weight:800;letter-spacing:1.4px">YOU'RE REGISTERED</p>
+      <h1 style="margin:6px 0 0;color:#ffffff;font-size:22px;line-height:1.25">%s</h1>
+    </div>
+    <div style="padding:24px 26px">
+      <p style="margin:0 0 10px;color:#16203a;font-size:15px">You're on the roster. Open it on PlanMyPickle to see the schedule, your matches and live standings.</p>
+      <a href="%s" style="display:block;margin:22px 0 4px;background:#f5c518;color:#16203a;text-decoration:none;text-align:center;font-weight:800;font-size:15px;padding:13px 18px;border-radius:999px">Open the event</a>
+    </div>
+  </div>
+</div>`, esc(eventName), link)
+		text := fmt.Sprintf("You're on the roster for %s.\n\nOpen it on PlanMyPickle:\n%s", eventName, link)
+		if eerr := s.Email.SendEmail(toEmail, subject, htmlBody, text); eerr == nil {
+			email = true
+		}
+	}
+	if !sms && !email {
+		return false, false, errors.New("could not send — check that SMS/email is configured")
+	}
+	return sms, email, nil
+}
+
+// leagueInviteTokenFor returns a claimable invite token for this person on this
+// league, reusing their existing member row when there is one so repeated
+// invites don't pile up duplicate rows. Returns "" when the row already resolves
+// to a real account (they need no invite).
+func (s *Service) leagueInviteTokenFor(leagueID, name, email, phone string) (string, error) {
+	np := normPhone(phone)
+	var row map[string]any
+	if email != "" {
+		row, _ = s.sb.SelectOne("league_members",
+			"league_id=eq."+store.Q(leagueID)+"&email=eq."+store.Q(email)+
+				"&left_at=is.null&select=id,user_id,invite_token")
+	}
+	if row == nil && np != "" {
+		row, _ = s.sb.SelectOne("league_members",
+			"league_id=eq."+store.Q(leagueID)+"&phone=eq."+store.Q(np)+
+				"&left_at=is.null&select=id,user_id,invite_token")
+	}
+	if row != nil {
+		if asStr(row, "user_id") != "" {
+			return "", nil
+		}
+		if tok := asStr(row, "invite_token"); tok != "" {
+			return tok, nil
+		}
+		// Member row exists but lost its token (claimed then unlinked) — mint one.
+		tok := newID()
+		if _, err := s.sb.Update("league_members",
+			"id=eq."+store.Q(asStr(row, "id")),
+			map[string]any{"invite_token": tok}); err != nil {
+			return "", err
+		}
+		return tok, nil
+	}
+	// No membership yet — create one so the invite has something to claim.
+	tok := newID()
+	if _, err := s.sb.Insert("league_members", map[string]any{
+		"league_id":    leagueID,
+		"full_name":    orNull(name),
+		"email":        orNull(email),
+		"phone":        orNull(np),
+		"invite_token": tok,
+	}); err != nil {
+		return "", err
+	}
+	return tok, nil
+}

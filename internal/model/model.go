@@ -899,6 +899,11 @@ type Registration struct {
 	// linked user_id), used as their roster avatar; empty for name-only players
 	// (the UI falls back to initials).
 	PhotoURL   string   `json:"photoUrl,omitempty"`
+	// HasAccount = this registrant's player row is tied to an app account. False
+	// means they were added by name/contact only: they cannot see the event, and
+	// nothing was ever sent to them. The roster surfaces an Invite action for
+	// exactly these rows.
+	HasAccount bool `json:"hasAccount"`
 	DuprID     *string  `json:"duprId,omitempty"`
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	// OutsideRating is true when the player's DUPR rating falls outside their

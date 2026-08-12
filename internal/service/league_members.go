@@ -672,3 +672,25 @@ func (s *Service) leagueInviteTokenFor(leagueID, name, email, phone string) (str
 	}
 	return tok, nil
 }
+
+// AutoInviteRosterAdd sends the invite automatically when an ORGANIZER adds a
+// player to a LEAGUE's roster, so the roster is the only list they need — adding
+// someone there now does what League -> Members used to do by hand.
+//
+// Scoped to league events on purpose. A standalone tournament keeps its manual
+// "Send invite" action instead: auto-texting every hand-added entrant of a
+// one-off tournament is a surprise (and a per-message cost) nobody asked for,
+// whereas a league member genuinely needs a way in to every future session.
+//
+// Best-effort and silent: InviteRegistrant already refuses when the player is
+// already on an account or has no contact details, which is exactly the no-op
+// we want for self-registration, placeholder fills and known players.
+func (s *Service) AutoInviteRosterAdd(eventID, regID, callerID, callerEmail string) {
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
+	if err != nil || ev == nil || asStr(ev, "league_id") == "" {
+		return
+	}
+	if _, _, ierr := s.InviteRegistrant(eventID, regID, callerID, callerEmail); ierr != nil {
+		log.Printf("roster: auto-invite skipped for reg %s: %v", regID, ierr)
+	}
+}

@@ -2624,6 +2624,15 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 				r.PathValue("id"), email, req.FullName, bracketID)
 		}
 	}
+	// An ORGANIZER added someone to a LEAGUE roster → text/email them the way in,
+	// off the request path. Without this the roster silently creates a player who
+	// is never contacted and cannot see the event, which is the whole reason a
+	// separate Members screen existed. Not for self-registration (they are already
+	// in the app) and not for pending entries (not in yet). Path values and the
+	// caller are captured as arguments — the request is gone by the time this runs.
+	if req.TrustedAdd && !req.Self && reg.Approved {
+		go s.svc.AutoInviteRosterAdd(r.PathValue("id"), reg.ID, userID(r), userEmail(r))
+	}
 	// For anonymous self-registration, tell the client whether an account already
 	// exists for this email, so the thank-you screen nudges sign-in vs sign-up.
 	if userID(r) == "" {

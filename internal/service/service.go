@@ -4592,11 +4592,13 @@ func (s *Service) checkContactlessRoom(eventID string) error {
 	}
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+
-			"&select=player:players!player_id(phone,email)")
+			"&select=player_id,player:players!player_id(phone,email)")
 	if err != nil {
 		return err // fail CLOSED — don't let a read error waive the bound
 	}
-	n := 0
+	// Count PEOPLE, not registrations: a player entered in two divisions has two
+	// rows, and counting those separately would trip a 12-cap at six real players.
+	seen := map[string]bool{}
 	for _, r := range rows {
 		p := asMap(r, "player")
 		if p == nil {
@@ -4604,10 +4606,10 @@ func (s *Service) checkContactlessRoom(eventID string) error {
 		}
 		if strings.TrimSpace(asStr(p, "phone")) == "" &&
 			strings.TrimSpace(asStr(p, "email")) == "" {
-			n++
+			seen[asStr(r, "player_id")] = true
 		}
 	}
-	if n >= limit {
+	if n := len(seen); n >= limit {
 		return fmt.Errorf(
 			"that's %d players with no phone or email — add a contact for the rest so they can see the event",
 			limit)

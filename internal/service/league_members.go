@@ -524,6 +524,13 @@ func (s *Service) sendLeagueInvite(leagueName, email, name, token string) {
 // Refuses when the player is already on an account (nothing to invite them to)
 // or has no contact details at all (nothing to send to) — both are states the
 // caller should surface rather than silently swallow.
+// NOT gated on the player's sms_consent flag, deliberately. That box covers
+// RECURRING automated messages (match alerts, court assignments, reminders); an
+// invite is a single transactional message from an organizer who just added this
+// person, which is what League -> Members has sent since the A2P campaign was
+// approved. Gating it here would also have made this silently email-only, since
+// the consent box defaults to unchecked — a feature that looks like it works and
+// doesn't. Recurring sends remain consent-gated where they're issued.
 func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string) (sms bool, email bool, err error) {
 	ev, err := s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+"&select=owner_id,name,league_id")
@@ -546,7 +553,8 @@ func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string)
 		return false, false, ErrNotFound
 	}
 	p, err := s.sb.SelectOne("players",
-		"id=eq."+store.Q(asStr(reg, "player_id"))+"&select=full_name,email,phone,user_id")
+		"id=eq."+store.Q(asStr(reg, "player_id"))+
+			"&select=full_name,email,phone,user_id")
 	if err != nil {
 		return false, false, err
 	}
@@ -556,12 +564,20 @@ func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string)
 	if asStr(p, "user_id") != "" {
 		return false, false, errors.New("they're already on the app")
 	}
+	// Placeholder/demo fill players carry a synthetic +15553… number (the same
+	// marker ClearDemoPlayers uses). They aren't people, so an invite would text
+	// a number that doesn't exist — refuse rather than burn an SMS on it.
+	if isPlaceholderPhone(asStr(p, "phone")) {
+		return false, false, errors.New(
+			"that's a placeholder player — add a real person to invite them")
+	}
 	name := strings.TrimSpace(asStr(p, "full_name"))
 	toEmail := strings.ToLower(strings.TrimSpace(asStr(p, "email")))
 	toPhone := strings.TrimSpace(asStr(p, "phone"))
 	if toEmail == "" && len(normPhone(toPhone)) < 10 {
 		return false, false, errors.New("add their email or phone first, then invite")
 	}
+	smsOK := len(normPhone(toPhone)) >= 10
 
 	// LEAGUE event → a league membership invite, so the link joins them to every
 	// session rather than this one night.
@@ -579,7 +595,7 @@ func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string)
 			// Resolved to a real account while we looked — nothing to invite.
 			return false, false, errors.New("they're already on the app")
 		}
-		if len(normPhone(toPhone)) >= 10 && s.Sms != nil {
+		if smsOK && s.Sms != nil {
 			s.sendLeagueInviteSMS(leagueName, toPhone, token)
 			sms = true
 		}
@@ -596,7 +612,7 @@ func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string)
 		eventName = "an event"
 	}
 	link := "https://app.planmypickle.com/?event=" + eventID
-	if len(normPhone(toPhone)) >= 10 && s.Sms != nil {
+	if smsOK && s.Sms != nil {
 		body := fmt.Sprintf(
 			"You're on the roster for %s. See the schedule and your matches on PlanMyPickle: %s",
 			eventName, s.ShortLink(link))
@@ -697,4 +713,11 @@ func (s *Service) AutoInviteRosterAdd(eventID, regID, callerID, callerEmail stri
 	if _, _, ierr := s.InviteRegistrant(eventID, regID, callerID, callerEmail); ierr != nil {
 		log.Printf("roster: auto-invite skipped for reg %s: %v", regID, ierr)
 	}
+}
+
+// isPlaceholderPhone reports whether a number is one of the synthetic ones the
+// placeholder/demo fill assigns (+15553…). Kept in one place so the invite path
+// and ClearDemoPlayers agree on what "not a real player" means.
+func isPlaceholderPhone(phone string) bool {
+	return strings.HasPrefix(strings.TrimSpace(phone), "+15553")
 }

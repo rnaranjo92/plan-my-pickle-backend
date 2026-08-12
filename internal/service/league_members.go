@@ -401,6 +401,10 @@ func (s *Service) SubstituteInSession(eventID, ownerID, callerEmail, outPlayerID
 		TrustedAdd: true,
 		// A one-day sub shouldn't become a permanent coaching student.
 		SkipCoachEnroll: true,
+		// ...nor be held to the league's "everyone must be reachable" rule: a
+		// walk-in standing in for tonight is exactly the case where an organizer
+		// types a name and nothing else.
+		AllowNoContact: true,
 	}, "")
 	if err != nil {
 		return model.Registration{}, err

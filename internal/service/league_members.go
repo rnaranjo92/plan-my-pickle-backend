@@ -571,6 +571,15 @@ func (s *Service) InviteRegistrant(eventID, regID, callerID, callerEmail string)
 		return false, false, errors.New(
 			"that's a placeholder player — add a real person to invite them")
 	}
+	// Denylist. Registration blocks a blocked contact at entry, but a row added
+	// BEFORE the block can still be sitting on a roster — and this is the one
+	// path that would then message them. Since invites are deliberately not
+	// gated on the SMS-consent box (they're transactional), the denylist is what
+	// guarantees someone who has opted out stays un-messaged. Neutral wording on
+	// purpose: a blocked person shouldn't be told they're blocked.
+	if s.isBlockedContact(asStr(p, "phone"), asStr(p, "email")) {
+		return false, false, errors.New("we're unable to send an invite to that contact")
+	}
 	name := strings.TrimSpace(asStr(p, "full_name"))
 	toEmail := strings.ToLower(strings.TrimSpace(asStr(p, "email")))
 	toPhone := strings.TrimSpace(asStr(p, "phone"))

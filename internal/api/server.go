@@ -638,6 +638,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/recurrence", s.ownerOnly("event", "id", s.setEventRecurrence))
 	mux.HandleFunc("POST /registrations/{id}/partner", s.ownerOnly("registration", "id", s.setPartner))
 	mux.HandleFunc("DELETE /registrations/{id}", s.ownerOnly("registration", "id", s.deleteRegistration))
+	// Text/email a rostered player a link into the app. Owner-gated on the EVENT
+	// (not the registration) because the invite is about the event's roster.
+	mux.HandleFunc("POST /events/{id}/registrations/{regId}/invite",
+		s.ownerOnly("event", "id", s.inviteRegistrant))
 	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
 	mux.HandleFunc("GET /events/{id}/dupr-status", s.ownerOnly("event", "id", s.duprStatuses))
 
@@ -2162,6 +2166,19 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
 		e.ViewerRegistered = s.svc.IsRegisteredInEvent(r.PathValue("id"), uid, userEmail(r))
 	}
 	writeJSON(w, http.StatusOK, e)
+}
+
+// inviteRegistrant texts/emails a rostered player a link into the app — the
+// recovery path for someone added by name off a paper signup, who otherwise
+// never hears anything.
+func (s *Server) inviteRegistrant(w http.ResponseWriter, r *http.Request) {
+	sms, email, err := s.svc.InviteRegistrant(r.PathValue("id"), r.PathValue("regId"),
+		userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"sms": sms, "email": email})
 }
 
 func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {

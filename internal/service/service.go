@@ -1231,6 +1231,15 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 	// coach's students (resolved from the league; best-effort).
 	if ev.LeagueID != nil && *ev.LeagueID != "" {
 		ev.CoachLed = s.leagueCoach(*ev.LeagueID) != ""
+		// Is this a challenge ladder's ongoing event? The app needs to know so it
+		// can show the ladder itself next to the normal event tabs. Rotation
+		// ladders never reach here — they keep their own league shell.
+		if lg, _ := s.sb.SelectOne("leagues",
+			"id=eq."+store.Q(*ev.LeagueID)+
+				"&select=league_type,ladder_format"); lg != nil {
+			ev.LadderLeague = asStr(lg, "league_type") == "ladder" &&
+				asStr(lg, "ladder_format") != "rotation"
+		}
 	}
 	// Organizer display name for the tournament-info tab (best-effort — a lookup
 	// failure just leaves it blank). pmp_profiles is keyed by the auth user id.

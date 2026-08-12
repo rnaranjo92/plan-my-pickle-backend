@@ -100,27 +100,85 @@ func (s *Service) ClaimRegistrationByToken(token, userID, email string) (string,
 	return asStr(reg, "event_id"), nil
 }
 
-// ClaimableEntries lists the unclaimed roster names for an event, for the
-// self-serve "pick your name" flow behind an event-level QR.
+// EventClaimCode returns the event's court-side claim code, minting one on first
+// use. Owner-gated: this code is what the QR carries, and holding it is what
+// authorizes self-serve claiming.
+func (s *Service) EventClaimCode(eventID, callerID, callerEmail string) (string, error) {
+	if !s.eventClaimReady() {
+		return "", errors.New("claim codes aren't available yet")
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=owner_id,league_id,claim_code")
+	if err != nil {
+		return "", err
+	}
+	if ev == nil {
+		return "", ErrNotFound
+	}
+	if asStr(ev, "owner_id") != callerID && !s.staff(callerEmail) {
+		return "", ErrForbidden
+	}
+	if asStr(ev, "league_id") != "" {
+		return "", errors.New(
+			"leagues don't use court-side claiming — every player needs a contact")
+	}
+	if c := strings.TrimSpace(asStr(ev, "claim_code")); c != "" {
+		return c, nil
+	}
+	code := newID()
+	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+		map[string]any{"claim_code": code}); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+func (s *Service) eventClaimReady() bool {
+	return s.columnReady("events", "claim_code")
+}
+
+// checkEventClaimCode verifies the caller actually holds the court-side code AND
+// that this event allows self-serve claiming at all.
 //
-// NON-LEAGUE events only. Anyone holding that QR could claim any unclaimed name,
-// which is a fine trade for a casual open play (worst case someone takes the
-// wrong slot and the organizer fixes it) and NOT fine where standings persist
-// for a season. Leagues also require a contact for every player, so they have a
-// real identity to match on and never need this.
-func (s *Service) ClaimableEntries(eventID string) ([]map[string]any, error) {
+// The code is the whole security model here. Anyone holding it can claim any
+// unclaimed name, which is a fine trade for a casual open play — worst case
+// someone takes the wrong slot and the organizer fixes it in seconds — but only
+// because holding it means you were standing where the organizer posted it.
+// Gating on the event id alone would NOT be that: ids travel in ordinary share
+// links, so a stranger could list a roster and take a name from anywhere.
+func (s *Service) checkEventClaimCode(eventID, code string) error {
+	if !s.eventClaimReady() {
+		return errors.New("claim codes aren't available yet")
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ErrForbidden
+	}
+	ev, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=league_id,claim_code")
+	if err != nil {
+		return err
+	}
+	if ev == nil {
+		return ErrNotFound
+	}
+	if asStr(ev, "league_id") != "" {
+		return ErrForbidden
+	}
+	if stored := strings.TrimSpace(asStr(ev, "claim_code")); stored == "" || stored != code {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// ClaimableEntries lists the unclaimed roster names behind the court-side QR.
+// Requires the event's claim code — see checkEventClaimCode.
+func (s *Service) ClaimableEntries(eventID, code string) ([]map[string]any, error) {
 	if !s.claimTokensReady() {
 		return nil, errors.New("claim links aren't available yet")
 	}
-	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
-	if err != nil {
+	if err := s.checkEventClaimCode(eventID, code); err != nil {
 		return nil, err
-	}
-	if ev == nil {
-		return nil, ErrNotFound
-	}
-	if asStr(ev, "league_id") != "" {
-		return nil, ErrForbidden
 	}
 	rows, err := s.sb.Select("registrations",
 		"event_id=eq."+store.Q(eventID)+
@@ -146,24 +204,17 @@ func (s *Service) ClaimableEntries(eventID string) ([]map[string]any, error) {
 }
 
 // ClaimRegistrationByID is the event-QR path: the caller picked their own name
-// from ClaimableEntries. Re-checks the non-league rule and that the row is still
-// unclaimed, so a stale list can't be replayed against a real person's row.
-func (s *Service) ClaimRegistrationByID(eventID, regID, userID, email string) error {
+// from ClaimableEntries. Re-checks the code (not just on the list call, or a
+// stale list could be replayed) and that the row is still unclaimed.
+func (s *Service) ClaimRegistrationByID(eventID, regID, code, userID, email string) error {
 	if !s.claimTokensReady() {
 		return errors.New("claim links aren't available yet")
 	}
 	if userID == "" {
 		return ErrForbidden
 	}
-	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
-	if err != nil {
+	if err := s.checkEventClaimCode(eventID, code); err != nil {
 		return err
-	}
-	if ev == nil {
-		return ErrNotFound
-	}
-	if asStr(ev, "league_id") != "" {
-		return ErrForbidden
 	}
 	reg, err := s.sb.SelectOne("registrations",
 		"id=eq."+store.Q(regID)+"&event_id=eq."+store.Q(eventID)+"&select=id,player_id")
@@ -214,9 +265,29 @@ func (s *Service) bindRegistrationToAccount(regID, playerID, userID, email strin
 		return err
 	}
 	if canonical != nil {
-		// Merge: this registration moves to the account's existing player row.
+		cid := asStr(canonical, "id")
+		// Merging moves this registration onto the account's existing player row —
+		// but if that row is ALREADY entered in this event, the move would leave
+		// them registered twice: two roster lines, two draw slots, one person.
+		// Refuse instead, since the caller is already in the event they're trying
+		// to claim into.
+		reg, rerr := s.sb.SelectOne("registrations", "id=eq."+store.Q(regID)+"&select=event_id")
+		if rerr != nil {
+			return rerr
+		}
+		if reg != nil {
+			dup, derr := s.sb.SelectOne("registrations",
+				"event_id=eq."+store.Q(asStr(reg, "event_id"))+
+					"&player_id=eq."+store.Q(cid)+"&select=id")
+			if derr != nil {
+				return derr
+			}
+			if dup != nil {
+				return errors.New("you're already on this roster")
+			}
+		}
 		_, uerr := s.sb.Update("registrations", "id=eq."+store.Q(regID),
-			map[string]any{"player_id": asStr(canonical, "id")})
+			map[string]any{"player_id": cid})
 		return uerr
 	}
 	upd := map[string]any{"user_id": userID}

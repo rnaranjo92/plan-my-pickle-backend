@@ -649,7 +649,11 @@ func NewServer(svc *service.Service) http.Handler {
 		s.ownerOnly("event", "id", s.registrationClaimLink))
 	mux.HandleFunc("POST /claim", requireAuth(s.claimByToken))
 	// Event-level self-serve claim (non-league only) — the "pick your name"
-	// list behind a court-side QR.
+	// list behind a court-side QR. Both require the event's claim code, which is
+	// what the QR carries: an event id alone is not a secret (it travels in
+	// ordinary share links), so gating on it would let anyone list a roster and
+	// take an unclaimed name from anywhere.
+	mux.HandleFunc("GET /events/{id}/claim-code", s.ownerOnly("event", "id", s.eventClaimCode))
 	mux.HandleFunc("GET /events/{id}/claimable", requireAuth(s.claimableEntries))
 	mux.HandleFunc("POST /events/{id}/claim", requireAuth(s.claimByID))
 	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
@@ -2227,9 +2231,23 @@ func (s *Server) claimByToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"eventId": eventID})
 }
 
+// eventClaimCode mints (or returns) the court-side claim code + the QR URL.
+func (s *Server) eventClaimCode(w http.ResponseWriter, r *http.Request) {
+	code, err := s.svc.EventClaimCode(r.PathValue("id"), userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"code": code,
+		"url": "https://app.planmypickle.com/?claimEvent=" +
+			r.PathValue("id") + "&c=" + code,
+	})
+}
+
 // claimableEntries lists unclaimed roster names for the court-side QR flow.
 func (s *Server) claimableEntries(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.ClaimableEntries(r.PathValue("id"))
+	out, err := s.svc.ClaimableEntries(r.PathValue("id"), r.URL.Query().Get("c"))
 	if err != nil {
 		status(w, err)
 		return
@@ -2241,12 +2259,13 @@ func (s *Server) claimableEntries(w http.ResponseWriter, r *http.Request) {
 func (s *Server) claimByID(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RegistrationID string `json:"registrationId"`
+		Code           string `json:"code"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	if err := s.svc.ClaimRegistrationByID(r.PathValue("id"), req.RegistrationID,
-		userID(r), userEmail(r)); err != nil {
+		req.Code, userID(r), userEmail(r)); err != nil {
 		status(w, err)
 		return
 	}

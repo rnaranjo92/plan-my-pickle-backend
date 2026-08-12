@@ -637,7 +637,12 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 	// tournament interface). Adopt it (mark perpetual + stop cloning) and hand the
 	// client the event id so it opens the tournament directly instead of a session
 	// list. Idempotent once adopted.
-	if detail.League.Recurs {
+	// Ladders always get one, recurring or not: a ladder has no sessions of its
+	// own, so this event is the only thing its feed, RSVPs and roster can hang
+	// off — see ensurePerpetualLeagueEvent.
+	if detail.League.Recurs ||
+		(detail.League.LeagueType == "ladder" &&
+			detail.League.LadderFormat != "rotation") {
 		if eid := s.ensurePerpetualLeagueEvent(detail.League, brackets, events); eid != nil {
 			detail.League.OngoingEventID = eid
 		}

@@ -679,11 +679,23 @@ const perpetualCheckinWindow = 12 * time.Hour
 // Returns the ongoing event id (nil only if creation genuinely fails). The
 // perpetual flag is set in place on the passed events.
 func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []model.LeagueBracket, events []model.Event) *string {
-	// The perpetual (one ongoing round-robin event) model applies ONLY to a
-	// standard league. Ladder / team / flex leagues keep their own structures, so
-	// never adopt or provision a perpetual event for them (even if flagged
-	// recurring by legacy data).
-	if lt := league.LeagueType; lt == "ladder" || lt == "team" || lt == "flex" {
+	// TEAM and FLEX leagues keep their own structures — never adopt or provision
+	// a perpetual event for them (even if flagged recurring by legacy data).
+	//
+	// LADDERS do get one. Everything an organizer expects on an event page — the
+	// feed, RSVPs, the roster, history, admin — hangs off an event_id, so without
+	// one a ladder could only ever have a thinner page than a league. Giving it
+	// the same ongoing event is how it gets the same page, reusing the model
+	// recurring leagues already run on rather than duplicating all of that
+	// against a league id.
+	if lt := league.LeagueType; lt == "team" || lt == "flex" {
+		return nil
+	}
+	// ROTATION ladders are excluded for now. They already have their own live
+	// sessions (rotation_sessions) and are in active use, so quietly creating an
+	// extra event under them risks disturbing something that works. Challenge
+	// ladders — which have no sessions at all — are the case this is for.
+	if league.LeagueType == "ladder" && league.LadderFormat == "rotation" {
 		return nil
 	}
 	// Already adopted → return the perpetual event.

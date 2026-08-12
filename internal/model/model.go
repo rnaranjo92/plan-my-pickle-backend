@@ -207,6 +207,10 @@ type Event struct {
 	// LeagueID links this event to a league (season/recurring play) it belongs to,
 	// or nil for a standalone event.
 	LeagueID *string `json:"leagueId,omitempty"`
+	// LadderLeague marks an event that IS a challenge ladder's ongoing event, so
+	// the app can show the ladder itself (rungs, challenges, history) alongside
+	// the usual event tabs. Resolved from the league on GetEvent.
+	LadderLeague bool `json:"ladderLeague,omitempty"`
 	// Sponsor watermark — a low-opacity sponsor logo/mascot rendered BEHIND the
 	// event's surfaces. URL "" = none; opacity 0–1; scale 0.1–1; position one of
 	// center|top-left|top-right|bottom-left|bottom-right|tiled.

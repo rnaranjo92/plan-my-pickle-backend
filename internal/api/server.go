@@ -642,6 +642,16 @@ func NewServer(svc *service.Service) http.Handler {
 	// (not the registration) because the invite is about the event's roster.
 	mux.HandleFunc("POST /events/{id}/registrations/{regId}/invite",
 		s.ownerOnly("event", "id", s.inviteRegistrant))
+	// CLAIMING a bare-name roster row. Minting the link is owner-only; redeeming
+	// it just needs a signed-in account, because the link IS the authorization —
+	// the organizer chose who to hand it to.
+	mux.HandleFunc("GET /events/{id}/registrations/{regId}/claim-link",
+		s.ownerOnly("event", "id", s.registrationClaimLink))
+	mux.HandleFunc("POST /claim", requireAuth(s.claimByToken))
+	// Event-level self-serve claim (non-league only) — the "pick your name"
+	// list behind a court-side QR.
+	mux.HandleFunc("GET /events/{id}/claimable", requireAuth(s.claimableEntries))
+	mux.HandleFunc("POST /events/{id}/claim", requireAuth(s.claimByID))
 	mux.HandleFunc("DELETE /rounds/{id}", s.ownerOnly("round", "id", s.deleteRound))
 	mux.HandleFunc("GET /events/{id}/dupr-status", s.ownerOnly("event", "id", s.duprStatuses))
 
@@ -2184,6 +2194,63 @@ func (s *Server) inviteRegistrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"sms": sms, "email": email})
+}
+
+// registrationClaimLink mints (or returns) the claim token for a roster row and
+// hands back the full link the organizer shares.
+func (s *Server) registrationClaimLink(w http.ResponseWriter, r *http.Request) {
+	tok, err := s.svc.RegistrationClaimToken(r.PathValue("id"), r.PathValue("regId"),
+		userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"token": tok,
+		"url":   "https://app.planmypickle.com/?claim=" + tok,
+	})
+}
+
+// claimByToken redeems a claim link for the signed-in caller.
+func (s *Server) claimByToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	eventID, err := s.svc.ClaimRegistrationByToken(req.Token, userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"eventId": eventID})
+}
+
+// claimableEntries lists unclaimed roster names for the court-side QR flow.
+func (s *Server) claimableEntries(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.ClaimableEntries(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// claimByID redeems the caller's own pick from that list.
+func (s *Server) claimByID(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RegistrationID string `json:"registrationId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.ClaimRegistrationByID(r.PathValue("id"), req.RegistrationID,
+		userID(r), userEmail(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {

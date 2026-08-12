@@ -74,11 +74,54 @@ func TestClaimable_RefusedOnLeagues(t *testing.T) {
 	f := newFake().seed("events", `[{"id":"e1","league_id":"lg1"}]`)
 	s := newFakeSvc(t, f)
 
-	if _, err := s.ClaimableEntries("e1"); err == nil {
+	if _, err := s.ClaimableEntries("e1", "any-code"); err == nil {
 		t.Fatal("a league exposed its roster to self-serve claiming")
 	}
-	if err := s.ClaimRegistrationByID("e1", "r1", "u1", "a@b.com"); err == nil {
+	if err := s.ClaimRegistrationByID("e1", "r1", "any-code", "u1", "a@b.com"); err == nil {
 		t.Fatal("a league allowed a self-serve claim")
+	}
+}
+
+// The court-side code is the ONLY thing standing between a stranger and someone
+// else's roster spot — event ids travel in ordinary share links, so they are not
+// a secret. These pin that the code is actually required and actually checked.
+func TestClaimable_RequiresTheEventCode(t *testing.T) {
+	f := newFake().seed("events", `[{"id":"e1","claim_code":"real-code"}]`)
+	s := newFakeSvc(t, f)
+
+	if _, err := s.ClaimableEntries("e1", ""); err == nil {
+		t.Fatal("listed a roster with NO claim code")
+	}
+	if _, err := s.ClaimableEntries("e1", "guessed"); err == nil {
+		t.Fatal("listed a roster with the WRONG claim code")
+	}
+	if _, err := s.ClaimableEntries("e1", "real-code"); err != nil {
+		t.Fatalf("the correct code was refused: %v", err)
+	}
+}
+
+// Checking the code only when LISTING would let a stale list be replayed, so the
+// claim itself must re-check it.
+func TestClaimByID_RechecksTheEventCode(t *testing.T) {
+	f := newFake().
+		seed("events", `[{"id":"e1","claim_code":"real-code"}]`).
+		seed("registrations", `[{"id":"r1","event_id":"e1","player_id":"p1"}]`).
+		seed("players", `[{"id":"p1"}]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.ClaimRegistrationByID("e1", "r1", "guessed", "u1", "a@b.com"); err == nil {
+		t.Fatal("claimed a spot with the WRONG code — the list check isn't enough")
+	}
+}
+
+// An event with no code minted yet must not be claimable by passing an empty
+// code (or any code) — "" == "" would otherwise be a free pass.
+func TestClaimable_UnmintedCodeIsNotAFreePass(t *testing.T) {
+	f := newFake().seed("events", `[{"id":"e1"}]`)
+	s := newFakeSvc(t, f)
+
+	if _, err := s.ClaimableEntries("e1", ""); err == nil {
+		t.Fatal("an event with no claim code was claimable with an empty code")
 	}
 }
 

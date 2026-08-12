@@ -4568,6 +4568,53 @@ func mapBlockedContact(m map[string]any) model.BlockedContact {
 	}
 }
 
+// maxContactlessPlayers bounds how many players an event may hold with NO phone
+// and NO email. Enough for a real open-play session without an entire event
+// becoming unreachable. Override with MAX_CONTACTLESS_PLAYERS.
+const maxContactlessPlayers = 12
+
+// checkContactlessRoom reports whether one more no-phone/no-email player fits.
+// Leagues never allow any; other events allow up to maxContactlessPlayers.
+func (s *Service) checkContactlessRoom(eventID string) error {
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
+	if err != nil {
+		return err
+	}
+	if ev != nil && asStr(ev, "league_id") != "" {
+		return errors.New(
+			"league players need a phone or email — they have to be reachable between sessions")
+	}
+	limit := maxContactlessPlayers
+	if v := strings.TrimSpace(os.Getenv("MAX_CONTACTLESS_PLAYERS")); v != "" {
+		if n, cerr := strconv.Atoi(v); cerr == nil && n >= 0 {
+			limit = n
+		}
+	}
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+
+			"&select=player:players!player_id(phone,email)")
+	if err != nil {
+		return err // fail CLOSED — don't let a read error waive the bound
+	}
+	n := 0
+	for _, r := range rows {
+		p := asMap(r, "player")
+		if p == nil {
+			continue
+		}
+		if strings.TrimSpace(asStr(p, "phone")) == "" &&
+			strings.TrimSpace(asStr(p, "email")) == "" {
+			n++
+		}
+	}
+	if n >= limit {
+		return fmt.Errorf(
+			"that's %d players with no phone or email — add a contact for the rest so they can see the event",
+			limit)
+	}
+	return nil
+}
+
 func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, linkUserID string) (model.Registration, error) {
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
@@ -4591,6 +4638,24 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		if code := s.eventRegistrationCode(eventID); code != "" &&
 			!strings.EqualFold(strings.TrimSpace(req.RegistrationCode), code) {
 			return model.Registration{}, ErrBadRegistrationCode
+		}
+	}
+	// CONTACTLESS ENTRIES — "just dump names in and see the games".
+	//
+	// An organizer add already bypasses the phone requirement above, so a player
+	// can exist as a bare name. That's genuinely useful for casual play, but a
+	// contactless player is invisible to themselves: nothing can be sent to them,
+	// they can't see the event, and no account will ever link to them. So it's
+	// allowed but BOUNDED.
+	//
+	// Leagues get a cap of ZERO. A league runs for weeks and has to reach people
+	// between sessions; an unreachable league player is precisely the failure this
+	// bound exists to prevent (a live league had 10 of them, none ever contacted).
+	if req.TrustedAdd && !req.AllowNoContact &&
+		strings.TrimSpace(req.Phone) == "" &&
+		strings.TrimSpace(req.Email) == "" {
+		if err := s.checkContactlessRoom(eventID); err != nil {
+			return model.Registration{}, err
 		}
 	}
 	// Hold the entry for organizer approval when the event requires it (public/

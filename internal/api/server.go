@@ -1006,6 +1006,11 @@ const qaAllowlist = "rolando.naranjo0420@gmail.com,krizhia_roxas29@yahoo.com"
 // when set). Scoped to PB Vision analysis only — NOT the broader qaAllowlist.
 const pbVisionCoachingAllow = "rolando.naranjo92@yahoo.com"
 
+// pbVisionLeagueFreeAnalyses is how many analyses a player reached through the
+// LEAGUE grant gets — total, not per month. One each, on purpose: this is a
+// taste of the feature while pricing is settled, and every run bills our key.
+const pbVisionLeagueFreeAnalyses = 1
+
 // coachingAnalysisAllowed gates the (currently FREE, un-metered) coaching PB
 // Vision analysis to a limited beta while payment is on hold — every run bills
 // our PB Vision API key. Defaults to the QA accounts; add beta testers (e.g.
@@ -6420,10 +6425,22 @@ func (s *Server) coachingThread(w http.ResponseWriter, r *http.Request) {
 func (s *Server) analyzeThreadVideo(w http.ResponseWriter, r *http.Request) {
 	// Limited beta while payment is on hold — free but allowlisted so it can't
 	// run up an uncapped PB Vision bill on our API key.
+	//
+	// Two ways in, with different allowances:
+	//   * the email beta allowlist — QA and named testers, standing access under
+	//     the usual rolling-30-day cap;
+	//   * membership of a GRANTED LEAGUE — a one-off so a specific league's
+	//     players can try it, hard-capped at pbVisionLeagueFreeAnalyses runs EVER.
+	// The league path is checked second so a beta tester keeps their normal
+	// allowance rather than being reduced to one.
+	lifetimeCap := 0
 	if !coachingAnalysisAllowed(userEmail(r)) {
-		writeErr(w, http.StatusForbidden, errors.New(
-			"PB Vision analysis is in limited beta and isn't available on your account yet"))
-		return
+		if !s.svc.InPBVisionLeague(userID(r), userEmail(r)) {
+			writeErr(w, http.StatusForbidden, errors.New(
+				"PB Vision analysis is in limited beta and isn't available on your account yet"))
+			return
+		}
+		lifetimeCap = pbVisionLeagueFreeAnalyses
 	}
 	var req struct {
 		VideoURL       string   `json:"videoUrl"`
@@ -6435,7 +6452,7 @@ func (s *Server) analyzeThreadVideo(w http.ResponseWriter, r *http.Request) {
 	}
 	vid, err := s.svc.AnalyzeThreadVideo(
 		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.VideoID,
-		req.ShareThreadIDs)
+		req.ShareThreadIDs, lifetimeCap)
 	if err != nil {
 		status(w, err)
 		return

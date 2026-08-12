@@ -8,6 +8,7 @@ import (
 	"html"
 	"log"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -2574,7 +2575,46 @@ func (s *Service) copyClipToThread(sourceVideoID, threadID, uploaderID, videoURL
 // shareThreadIDs are the caller's OTHER coach threads to also share this one
 // analysis with (they picked "all my coaches"). PB Vision is called ONCE; each
 // extra thread gets its own job row referencing the same vid + a copy of the clip.
-func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID string, shareThreadIDs []string) (string, error) {
+// pbVisionLeagueGrants: leagues whose PLAYERS may run a PB Vision analysis even
+// though their email isn't on the coaching beta allowlist. A deliberate one-off
+// (every run bills our PB Vision key), so it is a short explicit list, capped per
+// person by the caller, and overridable via PBVISION_LEAGUE_ALLOWLIST without a
+// deploy — set that to a bogus value to revoke instantly.
+const pbVisionLeagueGrants = "60bb75fb-3d1d-4f83-93fd-20ce7ece8bb5" // Women's Never ending league
+
+// InPBVisionLeague reports whether this caller plays in a league that has been
+// granted PB Vision analysis. Uses the same participation rule as MyLeagues, so
+// a registered player, a bracket entrant and an invited member all qualify.
+func (s *Service) InPBVisionLeague(userID, email string) bool {
+	list := strings.TrimSpace(os.Getenv("PBVISION_LEAGUE_ALLOWLIST"))
+	if list == "" {
+		list = pbVisionLeagueGrants
+	}
+	allowed := map[string]bool{}
+	for _, id := range strings.Split(list, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed[id] = true
+		}
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	mine, err := s.leagueIDsForUser(userID, email)
+	if err != nil {
+		return false // fail CLOSED: a lookup error must not hand out billed runs
+	}
+	for id := range mine {
+		if allowed[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// lifetimeCap > 0 bounds this thread to that many analyses EVER (not per month) —
+// used for the league grant, where the allowance is "one each, this once". 0
+// leaves only the standing rolling-30-day cap.
+func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID string, shareThreadIDs []string, lifetimeCap int) (string, error) {
 	if !s.coachingReady() || !s.pbvisionJobsReady() {
 		return "", ErrCoachingUnavailable
 	}
@@ -2621,6 +2661,16 @@ func (s *Service) AnalyzeThreadVideo(threadID, userID, email, videoURL, videoID 
 	// Cost cap: coaching PB Vision analysis is currently free (platform-billed), so
 	// bound it per student — at most N runs per rolling 30 days on this thread — so
 	// a coach-led league of many students can't run up an unbounded PB Vision bill.
+	// Lifetime allowance (league grant): counts EVERY prior run on this thread, so
+	// it can't be reset by waiting a month like the rolling cap below.
+	if lifetimeCap > 0 && s.columnReady("coaching_pbvision_jobs", "coach_student_id") {
+		if prior, _ := s.sb.Select("coaching_pbvision_jobs",
+			"coach_student_id=eq."+store.Q(threadID)+
+				"&select=id"); len(prior) >= lifetimeCap {
+			return "", errors.New(
+				"you've used your free video analysis — more coming when analysis opens up")
+		}
+	}
 	if s.columnReady("coaching_pbvision_jobs", "coach_student_id") {
 		since := time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339)
 		if prior, _ := s.sb.Select("coaching_pbvision_jobs",

@@ -13999,6 +13999,24 @@ func (s *Service) poolProgress(bracketID string) (total, open int, err error) {
 		return 0, 0, err
 	}
 	for _, m := range rows {
+		// A game marked "not played" is excluded from BOTH counts — it is not
+		// outstanding work, and it is not a result either.
+		//
+		// This is the whole point of CancelMatch ("rained out, ran out of time,
+		// players left"), and its doc already claims canceled games are excluded
+		// from the schedule-completion math. They weren't, here. So an organizer
+		// who did exactly what the app told them — "Mark as not played" on a game
+		// nobody showed up for — still couldn't build the playoff, and couldn't
+		// delete the round either (it holds real results), which left the event
+		// with no way forward at all.
+		//
+		// Excluding it from `total` as well means a division whose every pool
+		// game was called off reads as "no pool schedule" rather than "complete",
+		// so the playoff refuses with the right reason instead of seeding off
+		// nothing.
+		if st := asStr(m, "status"); st == "canceled" || st == "cancelled" {
+			continue
+		}
 		total++
 		if asStr(m, "status") != "completed" {
 			open++

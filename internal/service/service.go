@@ -5570,6 +5570,34 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string, force 
 	if tgt == nil || asStr(tgt, "event_id") != reg.eventID {
 		return ErrNotFound
 	}
+	// A player ALREADY entered in the target division collides with
+	// registrations_event_player_bracket_uidx (event_id, player_id, bracket_id).
+	// Without this check the move reached Postgres and came back as a bare
+	// "supabase update: status 409" — a number with nothing an organizer can act
+	// on, and easy to misread as a rating or sanctioning rule. Checked BEFORE the
+	// draw handling below, so a move that can never succeed cannot clear a draw.
+	dupIn := func(playerID string) (bool, error) {
+		if playerID == "" {
+			return false, nil
+		}
+		row, err := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(reg.eventID)+
+				"&player_id=eq."+store.Q(playerID)+
+				"&bracket_id=eq."+store.Q(targetBracketID)+"&select=id")
+		return row != nil, err
+	}
+	if dup, err := dupIn(reg.playerID); err != nil {
+		return err
+	} else if dup {
+		return errors.New("they're already registered in that division — " +
+			"remove one of their two entries first")
+	}
+	if dup, err := dupIn(reg.partnerID); err != nil {
+		return err
+	} else if dup {
+		return errors.New("their partner is already registered in that division — " +
+			"remove one of the partner's two entries first")
+	}
 	// A generated draw on either side would be orphaned by the move. Default:
 	// block (ErrDrawExists). With force: allow ONLY if no match is scored yet,
 	// clearing those divisions' draws so the organizer can rebuild.

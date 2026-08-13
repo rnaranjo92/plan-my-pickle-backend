@@ -13351,6 +13351,15 @@ func (s *Service) EventScheduleMatches(eventID string) ([]model.Match, error) {
 		// Pools AND the medal bracket — so the live TV can detect the playoff
 		// phase and show the bracket + champions celebration once pools finish.
 		stageFilter = ""
+	case "round_robin":
+		// A round robin can now finish with a playoff (Build playoff seeds one
+		// from the standings), so its bracket games have to come back too.
+		// Filtering them out meant the bracket was built and then invisible: the
+		// games never appeared on the Game tab, the "Build playoff" button never
+		// hid — because the client decides that by looking for a bracket match —
+		// and the only sign anything had happened was the pace banner counting
+		// games nobody could see.
+		stageFilter = ""
 	}
 	rows, err := s.sb.SelectAll("matches",
 		"event_id=eq."+store.Q(eventID)+stageFilter+"&select="+matchSelect)

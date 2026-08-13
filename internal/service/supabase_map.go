@@ -253,17 +253,17 @@ func mapEvent(m map[string]any) model.Event {
 		PosterURL:                  asStrPtr(m, "poster_url"),
 		CourtScorePasscode: asBool(m, "court_score_passcode") &&
 			strings.TrimSpace(asStr(m, "admin_passcode")) != "",
-		SponsorWatermarkURL:        asStr(m, "sponsor_watermark_url"),
-		SponsorWatermarkOpacity:    asFloatOr(m, "sponsor_watermark_opacity", 0.08),
-		SponsorWatermarkPosition:   asStr(m, "sponsor_watermark_position"),
-		SponsorWatermarkScale:      asFloatOr(m, "sponsor_watermark_scale", 0.5),
-		ScheduleBreaks:             mapBreaks(m),
-		DayCapMinutes:              asIntPtr(m, "day_cap_minutes"),
-		DayEndMinutes:              mapIntArray(m, "day_end_minutes"),
-		Description:                asStrPtr(m, "description"),
-		LeagueID:                   asStrPtr(m, "league_id"),
-		Status:                     asStr(m, "status"),
-		ScoreboardTheme:            asMap(m, "scoreboard_theme"),
+		SponsorWatermarkURL:      asStr(m, "sponsor_watermark_url"),
+		SponsorWatermarkOpacity:  asFloatOr(m, "sponsor_watermark_opacity", 0.08),
+		SponsorWatermarkPosition: asStr(m, "sponsor_watermark_position"),
+		SponsorWatermarkScale:    asFloatOr(m, "sponsor_watermark_scale", 0.5),
+		ScheduleBreaks:           mapBreaks(m),
+		DayCapMinutes:            asIntPtr(m, "day_cap_minutes"),
+		DayEndMinutes:            mapIntArray(m, "day_end_minutes"),
+		Description:              asStrPtr(m, "description"),
+		LeagueID:                 asStrPtr(m, "league_id"),
+		Status:                   asStr(m, "status"),
+		ScoreboardTheme:          asMap(m, "scoreboard_theme"),
 	}
 }
 

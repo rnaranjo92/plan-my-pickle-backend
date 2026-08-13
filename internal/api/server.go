@@ -370,7 +370,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// participant-OR-owner (so the "app is the cowbell" auto-advance fires from
 	// any player's phone, guarded idempotently by the advance RPC).
 	mux.HandleFunc("GET /league-brackets/{id}/rotation-sessions",
-		s.ladderDivisionOwner("id", s.listRotationSessions))
+		s.ladderDivisionViewer("id", s.listRotationSessions))
 	mux.HandleFunc("POST /league-brackets/{id}/rotation-sessions",
 		s.ladderDivisionOwner("id", s.createRotationSession))
 	mux.HandleFunc("GET /rotation-sessions/{id}/board",
@@ -387,6 +387,14 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationPlayerOwner("id", s.setRotationPlayerActive))
 	mux.HandleFunc("POST /rotation-players/{id}/rating",
 		s.rotationPlayerOwner("id", s.setRotationPlayerRating))
+	mux.HandleFunc("POST /rotation-players/{id}/name",
+		s.rotationPlayerOwner("id", s.setRotationPlayerName))
+	mux.HandleFunc("POST /rotation-sessions/{id}/substitute",
+		s.rotationSessionOwner("id", s.substituteRotationPlayer))
+	mux.HandleFunc("POST /rotation-players/{id}/start-court",
+		s.rotationPlayerOwner("id", s.setRotationPlayerStartCourt))
+	mux.HandleFunc("POST /rotation-sessions/{id}/shuffle-courts",
+		s.rotationSessionOwner("id", s.shuffleRotationStartCourts))
 	mux.HandleFunc("POST /rotation-sessions/{id}/courts",
 		s.rotationSessionOwner("id", s.setRotationCourts))
 	mux.HandleFunc("POST /rotation-sessions/{id}/auto-advance",
@@ -7591,6 +7599,13 @@ func (s *Server) allowLeagueRead(w http.ResponseWriter, r *http.Request, leagueI
 	if uid != "" && owner == uid {
 		return true
 	}
+	// QA/support accounts. Every OWNER gate already grants this (ladderOwnerOK),
+	// so without it here a support account has LESS access on read-only screens
+	// than on the ones that can change things — and the app renders their
+	// controls, which then 403.
+	if isSuperUser(userEmail(r)) && superUserAllowed(r) {
+		return true
+	}
 	ok, err := s.svc.IsLeagueParticipant(leagueID, uid, userEmail(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -7611,6 +7626,25 @@ func (s *Server) ladderDivisionOwner(idParam string, next http.HandlerFunc) http
 	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		owner, err := s.svc.LadderOwner(r.PathValue(idParam))
 		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// ladderDivisionViewer allows anyone who may READ the league behind a ladder
+// division. Listing the live sessions is the one management call a player needs:
+// without it they check in, land on the division page and see nothing at all, so
+// the whole live-session experience is unreachable from the app's own navigation
+// even though every screen behind it already handles a non-owner.
+func (s *Server) ladderDivisionViewer(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		leagueID, err := s.svc.LeagueIDOfDivision(r.PathValue(idParam))
+		if err != nil {
+			status(w, err)
+			return
+		}
+		if !s.allowLeagueRead(w, r, leagueID) {
 			return
 		}
 		next(w, r)
@@ -7811,6 +7845,19 @@ func status(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, service.ErrChallengeConflict) {
 		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	// A refusal a human must clear (409) vs a bad moment worth retrying (503).
+	// Without these both arrived as 400, so no client could tell them apart —
+	// and the two need opposite handling: retrying a refusal hammers the server
+	// with the clock stopped, while latching on a blip quietly turns an
+	// automatic night manual.
+	if errors.Is(err, service.ErrRoundBlocked) {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, service.ErrUpstream) {
+		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err)

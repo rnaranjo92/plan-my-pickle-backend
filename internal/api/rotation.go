@@ -244,6 +244,63 @@ func (s *Server) setRotationPlayerRating(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]float64{"selfRating": req.SelfRating})
 }
 
+// setRotationPlayerStartCourt places one player on a starting court by hand.
+// A null/absent court un-places them (back to the rating-seeded tail).
+func (s *Server) setRotationPlayerStartCourt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		StartCourt *int `json:"startCourt"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationPlayerStartCourt(r.PathValue("id"), req.StartCourt); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"startCourt": req.StartCourt})
+}
+
+// shuffleRotationStartCourts randomly redistributes the roster across the
+// starting courts (owner-gated, pre-start only).
+func (s *Server) shuffleRotationStartCourts(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.ShuffleRotationStartCourts(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"placed": n})
+}
+
+// setRotationPlayerName fixes a roster player's name (owner-gated, any time).
+func (s *Server) setRotationPlayerName(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DisplayName string `json:"displayName"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationPlayerName(r.PathValue("id"), req.DisplayName); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"displayName": req.DisplayName})
+}
+
+// substituteRotationPlayer hands a player's seat to a new roster row, splitting
+// the record at the current round (owner-gated, live only).
+func (s *Server) substituteRotationPlayer(w http.ResponseWriter, r *http.Request) {
+	var req model.SubstituteRotationPlayerRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.SubstituteRotationPlayer(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
 // startRotation seeds round 1 and flips the session live (owner-gated).
 func (s *Server) startRotation(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.StartRotationSession(r.PathValue("id")); err != nil {
@@ -259,7 +316,10 @@ func (s *Server) reportRotationCourt(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.ReportRotationCourt(r.PathValue("id"), req); err != nil {
+	sessionID := r.PathValue("id")
+	owner, oerr := s.svc.OwnerOfRotationSession(sessionID)
+	isOwner := oerr == nil && owner != "" && owner == userID(r)
+	if err := s.svc.ReportRotationCourt(sessionID, userID(r), isOwner, req); err != nil {
 		status(w, err)
 		return
 	}

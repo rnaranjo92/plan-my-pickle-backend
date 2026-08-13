@@ -5,8 +5,8 @@ import "testing"
 // Guards the bug class that broke substitute re-entry: the app stores a
 // FORMATTED phone, so any SQL match on a normalized value misses.
 func TestNormPhoneMatchesFormattedStorage(t *testing.T) {
-	typed := "6195550100"           // what a lookup normalizes to
-	stored := "(619) 555-0100"      // what players.phone actually holds
+	typed := "6195550100"      // what a lookup normalizes to
+	stored := "(619) 555-0100" // what players.phone actually holds
 	if normPhone(stored) != normPhone(typed) {
 		t.Fatalf("normPhone mismatch: stored=%q -> %q, typed=%q -> %q",
 			stored, normPhone(stored), typed, normPhone(typed))

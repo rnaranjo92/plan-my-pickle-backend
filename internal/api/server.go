@@ -370,7 +370,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// participant-OR-owner (so the "app is the cowbell" auto-advance fires from
 	// any player's phone, guarded idempotently by the advance RPC).
 	mux.HandleFunc("GET /league-brackets/{id}/rotation-sessions",
-		s.ladderDivisionOwner("id", s.listRotationSessions))
+		s.ladderDivisionViewer("id", s.listRotationSessions))
 	mux.HandleFunc("POST /league-brackets/{id}/rotation-sessions",
 		s.ladderDivisionOwner("id", s.createRotationSession))
 	mux.HandleFunc("GET /rotation-sessions/{id}/board",
@@ -7619,6 +7619,25 @@ func (s *Server) ladderDivisionOwner(idParam string, next http.HandlerFunc) http
 	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		owner, err := s.svc.LadderOwner(r.PathValue(idParam))
 		if !ladderOwnerOK(w, r, owner, err) {
+			return
+		}
+		next(w, r)
+	})
+}
+
+// ladderDivisionViewer allows anyone who may READ the league behind a ladder
+// division. Listing the live sessions is the one management call a player needs:
+// without it they check in, land on the division page and see nothing at all, so
+// the whole live-session experience is unreachable from the app's own navigation
+// even though every screen behind it already handles a non-owner.
+func (s *Server) ladderDivisionViewer(idParam string, next http.HandlerFunc) http.HandlerFunc {
+	return requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		leagueID, err := s.svc.LeagueIDOfDivision(r.PathValue(idParam))
+		if err != nil {
+			status(w, err)
+			return
+		}
+		if !s.allowLeagueRead(w, r, leagueID) {
 			return
 		}
 		next(w, r)

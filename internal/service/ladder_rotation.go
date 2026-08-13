@@ -941,7 +941,8 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		}
 	}
 
-	nextCourts, nextBench := engine.NextRound(cur, results, bench)
+	nextCourts, nextBench := engine.NextRound(cur, results, bench,
+		s.rotationLoserMode(sessionID))
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_round":   round,
@@ -1125,3 +1126,32 @@ func roundEndsAt(mins int) string {
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
+
+// rotationLoserMode resolves the league's loser rule for a session: 'stay' means
+// losers hold their court (and the top court's losers fall to the bottom),
+// anything else is the classic river where losers drop one.
+//
+// Fails safe to LosersDown — the behaviour every existing ladder already has —
+// so a missing column, an unreadable league or a session whose division has gone
+// keeps running the way it always did rather than silently changing the rules
+// mid-night.
+func (s *Service) rotationLoserMode(sessionID string) engine.LoserMode {
+	div, err := s.DivisionOfRotationSession(sessionID)
+	if err != nil || div == "" {
+		return engine.LosersDown
+	}
+	leagueID, err := s.LeagueIDOfDivision(div)
+	if err != nil || leagueID == "" {
+		return engine.LosersDown
+	}
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=ladder_loser_mode")
+	if err != nil || lg == nil {
+		return engine.LosersDown
+	}
+	if asStr(lg, "ladder_loser_mode") == "stay" {
+		return engine.LosersStay
+	}
+	return engine.LosersDown
+}

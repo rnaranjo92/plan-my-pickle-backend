@@ -298,6 +298,13 @@ func mapLeague(m map[string]any) model.League {
 		if lg.LadderFormat != "rotation" {
 			lg.LadderFormat = "challenge"
 		}
+		// Loser mode: 'down' (classic river) or 'stay'. Absent pre-migration, or
+		// any unexpected value, reads as 'down' — the behaviour every existing
+		// ladder already has.
+		lg.LadderLoserMode = asStr(m, "ladder_loser_mode")
+		if lg.LadderLoserMode != "stay" {
+			lg.LadderLoserMode = "down"
+		}
 	}
 	return lg
 }

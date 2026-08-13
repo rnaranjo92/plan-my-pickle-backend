@@ -24,6 +24,28 @@ type RotCourt struct {
 	TeamB [2]string
 }
 
+// LoserMode decides where a LOSING pair goes, chosen when the ladder is created
+// and fixed for the session.
+//
+//	LosersDown — the classic river: losers drop one court, the bottom court's
+//	             losers stay (and are the ones who rotate off to the bench).
+//	LosersStay — losers hold their court, and only winners climb. The TOP court's
+//	             losers fall all the way to the bottom, which is what keeps every
+//	             court at four: court 1 takes its own winners plus the climbers
+//	             from court 2, each middle court takes its own losers plus the
+//	             climbers from below, and the bottom takes its own losers plus
+//	             the pair dropped from the top.
+//
+// With ONE court the two modes are identical (nowhere to move), and with TWO
+// "all the way to the bottom" and "down one" are the same court — so they behave
+// the same there too.
+type LoserMode int
+
+const (
+	LosersDown LoserMode = iota
+	LosersStay
+)
+
 // RotResult reports which team won a court's round: "a", "b", or "tie". A tie is
 // resolved by a single point in real life; the caller passes the point winner as
 // "a"/"b" (never "tie" reaches the engine as a final outcome).
@@ -71,7 +93,7 @@ func SeedCourts(players []string, maxCourts int) ([]RotCourt, []string) {
 // ON, filling the bottom court. Up to 2 rotate per round (a losing pair's worth).
 // Returns the next courts and the next bench (FIFO). An empty bench reproduces
 // the classic no-bye behavior exactly.
-func NextRound(courts []RotCourt, results []RotResult, bench []string) ([]RotCourt, []string) {
+func NextRound(courts []RotCourt, results []RotResult, bench []string, mode LoserMode) ([]RotCourt, []string) {
 	n := len(courts)
 	if n == 0 {
 		return nil, append([]string(nil), bench...)
@@ -128,15 +150,31 @@ func NextRound(courts []RotCourt, results []RotResult, bench []string) ([]RotCou
 		//  - from BELOW (court k+1 winners moving up) — or, at the bottom, the
 		//    "stay" pair (bottom losers, possibly swapped with bench players).
 		var fromAbove, fromBelow [2]string
-		if k == 1 {
-			fromAbove = winners[1] // court 1 winners stay at the top
+		if mode == LosersStay && n > 1 {
+			// Only winners climb. Losers hold their court, except at the top,
+			// where they fall to the bottom.
+			switch k {
+			case 1:
+				fromAbove = winners[1]  // winners stay at the top
+				fromBelow = winners[2]  // climbers from court 2
+			case n:
+				fromAbove = losers[1]   // the top court's losers land here
+				fromBelow = bottomStay  // this court's own losers (after any bye swap)
+			default:
+				fromAbove = losers[k]   // own losers hold this court
+				fromBelow = winners[k+1]
+			}
 		} else {
-			fromAbove = losers[k-1] // court k-1 losers drop into k
-		}
-		if k == n {
-			fromBelow = bottomStay // bottom stayers (after any bye swap)
-		} else {
-			fromBelow = winners[k+1] // court k+1 winners climb into k
+			if k == 1 {
+				fromAbove = winners[1] // court 1 winners stay at the top
+			} else {
+				fromAbove = losers[k-1] // court k-1 losers drop into k
+			}
+			if k == n {
+				fromBelow = bottomStay // bottom stayers (after any bye swap)
+			} else {
+				fromBelow = winners[k+1] // court k+1 winners climb into k
+			}
 		}
 		// Re-pair so partners change: each "from below" pairs with one "from above".
 		next[k-1] = RotCourt{

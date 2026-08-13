@@ -290,6 +290,10 @@ type League struct {
 	// LeagueType: round_robin | ladder | team. DayType: single | multi.
 	LeagueType string `json:"leagueType"`
 	DayType    string `json:"dayType"`
+	// LadderLoserMode (rotation ladders): 'down' = losers drop a court (the
+	// classic river); 'stay' = losers hold their court and only winners climb,
+	// with the TOP court's losers falling to the bottom. Fixed at creation.
+	LadderLoserMode string `json:"ladderLoserMode,omitempty"`
 	// LadderFormat (ladder leagues only): challenge | rotation. 'challenge' is the
 	// persistent challenge ladder; 'rotation' is the live "up & down the river"
 	// session league. Empty/other for non-ladder leagues.

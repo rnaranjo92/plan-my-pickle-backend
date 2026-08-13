@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -26,6 +27,9 @@ type fakeSupabase struct {
 	// row. writes alone can't tell you WHICH row a PATCH hit — the id lives in
 	// the query string — so anything asserting a per-row update reads this.
 	targeted map[string][]targetedWrite
+	// rpcCalls records each RPC's request bodies. Logic that moved INTO the
+	// database can't be asserted from here, but what Go sends to it can.
+	rpcCalls map[string][][]byte
 }
 
 // targetedWrite is one PATCH/POST: the PostgREST filter (e.g. "id=eq.p3") and
@@ -38,7 +42,7 @@ type targetedWrite struct {
 func newFake() *fakeSupabase {
 	return &fakeSupabase{get: map[string]string{}, rpc: map[string]string{},
 		rpcFn: map[string]func([]byte) string{}, writes: map[string][]map[string]any{},
-		targeted: map[string][]targetedWrite{}}
+		targeted: map[string][]targetedWrite{}, rpcCalls: map[string][][]byte{}}
 }
 
 // written returns every row body POSTed/PATCHed to a table (for E2E assertions).
@@ -46,6 +50,13 @@ func (f *fakeSupabase) written(table string) []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.writes[table]
+}
+
+// rpcBodies returns every request body sent to an RPC.
+func (f *fakeSupabase) rpcBodies(fn string) [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rpcCalls[fn]
 }
 
 // targetedWrites returns every write to a table paired with its URL filter.
@@ -93,6 +104,12 @@ func (f *fakeSupabase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(path, "/rest/v1/rpc/"):
 		fn := strings.TrimPrefix(path, "/rest/v1/rpc/")
+		if b, rerr := io.ReadAll(r.Body); rerr == nil {
+			f.mu.Lock()
+			f.rpcCalls[fn] = append(f.rpcCalls[fn], b)
+			f.mu.Unlock()
+			r.Body = io.NopCloser(bytes.NewReader(b))
+		}
 		if respond, ok := f.rpcFn[fn]; ok {
 			b, _ := io.ReadAll(r.Body)
 			_, _ = w.Write([]byte(respond(b)))

@@ -39,12 +39,20 @@ func placementsFrom(t *testing.T, f *fakeSupabase) map[string]int {
 	t.Helper()
 	out := map[string]int{}
 	for _, w := range f.targetedWrites("rotation_players") {
+		// A batched upsert carries the id in the ROW; a single PATCH carries it
+		// in the URL filter. Both are legitimate writes.
 		id := idOf(w.filter)
 		if id == "" {
-			t.Fatalf("a roster update carried no player id: %q", w.filter)
+			id, _ = w.row["id"].(string)
+		}
+		if id == "" {
+			t.Fatalf("a roster update carried no player id: %q / %#v", w.filter, w.row)
 		}
 		court, ok := w.row["start_court"].(float64)
 		if !ok {
+			if w.row["start_court"] == nil {
+				continue // a cleared placement, counted separately
+			}
 			t.Fatalf("player %s got a non-numeric start_court: %#v", id, w.row["start_court"])
 		}
 		out[id] = int(court)
@@ -189,5 +197,64 @@ func TestSetStartCourt_RefusedOnceLive(t *testing.T) {
 	court := 2
 	if err := s.SetRotationPlayerStartCourt("p0", &court); err == nil {
 		t.Fatal("a player was re-placed in a live session")
+	}
+}
+
+
+// A stale placement on someone sitting out silently un-randomises the shuffle
+// the moment they're brought back: they'd sort ahead of the players actually
+// drawn onto that court.
+func TestShuffle_ClearsPlacementsOfPlayersSittingOut(t *testing.T) {
+	f := newFake().
+		seed("rotation_sessions", `[{"id":"s1","status":"setup"}]`).
+		seed("rotation_players", `[
+			{"id":"p0","session_id":"s1","active":true},
+			{"id":"p1","session_id":"s1","active":true},
+			{"id":"p2","session_id":"s1","active":true},
+			{"id":"p3","session_id":"s1","active":true},
+			{"id":"pOut","session_id":"s1","active":false,"start_court":1}]`)
+	s := newFakeSvc(t, f)
+
+	n, err := s.ShuffleRotationStartCourts("s1")
+	if err != nil {
+		t.Fatalf("shuffle failed: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("reported %d placed, only 4 are playing", n)
+	}
+	cleared := false
+	for _, w := range f.targetedWrites("rotation_players") {
+		if id, _ := w.row["id"].(string); id == "pOut" {
+			val, present := w.row["start_court"]
+			if !present {
+				t.Fatal("the benched player's placement was left untouched")
+			}
+			if val != nil {
+				t.Fatalf("benched player kept court %v", val)
+			}
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("a player sitting out kept their stale starting court")
+	}
+}
+
+// One write, not one per player: a partial sequence leaves half the room on the
+// new draw and half on the old one — a placement that is neither.
+func TestShuffle_IsASingleWrite(t *testing.T) {
+	f := rosterOf(40)
+	s := newFakeSvc(t, f)
+
+	if _, err := s.ShuffleRotationStartCourts("s1"); err != nil {
+		t.Fatalf("shuffle failed: %v", err)
+	}
+	batches := map[string]bool{}
+	for _, w := range f.targetedWrites("rotation_players") {
+		batches[w.filter] = true
+	}
+	if len(batches) != 1 {
+		t.Fatalf("shuffle issued %d separate writes for 40 players; want 1 batch",
+			len(batches))
 	}
 }

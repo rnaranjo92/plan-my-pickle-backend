@@ -81,6 +81,80 @@ func SeedCourts(players []string, maxCourts int) ([]RotCourt, []string) {
 	return courts, bench
 }
 
+// Seat is one player waiting to be placed for round 1, with the court the
+// organizer put them on. Court 0 means unplaced — seed them by rating.
+type Seat struct {
+	ID    string
+	Court int
+}
+
+// SeedPlacedCourts builds round 1 from EXPLICIT court placements, falling back
+// to rating order for whoever wasn't placed.
+//
+// This exists because sorting the roster by court number and chunking it into
+// fours -- the obvious implementation -- does not place anybody. It only ranks
+// them: place two players on court 3, leave the rest unplaced, and those two
+// sort to the front and open the TOP court. The number the organizer typed has
+// to survive as a destination, not a sort key.
+//
+// `players` must arrive in rating order (strongest first); that order decides
+// which unplaced player fills which remaining seat, and which placed player
+// keeps their seat when a court is oversubscribed.
+//
+// Court count is min(maxCourts, floor(n/4)) exactly as SeedCourts, so the room
+// never seats more courts than it has players for. Two consequences the caller
+// should expect, both deliberate:
+//
+//   - A court placed BEYOND the last real court can't be honoured; those players
+//     join the unplaced pool rather than vanishing.
+//   - A court with more than four placed players keeps the first four by rating
+//     and returns the rest to the pool. The alternative -- spilling them onto the
+//     next court -- silently shifts everyone below.
+func SeedPlacedCourts(players []Seat, maxCourts int) ([]RotCourt, []string) {
+	c := len(players) / 4
+	if maxCourts > 0 && maxCourts < c {
+		c = maxCourts
+	}
+	if c == 0 {
+		ids := make([]string, 0, len(players))
+		for _, p := range players {
+			ids = append(ids, p.ID)
+		}
+		return []RotCourt{}, ids
+	}
+
+	seats := make([][]string, c+1) // 1-based; index 0 unused
+	var pool []string
+	for _, p := range players {
+		if p.Court >= 1 && p.Court <= c && len(seats[p.Court]) < 4 {
+			seats[p.Court] = append(seats[p.Court], p.ID)
+			continue
+		}
+		pool = append(pool, p.ID)
+	}
+
+	// Fill the gaps top court first, so the strongest unplaced players land
+	// highest — the same intent as the rating seed they're falling back to.
+	next := 0
+	for k := 1; k <= c; k++ {
+		for len(seats[k]) < 4 && next < len(pool) {
+			seats[k] = append(seats[k], pool[next])
+			next++
+		}
+	}
+
+	courts := make([]RotCourt, 0, c)
+	for k := 1; k <= c; k++ {
+		q := seats[k]
+		courts = append(courts, RotCourt{
+			Court: k,
+			TeamA: [2]string{q[0], q[2]},
+			TeamB: [2]string{q[1], q[3]},
+		})
+	}
+	return courts, append([]string(nil), pool[next:]...)
+}
+
 // NextRound applies one round's results and returns the next round's courts.
 // Movement: winners go up a court, losers go down; court 1 winners and the last
 // court's losers stay. Each destination court's four players re-pair so nobody
@@ -95,6 +169,19 @@ func SeedCourts(players []string, maxCourts int) ([]RotCourt, []string) {
 // the classic no-bye behavior exactly.
 func NextRound(courts []RotCourt, results []RotResult, bench []string, mode LoserMode) ([]RotCourt, []string) {
 	n := len(courts)
+	// The movement math assumes contiguous courts 1..n with four real players
+	// each. Violate either and it doesn't degrade — it ERASES people: courts
+	// numbered [1,3] produce two courts of empty seats with all eight players
+	// gone, and a single blank seat becomes a phantom that holds a slot all night
+	// while a real player is benched every round. Nothing reaches here that way
+	// today; this makes sure nothing ever can.
+	for i, c := range courts {
+		if c.Court != i+1 ||
+			c.TeamA[0] == "" || c.TeamA[1] == "" ||
+			c.TeamB[0] == "" || c.TeamB[1] == "" {
+			return append([]RotCourt(nil), courts...), append([]string(nil), bench...)
+		}
+	}
 	if n == 0 {
 		return nil, append([]string(nil), bench...)
 	}

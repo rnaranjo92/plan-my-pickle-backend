@@ -80,6 +80,11 @@ type Service struct {
 	colProbeMu  sync.Mutex
 	colProbe    map[string]bool
 	colProbeNeg map[string]time.Time
+	// loserModeCache memoises a ladder's loser rule per session. It is fixed at
+	// league creation with no update path, and the live board polls every few
+	// seconds — without this, each poll cost three extra queries for a constant.
+	loserModeMu    sync.Mutex
+	loserModeCache map[string]engine.LoserMode
 }
 
 // columnProbeCooldown bounds how often a missing column is re-probed (see

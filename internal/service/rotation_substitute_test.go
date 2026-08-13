@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -9,15 +10,25 @@ import (
 
 // Someone's knee goes at round 5 and a friend takes over. The scores already on
 // the board belong to the first player and must stay theirs; every round from
-// here belongs to whoever actually played it. That split is the whole feature —
-// which is why a substitution creates a roster row rather than renaming one.
+// here belongs to whoever actually played it.
+//
+// The SPLIT ITSELF now happens inside the rotation_substitute RPC, under the
+// session's row lock — five separate writes from Go left gaps that could seat a
+// phantom player or clobber a concurrent advance's queue. That means the
+// interesting invariants (which round the swap takes effect, seat swap, queue
+// position, retiring the outgoing player) are enforced in SQL and are NOT
+// reachable from this fake, which returns canned responses. What Go still owns,
+// and what these tests cover, is: validation before the call, the payload, and
+// turning each refusal into something an organizer can act on.
 
 func liveSession(round int, bench string) *fakeSupabase {
 	return newFake().
 		seed("rotation_sessions", `[{"id":"s1","status":"live","current_round":`+
 			itoa(round)+`,"bench":`+bench+`}]`).
 		seed("rotation_players",
-			`[{"id":"pOut","session_id":"s1","display_name":"Ann","self_rating":4.5,"active":true}]`)
+			`[{"id":"pOut","session_id":"s1","display_name":"Ann","self_rating":4.5,"active":true}]`).
+		seedRPC("rotation_substitute",
+			`{"ok":true,"round":5,"player":{"id":"pIn","session_id":"s1","display_name":"Bea","active":true}}`)
 }
 
 func itoa(n int) string {
@@ -36,155 +47,41 @@ func subReq() model.SubstituteRotationPlayerRequest {
 	return model.SubstituteRotationPlayerRequest{OutPlayerID: "pOut", DisplayName: "Bea"}
 }
 
-// The substitute must be a NEW row. Renaming the outgoing player would hand
-// every point already scored to someone who never played those rounds.
-func TestSubstitute_CreatesANewRosterRow(t *testing.T) {
-	f := liveSession(5, `[]`)
-	s := newFakeSvc(t, f)
-
-	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
-		t.Fatalf("substitution failed: %v", err)
-	}
-
-	var inserted map[string]any
-	for _, w := range f.targetedWrites("rotation_players") {
-		if w.row["display_name"] == "Bea" {
-			inserted = w.row
+// rpcPayload returns the body sent to the substitution RPC.
+func rpcPayload(t *testing.T, f *fakeSupabase) map[string]any {
+	t.Helper()
+	for _, b := range f.rpcBodies("rotation_substitute") {
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("unparseable RPC body: %v", err)
 		}
+		return m
 	}
-	if inserted == nil {
-		t.Fatal("no roster row was created for the substitute")
-	}
-	if inserted["session_id"] != "s1" {
-		t.Errorf("substitute landed in session %v, want s1", inserted["session_id"])
-	}
-	// Nothing may rewrite the outgoing player's NAME — that is the exact mistake
-	// this design exists to prevent.
-	for _, w := range f.targetedWrites("rotation_players") {
-		if idOf(w.filter) == "pOut" {
-			if _, renamed := w.row["display_name"]; renamed {
-				t.Fatal("the outgoing player was renamed — their score would move to the substitute")
-			}
-		}
-	}
+	t.Fatal("the substitution RPC was never called")
+	return nil
 }
 
-// The outgoing player has to leave the active roster, or the reconciliation on
-// the next advance will seat them again alongside their own replacement.
-func TestSubstitute_RetiresTheOutgoingPlayer(t *testing.T) {
+func TestSubstitute_CallsTheAtomicRPC(t *testing.T) {
 	f := liveSession(5, `[]`)
-	s := newFakeSvc(t, f)
-
-	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
-		t.Fatalf("substitution failed: %v", err)
-	}
-
-	retired := false
-	for _, w := range f.targetedWrites("rotation_players") {
-		if idOf(w.filter) == "pOut" && w.row["active"] == false {
-			retired = true
-		}
-	}
-	if !retired {
-		t.Fatal("the outgoing player is still active — they'd rotate back in")
-	}
-}
-
-// The seat swap must cover every one of the four positions on a court: a
-// substitute who is only ever checked into team A's first slot silently fails
-// for three players out of four.
-func TestSubstitute_TakesTheSeatInEveryPosition(t *testing.T) {
-	f := liveSession(5, `[]`)
-	s := newFakeSvc(t, f)
-
-	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
-		t.Fatalf("substitution failed: %v", err)
-	}
-
-	want := map[string]bool{
-		"team_a_p1": false, "team_a_p2": false,
-		"team_b_p1": false, "team_b_p2": false,
-	}
-	for _, w := range f.targetedWrites("rotation_round_courts") {
-		for col := range want {
-			if _, set := w.row[col]; set && strings.Contains(w.filter, col+"=eq.pOut") {
-				want[col] = true
-			}
-		}
-	}
-	for col, covered := range want {
-		if !covered {
-			t.Errorf("a player sitting in %s would never be substituted", col)
-		}
-	}
-}
-
-// The swap is filtered round >= current, not round = current. An advance landing
-// between reading the round and writing the seat would otherwise strand the
-// substitute in a round that has already finished.
-func TestSubstitute_SeatSwapCoversLaterRounds(t *testing.T) {
-	f := liveSession(5, `[]`)
-	s := newFakeSvc(t, f)
-
-	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
-		t.Fatalf("substitution failed: %v", err)
-	}
-
-	writes := f.targetedWrites("rotation_round_courts")
-	if len(writes) == 0 {
-		t.Fatal("no seat swap was attempted")
-	}
-	for _, w := range writes {
-		if !strings.Contains(w.filter, "round=gte.5") {
-			t.Fatalf("seat swap filtered %q — an advance mid-call would strand the substitute", w.filter)
-		}
-	}
-}
-
-// A waiting player's replacement inherits their PLACE in the queue. Sending them
-// to the back would make the substitute wait a second full turn for a rest the
-// player they replaced had already served.
-func TestSubstitute_InheritsTheBenchPosition(t *testing.T) {
-	f := liveSession(5, `["pX","pOut","pY"]`)
 	s := newFakeSvc(t, f)
 
 	in, err := s.SubstituteRotationPlayer("s1", subReq())
 	if err != nil {
 		t.Fatalf("substitution failed: %v", err)
 	}
-
-	var bench []any
-	for _, w := range f.targetedWrites("rotation_sessions") {
-		if b, ok := w.row["bench"].([]any); ok {
-			bench = b
-		}
+	if in.ID != "pIn" || in.DisplayName != "Bea" {
+		t.Fatalf("returned the wrong player: %+v", in)
 	}
-	if bench == nil {
-		t.Fatal("the waiting queue was never updated")
+	p := rpcPayload(t, f)
+	if p["p_session"] != "s1" || p["p_out"] != "pOut" || p["p_name"] != "Bea" {
+		t.Fatalf("wrong payload: %v", p)
 	}
-	if len(bench) != 3 {
-		t.Fatalf("queue length changed to %d, want 3: %v", len(bench), bench)
-	}
-	if bench[1] != in.ID {
-		t.Fatalf("substitute landed at %v, want position 1 (their queue slot): %v", bench[1], bench)
-	}
-	if bench[0] != "pX" || bench[2] != "pY" {
-		t.Fatalf("the rest of the queue moved: %v", bench)
-	}
-}
-
-// A player who was on a court, not waiting, must not be written into the queue.
-func TestSubstitute_PlayingPlayerLeavesTheQueueAlone(t *testing.T) {
-	f := liveSession(5, `["pX","pY"]`)
-	s := newFakeSvc(t, f)
-
-	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
-		t.Fatalf("substitution failed: %v", err)
-	}
-	for _, w := range f.targetedWrites("rotation_sessions") {
-		if _, touched := w.row["bench"]; touched {
-			t.Fatal("substituting a PLAYING player rewrote the waiting queue")
-		}
+	// Doing any of this from Go would reintroduce the partial-write races the
+	// RPC exists to remove.
+	if len(f.written("rotation_players")) != 0 ||
+		len(f.written("rotation_round_courts")) != 0 ||
+		len(f.written("rotation_substitutions")) != 0 {
+		t.Fatal("the substitution wrote directly to tables instead of going through the RPC")
 	}
 }
 
@@ -197,15 +94,9 @@ func TestSubstitute_InheritsTheRating(t *testing.T) {
 	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
 		t.Fatalf("substitution failed: %v", err)
 	}
-	for _, w := range f.targetedWrites("rotation_players") {
-		if w.row["display_name"] == "Bea" {
-			if got, _ := w.row["self_rating"].(float64); got != 4.5 {
-				t.Fatalf("substitute rated %v, want the 4.5 they inherited", got)
-			}
-			return
-		}
+	if got := rpcPayload(t, f)["p_rating"]; got != 4.5 {
+		t.Fatalf("substitute rated %v, want the 4.5 they inherited", got)
 	}
-	t.Fatal("no substitute row was written")
 }
 
 // An explicit rating beats the inherited one — the organizer knows who walked in.
@@ -218,60 +109,57 @@ func TestSubstitute_ExplicitRatingWins(t *testing.T) {
 	if _, err := s.SubstituteRotationPlayer("s1", req); err != nil {
 		t.Fatalf("substitution failed: %v", err)
 	}
-	for _, w := range f.targetedWrites("rotation_players") {
-		if w.row["display_name"] == "Bea" {
-			if got, _ := w.row["self_rating"].(float64); got != 3.0 {
-				t.Fatalf("substitute rated %v, want the requested 3.0", got)
-			}
-			return
-		}
+	if got := rpcPayload(t, f)["p_rating"]; got != 3.0 {
+		t.Fatalf("substitute rated %v, want the requested 3.0", got)
 	}
-	t.Fatal("no substitute row was written")
 }
 
-// Nothing has been played in setup, so there is no record to split. Allowing it
-// would leave a phantom "subbed out at round 0" in the history.
-func TestSubstitute_RefusedBeforeTheSessionStarts(t *testing.T) {
-	f := liveSession(0, `[]`).
-		seed("rotation_sessions", `[{"id":"s1","status":"setup","current_round":0,"bench":[]}]`)
+// Covering a walk-off with someone who is already resting is the natural move,
+// and it would give one human two roster rows — seated on two courts at once,
+// splitting their own points.
+func TestSubstitute_RefusesSomeoneAlreadyPlaying(t *testing.T) {
+	f := liveSession(5, `[]`).
+		seed("rotation_players", `[
+			{"id":"pOut","session_id":"s1","display_name":"Ann","active":true},
+			{"id":"pRest","session_id":"s1","display_name":"Bea","active":true}]`)
 	s := newFakeSvc(t, f)
 
 	_, err := s.SubstituteRotationPlayer("s1", subReq())
 	if err == nil {
-		t.Fatal("a substitution was accepted before the session started")
+		t.Fatal("substituting in a player who is already in the session was allowed")
 	}
-	if !strings.Contains(err.Error(), "remove") {
-		t.Fatalf("the refusal should point at remove/add; got %q", err)
+	if !strings.Contains(err.Error(), "already playing") {
+		t.Fatalf("the refusal should say why; got %q", err)
 	}
-	if len(f.written("rotation_players")) != 0 {
-		t.Fatal("a refused substitution still wrote a roster row")
+	if len(f.rpcBodies("rotation_substitute")) != 0 {
+		t.Fatal("a refused substitution still called the RPC")
 	}
 }
 
-func TestSubstitute_RefusedOnAFinishedSession(t *testing.T) {
+// Case and stray spacing are how the same person gets typed differently.
+func TestSubstitute_DuplicateCheckIgnoresCaseAndSpacing(t *testing.T) {
 	f := liveSession(5, `[]`).
-		seed("rotation_sessions", `[{"id":"s1","status":"done","current_round":5,"bench":[]}]`)
+		seed("rotation_players", `[
+			{"id":"pOut","session_id":"s1","display_name":"Ann","active":true},
+			{"id":"pRest","session_id":"s1","display_name":"  bea  ","active":true}]`)
 	s := newFakeSvc(t, f)
 
 	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err == nil {
-		t.Fatal("a finished session accepted a substitution")
+		t.Fatal("'Bea' was accepted while '  bea  ' is already playing")
 	}
 }
 
-// Substituting someone who already left would retire a row twice and record a
-// swap for a seat nobody holds.
-func TestSubstitute_RefusedForAnAlreadyRetiredPlayer(t *testing.T) {
+// A player who already left is not a duplicate — their name must be reusable,
+// which is what makes a player returning later work.
+func TestSubstitute_RetiredNameIsNotADuplicate(t *testing.T) {
 	f := liveSession(5, `[]`).
-		seed("rotation_players",
-			`[{"id":"pOut","session_id":"s1","display_name":"Ann","active":false}]`)
+		seed("rotation_players", `[
+			{"id":"pOut","session_id":"s1","display_name":"Ann","active":true},
+			{"id":"pGone","session_id":"s1","display_name":"Bea","active":false}]`)
 	s := newFakeSvc(t, f)
 
-	_, err := s.SubstituteRotationPlayer("s1", subReq())
-	if err == nil {
-		t.Fatal("a player who already left was substituted again")
-	}
-	if !strings.Contains(err.Error(), "Ann") {
-		t.Fatalf("the refusal should name the player; got %q", err)
+	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
+		t.Fatalf("a departed player's name was treated as a duplicate: %v", err)
 	}
 }
 
@@ -284,58 +172,59 @@ func TestSubstitute_RequiresAName(t *testing.T) {
 	if _, err := s.SubstituteRotationPlayer("s1", req); err == nil {
 		t.Fatal("a nameless substitute was accepted")
 	}
+	if len(f.rpcBodies("rotation_substitute")) != 0 {
+		t.Fatal("a nameless substitution still called the RPC")
+	}
 }
 
-// The swap is recorded, and at the round it took effect — that round is the
-// boundary between the two players' records.
-func TestSubstitute_RecordsTheSwapAtTheCurrentRound(t *testing.T) {
+// Newly callable mid-session, so an accidental paste shouldn't reach the live
+// board and the TV scoreboard.
+func TestSubstitute_CapsAbsurdNames(t *testing.T) {
 	f := liveSession(5, `[]`)
 	s := newFakeSvc(t, f)
 
-	in, err := s.SubstituteRotationPlayer("s1", subReq())
-	if err != nil {
+	req := subReq()
+	req.DisplayName = strings.Repeat("x", 5000)
+	if _, err := s.SubstituteRotationPlayer("s1", req); err != nil {
 		t.Fatalf("substitution failed: %v", err)
 	}
-	rows := f.written("rotation_substitutions")
-	if len(rows) != 1 {
-		t.Fatalf("want 1 recorded swap, got %d", len(rows))
-	}
-	if rows[0]["round"] != float64(5) {
-		t.Errorf("swap recorded at round %v, want 5", rows[0]["round"])
-	}
-	if rows[0]["out_player"] != "pOut" || rows[0]["in_player"] != in.ID {
-		t.Errorf("swap recorded the wrong pair: %v", rows[0])
+	if got, _ := rpcPayload(t, f)["p_name"].(string); len(got) != 80 {
+		t.Fatalf("name reached the datastore at %d chars", len(got))
 	}
 }
 
-// A chain (Ann -> Bea -> Cal) needs no special handling: the substitute is an
-// ordinary roster player, so subbing THEM out is the same call. What must hold
-// is that each link is recorded separately, so the history can be walked.
-func TestSubstitute_ChainsWithoutSpecialCasing(t *testing.T) {
-	f := liveSession(5, `[]`)
+// Each refusal has to tell the organizer what to do instead — they are standing
+// on a court with people waiting.
+func TestSubstitute_RefusalsAreActionable(t *testing.T) {
+	cases := []struct{ reason, want string }{
+		{"not_started", "remove"},
+		{"finished", "finished"},
+		{"out_not_active", "already out"},
+		{"already_substituted", "already taken over"},
+	}
+	for _, c := range cases {
+		f := liveSession(5, `[]`).
+			seedRPC("rotation_substitute", `{"ok":false,"reason":"`+c.reason+`"}`)
+		s := newFakeSvc(t, f)
+
+		_, err := s.SubstituteRotationPlayer("s1", subReq())
+		if err == nil {
+			t.Errorf("%s: was accepted", c.reason)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: message %q doesn't mention %q", c.reason, err, c.want)
+		}
+	}
+}
+
+func TestSubstitute_MissingSessionIsNotFound(t *testing.T) {
+	f := liveSession(5, `[]`).
+		seedRPC("rotation_substitute", `{"ok":false,"reason":"no_session"}`)
 	s := newFakeSvc(t, f)
 
-	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != nil {
-		t.Fatalf("first substitution failed: %v", err)
-	}
-	// Bea is now an ordinary active roster row; sub her out for Cal at round 8.
-	f.seed("rotation_sessions", `[{"id":"s1","status":"live","current_round":8,"bench":[]}]`).
-		seed("rotation_players",
-			`[{"id":"pBea","session_id":"s1","display_name":"Bea","active":true}]`)
-	if _, err := s.SubstituteRotationPlayer("s1",
-		model.SubstituteRotationPlayerRequest{OutPlayerID: "pBea", DisplayName: "Cal"}); err != nil {
-		t.Fatalf("second substitution failed: %v", err)
-	}
-
-	rows := f.written("rotation_substitutions")
-	if len(rows) != 2 {
-		t.Fatalf("want 2 links in the chain, got %d", len(rows))
-	}
-	if rows[0]["out_player"] != "pOut" || rows[1]["out_player"] != "pBea" {
-		t.Fatalf("the chain didn't record both links in order: %v", rows)
-	}
-	if rows[0]["round"] != float64(5) || rows[1]["round"] != float64(8) {
-		t.Fatalf("chain rounds wrong, want 5 then 8: %v", rows)
+	if _, err := s.SubstituteRotationPlayer("s1", subReq()); err != ErrNotFound {
+		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
 
@@ -357,8 +246,8 @@ func TestSetName_RenamesWithoutTouchingTheRecord(t *testing.T) {
 	if _, touched := writes[0]["active"]; touched {
 		t.Fatal("a rename retired the player — that's a substitution, not a rename")
 	}
-	if len(f.written("rotation_substitutions")) != 0 {
-		t.Fatal("a rename recorded a substitution")
+	if len(f.rpcBodies("rotation_substitute")) != 0 {
+		t.Fatal("a rename triggered a substitution")
 	}
 }
 
@@ -368,5 +257,39 @@ func TestSetName_RejectsBlank(t *testing.T) {
 
 	if err := s.SetRotationPlayerName("pOut", "   "); err == nil {
 		t.Fatal("a blank name was accepted")
+	}
+}
+
+// A player rolls an ankle at round 4 and nobody can replace them. Without a live
+// sit-out the organizer has to invent a fake substitute, or leave a ghost
+// holding a seat and being scored all night.
+func TestSetActive_SittingOutIsAllowedMidSession(t *testing.T) {
+	f := liveSession(5, `[]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.SetRotationPlayerActive("pOut", false); err != nil {
+		t.Fatalf("sitting a player out mid-session was refused: %v", err)
+	}
+	writes := f.written("rotation_players")
+	if len(writes) != 1 || writes[0]["active"] != false {
+		t.Fatalf("wrote %v", writes)
+	}
+}
+
+func TestSetActive_BringingBackIsAllowedMidSession(t *testing.T) {
+	f := liveSession(5, `[]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.SetRotationPlayerActive("pOut", true); err != nil {
+		t.Fatalf("bringing a player back mid-session was refused: %v", err)
+	}
+}
+
+func TestSetActive_UnknownPlayerIsNotFound(t *testing.T) {
+	f := newFake().seed("rotation_sessions", `[{"id":"s1","status":"live"}]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.SetRotationPlayerActive("nope", false); err != ErrNotFound {
+		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }

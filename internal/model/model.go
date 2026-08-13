@@ -325,6 +325,11 @@ type League struct {
 	// CourtCount is the default number of courts the league's sessions schedule
 	// on (a "New session" seeds its num_courts from this). Nil = per-session.
 	CourtCount *int `json:"courtCount,omitempty"`
+	// WinBy is the default win margin (1 or 2) for the sessions this league
+	// creates. Nil = the app-wide default of 2. A session COPIES it at creation
+	// and owns its value from then on, so changing this never restates a game
+	// that has already been played.
+	WinBy *int `json:"winBy,omitempty"`
 	// Recurs marks a league on a recurring schedule (a weekly RR session auto-
 	// spawns forever). RecurStartAt is the anchor (RFC3339 UTC) — the weekday +
 	// time are derived from it. Nil/false when there's no recurring schedule.
@@ -388,6 +393,9 @@ type CreateLeagueRequest struct {
 	CoachLed bool `json:"coachLed"`
 	// CourtCount is the default court count the league's sessions schedule on.
 	CourtCount *int `json:"courtCount,omitempty"`
+	// WinBy is the default win margin (1 or 2) for this league's sessions.
+	// Nil leaves the app-wide default of 2.
+	WinBy *int `json:"winBy,omitempty"`
 	// Divisions are the league's brackets (skill/age/DUPR bands). Empty creates
 	// a single "Open" division by default (mirrors event creation).
 	Divisions []LeagueBracketInput `json:"divisions"`

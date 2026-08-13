@@ -59,6 +59,13 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 	if loc := strings.TrimSpace(req.Location); loc != "" && s.columnReady("leagues", "location") {
 		payload["location"] = loc
 	}
+	// Win margin (add_league_win_by.sql) — the default every session this league
+	// creates is born with. Only 1 and 2 are meaningful; anything else is left
+	// unset so the app-wide default of 2 applies.
+	if req.WinBy != nil && (*req.WinBy == 1 || *req.WinBy == 2) &&
+		s.columnReady("leagues", "win_by") {
+		payload["win_by"] = *req.WinBy
+	}
 	// Ladder rule config (0068 columns) — only for ladder leagues, and only when
 	// the columns exist so create stays safe pre-migration.
 	if leagueType == "ladder" && req.Ladder != nil && s.columnReady("leagues", "ladder_reorder_model") {
@@ -185,6 +192,95 @@ func (s *Service) SetLeagueListed(leagueID, ownerID string, listed bool) error {
 	_, err = s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
 		map[string]any{"listed": listed})
 	return err
+}
+
+// SetLeagueWinBy sets the league's default win margin (1 or 2) and, when
+// applyToSessions is set, pushes it onto the league's existing sessions.
+//
+// Sessions that have ALREADY PLAYED a game are held back on the first pass and
+// returned as `skipped`, so the organizer is told before a mid-season rule
+// change lands rather than after. Passing includePlayed applies to those too.
+//
+// Applying to a played session is SAFE for the record: winning_team is written
+// at score time and read back verbatim, so win_by is consulted only while a
+// score is being entered. Games already on the board keep their result and their
+// winner; only games played from now on use the new margin. That matters for a
+// PERPETUAL league, which is a single long-running event — refusing to touch it
+// would mean the setting could never take effect at all, which is a worse
+// failure than a rule that changes partway through a season.
+func (s *Service) SetLeagueWinBy(leagueID, ownerID string, winBy int, applyToSessions, includePlayed bool) (updated, skipped int, err error) {
+	if ownerID == "" {
+		return 0, 0, ErrForbidden
+	}
+	if winBy != 1 && winBy != 2 {
+		return 0, 0, errors.New("win margin must be 1 or 2")
+	}
+	row, err := s.sb.SelectOne("leagues", "id=eq."+store.Q(leagueID)+"&select=owner_id")
+	if err != nil {
+		return 0, 0, err
+	}
+	if row == nil {
+		return 0, 0, ErrNotFound
+	}
+	if asStr(row, "owner_id") != ownerID {
+		return 0, 0, ErrForbidden
+	}
+	if !s.columnReady("leagues", "win_by") {
+		return 0, 0, errors.New("the league win margin setting isn't available yet")
+	}
+	if _, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+		map[string]any{"win_by": winBy}); err != nil {
+		return 0, 0, err
+	}
+	if !applyToSessions {
+		return 0, 0, nil
+	}
+	events, err := s.sb.Select("events",
+		"league_id=eq."+store.Q(leagueID)+"&select=id,win_by")
+	if err != nil {
+		// The league default is already saved — report it as a partial success
+		// rather than losing the setting the organizer just chose.
+		return 0, 0, err
+	}
+	for _, ev := range events {
+		id := asStr(ev, "id")
+		if id == "" {
+			continue
+		}
+		if asInt(ev, "win_by") == winBy {
+			continue // already correct — not a change worth reporting
+		}
+		if !includePlayed {
+			played, perr := s.eventHasPlayedGame(id)
+			if perr != nil {
+				return updated, skipped, perr
+			}
+			if played {
+				skipped++
+				continue
+			}
+		}
+		if _, uerr := s.sb.Update("events", "id=eq."+store.Q(id),
+			map[string]any{"win_by": winBy}); uerr != nil {
+			return updated, skipped, uerr
+		}
+		updated++
+	}
+	return updated, skipped, nil
+}
+
+// eventHasPlayedGame reports whether any match in the event carries a result.
+// Checks winning_team rather than status alone: a game can be marked completed
+// with no score (a called-off game), and it's the RECORDED RESULT that a changed
+// win margin would contradict.
+func (s *Service) eventHasPlayedGame(eventID string) (bool, error) {
+	m, err := s.sb.SelectOne("matches",
+		"event_id=eq."+store.Q(eventID)+
+			"&winning_team=not.is.null&select=id&limit=1")
+	if err != nil {
+		return false, err
+	}
+	return m != nil, nil
 }
 
 // PublicLeagues returns every publicly-listed, non-demo league with its city/state
@@ -788,8 +884,11 @@ func (s *Service) SetLeagueSchedule(leagueID, ownerID, startsAt string, courtCou
 	if startsAt == "" {
 		return model.Event{}, errors.New("pick a day and time")
 	}
-	lg, err := s.sb.SelectOne("leagues",
-		"id=eq."+store.Q(leagueID)+"&select=owner_id,name,recur_event_id,court_count,league_type")
+	sel := "owner_id,name,recur_event_id,court_count,league_type"
+	if s.columnReady("leagues", "win_by") {
+		sel += ",win_by"
+	}
+	lg, err := s.sb.SelectOne("leagues", "id=eq."+store.Q(leagueID)+"&select="+sel)
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -839,13 +938,20 @@ func (s *Service) SetLeagueSchedule(leagueID, ownerID, startsAt string, courtCou
 	if name == "" {
 		name = "League"
 	}
+	// Win margin follows the league. This was hardcoded to 2, so a league set to
+	// "win by 1" still produced win-by-2 sessions — and every session generated
+	// later quietly reverted, with no way to tell from the league screen.
+	winBy := 2
+	if v := asInt(lg, "win_by"); v == 1 {
+		winBy = 1
+	}
 	eventID, err := s.CreateEvent(model.CreateEventRequest{
 		Name:              name + " — weekly session",
 		Format:            "doubles",
 		TournamentFormat:  "round_robin",
 		NumCourts:         courtCount,
 		PointsToWin:       11,
-		WinBy:             2,
+		WinBy:             winBy,
 		StartsAt:          startsAt,
 		RecurIntervalDays: 7,
 		Brackets:          []model.BracketInput{{Name: "Open", DivisionType: "open"}},

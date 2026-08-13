@@ -285,6 +285,7 @@ func mapLeague(m map[string]any) model.League {
 		CoachLed:        asBool(m, "coach_led"),
 		CoachID:         asStrPtr(m, "coach_id"),
 		CourtCount:      asIntPtr(m, "court_count"),
+		WinBy:           asIntPtr(m, "win_by"),
 		Recurs:          asBool(m, "recurs"),
 		RecurStartAt:    asStrPtr(m, "recur_start_at"),
 	}

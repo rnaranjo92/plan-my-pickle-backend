@@ -322,6 +322,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
 	mux.HandleFunc("POST /leagues/{id}/listing", s.ownerOnly("league", "id", s.setLeagueListing))
+	mux.HandleFunc("POST /leagues/{id}/win-by", s.ownerOnly("league", "id", s.setLeagueWinBy))
 
 	// --- Ladder League (organizer-driven): a division's (league_bracket) ladder
 	// is an ordered ranking of entrants; recording a result applies the leapfrog
@@ -1246,6 +1247,33 @@ func (s *Server) setLeagueListing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"listed": req.Listed})
+}
+
+// setLeagueWinBy sets the league's default win margin, optionally pushing it to
+// the league's existing sessions. Returns how many sessions changed and how many
+// were left alone because a game has already been played in them — the caller
+// shows both, so "applied everywhere" is never implied when it wasn't.
+func (s *Server) setLeagueWinBy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WinBy           int  `json:"winBy"`
+		ApplyToSessions bool `json:"applyToSessions"`
+		// IncludePlayed applies the change to sessions that already have played
+		// games too — the organizer's explicit second step after being told how
+		// many there are. Games already scored keep their recorded result.
+		IncludePlayed bool `json:"includePlayed"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	updated, skipped, err := s.svc.SetLeagueWinBy(
+		r.PathValue("id"), userID(r), req.WinBy, req.ApplyToSessions, req.IncludePlayed)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"winBy": req.WinBy, "updated": updated, "skipped": skipped,
+	})
 }
 
 // listLeagues returns the leagues owned by the authenticated caller.

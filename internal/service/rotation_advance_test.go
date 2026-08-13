@@ -121,7 +121,9 @@ func TestAdvance_RemapFollowsASubstitutionChain(t *testing.T) {
 			{"id":"pA2","session_id":"s1","display_name":"A2","active":true},
 			{"id":"pB1","session_id":"s1","display_name":"B1","active":true},
 			{"id":"pB2","session_id":"s1","display_name":"B2","active":true},
-			{"id":"pLast","session_id":"s1","display_name":"Last","active":true}]`)
+			{"id":"pLast","session_id":"s1","display_name":"Last","active":true},
+			{"id":"pA1","session_id":"s1","display_name":"A1","active":false},
+			{"id":"pMid","session_id":"s1","display_name":"Mid","active":false}]`)
 	s := newFakeSvc(t, f)
 
 	if err := s.AdvanceRotationSession("s1", 1); err != nil {
@@ -179,30 +181,36 @@ func TestAdvance_ReportedWinnerBreaksATie(t *testing.T) {
 	}
 }
 
-// Sitting someone out who is ON COURT with nobody waiting would leave that court
-// with three players. Say so, and name the operation that can actually do it.
-func TestSetActive_RefusesWhenItWouldLeaveACourtShort(t *testing.T) {
-	f := oneCourtSession(0, 0, 0, 0)
+// The only floor left: a session needs four people to be a session. Below that
+// there is no layout to write, so say so rather than shrinking to nothing.
+func TestSetActive_RefusesBelowFourPlayers(t *testing.T) {
+	f := oneCourtSession(0, 0, 0, 0) // exactly four on the roster
 	s := newFakeSvc(t, f)
 
 	err := s.SetRotationPlayerActive("pA1", false)
 	if err == nil {
-		t.Fatal("sitting out a seated player with an empty queue was allowed")
+		t.Fatal("a session was allowed to drop below four players")
 	}
-	if !strings.Contains(err.Error(), "Substitute") {
-		t.Fatalf("the refusal should point at the operation that works; got %q", err)
+	if !strings.Contains(err.Error(), "end the session") {
+		t.Fatalf("the refusal should name the way out; got %q", err)
 	}
 }
 
-// With someone waiting it's fine — they step on next round.
-func TestSetActive_AllowedWhenSomeoneIsWaiting(t *testing.T) {
+// Above that floor it is always allowed — the advance settles the empty seat,
+// shrinking the room if nobody is waiting. Refusing here (the previous
+// behaviour) left a full house with NO exit at all.
+func TestSetActive_AllowedOnAFullHouseWithNobodyWaiting(t *testing.T) {
 	f := oneCourtSession(0, 0, 0, 0).
-		seed("rotation_sessions",
-			`[{"id":"s1","status":"live","current_round":1,"bench":["pWait"]}]`)
+		seed("rotation_players", `[
+			{"id":"pA1","session_id":"s1","active":true},
+			{"id":"pA2","session_id":"s1","active":true},
+			{"id":"pB1","session_id":"s1","active":true},
+			{"id":"pB2","session_id":"s1","active":true},
+			{"id":"pE1","session_id":"s1","active":true}]`)
 	s := newFakeSvc(t, f)
 
 	if err := s.SetRotationPlayerActive("pA1", false); err != nil {
-		t.Fatalf("refused with a player waiting: %v", err)
+		t.Fatalf("a full house with an empty queue had no way to let someone go: %v", err)
 	}
 }
 

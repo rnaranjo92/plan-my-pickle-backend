@@ -264,7 +264,13 @@ func TestSetName_RejectsBlank(t *testing.T) {
 // sit-out the organizer has to invent a fake substitute, or leave a ghost
 // holding a seat and being scored all night.
 func TestSetActive_SittingOutIsAllowedMidSession(t *testing.T) {
-	f := liveSession(5, `[]`)
+	f := liveSession(5, `[]`).
+		seed("rotation_players", `[
+			{"id":"pOut","session_id":"s1","display_name":"Ann","active":true},
+			{"id":"p2","session_id":"s1","active":true},
+			{"id":"p3","session_id":"s1","active":true},
+			{"id":"p4","session_id":"s1","active":true},
+			{"id":"p5","session_id":"s1","active":true}]`)
 	s := newFakeSvc(t, f)
 
 	if err := s.SetRotationPlayerActive("pOut", false); err != nil {

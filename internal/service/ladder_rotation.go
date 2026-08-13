@@ -436,16 +436,19 @@ func (s *Service) SetRotationScore(sessionID string, round int, playerID string,
 	// The grid still shows their row (it carries every round they DID play), so
 	// typing into it is the natural mistake — and it orphans the score from the
 	// court, which makes that court unresolvable and hands the round to team A.
-	if subs, _ := s.rotationSubstitutionsStrict(sessionID); subs != nil {
+	// The handover round itself stays open to BOTH of them: whoever actually
+	// finished the game gets the points, and the court still resolves because
+	// teamPoints falls back through the handover (see scoresWithHandover).
+	// Only rounds strictly AFTER the handover belong solely to the substitute.
+	if subs, serr := s.rotationSubstitutionsStrict(sessionID); serr == nil {
 		for _, sub := range subs {
-			if sub.OutPlayerID == playerID && round >= sub.Round {
+			if sub.OutPlayerID == playerID && round > sub.Round {
 				return fmt.Errorf(
 					"they had already been substituted out by round %d — enter "+
 						"that score on the player who took over", sub.Round)
 			}
 			if sub.InPlayerID == playerID && round < sub.Round {
-				return fmt.Errorf(
-					"they didn't come on until round %d", sub.Round)
+				return fmt.Errorf("they didn't come on until round %d", sub.Round)
 			}
 		}
 	}
@@ -733,39 +736,52 @@ func (s *Service) SetRotationPlayerActive(playerID string, active bool) error {
 		(asStr(srow, "status") == "live" || asStr(srow, "status") == "paused")
 
 	if live && !active {
-		// A court must keep four. If this player is on one and nobody is waiting,
-		// there is no honest way to free the seat — say so and point at the
-		// operation that CAN do it, instead of leaving a ghost on court.
-		seated, cerr := s.isSeatedNow(sessionID, playerID)
-		if cerr == nil && seated {
-			free := 0
-			for _, id := range asStrSlice(srow, "bench") {
-				if id != playerID {
-					free++
-				}
-			}
-			if free == 0 {
-				return fmt.Errorf("nobody is waiting to take that spot — use " +
-					"“Substitute a player” so their court still has four")
-			}
+		// Their seat is settled at the next advance: taken by whoever has waited
+		// longest, or — when nobody is waiting — by dropping a court, because the
+		// room really has got smaller. Refusing here (the previous behaviour) left
+		// a full house with NO exit: the seat couldn't be freed, the roster
+		// couldn't be edited, and the court count was fixed at Start, so the only
+		// remaining move was to invent a fake substitute.
+		if n, cerr := s.activeCount(sessionID); cerr == nil && n <= 4 {
+			return fmt.Errorf("that would leave fewer than four players — end the " +
+				"session instead")
 		}
 	}
 	if live && active {
 		// Bringing back someone who was SUBSTITUTED out would seat their
 		// replacement twice: the advance remap resolves the returning player
 		// straight onto the id that took over from them.
-		if subs, _ := s.rotationSubstitutionsStrict(sessionID); subs != nil {
-			for _, sub := range subs {
-				if sub.OutPlayerID == playerID {
-					return fmt.Errorf("someone already took over for them — add " +
-						"them back as a new player instead")
-				}
+		subs, serr := s.rotationSubstitutionsStrict(sessionID)
+		if serr != nil {
+			return fmt.Errorf("couldn't check whether someone took over for "+
+				"them: %w", serr)
+		}
+		for _, sub := range subs {
+			if sub.OutPlayerID == playerID {
+				return fmt.Errorf("someone already took over for them — add " +
+					"them back as a new player instead")
 			}
 		}
 	}
 	_, err = s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
 		map[string]any{"active": active})
 	return err
+}
+
+// activeCount is how many players are still in the session.
+func (s *Service) activeCount(sessionID string) (int, error) {
+	rows, err := s.sb.Select("rotation_players",
+		"session_id=eq."+store.Q(sessionID)+"&select=id,active")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if asBool(r, "active") {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // isSeatedNow reports whether a player holds a seat in the live round.
@@ -1045,9 +1061,6 @@ func (s *Service) RotationSubstitutions(sessionID string) ([]model.RotationSubst
 // missing answer changes what happens on court, so an error must not be
 // flattened into "nobody was substituted".
 func (s *Service) rotationSubstitutionsStrict(sessionID string) ([]model.RotationSubstitution, error) {
-	if !s.columnReady("rotation_substitutions", "id") {
-		return nil, nil // table not migrated yet: genuinely no substitutions
-	}
 	rows, err := s.sb.Select("rotation_substitutions",
 		"session_id=eq."+store.Q(sessionID)+"&order=round.asc,created_at.asc")
 	if err != nil {
@@ -1199,6 +1212,96 @@ func (s *Service) ReportRotationCourt(sessionID, callerUserID string,
 	return err
 }
 
+// sameLayout reports whether two court layouts are identical seat for seat.
+func sameLayout(a, b []engine.RotCourt) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// settleDepartures removes players who have left from the round about to start.
+//
+// A seat is first offered to whoever has been waiting longest. When nobody is
+// waiting, the room itself has shrunk — 8 players on 2 courts becomes 7, which
+// is one court and three waiting — so the BOTTOM court is dropped and its
+// remaining players go to the FRONT of the queue (they were mid-game; they
+// should be first back on).
+//
+// Without this, "someone left" had no honest answer on a full house: the seat
+// couldn't be freed, the roster couldn't be edited, and the court count was
+// fixed at Start — so the only move left was inventing a fake substitute, which
+// is the ghost the feature was built to prevent.
+func settleDepartures(courts []engine.RotCourt, bench []string,
+	left map[string]bool) ([]engine.RotCourt, []string) {
+	if len(left) == 0 {
+		return courts, bench
+	}
+	waiting := make([]string, 0, len(bench))
+	for _, id := range bench {
+		if !left[id] {
+			waiting = append(waiting, id)
+		}
+	}
+	for {
+		take := 0
+		stranded := false
+		for i := range courts {
+			for _, seat := range []*string{
+				&courts[i].TeamA[0], &courts[i].TeamA[1],
+				&courts[i].TeamB[0], &courts[i].TeamB[1],
+			} {
+				// A blank seat counts as vacant too. It is the one input that
+				// trips the engine's guard, and it is literally a free seat the
+				// queue can fill — walking past it is how a null seat became a
+				// permanent freeze.
+				if *seat != "" && !left[*seat] {
+					continue
+				}
+				if take < len(waiting) {
+					*seat = waiting[take]
+					take++
+					continue
+				}
+				stranded = true
+			}
+		}
+		waiting = waiting[take:]
+		if !stranded {
+			return courts, waiting
+		}
+		if len(courts) <= 1 {
+			// Fewer than four players are left in the room. There is no layout
+			// to write; hand back what remains and let the caller's own guards
+			// deal with it rather than inventing a court.
+			var rest []string
+			for _, c := range courts {
+				for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+					if id != "" && !left[id] {
+						rest = append(rest, id)
+					}
+				}
+			}
+			return nil, append(rest, waiting...)
+		}
+		// Drop the bottom court; its survivors go to the FRONT of the queue.
+		last := courts[len(courts)-1]
+		courts = courts[:len(courts)-1]
+		var survivors []string
+		for _, id := range []string{last.TeamA[0], last.TeamA[1], last.TeamB[0], last.TeamB[1]} {
+			if id != "" && !left[id] {
+				survivors = append(survivors, id)
+			}
+		}
+		waiting = append(survivors, waiting...)
+	}
+}
+
 // inactiveIDs is the set of roster rows no longer in the session.
 func (s *Service) inactiveIDs(sessionID string) (map[string]bool, error) {
 	rows, err := s.sb.Select("rotation_players",
@@ -1208,7 +1311,14 @@ func (s *Service) inactiveIDs(sessionID string) (map[string]bool, error) {
 	}
 	out := map[string]bool{}
 	for _, r := range rows {
-		if id := asStr(r, "id"); id != "" && !asBool(r, "active") {
+		id := asStr(r, "id")
+		if id == "" {
+			continue
+		}
+		// Require the column to be PRESENT and false. asBool reports false for a
+		// missing key, so trusting it would let one malformed read classify the
+		// whole roster as departed — which empties the queue in a single advance.
+		if v, present := r["active"]; present && !asBool(map[string]any{"a": v}, "a") {
 			out[id] = true
 		}
 	}
@@ -1385,6 +1495,11 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	// below only cleans the QUEUE, not the seats. Remap through the swap history
 	// so the substitute inherits the seat rather than the next round being
 	// written with someone who left. Chains resolve by walking the map.
+	gone, gerr := s.inactiveIDs(sessionID)
+	if gerr != nil {
+		return fmt.Errorf("couldn't read who is still in this session — not "+
+			"advancing rather than seating someone who has left: %w", gerr)
+	}
 	subs, serr := s.rotationSubstitutionsStrict(sessionID)
 	if serr != nil {
 		// Skipping the remap on a failed read is indistinguishable from "nobody
@@ -1400,6 +1515,13 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		}
 		resolve := func(id string) string {
 			for hop := 0; hop <= len(takeover); hop++ {
+				// Only follow a handover for someone who has actually LEFT. A
+				// player substituted out and later brought back is active again,
+				// and rewriting them into their replacement's id would seat that
+				// replacement twice while stranding them forever.
+				if !gone[id] {
+					break
+				}
 				next, ok := takeover[id]
 				if !ok {
 					break
@@ -1421,37 +1543,6 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		for i := range bench {
 			bench[i] = resolve(bench[i])
 		}
-	}
-
-	// Anyone still SEATED who is no longer in the session takes their seat with
-	// them unless we refill it. Sitting a player out only flipped a flag, so
-	// without this they were re-seated by the engine every round for the rest of
-	// the night — collecting games, blocking the scorecard from ever completing
-	// (which silently stopped auto-advance), and making their court unresolvable.
-	// Exactly the ghost the feature was written to remove.
-	if left, lerr := s.inactiveIDs(sessionID); lerr == nil && len(left) > 0 {
-		waiting := make([]string, 0, len(bench))
-		for _, id := range bench {
-			if !left[id] {
-				waiting = append(waiting, id)
-			}
-		}
-		take := 0
-		for i := range cur {
-			for _, seat := range []*string{
-				&cur[i].TeamA[0], &cur[i].TeamA[1],
-				&cur[i].TeamB[0], &cur[i].TeamB[1],
-			} {
-				if !left[*seat] {
-					continue
-				}
-				if take < len(waiting) {
-					*seat = waiting[take] // longest-waiting steps on
-					take++
-				}
-			}
-		}
-		bench = waiting[take:]
 	}
 
 	// Reconcile the bench against the live roster. Two directions:
@@ -1508,6 +1599,18 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 			"rather than risk running the round under the wrong rules: %w", merr)
 	}
 	nextCourts, nextBench := engine.NextRound(cur, results, bench, mode)
+	// A no-op means engine.NextRound rejected its input (a blank or duplicated
+	// seat). It returns the courts unchanged, which the RPC would happily write
+	// back as a fresh round: the counter increments, the buzzer rings, and NOBODY
+	// MOVES — silently, every round, forever. Surfacing it is the whole point.
+	if len(cur) > 0 && sameLayout(cur, nextCourts) {
+		return fmt.Errorf("the court layout for round %d is inconsistent, so the "+
+			"rotation was stopped rather than left silently stuck — please end "+
+			"this session and start a new one", round)
+	}
+	// Now settle anyone who has LEFT. Doing this after the movement keeps the
+	// round that was just played intact; only the round about to start changes.
+	nextCourts, nextBench = settleDepartures(nextCourts, nextBench, gone)
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_round":   round,

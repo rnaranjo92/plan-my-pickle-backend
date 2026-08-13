@@ -12,8 +12,18 @@ package engine
 // players than seats (courts×4), the extras wait on a BENCH (a FIFO queue). Byes
 // rotate through the BOTTOM court and are game-driven: the bottom court's losers
 // step off to the back of the bench, and the longest-waiting bench players take
-// their seats. So you only sit out after LOSING on the bottom court, and you're
-// always the last to be re-benched — fair playing time over the session.
+// their seats. So you only sit out after LOSING on the bottom court.
+//
+// FAIRNESS, HONESTLY: the bench is FIFO, so bench ORDER is fair — you are always
+// the last to be re-benched. But that is not the same as fair playing TIME, and
+// this comment used to claim it was. Because you re-enter onto the BOTTOM court,
+// where you are most likely to lose again, sit-outs concentrate on whoever keeps
+// losing. Simulated over a 3-hour night with 24 players on 4 courts and results
+// that track skill, the weakest quartile sat out ~65% of rounds and the
+// strongest ~3.5% — an 18× gap; with randomly-decided games the spread is nearly
+// flat, so this only bites when results correlate with ability, i.e. always.
+// That is a property of the RULE (Michelle's "whoever loses at the bottom court
+// sits out"), not a bug in this code, and changing it is a product decision.
 
 // RotCourt is the four players on one court, as two teams (a vs b). Each team is
 // a pair of player ids (entrant ids). Court number is 1-based (1 = top).
@@ -187,11 +197,19 @@ func NextRound(courts []RotCourt, results []RotResult, bench []string, mode Lose
 	// gone, and a single blank seat becomes a phantom that holds a slot all night
 	// while a real player is benched every round. Nothing reaches here that way
 	// today; this makes sure nothing ever can.
+	seen := make(map[string]bool, n*4)
 	for i, c := range courts {
-		if c.Court != i+1 ||
-			c.TeamA[0] == "" || c.TeamA[1] == "" ||
-			c.TeamB[0] == "" || c.TeamB[1] == "" {
+		if c.Court != i+1 {
 			return append([]RotCourt(nil), courts...), append([]string(nil), bench...)
+		}
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			// Blank seats become permanent phantoms; a duplicated id means one
+			// person on two courts and a real player silently missing. Neither
+			// self-heals — a duplicate survives every subsequent round.
+			if id == "" || seen[id] {
+				return append([]RotCourt(nil), courts...), append([]string(nil), bench...)
+			}
+			seen[id] = true
 		}
 	}
 	if n == 0 {

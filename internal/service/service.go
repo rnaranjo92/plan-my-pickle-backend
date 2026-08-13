@@ -6509,7 +6509,22 @@ func (s *Service) RecordCourtScore(eventID string, court int, tok string, t1, t2
 		"match_id=eq."+store.Q(matchID)+"&status=eq.disputed&select=id"); disp != nil {
 		return errors.New("this game's score is disputed — the organizer resolves it in the app")
 	}
-	return s.RecordScore(matchID, t1, t2)
+	if err := s.RecordScore(matchID, t1, t2); err != nil {
+		return err
+	}
+	// Post the same feed trail the organizer's in-app scoring writes (see the
+	// recordScore handler). A result is no less newsworthy for having been typed
+	// on the court QR page — without this an event scored entirely from the
+	// courts finishes with a completely empty feed and no champions post. Both
+	// calls are best-effort and the champions upsert is keyed on the final's
+	// match id, so a later re-score updates rather than duplicates.
+	if eid, txt := s.MatchFeedText(matchID, true); txt != "" {
+		s.AddFeedItem(eid, "match_final", txt, matchID)
+	}
+	if eid, txt := s.ChampionFeedText(matchID); txt != "" {
+		s.PostChampionFeed(eid, matchID, txt)
+	}
+	return nil
 }
 
 // SetLiveScore writes the RUNNING scorebug values for an in-progress match (the

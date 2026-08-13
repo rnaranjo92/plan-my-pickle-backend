@@ -4204,6 +4204,17 @@ var ErrDrawExists = errors.New("the draw is already generated — clear it befor
 // so the move is refused even with force. The HTTP layer maps it to 409.
 var ErrDrawHasScores = errors.New("a match in one of these divisions already has a score — can't move players without losing results")
 
+// ErrAlreadyInDivision is returned when a move's target division ALREADY holds a
+// registration for that player. A player may legitimately enter several
+// divisions, so this is not a data error — it means the "move" is really a
+// merge: the two entries should become one, by removing the one they're being
+// moved out of.
+//
+// Mapped to 422 rather than 409 so the client can tell it apart from
+// ErrDrawExists, which the same screen already handles with a completely
+// different remedy (clear the draw and move anyway).
+var ErrAlreadyInDivision = errors.New("they're already registered in that division")
+
 // registrationExistsByContact reports whether this event already has a
 // registration whose player shares the given phone or email. Used to block
 // silent duplicates from the organizer-add and anonymous self-register flows,
@@ -4290,6 +4301,35 @@ func (s *Service) RegistrantByPhone(eventID, phone string) (playerID, fullName s
 		}
 	}
 	return "", "", false, nil
+}
+
+// RegistrantDivisions returns the names of the divisions a player is already
+// entered in for an event, in roster order.
+//
+// Entering several divisions is legitimate (Men's Doubles AND Mixed), so the
+// point is not to block it but to make it VISIBLE at the moment someone is
+// about to add a second entry — which is how a player ends up in two divisions
+// nobody meant, and stays there unnoticed until a move fails against the
+// (event, player, division) unique index.
+func (s *Service) RegistrantDivisions(eventID, playerID string) ([]string, error) {
+	if eventID == "" || playerID == "" {
+		return nil, nil
+	}
+	rows, err := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&player_id=eq."+store.Q(playerID)+
+			"&select=bracket:brackets!bracket_id(name)")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if b := asMap(r, "bracket"); b != nil {
+			if n := strings.TrimSpace(asStr(b, "name")); n != "" {
+				out = append(out, n)
+			}
+		}
+	}
+	return out, nil
 }
 
 // SendTestSms texts the signed-in user's own phone a diagnostic message — the SMS
@@ -5589,8 +5629,7 @@ func (s *Service) MoveRegistrationDivision(regID, targetBracketID string, force 
 	if dup, err := dupIn(reg.playerID); err != nil {
 		return err
 	} else if dup {
-		return errors.New("they're already registered in that division — " +
-			"remove one of their two entries first")
+		return ErrAlreadyInDivision
 	}
 	if dup, err := dupIn(reg.partnerID); err != nil {
 		return err

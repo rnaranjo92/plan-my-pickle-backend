@@ -2650,7 +2650,7 @@ func (s *Server) registrantByPhone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	phone := r.URL.Query().Get("phone")
-	_, name, found, err := s.svc.RegistrantByPhone(eventID, phone)
+	playerID, name, found, err := s.svc.RegistrantByPhone(eventID, phone)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -2658,6 +2658,14 @@ func (s *Server) registrantByPhone(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"exists": found}
 	if found {
 		out["name"] = name
+		// Which divisions they're already in, so the caller can say "already in
+		// Women's Doubles — add to Men's Doubles as well?" instead of just
+		// "already registered". Division names are already public on the event
+		// page, so this discloses nothing the name lookup hasn't.
+		if divs, derr := s.svc.RegistrantDivisions(eventID, playerID); derr == nil &&
+			len(divs) > 0 {
+			out["divisions"] = divs
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -7891,6 +7899,13 @@ func status(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, service.ErrChallengeConflict) {
 		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	// 422, deliberately NOT 409: the move screen already treats 409 as "the draw
+	// is built, offer to clear it", and this needs the opposite remedy — remove
+	// the duplicate entry rather than touch the draw.
+	if errors.Is(err, service.ErrAlreadyInDivision) {
+		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
 	// A refusal a human must clear (409) vs a bad moment worth retrying (503).

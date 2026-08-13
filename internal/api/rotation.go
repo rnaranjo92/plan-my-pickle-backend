@@ -244,6 +244,33 @@ func (s *Server) setRotationPlayerRating(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]float64{"selfRating": req.SelfRating})
 }
 
+// setRotationPlayerStartCourt places one player on a starting court by hand.
+// A null/absent court un-places them (back to the rating-seeded tail).
+func (s *Server) setRotationPlayerStartCourt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		StartCourt *int `json:"startCourt"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationPlayerStartCourt(r.PathValue("id"), req.StartCourt); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"startCourt": req.StartCourt})
+}
+
+// shuffleRotationStartCourts randomly redistributes the roster across the
+// starting courts (owner-gated, pre-start only).
+func (s *Server) shuffleRotationStartCourts(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.ShuffleRotationStartCourts(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"placed": n})
+}
+
 // startRotation seeds round 1 and flips the session live (owner-gated).
 func (s *Server) startRotation(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.StartRotationSession(r.PathValue("id")); err != nil {

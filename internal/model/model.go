@@ -578,6 +578,9 @@ type RotationPlayer struct {
 	Wins        int     `json:"wins"`
 	Games       int     `json:"games"`
 	Active      bool    `json:"active"`
+	// StartCourt is the court this player was placed on for round 1, by hand or
+	// by shuffle. nil = unplaced, seeded by rating like it always was.
+	StartCourt *int `json:"startCourt,omitempty"`
 	// Points is the player's TOTAL across every round of the scorecard (the sum
 	// of RotationScorecard cells). 0 when the scorecard isn't in use.
 	Points int `json:"points"`

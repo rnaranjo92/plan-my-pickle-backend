@@ -387,6 +387,10 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationPlayerOwner("id", s.setRotationPlayerActive))
 	mux.HandleFunc("POST /rotation-players/{id}/rating",
 		s.rotationPlayerOwner("id", s.setRotationPlayerRating))
+	mux.HandleFunc("POST /rotation-players/{id}/start-court",
+		s.rotationPlayerOwner("id", s.setRotationPlayerStartCourt))
+	mux.HandleFunc("POST /rotation-sessions/{id}/shuffle-courts",
+		s.rotationSessionOwner("id", s.shuffleRotationStartCourts))
 	mux.HandleFunc("POST /rotation-sessions/{id}/courts",
 		s.rotationSessionOwner("id", s.setRotationCourts))
 	mux.HandleFunc("POST /rotation-sessions/{id}/auto-advance",

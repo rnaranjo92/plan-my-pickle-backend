@@ -22,11 +22,23 @@ type fakeSupabase struct {
 	rpcFn  map[string]func(body []byte) string // function -> payload-aware responder
 	reqs   []string                            // "METHOD /path" captured for assertions
 	writes map[string][]map[string]any         // table -> captured insert/update rows
+	// targeted records writes together with the URL filter that selected the
+	// row. writes alone can't tell you WHICH row a PATCH hit — the id lives in
+	// the query string — so anything asserting a per-row update reads this.
+	targeted map[string][]targetedWrite
+}
+
+// targetedWrite is one PATCH/POST: the PostgREST filter (e.g. "id=eq.p3") and
+// the body that was sent.
+type targetedWrite struct {
+	filter string
+	row    map[string]any
 }
 
 func newFake() *fakeSupabase {
 	return &fakeSupabase{get: map[string]string{}, rpc: map[string]string{},
-		rpcFn: map[string]func([]byte) string{}, writes: map[string][]map[string]any{}}
+		rpcFn: map[string]func([]byte) string{}, writes: map[string][]map[string]any{},
+		targeted: map[string][]targetedWrite{}}
 }
 
 // written returns every row body POSTed/PATCHed to a table (for E2E assertions).
@@ -36,8 +48,15 @@ func (f *fakeSupabase) written(table string) []map[string]any {
 	return f.writes[table]
 }
 
+// targetedWrites returns every write to a table paired with its URL filter.
+func (f *fakeSupabase) targetedWrites(table string) []targetedWrite {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.targeted[table]
+}
+
 // capture records an insert/update body (array or single object) under a table.
-func (f *fakeSupabase) capture(table string, b []byte) {
+func (f *fakeSupabase) capture(table, filter string, b []byte) {
 	var arr []map[string]any
 	if json.Unmarshal(b, &arr) != nil {
 		var obj map[string]any
@@ -50,6 +69,9 @@ func (f *fakeSupabase) capture(table string, b []byte) {
 	}
 	f.mu.Lock()
 	f.writes[table] = append(f.writes[table], arr...)
+	for _, row := range arr {
+		f.targeted[table] = append(f.targeted[table], targetedWrite{filter, row})
+	}
 	f.mu.Unlock()
 }
 
@@ -92,7 +114,7 @@ func (f *fakeSupabase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte("[]"))
 		case http.MethodPost, http.MethodPatch:
 			b, _ := io.ReadAll(r.Body)
-			f.capture(table, b)
+			f.capture(table, r.URL.RawQuery, b)
 			_, _ = w.Write(wrapRows(b))
 		case http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"sort"
 	"strings"
@@ -707,6 +708,68 @@ func (s *Service) SetRotationPlayerRating(playerID string, rating float64) error
 	return err
 }
 
+// SetRotationPlayerStartCourt places a player on a starting court by hand
+// (pre-start only). Passing nil un-places them, sending them back to the
+// rating-ordered tail.
+//
+// The court number is NOT validated against the session's court count: the
+// count is itself derived from a roster the organizer is still editing, so
+// "court 4" typed while only 12 players are in the room has to survive the
+// 4 more that arrive a minute later. Anything past the last real court simply
+// seeds onto the bench, which is where those players would have started anyway.
+func (s *Service) SetRotationPlayerStartCourt(playerID string, court *int) error {
+	if err := s.rosterEditable(playerID); err != nil {
+		return err
+	}
+	var val any
+	if court != nil {
+		if *court < 1 {
+			return fmt.Errorf("court number starts at 1")
+		}
+		val = *court
+	}
+	_, err := s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
+		map[string]any{"start_court": val})
+	return err
+}
+
+// ShuffleRotationStartCourts randomly distributes the active roster across the
+// starting courts (pre-start only) — the "nobody has a rating, just mix us up"
+// button. Returns how many players were placed.
+//
+// Overflow players are numbered past the last court on purpose rather than left
+// NULL: it keeps the shuffle a total order, so who waits first is part of what
+// got randomised instead of falling back to a rating nobody set.
+func (s *Service) ShuffleRotationStartCourts(sessionID string) (int, error) {
+	srow, err := s.sb.SelectOne("rotation_sessions", "id=eq."+store.Q(sessionID)+"&select=status")
+	if err != nil {
+		return 0, err
+	}
+	if srow == nil {
+		return 0, ErrNotFound
+	}
+	if asStr(srow, "status") != "setup" {
+		return 0, fmt.Errorf("the roster can't be changed once the session has started")
+	}
+	rows, err := s.sb.Select("rotation_players",
+		"session_id=eq."+store.Q(sessionID)+"&active=eq.true&select=id")
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, asStr(r, "id"))
+	}
+	rand.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+	for i, id := range ids {
+		if _, err := s.sb.Update("rotation_players", "id=eq."+store.Q(id),
+			map[string]any{"start_court": i/4 + 1}); err != nil {
+			return i, err
+		}
+	}
+	return len(ids), nil
+}
+
 // OwnerOfRotationPlayer resolves a roster player → session → division → owner.
 func (s *Service) OwnerOfRotationPlayer(playerID string) (string, error) {
 	row, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(playerID)+"&select=session_id")
@@ -740,8 +803,12 @@ func (s *Service) StartRotationSession(sessionID string) error {
 
 	// Active players, strongest self-rating first (stable by created_at).
 	loadActive := func() ([]map[string]any, error) {
+		// start_court first (organizer's hand or a shuffle), then rating for
+		// whoever was left unplaced — nullslast is what keeps a PARTIALLY placed
+		// roster sane rather than sweeping the unplaced players to the top court.
 		return s.sb.Select("rotation_players",
-			"session_id=eq."+store.Q(sessionID)+"&active=eq.true&order=self_rating.desc,created_at.asc&select=id")
+			"session_id=eq."+store.Q(sessionID)+
+				"&active=eq.true&order=start_court.asc.nullslast,self_rating.desc,created_at.asc&select=id")
 	}
 	rows, err := loadActive()
 	if err != nil {
@@ -1103,6 +1170,7 @@ func rotationPlayerFromRow(r map[string]any) model.RotationPlayer {
 		Wins:        asInt(r, "wins"),
 		Games:       asInt(r, "games"),
 		Active:      asBool(r, "active"),
+		StartCourt:  asIntPtr(r, "start_court"),
 	}
 }
 

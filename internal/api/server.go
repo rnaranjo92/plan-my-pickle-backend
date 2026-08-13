@@ -679,6 +679,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/reset-checkins", s.ownerOnly("event", "id", s.resetCheckins))
 	mux.HandleFunc("POST /events/{id}/remove-test-player", s.ownerOnly("event", "id", s.removeTestPlayer))
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
+	mux.HandleFunc("POST /dev/seed-rr-playoff", requireAuth(s.seedRoundRobinPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
 	mux.HandleFunc("POST /dev/seed-mlp", requireAuth(s.seedMlpDemo))
@@ -2566,6 +2567,23 @@ func (s *Server) unseedNearbyDemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// seedRoundRobinPlayoffDemo (QA-only) builds a round robin with every pool game
+// played, so "Build playoff" is showing and the whole flow can be tested in one
+// tap — without touching a real organizer's event.
+func (s *Server) seedRoundRobinPlayoffDemo(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	id, err := s.svc.SeedRoundRobinPlayoffDemo(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
 }
 
 func (s *Server) seedPlayoffDemo(w http.ResponseWriter, r *http.Request) {

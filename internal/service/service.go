@@ -2044,6 +2044,73 @@ func (s *Service) SeedDemo(ownerID string) (string, error) {
 // registered across two divisions, with NO schedule generated and NO playoff
 // bracket yet. The coordinator drives every step from the UI — Generate schedule,
 // start matches, score the pools, then Build playoff. Returns the new event id.
+// SeedRoundRobinPlayoffDemo (QA) stands up the exact state the round-robin
+// playoff flow starts from: a ROUND-ROBIN event with 8 players, a full pool
+// schedule, and every pool game scored — so "Build playoff" is showing and one
+// tap exercises the whole path (build → the Playoff section on Game → the
+// bracket on Standings → Rebuild in the ⋯ menu).
+//
+// Round-robin on purpose: the pools→playoff seeder next to this one cannot
+// reach any of it, because that format auto-seeds its bracket at schedule time.
+// Everything that broke on Marvin's night was specific to round_robin.
+func (s *Service) SeedRoundRobinPlayoffDemo(ownerID string) (string, error) {
+	eid, err := s.CreateEvent(model.CreateEventRequest{
+		Name:             "TEST Round-Robin Playoff",
+		Format:           "doubles",
+		PartnerMode:      "fixed",
+		TournamentFormat: "round_robin",
+		ScoringMode:      "wins",
+		NumCourts:        2,
+		Location:         "Test Courts",
+		Brackets:         []model.BracketInput{{Name: "Open", DivisionType: "open"}},
+	}, ownerID)
+	if err != nil {
+		return "", err
+	}
+	bks, err := s.GetBrackets(eid)
+	if err != nil || len(bks) == 0 {
+		return "", errors.New("seed: no division to register into")
+	}
+	bid := bks[0].ID
+	// Eight players = four fixed pairs, which is the minimum a medal bracket
+	// needs. Fewer and "Build playoff" would refuse with "need at least 4 teams",
+	// which is a different thing to test.
+	names := []string{
+		"Test Ana", "Test Ben", "Test Cara", "Test Dan",
+		"Test Eve", "Test Finn", "Test Gia", "Test Hal",
+	}
+	for i, nm := range names {
+		_, _ = s.RegisterPlayer(eid, model.RegisterRequest{
+			TrustedAdd:      true,
+			SkipCoachEnroll: true,
+			FullName:        nm,
+			Phone:           fmt.Sprintf("+1555%07d", 4100000+i),
+			BracketID:       bid,
+			SkillLevel:      ratingPtr(3.0 + float64(i)*0.1),
+		}, "")
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	_, _ = s.sb.Update("registrations", "event_id=eq."+store.Q(eid),
+		map[string]any{"checked_in": true, "checked_in_at": nowStr})
+
+	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
+		return "", err
+	}
+	// Score every pool game — spread the wins so the standings have a real order
+	// to seed from rather than a pile of ties.
+	poolIDs, _ := s.listPoolMatchIDs(eid)
+	for i, mid := range poolIDs {
+		lo := 5 + (i*3)%7 // 5..11, deterministic
+		if i%3 == 0 {
+			_ = s.applyScore(mid, lo, 15)
+		} else {
+			_ = s.applyScore(mid, 15, lo)
+		}
+	}
+	_ = s.reconcileRoundStatuses(eid)
+	return eid, nil
+}
+
 func (s *Service) SeedPlayoffDemo(ownerID string) (string, error) {
 	eid, err := s.CreateEvent(model.CreateEventRequest{
 		Name:                 "Demo Pickle Cup",

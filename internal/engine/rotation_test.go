@@ -91,7 +91,7 @@ func TestNextRoundByes(t *testing.T) {
 
 	// Court 1: A wins. Court 2: A wins (so d1,d2 are the bottom losers → step off).
 	next, nb := NextRound(courts,
-		[]RotResult{{Court: 1, Winner: "a"}, {Court: 2, Winner: "a"}}, bench)
+		[]RotResult{{Court: 1, Winner: "a"}, {Court: 2, Winner: "a"}}, bench, LosersDown)
 
 	// Conservation: same 10 players across courts + bench, no dups.
 	after := append(allPlayers(next), nb...)
@@ -130,7 +130,7 @@ func TestByesRotateFairly(t *testing.T) {
 			sat[id]++
 		}
 		// Court 1: team A always wins (deterministic; losers cycle to bench).
-		courts, bench = NextRound(courts, []RotResult{{Court: 1, Winner: "a"}}, bench)
+		courts, bench = NextRound(courts, []RotResult{{Court: 1, Winner: "a"}}, bench, LosersDown)
 	}
 	// 6 players, 2 sit each round over 30 rounds = 60 sit-outs; a fair spread is
 	// ~10 each. Assert nobody is starved (played every round) or benched always.
@@ -158,7 +158,7 @@ func TestNextRoundMovementAndRepair(t *testing.T) {
 		{Court: 2, Winner: "b"},
 		{Court: 3, Winner: "a"},
 	}
-	next, _ := NextRound(courts, results, nil)
+	next, _ := NextRound(courts, results, nil, LosersDown)
 
 	if len(next) != 3 {
 		t.Fatalf("want 3 courts, got %d", len(next))
@@ -211,7 +211,7 @@ func TestNextRoundSingleCourt(t *testing.T) {
 	courts := []RotCourt{
 		{Court: 1, TeamA: [2]string{"x1", "x2"}, TeamB: [2]string{"y1", "y2"}},
 	}
-	next, _ := NextRound(courts, []RotResult{{Court: 1, Winner: "a"}}, nil)
+	next, _ := NextRound(courts, []RotResult{{Court: 1, Winner: "a"}}, nil, LosersDown)
 	if len(next) != 1 {
 		t.Fatalf("want 1 court, got %d", len(next))
 	}

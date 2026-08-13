@@ -200,7 +200,6 @@ func TestSetStartCourt_RefusedOnceLive(t *testing.T) {
 	}
 }
 
-
 // A stale placement on someone sitting out silently un-randomises the shuffle
 // the moment they're brought back: they'd sort ahead of the players actually
 // drawn onto that court.

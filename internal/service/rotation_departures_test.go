@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/engine"
@@ -295,5 +296,64 @@ func TestSettle_LongestWaitingPlayerReEntersLowest(t *testing.T) {
 	if !has(seatOn(1), "second") {
 		t.Errorf("court 1's vacancy should go to the next in line; court 1 = %v",
 			seatOn(1))
+	}
+}
+
+// A player who leaves, returns, and leaves again resolves across rounds onto the
+// id that took over from them the first time — putting that person in the queue
+// while they are already on court. The engine guard rejects a duplicate, so the
+// session freezes for good. Simulation hit this in 15,091 of 40,000 nights once
+// the upstream refusal was bypassed, which is too thin a defence for a dead
+// night, so the advance dedupes the queue against the seats.
+func TestAdvance_QueueNeverHoldsSomeoneAlreadySeated(t *testing.T) {
+	// pGone is WAITING (not seated) and was substituted out earlier; the player
+	// who took over from them, pOnCourt, is on court. Resolving the queue entry
+	// therefore points at somebody already playing.
+	f := oneCourtSession(11, 11, 9, 9).
+		seed("rotation_sessions",
+			`[{"id":"s1","status":"live","current_round":1,"round_minutes":12,
+			   "bench":["pGone"]}]`).
+		seed("rotation_round_courts", `[{"session_id":"s1","round":1,"court":1,
+			"team_a_p1":"pOnCourt","team_a_p2":"pA2",
+			"team_b_p1":"pB1","team_b_p2":"pB2","winner":"a"}]`).
+		seed("rotation_substitutions",
+			`[{"session_id":"s1","round":1,"out_player":"pGone","in_player":"pOnCourt"}]`).
+		seed("rotation_players", `[
+			{"id":"pOnCourt","session_id":"s1","active":true},
+			{"id":"pA2","session_id":"s1","active":true},
+			{"id":"pB1","session_id":"s1","active":true},
+			{"id":"pB2","session_id":"s1","active":true},
+			{"id":"pGone","session_id":"s1","active":false}]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.AdvanceRotationSession("s1", 1); err != nil {
+		t.Fatalf("advance failed: %v", err)
+	}
+	sent := string(f.rpcBodies("advance_rotation_session")[0])
+
+	// pB1 is on court; the queue resolved pA1 -> pB1, which would duplicate them.
+	var payload struct {
+		Bench  []string `json:"p_bench"`
+		Courts []struct {
+			A []string `json:"a"`
+			B []string `json:"b"`
+		} `json:"p_courts"`
+	}
+	if err := json.Unmarshal([]byte(sent), &payload); err != nil {
+		t.Fatalf("unparseable advance payload: %v", err)
+	}
+	seated := map[string]bool{}
+	for _, c := range payload.Courts {
+		for _, id := range append(append([]string{}, c.A...), c.B...) {
+			if seated[id] {
+				t.Fatalf("%s is seated twice — the session would freeze: %s", id, sent)
+			}
+			seated[id] = true
+		}
+	}
+	for _, id := range payload.Bench {
+		if seated[id] {
+			t.Fatalf("%s is both on court and in the queue: %s", id, sent)
+		}
 	}
 }

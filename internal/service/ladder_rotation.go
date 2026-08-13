@@ -1270,10 +1270,10 @@ func settleDepartures(courts []engine.RotCourt, bench []string,
 				&courts[i].TeamA[0], &courts[i].TeamA[1],
 				&courts[i].TeamB[0], &courts[i].TeamB[1],
 			} {
-				// A blank seat counts as vacant too. It is the one input that
-				// trips the engine's guard, and it is literally a free seat the
-				// queue can fill — walking past it is how a null seat became a
-				// permanent freeze.
+				// A blank seat counts as vacant too. In practice the engine's
+				// guard catches a blank first and the advance refuses before
+				// reaching here — so this is belt-and-braces, NOT the thing that
+				// saves a session from a null seat. (It said so; it was wrong.)
 				if *seat != "" && !left[*seat] {
 					continue
 				}
@@ -1599,6 +1599,31 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		for i := range bench {
 			bench[i] = resolve(bench[i])
 		}
+		// A resolved queue entry can land on someone who is ALREADY seated: the
+		// per-hop `gone` test protects within one advance, but a player who left,
+		// came back, and left again resolves across rounds onto the id that took
+		// over from them the first time. The result is one person seated twice —
+		// which the engine guard rejects, freezing the session permanently.
+		//
+		// Simulation reached this in 15,091 of 40,000 nights with the upstream
+		// refusal disabled, so the refusal alone is too thin a defence for
+		// something whose failure mode is a dead night.
+		seatedNow := map[string]bool{}
+		for _, c := range cur {
+			for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+				seatedNow[id] = true
+			}
+		}
+		deduped := bench[:0]
+		queued := map[string]bool{}
+		for _, id := range bench {
+			if id == "" || seatedNow[id] || queued[id] {
+				continue
+			}
+			queued[id] = true
+			deduped = append(deduped, id)
+		}
+		bench = deduped
 	}
 
 	// Reconcile the bench against the live roster. Two directions:

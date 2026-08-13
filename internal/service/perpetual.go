@@ -1216,7 +1216,7 @@ func (s *Service) cancelStalePerpetualGames(ev model.Event) {
 		_, _ = s.sb.Update("matches",
 			"id=eq."+store.Q(asStr(r, "id"))+"&status=eq.in_progress",
 			map[string]any{
-				"status": "canceled",
+				"status":      "canceled",
 				"team1_score": nil, "team2_score": nil, "winning_team": nil,
 				"live_team1": nil, "live_team2": nil,
 				"result_type": nil, "completed_at": nil,

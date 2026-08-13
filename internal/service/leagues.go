@@ -302,6 +302,7 @@ func (s *Service) PublicLeagueByID(id string) (model.PublicLeague, []model.Event
 //   - registered for an event whose league_id is set (reuse the MyEvents
 //     registration-matching: caller's player rows → registrations → events with
 //     a non-null league_id → their league), and/or
+//
 //   - an entrant in a league bracket: a ladder_entrants / teams row whose
 //     player_id matches one of the caller's player rows → league_bracket →
 //     league.

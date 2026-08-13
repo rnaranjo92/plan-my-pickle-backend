@@ -7599,6 +7599,13 @@ func (s *Server) allowLeagueRead(w http.ResponseWriter, r *http.Request, leagueI
 	if uid != "" && owner == uid {
 		return true
 	}
+	// QA/support accounts. Every OWNER gate already grants this (ladderOwnerOK),
+	// so without it here a support account has LESS access on read-only screens
+	// than on the ones that can change things — and the app renders their
+	// controls, which then 403.
+	if isSuperUser(userEmail(r)) && superUserAllowed(r) {
+		return true
+	}
 	ok, err := s.svc.IsLeagueParticipant(leagueID, uid, userEmail(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

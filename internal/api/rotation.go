@@ -316,7 +316,10 @@ func (s *Server) reportRotationCourt(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.ReportRotationCourt(r.PathValue("id"), req); err != nil {
+	sessionID := r.PathValue("id")
+	owner, oerr := s.svc.OwnerOfRotationSession(sessionID)
+	isOwner := oerr == nil && owner != "" && owner == userID(r)
+	if err := s.svc.ReportRotationCourt(sessionID, userID(r), isOwner, req); err != nil {
 		status(w, err)
 		return
 	}

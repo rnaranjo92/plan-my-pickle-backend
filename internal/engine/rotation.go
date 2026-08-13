@@ -124,16 +124,28 @@ func SeedPlacedCourts(players []Seat, maxCourts int) ([]RotCourt, []string) {
 	}
 
 	seats := make([][]string, c+1) // 1-based; index 0 unused
-	var pool []string
+	var pool, overflow []string
 	for _, p := range players {
 		if p.Court >= 1 && p.Court <= c && len(seats[p.Court]) < 4 {
 			seats[p.Court] = append(seats[p.Court], p.ID)
 			continue
 		}
+		if p.Court >= 1 {
+			// Placed somewhere we can't honour: a court that isn't running
+			// tonight, or a court the organizer put five people on. They go
+			// BEHIND the unplaced players, because the one thing we know is that
+			// the organizer did NOT ask for them to be up top. Putting them in
+			// the ordinary pool let an evicted or out-of-range player open court
+			// 1 — the exact bug this function was written to kill, wearing a
+			// different hat.
+			overflow = append(overflow, p.ID)
+			continue
+		}
 		pool = append(pool, p.ID)
 	}
+	pool = append(pool, overflow...)
 
-	// Fill the gaps top court first, so the strongest unplaced players land
+	// Fill the gaps top court first, so the strongest UNPLACED players land
 	// highest — the same intent as the rating seed they're falling back to.
 	next := 0
 	for k := 1; k <= c; k++ {

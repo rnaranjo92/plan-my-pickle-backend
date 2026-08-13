@@ -135,3 +135,107 @@ func TestAdvance_RemapFollowsASubstitutionChain(t *testing.T) {
 		t.Fatalf("the last substitute never took the seat: %s", sent)
 	}
 }
+
+// A player who is sat out mid-session must lose their SEAT, not just a flag.
+// Flipping active alone left them on court every round for the rest of the
+// night: collecting games, never scoring, and so keeping the scorecard
+// permanently incomplete — which silently stopped auto-advance dead.
+func TestAdvance_RefillsTheSeatOfAPlayerWhoLeft(t *testing.T) {
+	f := oneCourtSession(11, 11, 9, 9).
+		seed("rotation_sessions",
+			`[{"id":"s1","status":"live","current_round":1,"round_minutes":12,
+			   "bench":["pWait"]}]`).
+		seed("rotation_players", `[
+			{"id":"pA2","session_id":"s1","display_name":"A2","active":true},
+			{"id":"pB1","session_id":"s1","display_name":"B1","active":true},
+			{"id":"pB2","session_id":"s1","display_name":"B2","active":true},
+			{"id":"pWait","session_id":"s1","display_name":"Wait","active":true},
+			{"id":"pA1","session_id":"s1","display_name":"Gone","active":false}]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.AdvanceRotationSession("s1", 1); err != nil {
+		t.Fatalf("advance failed: %v", err)
+	}
+	sent := string(f.rpcBodies("advance_rotation_session")[0])
+	if strings.Contains(sent, "pA1") {
+		t.Fatalf("a player who left is still seated next round: %s", sent)
+	}
+	if !strings.Contains(sent, "pWait") {
+		t.Fatalf("the waiting player never took the free seat: %s", sent)
+	}
+}
+
+// The sudden-death point IS the resolution. Refusing even after a winner was
+// tapped would leave the organizer editing score cells to escape a hang.
+func TestAdvance_ReportedWinnerBreaksATie(t *testing.T) {
+	f := oneCourtSession(11, 11, 11, 11).
+		seed("rotation_round_courts", `[{"session_id":"s1","round":1,"court":1,
+			"team_a_p1":"pA1","team_a_p2":"pA2",
+			"team_b_p1":"pB1","team_b_p2":"pB2","winner":"b"}]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.AdvanceRotationSession("s1", 1); err != nil {
+		t.Fatalf("a tie resolved by a sudden-death point still blocked: %v", err)
+	}
+}
+
+// Sitting someone out who is ON COURT with nobody waiting would leave that court
+// with three players. Say so, and name the operation that can actually do it.
+func TestSetActive_RefusesWhenItWouldLeaveACourtShort(t *testing.T) {
+	f := oneCourtSession(0, 0, 0, 0)
+	s := newFakeSvc(t, f)
+
+	err := s.SetRotationPlayerActive("pA1", false)
+	if err == nil {
+		t.Fatal("sitting out a seated player with an empty queue was allowed")
+	}
+	if !strings.Contains(err.Error(), "Substitute") {
+		t.Fatalf("the refusal should point at the operation that works; got %q", err)
+	}
+}
+
+// With someone waiting it's fine — they step on next round.
+func TestSetActive_AllowedWhenSomeoneIsWaiting(t *testing.T) {
+	f := oneCourtSession(0, 0, 0, 0).
+		seed("rotation_sessions",
+			`[{"id":"s1","status":"live","current_round":1,"bench":["pWait"]}]`)
+	s := newFakeSvc(t, f)
+
+	if err := s.SetRotationPlayerActive("pA1", false); err != nil {
+		t.Fatalf("refused with a player waiting: %v", err)
+	}
+}
+
+// Bringing back someone who was SUBSTITUTED out seats their replacement twice —
+// the advance remap resolves the returning player onto the id that took over.
+func TestSetActive_RefusesToResurrectASubstitutedPlayer(t *testing.T) {
+	f := oneCourtSession(0, 0, 0, 0).
+		seed("rotation_substitutions",
+			`[{"session_id":"s1","round":1,"out_player":"pA1","in_player":"pSub"}]`)
+	s := newFakeSvc(t, f)
+
+	err := s.SetRotationPlayerActive("pA1", true)
+	if err == nil {
+		t.Fatal("a substituted-out player was brought back — their replacement would be seated twice")
+	}
+	if !strings.Contains(err.Error(), "took over") {
+		t.Fatalf("the refusal should explain; got %q", err)
+	}
+}
+
+// The grid still shows a departed player's row, so typing tonight's score into
+// it is the natural mistake — and it orphans the score from the court.
+func TestSetScore_RejectsRoundsAfterAHandover(t *testing.T) {
+	f := oneCourtSession(0, 0, 0, 0).
+		seed("rotation_substitutions",
+			`[{"session_id":"s1","round":5,"out_player":"pA1","in_player":"pSub"}]`)
+	s := newFakeSvc(t, f)
+
+	v := 11
+	if err := s.SetRotationScore("s1", 6, "pA1", &v); err == nil {
+		t.Fatal("scored a round the player had already been substituted out of")
+	}
+	if err := s.SetRotationScore("s1", 4, "pSub", &v); err == nil {
+		t.Fatal("scored a round before the substitute came on")
+	}
+}

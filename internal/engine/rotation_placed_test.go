@@ -93,23 +93,59 @@ func TestPlaced_OversubscribedCourtDoesntSpillDownward(t *testing.T) {
 
 	courts, bench := SeedPlacedCourts(players, 0)
 
-	count := 0
-	for _, c := range courts {
-		if c.Court == 1 {
-			count = 4
+	// Count real seats. The previous version of this assertion set a literal 4
+	// and could never fail — it proved nothing.
+	on1 := 0
+	for i := 0; i < 12; i++ {
+		if courtOf(courts, bench, fmt.Sprintf("p%d", i)) == 1 {
+			on1++
 		}
 	}
-	if count != 4 {
-		t.Fatalf("court 1 has %d players, want 4", count)
+	if on1 != 4 {
+		t.Fatalf("court 1 holds %d players, want 4", on1)
 	}
 	for i := 0; i < 4; i++ {
 		if got := courtOf(courts, bench, fmt.Sprintf("p%d", i)); got != 1 {
 			t.Errorf("p%d should hold court 1 (top four by rating), got %d", i, got)
 		}
 	}
-	// The fifth is placed by the fallback, not lost.
-	if got := courtOf(courts, bench, "p4"); got < 0 {
-		t.Error("the fifth player placed on court 1 vanished entirely")
+	// The fifth is placed by the fallback, not lost — and must not be PROMOTED.
+	got := courtOf(courts, bench, "p4")
+	if got < 0 {
+		t.Fatal("the fifth player placed on court 1 vanished entirely")
+	}
+	if got == 1 {
+		t.Fatal("five players on a court of four")
+	}
+}
+
+// An evicted player must not leapfrog UPWARD past the court they were typed on.
+func TestPlaced_EvictedPlayerIsNotPromoted(t *testing.T) {
+	players := unplaced(12)
+	for i := 0; i < 5; i++ {
+		players[i].Court = 2 // p0 (strongest)..p4; court 2 keeps four
+	}
+	courts, bench := SeedPlacedCourts(players, 0)
+
+	if got := courtOf(courts, bench, "p4"); got == 1 {
+		t.Fatal("an evicted player opened court 1 — a court the organizer never typed")
+	}
+}
+
+// A court that isn't running tonight can't be honoured, but the player must not
+// be rewarded with the TOP court for it.
+func TestPlaced_OutOfRangePlacementNeverOpensTheTopCourt(t *testing.T) {
+	players := unplaced(12) // 3 courts run
+	for i := 0; i < 4; i++ {
+		players[i].Court = 9 // the four STRONGEST, on a court that won't run
+	}
+	courts, bench := SeedPlacedCourts(players, 0)
+
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("p%d", i)
+		if got := courtOf(courts, bench, id); got == 1 {
+			t.Fatalf("%s was placed on court 9 (not running) and opened court 1", id)
+		}
 	}
 }
 

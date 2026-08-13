@@ -139,6 +139,11 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 		return model.RotationBoard{}, ErrNotFound
 	}
 	session := rotationSessionFromRow(srow)
+	if s.rotationLoserMode(sessionID) == engine.LosersStay {
+		session.LoserMode = "stay"
+	} else {
+		session.LoserMode = "down"
+	}
 
 	players, byID, err := s.rotationPlayers(sessionID)
 	if err != nil {
@@ -181,13 +186,15 @@ func (s *Service) GetRotationBoard(sessionID string) (model.RotationBoard, error
 		}
 	}
 
+	subs, _ := s.RotationSubstitutions(sessionID)
 	return model.RotationBoard{
-		Session:   session,
-		Players:   players,
-		Courts:    courts,
-		Standings: standings,
-		Byes:      byes,
-		Scorecard: card,
+		Session:       session,
+		Players:       players,
+		Courts:        courts,
+		Standings:     standings,
+		Byes:          byes,
+		Scorecard:     card,
+		Substitutions: subs,
 	}, nil
 }
 
@@ -770,6 +777,181 @@ func (s *Service) ShuffleRotationStartCourts(sessionID string) (int, error) {
 	return len(ids), nil
 }
 
+// SetRotationPlayerName fixes a roster player's name — a typo, a nickname, a
+// surname that was missing. Allowed at any point in the session, INCLUDING live,
+// because it changes only how a person is labelled.
+//
+// Deliberately separate from SubstituteRotationPlayer. Typing a different
+// person's name over this one would be the tempting way to swap a player, and
+// it would silently hand the whole night's record -- every score already on the
+// board -- to someone who never played those rounds.
+func (s *Service) SetRotationPlayerName(playerID, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("a name is required")
+	}
+	row, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(playerID)+"&select=id")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	_, err = s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
+		map[string]any{"display_name": name})
+	return err
+}
+
+// SubstituteRotationPlayer hands one player's seat to another mid-session.
+//
+// The outgoing player keeps every point they have already scored and stops
+// there; the incoming player starts a fresh record from the current round. That
+// split is the whole feature, and it's why this creates a roster row instead of
+// renaming: scores are keyed to the roster row, so a rename would move the
+// night's work to someone who didn't do it.
+//
+// A chain (A -> B -> C) needs no special handling. The substitute is an ordinary
+// roster player, so subbing THEM out later is this same call again.
+func (s *Service) SubstituteRotationPlayer(sessionID string,
+	req model.SubstituteRotationPlayerRequest) (model.RotationPlayer, error) {
+	name := strings.TrimSpace(req.DisplayName)
+	if name == "" {
+		return model.RotationPlayer{}, fmt.Errorf("who is coming in? a name is required")
+	}
+	srow, err := s.sb.SelectOne("rotation_sessions", "id=eq."+store.Q(sessionID))
+	if err != nil {
+		return model.RotationPlayer{}, err
+	}
+	if srow == nil {
+		return model.RotationPlayer{}, ErrNotFound
+	}
+	switch asStr(srow, "status") {
+	case "live", "paused":
+	case "setup":
+		// Nothing has been played, so there is no record to split. Remove and add
+		// is the honest operation, and it leaves no phantom "subbed out at round
+		// 0" in the history.
+		return model.RotationPlayer{}, fmt.Errorf(
+			"the session hasn't started — remove that player and add the new one instead")
+	default:
+		return model.RotationPlayer{}, fmt.Errorf("this session has finished")
+	}
+	round := asInt(srow, "current_round")
+	if round < 1 {
+		round = 1
+	}
+
+	out, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(req.OutPlayerID))
+	if err != nil {
+		return model.RotationPlayer{}, err
+	}
+	if out == nil || asStr(out, "session_id") != sessionID {
+		return model.RotationPlayer{}, ErrNotFound
+	}
+	if !asBool(out, "active") {
+		return model.RotationPlayer{}, fmt.Errorf(
+			"%s is already out of this session", asStr(out, "display_name"))
+	}
+
+	rating := req.SelfRating
+	if rating < 1.0 || rating > 7.0 {
+		// Inherit the outgoing player's rating rather than defaulting to 3.0: the
+		// substitute is stepping into that player's court, and a stranger rating
+		// would misplace them the moment the courts reseed.
+		rating = asFloatOr(out, "self_rating", 3.0)
+	}
+	body := map[string]any{
+		"session_id":   sessionID,
+		"display_name": name,
+		"self_rating":  rating,
+	}
+	if req.EntrantID != nil && *req.EntrantID != "" {
+		body["entrant_id"] = *req.EntrantID
+	}
+	rows, err := s.sb.Insert("rotation_players", body)
+	if err != nil {
+		return model.RotationPlayer{}, err
+	}
+	if len(rows) == 0 {
+		return model.RotationPlayer{}, fmt.Errorf("could not add the substitute")
+	}
+	in := rotationPlayerFromRow(rows[0])
+	if in.ID == "" {
+		return model.RotationPlayer{}, fmt.Errorf("could not add the substitute")
+	}
+
+	// Take the seat. Filtered on round >= current rather than = current so that
+	// an advance landing between the read above and this write is still covered:
+	// the substitute inherits the seat in whichever round is now live, instead of
+	// being stranded in a round that has already finished.
+	for _, col := range []string{"team_a_p1", "team_a_p2", "team_b_p1", "team_b_p2"} {
+		if _, uerr := s.sb.Update("rotation_round_courts",
+			"session_id=eq."+store.Q(sessionID)+
+				"&round=gte."+fmt.Sprint(round)+
+				"&"+col+"=eq."+store.Q(req.OutPlayerID),
+			map[string]any{col: in.ID}); uerr != nil {
+			return model.RotationPlayer{}, uerr
+		}
+	}
+	// If they were waiting rather than playing, the substitute inherits their
+	// place in the queue — not the back of it. Best-effort: the advance
+	// reconciliation seats any active, unbenched player anyway.
+	s.replaceOnBench(sessionID, srow, req.OutPlayerID, in.ID)
+
+	// Retire the outgoing player LAST. Until this lands they are still active, so
+	// a failure above leaves the session playable with both rows present rather
+	// than a seat belonging to nobody.
+	if _, uerr := s.sb.Update("rotation_players", "id=eq."+store.Q(req.OutPlayerID),
+		map[string]any{"active": false}); uerr != nil {
+		return model.RotationPlayer{}, uerr
+	}
+	_, _ = s.sb.Insert("rotation_substitutions", map[string]any{
+		"session_id": sessionID,
+		"round":      round,
+		"out_player": req.OutPlayerID,
+		"in_player":  in.ID,
+	})
+	return in, nil
+}
+
+// replaceOnBench swaps one id for another in the session's waiting queue,
+// keeping the position. No-op when the outgoing player wasn't waiting.
+func (s *Service) replaceOnBench(sessionID string, srow map[string]any, outID, inID string) {
+	bench := asStrSlice(srow, "bench")
+	found := false
+	for i, id := range bench {
+		if id == outID {
+			bench[i] = inID
+			found = true
+		}
+	}
+	if !found {
+		return
+	}
+	_, _ = s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
+		map[string]any{"bench": bench})
+}
+
+// RotationSubstitutions lists a session's swaps in the order they happened, so
+// each player's card can say who they came in for and who took over from them.
+func (s *Service) RotationSubstitutions(sessionID string) ([]model.RotationSubstitution, error) {
+	rows, err := s.sb.Select("rotation_substitutions",
+		"session_id=eq."+store.Q(sessionID)+"&order=round.asc,created_at.asc")
+	if err != nil {
+		// The table arrives in a migration; a session must still open without it.
+		return []model.RotationSubstitution{}, nil
+	}
+	out := make([]model.RotationSubstitution, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, model.RotationSubstitution{
+			Round:       asInt(r, "round"),
+			OutPlayerID: asStr(r, "out_player"),
+			InPlayerID:  asStr(r, "in_player"),
+		})
+	}
+	return out, nil
+}
+
 // OwnerOfRotationPlayer resolves a roster player → session → division → owner.
 func (s *Service) OwnerOfRotationPlayer(playerID string) (string, error) {
 	row, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(playerID)+"&select=session_id")
@@ -981,11 +1163,16 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		results = append(results, engine.RotResult{Court: court, Winner: w})
 	}
 
-	// Reconcile mid-session joiners (self-heals the join-vs-advance race): any
-	// ACTIVE roster player who isn't seated this round and isn't already on the
-	// bench snapshot was added since we read the bench → append to the bench back
-	// (newest waits longest). Roster edits are setup-only, so active players only
-	// GROW mid-session, never shrink — this can only add, never lose, a player.
+	// Reconcile the bench against the live roster. Two directions:
+	//
+	//  ADD — any ACTIVE player who isn't seated this round and isn't already on
+	//  the bench snapshot joined since we read the bench (self-heals the
+	//  join-vs-advance race). Appended at the back, so the newest waits longest.
+	//
+	//  DROP — any player who is no longer active. Substitution is the only thing
+	//  that deactivates someone mid-session, and a substituted-out player left on
+	//  the bench would rotate back onto a court later in the night, after their
+	//  replacement had already taken over their spot.
 	seated := map[string]bool{}
 	for _, c := range cur {
 		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
@@ -1000,6 +1187,19 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	}
 	if activeRows, aerr := s.sb.Select("rotation_players",
 		"session_id=eq."+store.Q(sessionID)+"&active=eq.true&order=created_at.asc&select=id"); aerr == nil {
+		active := make(map[string]bool, len(activeRows))
+		for _, r := range activeRows {
+			if id := asStr(r, "id"); id != "" {
+				active[id] = true
+			}
+		}
+		kept := bench[:0]
+		for _, id := range bench {
+			if active[id] {
+				kept = append(kept, id)
+			}
+		}
+		bench = kept
 		for _, r := range activeRows {
 			id := asStr(r, "id")
 			if id != "" && !seated[id] && !benchSet[id] {

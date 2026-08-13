@@ -271,6 +271,36 @@ func (s *Server) shuffleRotationStartCourts(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]int{"placed": n})
 }
 
+// setRotationPlayerName fixes a roster player's name (owner-gated, any time).
+func (s *Server) setRotationPlayerName(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DisplayName string `json:"displayName"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationPlayerName(r.PathValue("id"), req.DisplayName); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"displayName": req.DisplayName})
+}
+
+// substituteRotationPlayer hands a player's seat to a new roster row, splitting
+// the record at the current round (owner-gated, live only).
+func (s *Server) substituteRotationPlayer(w http.ResponseWriter, r *http.Request) {
+	var req model.SubstituteRotationPlayerRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.SubstituteRotationPlayer(r.PathValue("id"), req)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
 // startRotation seeds round 1 and flips the session live (owner-gated).
 func (s *Server) startRotation(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.StartRotationSession(r.PathValue("id")); err != nil {

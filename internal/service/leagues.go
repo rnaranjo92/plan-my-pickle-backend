@@ -74,6 +74,17 @@ func (s *Service) CreateLeague(ownerID string, req model.CreateLeagueRequest) (s
 			format = "challenge"
 		}
 		payload["ladder_format"] = format
+		// Loser rule — only meaningful for a rotation, and fixed here because the
+		// room has to know it before the first ball is served. Anything but the
+		// explicit 'stay' is the classic river, so a stale client can't invent a
+		// third rule.
+		if format == "rotation" && s.columnReady("leagues", "ladder_loser_mode") {
+			mode := "down"
+			if req.LadderLoserMode == "stay" {
+				mode = "stay"
+			}
+			payload["ladder_loser_mode"] = mode
+		}
 	}
 	// Coach-led league: auto-enroll every registrant as the owner's coaching
 	// student. Turning it on makes the OWNER the coach — enroll them as an

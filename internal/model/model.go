@@ -370,7 +370,10 @@ type CreateLeagueRequest struct {
 	LeagueType  string `json:"leagueType"` // round_robin | ladder | team (default round_robin)
 	DayType     string `json:"dayType"`    // single | multi (default multi)
 	// LadderFormat (ladder only): challenge (default) | rotation.
-	LadderFormat    string   `json:"ladderFormat"`
+	LadderFormat string `json:"ladderFormat"`
+	// LadderLoserMode (rotation ladders): 'down' (default) | 'stay'. Fixed at
+	// creation — the room has to know the rule before the first ball is served.
+	LadderLoserMode string   `json:"ladderLoserMode,omitempty"`
 	Sanctioned      bool     `json:"sanctioned"`
 	Listed          bool     `json:"listed"` // opt into public discovery (default false)
 	CashPrize       bool     `json:"cashPrize"`
@@ -565,6 +568,28 @@ type RotationSession struct {
 	RoundStartedAt string `json:"roundStartedAt,omitempty"`
 	RoundEndsAt    string `json:"roundEndsAt,omitempty"`
 	CreatedAt      string `json:"createdAt"`
+	// LoserMode ('down' | 'stay') is the league's loser rule, carried on the
+	// board so every player can see which of the two games is being played
+	// without opening the league.
+	LoserMode string `json:"loserMode,omitempty"`
+}
+
+// SubstituteRotationPlayerRequest hands OutPlayerID's seat to a new roster row.
+// The outgoing player keeps the score they have; the substitute starts fresh.
+type SubstituteRotationPlayerRequest struct {
+	OutPlayerID string  `json:"outPlayerId"`
+	DisplayName string  `json:"displayName"`
+	EntrantID   *string `json:"entrantId,omitempty"`
+	// SelfRating out of 1..7 inherits the outgoing player's rating.
+	SelfRating float64 `json:"selfRating"`
+}
+
+// RotationSubstitution is one swap: who went out, who came in, and the round it
+// took effect (the boundary between the two records).
+type RotationSubstitution struct {
+	Round       int    `json:"round"`
+	OutPlayerID string `json:"outPlayerId"`
+	InPlayerID  string `json:"inPlayerId"`
 }
 
 // RotationPlayer is one competitor in a session's roster snapshot, with the
@@ -633,6 +658,9 @@ type RotationBoard struct {
 	// Scorecard is the organizer's name × round grid (the primary way results are
 	// recorded — the court winner is derived from these scores).
 	Scorecard RotationScorecard `json:"scorecard"`
+	// Substitutions, oldest first — who took over from whom, and at which round.
+	// Empty for the ordinary session where nobody left early.
+	Substitutions []RotationSubstitution `json:"substitutions"`
 }
 
 // CreateRotationSessionRequest opens a new session under a ladder division.
@@ -909,12 +937,12 @@ type Registration struct {
 	// PhotoURL is the registrant's account profile photo (pmp_profiles via the
 	// linked user_id), used as their roster avatar; empty for name-only players
 	// (the UI falls back to initials).
-	PhotoURL   string   `json:"photoUrl,omitempty"`
+	PhotoURL string `json:"photoUrl,omitempty"`
 	// HasAccount = this registrant's player row is tied to an app account. False
 	// means they were added by name/contact only: they cannot see the event, and
 	// nothing was ever sent to them. The roster surfaces an Invite action for
 	// exactly these rows.
-	HasAccount bool `json:"hasAccount"`
+	HasAccount bool     `json:"hasAccount"`
 	DuprID     *string  `json:"duprId,omitempty"`
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	// OutsideRating is true when the player's DUPR rating falls outside their

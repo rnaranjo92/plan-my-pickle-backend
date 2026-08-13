@@ -3177,6 +3177,15 @@ func (s *Service) ShareVideoToLeagueCoach(eventID, userID, email, videoURL, titl
 		}
 	}
 	if threadID == "" {
+		// The league's own coach has no thread with THEMSELVES, so this can never
+		// succeed for them. "You're not on the roster" then reads as though the
+		// player the clip is about is missing from it — which sends the coach
+		// hunting through a roster that was correct all along. Say what's true,
+		// and where the clip actually belongs.
+		if coach == userID {
+			return errors.New("you lead this league — open the player's coaching " +
+				"page to add a clip to their thread")
+		}
 		return errors.New("you're not on the league coach's roster yet")
 	}
 	_, err = s.AddThreadVideo(threadID, userID, email,

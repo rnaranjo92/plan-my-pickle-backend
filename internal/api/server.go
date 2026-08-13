@@ -5757,7 +5757,13 @@ func (s *Server) feedList(w http.ResponseWriter, r *http.Request) {
 	// The Feed is private to people IN the event — the owner and its registered
 	// (approved) players. A non-registered viewer gets an empty feed (the app
 	// shows a "register to join the conversation" state).
-	if !s.svc.CanViewEventFeed(eventID, userID(r), userEmail(r)) {
+	//
+	// Super users act as owner of any event, and the app shows them the full
+	// organizer view (isSuperUser in super_user.dart). Without the same grant
+	// here the Feed alone came back empty for them — indistinguishable from an
+	// event where nothing had happened, on an event with a full activity log.
+	if !isSuperUser(userEmail(r)) &&
+		!s.svc.CanViewEventFeed(eventID, userID(r), userEmail(r)) {
 		writeJSON(w, http.StatusOK, []model.FeedItem{})
 		return
 	}
@@ -5802,9 +5808,11 @@ func (s *Server) feedItemGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Single posts are as private as the feed they belong to: owner + registered
-	// players only. (A deep link/notification only reaches those people anyway.)
-	// `event` discovery cards are public by design (NewsFeed advertising).
-	if item.Type != "event" &&
+	// players only, plus super users (same grant as the list — otherwise they
+	// could see a post in the feed but not open it). (A deep link/notification
+	// only reaches those people anyway.) `event` discovery cards are public by
+	// design (NewsFeed advertising).
+	if item.Type != "event" && !isSuperUser(userEmail(r)) &&
 		!s.svc.CanViewEventFeed(strings.TrimSpace(item.EventID), userID(r), userEmail(r)) {
 		status(w, service.ErrForbidden)
 		return

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -245,5 +246,21 @@ func TestSetScore_RejectsRoundsAfterAHandover(t *testing.T) {
 	}
 	if err := s.SetRotationScore("s1", 4, "pSub", &v); err == nil {
 		t.Fatal("scored a round before the substitute came on")
+	}
+}
+
+// The client has to tell "a human must fix this" from "the server had a bad
+// moment" — they need opposite handling, and every unclassified error leaves
+// this layer as a 400, so the distinction has to be carried explicitly.
+func TestAdvance_TieIsAHumanRefusal(t *testing.T) {
+	f := oneCourtSession(11, 11, 11, 11)
+	s := newFakeSvc(t, f)
+
+	err := s.AdvanceRotationSession("s1", 1)
+	if !errors.Is(err, ErrRoundBlocked) {
+		t.Fatalf("a tie should be a refusal a human clears; got %v", err)
+	}
+	if errors.Is(err, ErrUpstream) {
+		t.Fatal("a tie was classed as a transient failure — it would be retried forever")
 	}
 }

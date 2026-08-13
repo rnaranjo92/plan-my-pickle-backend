@@ -7847,6 +7847,19 @@ func status(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	// A refusal a human must clear (409) vs a bad moment worth retrying (503).
+	// Without these both arrived as 400, so no client could tell them apart —
+	// and the two need opposite handling: retrying a refusal hammers the server
+	// with the clock stopped, while latching on a blip quietly turns an
+	// automatic night manual.
+	if errors.Is(err, service.ErrRoundBlocked) {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, service.ErrUpstream) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	writeErr(w, http.StatusBadRequest, err)
 }
 

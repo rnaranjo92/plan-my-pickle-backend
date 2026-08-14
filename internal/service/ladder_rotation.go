@@ -372,6 +372,36 @@ func (s *Service) rotationScorecard(sessionID string, currentRound int) (model.R
 // AddScorecardRound appends an empty column to the scorecard and returns the new
 // round number. Persisted as one NULL-score row per player, which the loader
 // reads as "this column exists but is blank". Owner-gated at the route.
+// ClearRotationScorecard removes every scorecard row for a session, putting it
+// back on the who-won flow. SETUP ONLY — deliberately.
+//
+// How results are recorded has to be settled BEFORE the first ball is hit. The
+// two modes don't just look different: who-won ranks the night by games won,
+// the scorecard ranks it by points, and the court winner is derived differently
+// under each. Switching halfway means the rounds already played were scored one
+// way and the rest another, with a single leaderboard presenting the mix as if
+// it were one number. In setup nothing has been played, so the organizer can
+// change their mind freely; once the session is live the choice is fixed.
+func (s *Service) ClearRotationScorecard(sessionID string) error {
+	if !s.rotationScoresReady() {
+		return ErrCoachingUnavailable
+	}
+	srow, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=status")
+	if err != nil {
+		return err
+	}
+	if srow == nil {
+		return ErrNotFound
+	}
+	if asStr(srow, "status") != "setup" {
+		return fmt.Errorf("%w: how results are recorded is fixed once the "+
+			"session starts", ErrRoundBlocked)
+	}
+	return s.sb.Delete("rotation_round_scores",
+		"session_id=eq."+store.Q(sessionID))
+}
+
 func (s *Service) AddScorecardRound(sessionID string) (int, error) {
 	if !s.rotationScoresReady() {
 		return 0, ErrCoachingUnavailable

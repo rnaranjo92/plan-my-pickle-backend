@@ -419,6 +419,10 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.addScorecardRound))
 	mux.HandleFunc("DELETE /rotation-sessions/{id}/scorecard/rounds/{round}",
 		s.rotationSessionOwner("id", s.deleteScorecardRound))
+	// Setup-only: put the session back on the who-won flow. The scoring mode is
+	// chosen before Start and fixed from then on.
+	mux.HandleFunc("DELETE /rotation-sessions/{id}/scorecard",
+		s.rotationSessionOwner("id", s.clearScorecard))
 	// ADVANCE is organizer-only. It rotates EVERY court on the night, and the
 	// participant grant on it let any rostered player — including one who had
 	// already gone home — POST an empty body thirty seconds into a round and
@@ -1747,6 +1751,15 @@ func (s *Server) voidChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "voided"})
+}
+
+// clearScorecard puts a session that hasn't started back on the who-won flow.
+func (s *Server) clearScorecard(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ClearRotationScorecard(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 func (s *Server) reportChallenge(w http.ResponseWriter, r *http.Request) {

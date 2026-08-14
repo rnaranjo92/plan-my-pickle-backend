@@ -1574,7 +1574,16 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		return nil
 	}
 	mins := asInt(srow, "round_minutes")
-	bench := asStrSlice(srow, "bench") // players sitting out the current round
+	// Players sitting out the current round — DEDUPED, blanks dropped.
+	//
+	// A duplicated bench id is fatal downstream: the engine's guard refuses the
+	// whole layout, so the session stops with "inconsistent" and the only advice
+	// is to end the night and start again. And it is reachable — a mid-session
+	// "Sync from ladder" issues one insert per arrival while a concurrent advance
+	// is rebuilding the bench from the roster, so the same late arrival can be
+	// appended by both. Cleaning it here costs nothing and turns a bricked
+	// session into a normal round.
+	bench := dedupeIDs(asStrSlice(srow, "bench"))
 
 	rows, err := s.sb.Select("rotation_round_courts",
 		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+"&order=court.asc")
@@ -2099,4 +2108,20 @@ func (s *Service) rotationLoserMode(sessionID string) (engine.LoserMode, error) 
 	s.loserModeCache[sessionID] = mode
 	s.loserModeMu.Unlock()
 	return mode, nil
+}
+
+// dedupeIDs returns ids with blanks and repeats removed, order preserved.
+// Order matters: the bench is a queue, and who has waited longest decides who
+// comes on next.
+func dedupeIDs(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, id := range in {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }

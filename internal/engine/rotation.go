@@ -191,6 +191,47 @@ func SeedPlacedCourts(players []Seat, maxCourts int) ([]RotCourt, []string) {
 // ON, filling the bottom court. Up to 2 rotate per round (a losing pair's worth).
 // Returns the next courts and the next bench (FIFO). An empty bench reproduces
 // the classic no-bye behavior exactly.
+// LayoutOK reports whether a court layout is safe to move: contiguous courts
+// 1..n, four seats each, every seat filled, nobody seated twice.
+//
+// Exported and shared so a caller can ask the SAME question NextRound asks.
+// NextRoundFair has to: NextRound signals refusal by returning the layout
+// untouched, and a wrapper that mutates that "refusal" turns a deliberate
+// tripwire into a silent corruption — the service's sameLayout check sees a
+// difference, concludes the round advanced, and a duplicated or blank seat
+// runs for the rest of the night.
+func LayoutOK(courts []RotCourt) bool {
+	return layoutAndBenchOK(courts, nil)
+}
+
+// layoutAndBenchOK also validates the BENCH against the courts.
+//
+// The bench is not passive: the bye swap seats bench[:k] on the bottom court
+// every round, so a blank entry there becomes the same phantom seat the court
+// check exists to catch, and an entry already on court seats one person twice.
+// Validating courts alone let both through the front door.
+func layoutAndBenchOK(courts []RotCourt, bench []string) bool {
+	seen := make(map[string]bool, len(courts)*4+len(bench))
+	for i, c := range courts {
+		if c.Court != i+1 {
+			return false
+		}
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			if id == "" || seen[id] {
+				return false
+			}
+			seen[id] = true
+		}
+	}
+	for _, id := range bench {
+		if id == "" || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
 func NextRound(courts []RotCourt, results []RotResult, bench []string, mode LoserMode) ([]RotCourt, []string) {
 	n := len(courts)
 	// The movement math assumes contiguous courts 1..n with four real players
@@ -199,20 +240,13 @@ func NextRound(courts []RotCourt, results []RotResult, bench []string, mode Lose
 	// gone, and a single blank seat becomes a phantom that holds a slot all night
 	// while a real player is benched every round. Nothing reaches here that way
 	// today; this makes sure nothing ever can.
-	seen := make(map[string]bool, n*4)
-	for i, c := range courts {
-		if c.Court != i+1 {
-			return append([]RotCourt(nil), courts...), append([]string(nil), bench...)
-		}
-		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
-			// Blank seats become permanent phantoms; a duplicated id means one
-			// person on two courts and a real player silently missing. Neither
-			// self-heals — a duplicate survives every subsequent round.
-			if id == "" || seen[id] {
-				return append([]RotCourt(nil), courts...), append([]string(nil), bench...)
-			}
-			seen[id] = true
-		}
+	//
+	// Refusal is deliberately a NO-OP: returning the layout unchanged is the
+	// signal the service reads (sameLayout) to stop the session instead of
+	// letting a broken court run all night. Anything wrapping this must preserve
+	// that — see NextRoundFair.
+	if !layoutAndBenchOK(courts, bench) {
+		return append([]RotCourt(nil), courts...), append([]string(nil), bench...)
 	}
 	if n == 0 {
 		return nil, append([]string(nil), bench...)
@@ -349,6 +383,33 @@ func NextRoundFair(courts []RotCourt, results []RotResult, bench []string,
 	next, nextBench := NextRound(courts, results, bench, mode)
 	if len(nextBench) == 0 || len(next) == 0 {
 		return next, nextBench
+	}
+	// CRITICAL: never touch a layout NextRound REFUSED.
+	//
+	// Refusal is a no-op — NextRound hands the layout back unchanged — and the
+	// service detects that no-op (sameLayout) to stop a session whose courts are
+	// corrupt. Swapping seats on it makes the layout differ, so that tripwire
+	// never fires and a duplicated or blank seat runs for the rest of the night,
+	// with a player able to be seated AND on the bench at once. Fairness is a
+	// preference; the tripwire is a safety net, and a preference must not be
+	// allowed to disarm one.
+	if !LayoutOK(courts) || !LayoutOK(next) {
+		return next, nextBench
+	}
+	// A bench holding someone already seated (or a blank) is the same corruption
+	// arriving from the other side: swapping them in would seat one person twice.
+	seated := make(map[string]bool, len(next)*4)
+	for _, c := range next {
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			seated[id] = true
+		}
+	}
+	benchSeen := make(map[string]bool, len(nextBench))
+	for _, id := range nextBench {
+		if id == "" || seated[id] || benchSeen[id] {
+			return next, nextBench
+		}
+		benchSeen[id] = true
 	}
 	plays := func(id string) int {
 		if played == nil {

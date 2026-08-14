@@ -224,3 +224,113 @@ func TestFairRotation_UnknownPlayerCountsAsZero(t *testing.T) {
 		}
 	}
 }
+
+// The critical one from the ladder review. NextRound signals "this layout is
+// corrupt" by returning it UNCHANGED, and the service reads that no-op
+// (sameLayout) to stop the session. NextRoundFair used to swap seats on that
+// refusal — so the layout differed, the tripwire never fired, and a duplicated
+// or blank seat ran for the rest of the night with a player both seated and on
+// the bench.
+//
+// Fairness is a preference. The tripwire is a safety net. A preference must
+// never be able to disarm one.
+func TestFairRotation_NeverTouchesARefusedLayout(t *testing.T) {
+	bench := []string{"b1", "b2", "b3"}
+	played := map[string]int{"p1": 99, "p2": 99, "p3": 99, "p4": 99}
+	res := []RotResult{{Court: 1, Winner: "a"}}
+
+	cases := []struct {
+		name   string
+		courts []RotCourt
+	}{
+		{
+			// The exact shape the substitution remap can produce — the service's
+			// own comment measured it in 15,091 of 40,000 simulated nights.
+			name: "a player seated twice",
+			courts: []RotCourt{{
+				Court: 1,
+				TeamA: [2]string{"p1", "p2"},
+				TeamB: [2]string{"p1", "p4"}, // p1 twice
+			}},
+		},
+		{
+			name: "a blank seat",
+			courts: []RotCourt{{
+				Court: 1,
+				TeamA: [2]string{"p1", ""},
+				TeamB: [2]string{"p3", "p4"},
+			}},
+		},
+		{
+			name: "courts not contiguous from 1",
+			courts: []RotCourt{
+				{Court: 1, TeamA: [2]string{"p1", "p2"}, TeamB: [2]string{"p3", "p4"}},
+				{Court: 3, TeamA: [2]string{"p5", "p6"}, TeamB: [2]string{"p7", "p8"}},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		gotC, _ := NextRoundFair(c.courts, res, bench, LosersDown, played)
+		if len(gotC) != len(c.courts) {
+			t.Errorf("%s: court count changed (%d -> %d)", c.name, len(c.courts), len(gotC))
+			continue
+		}
+		for i := range c.courts {
+			if gotC[i] != c.courts[i] {
+				t.Errorf("%s: the fairness pass MUTATED a refused layout.\n"+
+					"  court %d before: %+v\n  court %d after : %+v\n"+
+					"  the service's sameLayout tripwire would no longer fire",
+					c.name, i+1, c.courts[i], i+1, gotC[i])
+			}
+		}
+	}
+}
+
+// The same corruption arriving from the other side: a bench holding somebody who
+// is already seated. Swapping them in seats one person twice.
+func TestFairRotation_RefusesABenchThatOverlapsTheCourts(t *testing.T) {
+	courts := []RotCourt{{
+		Court: 1,
+		TeamA: [2]string{"p1", "p2"},
+		TeamB: [2]string{"p3", "p4"},
+	}}
+	res := []RotResult{{Court: 1, Winner: "a"}}
+	// "p3" is on court AND on the bench.
+	bench := []string{"p3", "b2"}
+	played := map[string]int{"p1": 99, "p2": 99, "p3": 99, "p4": 99}
+
+	gotC, gotB := NextRoundFair(courts, res, bench, LosersDown, played)
+	wantC, wantB := NextRound(courts, res, bench, LosersDown)
+
+	for i := range wantC {
+		if gotC[i] != wantC[i] {
+			t.Fatalf("fairness ran on an overlapping bench: court %d %+v, want %+v",
+				i+1, gotC[i], wantC[i])
+		}
+	}
+	if len(gotB) != len(wantB) {
+		t.Fatalf("bench differs: %v vs %v", gotB, wantB)
+	}
+}
+
+// A blank id on the bench must not be swapped onto a court.
+func TestFairRotation_RefusesABlankOnTheBench(t *testing.T) {
+	courts := []RotCourt{{
+		Court: 1,
+		TeamA: [2]string{"p1", "p2"},
+		TeamB: [2]string{"p3", "p4"},
+	}}
+	res := []RotResult{{Court: 1, Winner: "a"}}
+	bench := []string{"", "b2"}
+	played := map[string]int{"p1": 99, "p2": 99, "p3": 99, "p4": 99}
+
+	gotC, _ := NextRoundFair(courts, res, bench, LosersDown, played)
+	for _, c := range gotC {
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			if id == "" {
+				t.Fatalf("a blank bench entry was seated: %+v", c)
+			}
+		}
+	}
+}

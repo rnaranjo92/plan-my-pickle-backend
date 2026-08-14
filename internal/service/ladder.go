@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -210,8 +211,68 @@ func (s *Service) RemoveLadderEntrant(entrantID string) error {
 	// them away silently (so the surviving counterparty learns why).
 	s.voidActiveChallengesForEntrant(entrantID,
 		"The other player left the ladder — your challenge was cancelled.")
-	_, err := s.sb.RPC("remove_ladder_entrant", map[string]any{"p_entrant": entrantID})
-	return err
+	// Read the player id BEFORE the delete — afterwards there's nothing to read,
+	// and we need it to undo the registration the roster sync created.
+	var playerID, divisionID string
+	if row, rerr := s.sb.SelectOne("ladder_entrants",
+		"id=eq."+store.Q(entrantID)+"&select=player_id,league_bracket_id"); rerr == nil &&
+		row != nil {
+		playerID = asStr(row, "player_id")
+		divisionID = asStr(row, "league_bracket_id")
+	}
+	if _, err := s.sb.RPC("remove_ladder_entrant",
+		map[string]any{"p_entrant": entrantID}); err != nil {
+		return err
+	}
+	// Undo the mirror. syncLadderRegistrations creates a registration for every
+	// entrant, so leaving it behind would keep someone on the Players tab after
+	// they'd been removed from the ladder — the button would look like it did
+	// nothing, and the two rosters would disagree again.
+	s.removeLadderMirrorRegistration(divisionID, playerID)
+	return nil
+}
+
+// removeLadderMirrorRegistration deletes the registration that the roster sync
+// created for a ladder entrant, on the league's ongoing event.
+//
+// Best-effort and deliberately narrow: it will NOT delete a registration that
+// has been paid. Money is a record, and a roster edit should not erase one —
+// an organizer removing a player who paid dues needs to see that payment, not
+// discover it vanished. Those stay, and can be dealt with in Finances.
+func (s *Service) removeLadderMirrorRegistration(divisionID, playerID string) {
+	if divisionID == "" || playerID == "" {
+		return
+	}
+	leagueID, err := s.LeagueIDOfDivision(divisionID)
+	if err != nil || leagueID == "" {
+		return
+	}
+	rows, err := s.sb.Select("events",
+		"league_id=eq."+store.Q(leagueID)+"&select=id&limit=5")
+	if err != nil {
+		return
+	}
+	for _, ev := range rows {
+		eid := asStr(ev, "id")
+		if eid == "" {
+			continue
+		}
+		reg, rerr := s.sb.SelectOne("registrations",
+			"event_id=eq."+store.Q(eid)+"&player_id=eq."+store.Q(playerID)+
+				"&select=id,payment_status")
+		if rerr != nil || reg == nil {
+			continue
+		}
+		if st := strings.ToLower(asStr(reg, "payment_status")); st == "paid" {
+			log.Printf("ladder: kept PAID registration %s after removing entrant",
+				asStr(reg, "id"))
+			continue
+		}
+		if derr := s.sb.Delete("registrations",
+			"id=eq."+store.Q(asStr(reg, "id"))); derr != nil {
+			log.Printf("ladder: could not remove mirrored registration: %v", derr)
+		}
+	}
 }
 
 // RecordLadderResult records a match between two entrants and applies the

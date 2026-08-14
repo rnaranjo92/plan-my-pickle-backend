@@ -191,6 +191,10 @@ type Event struct {
 	// auto-enroll as the league coach's students). Resolved on GetEvent from the
 	// league; drives a "Coach-led" badge in the header. Not a stored event column.
 	CoachLed bool `json:"coachLed,omitempty"`
+	// RotationLadder narrows LadderLeague: true only for the live "up and down
+	// the river" format. Both formats share the event shell, but they are
+	// different games — the client names the tab and picks the panel from this.
+	RotationLadder bool `json:"rotationLadder,omitempty"`
 	// DistanceKm is set only in Nearby results — km from the requester.
 	DistanceKm *float64 `json:"distanceKm,omitempty"`
 	// ScheduleBreaks are organizer-defined blocked time ranges (e.g. lunch) the

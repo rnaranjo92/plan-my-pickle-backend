@@ -748,9 +748,13 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 	// Ladders always get one, recurring or not: a ladder has no sessions of its
 	// own, so this event is the only thing its feed, RSVPs and roster can hang
 	// off — see ensurePerpetualLeagueEvent.
-	if detail.League.Recurs ||
-		(detail.League.LeagueType == "ladder" &&
-			detail.League.LadderFormat != "rotation") {
+	//
+	// ROTATION ladders included. They were excluded because their play lives in
+	// their own live sessions, which is true — but the event was never about the
+	// play. It is what Feed, Players, Finances, Info and Admin hang off, and
+	// without one a rotation ladder had none of them: a different, thinner screen
+	// than every other league, for no reason the organizer could see.
+	if detail.League.Recurs || detail.League.LeagueType == "ladder" {
 		if eid := s.ensurePerpetualLeagueEvent(detail.League, brackets, events); eid != nil {
 			detail.League.OngoingEventID = eid
 		}

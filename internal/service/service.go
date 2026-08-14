@@ -1242,8 +1242,14 @@ func (s *Service) GetEvent(id string) (model.Event, error) {
 		if lg, _ := s.sb.SelectOne("leagues",
 			"id=eq."+store.Q(*ev.LeagueID)+
 				"&select=league_type,ladder_format"); lg != nil {
-			ev.LadderLeague = asStr(lg, "league_type") == "ladder" &&
-				asStr(lg, "ladder_format") != "rotation"
+			// Both ladder formats. Rotation was excluded here too, which would
+			// have left a rotation ladder in the event shell with no ladder tab
+			// at all — the shell it now opens in, minus the one thing it is for.
+			// The panel itself branches on the format (LadderPanel), so this only
+			// needs to answer "is this event's league a ladder".
+			ev.LadderLeague = asStr(lg, "league_type") == "ladder"
+			ev.RotationLadder = ev.LadderLeague &&
+				asStr(lg, "ladder_format") == "rotation"
 		}
 	}
 	// Organizer display name for the tournament-info tab (best-effort — a lookup

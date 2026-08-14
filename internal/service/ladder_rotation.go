@@ -1842,6 +1842,22 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	// keeps running slightly unfairly beats a night that stops. Missing players
 	// count as zero, which reads as "owed court time" — the safe direction.
 	played := s.rotationPlayCounts(sessionID)
+	// Count the round being closed RIGHT NOW. games is tallied by the advance RPC
+	// that runs after this, so a read here misses the round just played — every
+	// seated player looks one game short. In steady state that made the bench
+	// player and the on-court player compare EQUAL, the loop broke on
+	// `plays(waiting) >= plays(onCourt)`, and no swap happened at all: the
+	// feature quietly did nothing on exactly the nights it was built for.
+	if played == nil {
+		played = map[string]int{}
+	}
+	for _, c := range cur {
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			if id != "" {
+				played[id]++
+			}
+		}
+	}
 	nextCourts, nextBench := engine.NextRoundFair(cur, results, bench, mode, played)
 	// A no-op means engine.NextRound rejected its input (a blank or duplicated
 	// seat). It returns the courts unchanged, which the RPC would happily write

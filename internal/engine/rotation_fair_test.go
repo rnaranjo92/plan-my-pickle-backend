@@ -334,3 +334,70 @@ func TestFairRotation_RefusesABlankOnTheBench(t *testing.T) {
 		}
 	}
 }
+
+// The busiest player must go to the BACK of the queue.
+//
+// The swap used to write them into the slot the incoming player vacated, which
+// on a FIFO bench is the FRONT — so NextRound's bye rotation seated them again
+// on the very next round. They sat exactly one round while somebody who had
+// waited three stayed put: the opposite of equal court time, and it would have
+// read as the feature simply not working.
+func TestFairRotation_SwappedOffPlayerGoesToTheBackOfTheQueue(t *testing.T) {
+	courts := []RotCourt{{
+		Court: 1,
+		TeamA: [2]string{"busy1", "busy2"},
+		TeamB: [2]string{"busy3", "busy4"},
+	}}
+	res := []RotResult{{Court: 1, Winner: "a"}}
+	// w1/w2 have waited longest; w3 is behind them.
+	bench := []string{"w1", "w2", "w3"}
+	played := map[string]int{
+		"busy1": 20, "busy2": 20, "busy3": 20, "busy4": 20,
+		"w1": 1, "w2": 1, "w3": 5,
+	}
+
+	plainC, plainB := NextRound(courts, res, bench, LosersDown)
+	gotC, gotBench := NextRoundFair(courts, res, bench, LosersDown, played)
+
+	if len(gotBench) == 0 {
+		t.Fatal("bench emptied")
+	}
+	// NOT an assertion about the front of the queue: NextRound's own bye swap
+	// puts the BOTTOM COURT'S losers at the front, which is the river working
+	// as designed. What belongs to the fairness pass is the player IT removed,
+	// and that one must land at the BACK.
+	seatedPlain := map[string]bool{}
+	for _, c := range plainC {
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			seatedPlain[id] = true
+		}
+	}
+	seatedFair := map[string]bool{}
+	for _, c := range gotC {
+		for _, id := range []string{c.TeamA[0], c.TeamA[1], c.TeamB[0], c.TeamB[1]} {
+			seatedFair[id] = true
+		}
+	}
+	// Somebody the plain river would have kept on court is now benched by the
+	// fairness pass — and they are LAST, behind everyone already waiting.
+	var removed string
+	for id := range seatedPlain {
+		if !seatedFair[id] {
+			removed = id
+			break
+		}
+	}
+	if removed == "" {
+		t.Fatalf("the fairness pass removed nobody (bench %v)", gotBench)
+	}
+	if last := gotBench[len(gotBench)-1]; last != removed {
+		t.Fatalf("the fairness pass benched %q but the back of the queue is %q "+
+			"(bench %v) — a busy player ahead of someone who waited longer "+
+			"would be seated again next round", removed, last, gotBench)
+	}
+	// And the players it brought on really are on court.
+	if !seatedFair["w1"] {
+		t.Errorf("the longest-waiting player was not seated: courts %v", gotC)
+	}
+	_ = plainB
+}

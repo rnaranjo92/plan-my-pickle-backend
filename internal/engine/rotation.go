@@ -473,10 +473,12 @@ func NextRoundFair(courts []RotCourt, results []RotResult, bench []string,
 	}
 
 	swaps := min2(len(nextBench))
+	tookOff := make([]string, 0, swaps)    // most-played, heading to the bench
+	cameOn := make(map[string]bool, swaps) // longest-waiting, now seated
 	for i := 0; i < swaps && i < len(seats) && i < len(benchOrder); i++ {
 		seat := seats[i]
-		bi := benchOrder[i]
-		onCourt, waiting := seat.id, nextBench[bi]
+		waiting := nextBench[benchOrder[i]]
+		onCourt := seat.id
 		// Only swap while it actually narrows the gap. Equal counts are left
 		// alone: swapping them churns the courts every round for no fairness
 		// gain, and churn is what makes a night feel random.
@@ -484,7 +486,27 @@ func NextRoundFair(courts []RotCourt, results []RotResult, bench []string,
 			break
 		}
 		setSeat(seat, waiting)
-		nextBench[bi] = onCourt
+		tookOff = append(tookOff, onCourt)
+		cameOn[waiting] = true
 	}
-	return next, nextBench
+	if len(tookOff) == 0 {
+		return next, nextBench
+	}
+	// The player coming OFF goes to the BACK of the queue, not into the slot the
+	// incoming player vacated.
+	//
+	// Writing them into that slot put the busiest player at the FRONT of a FIFO
+	// bench, so NextRound's bye rotation seated them again on the very next
+	// round — they sat exactly one round while somebody who had waited three
+	// stayed put. That is the opposite of equal court time, quietly, and it
+	// would have looked like the feature simply not working.
+	rebuilt := make([]string, 0, len(nextBench)+len(tookOff))
+	for _, id := range nextBench {
+		if cameOn[id] {
+			continue // now on court
+		}
+		rebuilt = append(rebuilt, id)
+	}
+	rebuilt = append(rebuilt, tookOff...)
+	return next, rebuilt
 }

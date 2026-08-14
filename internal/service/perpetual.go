@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -695,6 +696,20 @@ func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []mod
 	for i := range events {
 		if events[i].Perpetual {
 			id := events[i].ID
+			// Widen an already-provisioned rotation ladder's event to match its
+			// sessions. Events provisioned before the court count was derived
+			// have num_courts = 1, and without this they'd keep offering a single
+			// court chip forever — only a delete-and-recreate would fix a ladder
+			// that is otherwise fine. Only ever RAISES it, so an organizer who
+			// deliberately set more courts than any session uses keeps theirs.
+			if league.LeagueType == "ladder" && league.LadderFormat == "rotation" {
+				if n := s.maxRotationCourts(brackets); n > events[i].NumCourts {
+					if _, err := s.sb.Update("events", "id=eq."+store.Q(id),
+						map[string]any{"num_courts": n}); err != nil {
+						log.Printf("perpetual: could not widen courts on %s: %v", id, err)
+					}
+				}
+			}
 			return &id
 		}
 	}
@@ -760,6 +775,36 @@ func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []mod
 	return &id
 }
 
+// maxRotationCourts returns the widest court count across a ladder's rotation
+// sessions, or 0 when there are none yet. Best-effort: a failure here just
+// leaves the caller's default alone.
+func (s *Service) maxRotationCourts(brackets []model.LeagueBracket) int {
+	if len(brackets) == 0 {
+		return 0
+	}
+	ids := make([]string, 0, len(brackets))
+	for _, b := range brackets {
+		if b.ID != "" {
+			ids = append(ids, b.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0
+	}
+	rows, err := s.sb.Select("rotation_sessions",
+		"league_bracket_id="+store.In(ids)+"&select=court_count")
+	if err != nil {
+		return 0
+	}
+	max := 0
+	for _, r := range rows {
+		if n := asInt(r, "court_count"); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
 // provisionPerpetualLeagueEvent creates the single ongoing event for a recurring
 // league that has none — from the league's divisions + config + members — so the
 // league opens straight into the tournament interface. Serialized + re-checked
@@ -797,6 +842,18 @@ func (s *Service) provisionPerpetualLeagueEvent(league model.League, brackets []
 		startsAt = *league.RecurStartAt
 	}
 	courts := 1
+	// A ROTATION ladder carries its court count on the SESSION, not the league —
+	// that's where the organizer sets it — so league.CourtCount is nil and the
+	// event was being born with a single court. The division then offered one
+	// court chip while the session ran six, which is the event contradicting the
+	// thing it exists to describe. Take the widest session as the event's court
+	// count.
+	if league.LeagueType == "ladder" && league.LadderFormat == "rotation" &&
+		(league.CourtCount == nil || *league.CourtCount <= 0) {
+		if n := s.maxRotationCourts(brackets); n > courts {
+			courts = n
+		}
+	}
 	if league.CourtCount != nil && *league.CourtCount > 0 {
 		courts = *league.CourtCount
 	}

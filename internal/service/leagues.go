@@ -757,6 +757,13 @@ func (s *Service) GetLeague(id string) (model.LeagueDetail, error) {
 	if detail.League.Recurs || detail.League.LeagueType == "ladder" {
 		if eid := s.ensurePerpetualLeagueEvent(detail.League, brackets, events); eid != nil {
 			detail.League.OngoingEventID = eid
+			// A ladder keeps its roster in ladder_entrants, but the Players tab,
+			// approvals, check-in and dues all read registrations. Mirror one onto
+			// the other so the ladder has a single roster instead of two that
+			// disagree. Idempotent, best-effort, ladders only.
+			if detail.League.LeagueType == "ladder" {
+				s.syncLadderRegistrations(*eid, brackets)
+			}
 		}
 	}
 	return detail, nil

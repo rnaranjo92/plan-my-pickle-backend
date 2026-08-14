@@ -1610,7 +1610,18 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	// rather than read from a who-won tap. Falls back to the stored winner when
 	// no scores were entered (or the scorecard migration hasn't run).
 	scoreOf := map[string]int{} // rotation_player_id -> this round's score
-	if s.rotationScoresReady() {
+	// Ask with the failure kept. A probe that never got an answer used to read as
+	// "the migration hasn't run", skipping the whole block below — the same
+	// coin-flip advance the failed-read guard prevents, just one level up and
+	// cached for the probe cooldown, so it could cover several rounds rather than
+	// one. Hold the round instead.
+	scoresReady, probeErr := s.columnReadyErr("rotation_round_scores", "id")
+	if probeErr != nil {
+		return fmt.Errorf("%w: couldn't confirm this round's scores were "+
+			"readable, so the round was held rather than advanced by the "+
+			"default winner", ErrUpstream)
+	}
+	if scoresReady {
 		srows, serr := s.sb.Select("rotation_round_scores",
 			"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+
 				"&select=rotation_player_id,score")

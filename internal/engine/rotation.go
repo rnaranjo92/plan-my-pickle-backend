@@ -179,18 +179,6 @@ func SeedPlacedCourts(players []Seat, maxCourts int) ([]RotCourt, []string) {
 	return courts, append([]string(nil), pool[next:]...)
 }
 
-// NextRound applies one round's results and returns the next round's courts.
-// Movement: winners go up a court, losers go down; court 1 winners and the last
-// court's losers stay. Each destination court's four players re-pair so nobody
-// keeps their partner (the "split + new partner" rule): the two who arrive from
-// BELOW (winners moving up) each pair with one who arrives from ABOVE (losers
-// moving down). Courts must be contiguous 1..N with exactly 4 players each.
-//
-// BYES: when `bench` is non-empty, the bottom court's losers step OFF (to the
-// back of the bench) and the same number of longest-waiting bench players step
-// ON, filling the bottom court. Up to 2 rotate per round (a losing pair's worth).
-// Returns the next courts and the next bench (FIFO). An empty bench reproduces
-// the classic no-bye behavior exactly.
 // LayoutOK reports whether a court layout is safe to move: contiguous courts
 // 1..n, four seats each, every seat filled, nobody seated twice.
 //
@@ -232,6 +220,18 @@ func layoutAndBenchOK(courts []RotCourt, bench []string) bool {
 	return true
 }
 
+// NextRound applies one round's results and returns the next round's courts.
+// Movement: winners go up a court, losers go down; court 1 winners and the last
+// court's losers stay. Each destination court's four players re-pair so nobody
+// keeps their partner (the "split + new partner" rule): the two who arrive from
+// BELOW (winners moving up) each pair with one who arrives from ABOVE (losers
+// moving down). Courts must be contiguous 1..N with exactly 4 players each.
+//
+// BYES: when `bench` is non-empty, the bottom court's losers step OFF (to the
+// back of the bench) and the same number of longest-waiting bench players step
+// ON, filling the bottom court. Up to 2 rotate per round (a losing pair's worth).
+// Returns the next courts and the next bench (FIFO). An empty bench reproduces
+// the classic no-bye behavior exactly.
 func NextRound(courts []RotCourt, results []RotResult, bench []string, mode LoserMode) ([]RotCourt, []string) {
 	n := len(courts)
 	// The movement math assumes contiguous courts 1..n with four real players

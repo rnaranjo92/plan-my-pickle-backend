@@ -362,6 +362,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /ladder-challenges/{id}/accept", requireAuth(s.acceptChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/decline", requireAuth(s.declineChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/cancel", requireAuth(s.cancelChallenge))
+	// Organizer escape hatch — the only way to kill an ACCEPTED challenge early.
+	mux.HandleFunc("POST /ladder-challenges/{id}/void", requireAuth(s.voidChallenge))
 	mux.HandleFunc("POST /ladder-challenges/{id}/report", requireAuth(s.reportChallenge))
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/join", requireAuth(s.joinLadder))
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/seed-test",
@@ -1735,6 +1737,16 @@ func (s *Server) cancelChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+// voidChallenge lets the league owner kill a pending OR accepted challenge with
+// no position change (injury, a player who left, a match that can't be played).
+func (s *Server) voidChallenge(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.VoidChallenge(userID(r), r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "voided"})
 }
 
 func (s *Server) reportChallenge(w http.ResponseWriter, r *http.Request) {

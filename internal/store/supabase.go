@@ -8,6 +8,7 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,9 +22,34 @@ import (
 // dbError logs the raw PostgREST response server-side and returns a sanitized
 // error. PostgREST bodies leak table/column/constraint details, so only the
 // status code is surfaced to callers.
+// StatusError is a non-2xx response from PostgREST, carrying the status so
+// callers can tell an ANSWER from a FAILURE. A 4xx means the database
+// understood us and said no (bad filter, missing column); a 5xx or a transport
+// error means we never got an answer at all. Most callers don't care — but code
+// that probes the schema must not read "the request failed" as "the column
+// isn't there".
+type StatusError struct {
+	Op, Table string
+	Status    int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("supabase %s: status %d", e.Op, e.Status)
+}
+
+// StatusOf returns the HTTP status behind err, or 0 when err didn't come from a
+// server response (a network failure, a decode failure, or any other error).
+func StatusOf(err error) int {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status
+	}
+	return 0
+}
+
 func dbError(op, table string, status int, body []byte) error {
 	log.Printf("supabase %s on %s: status=%d body=%s", op, table, status, body)
-	return fmt.Errorf("supabase %s: status %d", op, status)
+	return &StatusError{Op: op, Table: table, Status: status}
 }
 
 func dbDecodeError(op, table string, body []byte) error {

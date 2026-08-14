@@ -310,6 +310,57 @@ func (s *Service) CancelChallenge(userID, challengeID string) error {
 	return nil
 }
 
+// VoidChallenge kills a challenge with NO position change. Owner only.
+//
+// This is the organizer's escape hatch, and it exists because an ACCEPTED
+// challenge previously had no manual exit at all: Cancel and Decline both only
+// match `status=eq.pending`, so once two players accepted, the only ways out
+// were playing it or waiting for the play_by sweep — days later. An injury, a
+// player leaving the league, or two people who simply can't find a court froze
+// BOTH of them: `status=in.(pending,accepted)` counts toward each side's active
+// challenge limit, so neither could issue or receive another one meanwhile.
+//
+// Deliberately owner-only. Letting the challenger back out of an accepted
+// challenge would be a way to dodge a loss; an organizer voiding it is a
+// judgement call with a name attached to it.
+func (s *Service) VoidChallenge(userID, challengeID string) error {
+	ch, party, err := s.authorizeChallenge(userID, challengeID)
+	if err != nil {
+		return err
+	}
+	if party != "owner" {
+		return ErrForbidden
+	}
+	// Claim atomically against BOTH live states — the status filter means a
+	// challenge that got played, declined or swept a moment ago is a conflict
+	// rather than a silent no-op that reports success to the organizer.
+	updated, err := s.sb.Update("ladder_challenges",
+		"id=eq."+store.Q(challengeID)+"&status=in.(pending,accepted)",
+		map[string]any{
+			"status":      "voided",
+			"resolved_at": now(),
+			// Clearing play_by is what actually keeps the promise below.
+			// IssueChallenge's re-challenge cooldown fires on
+			// `voided AND play_by IS NOT NULL` — deliberately, to catch the
+			// accept-stall-recycle loop a player can use to duck a match. But
+			// play_by is set the moment a challenge is ACCEPTED, so without this
+			// an organizer voiding an accepted challenge would trip the
+			// anti-ducking penalty and block the pair for a day. An organizer
+			// void is the opposite of ducking: a human deciding the match
+			// couldn't be played. No deadline survives that, so none is stored.
+			"play_by": nil,
+		})
+	if err != nil {
+		return err
+	}
+	if len(updated) == 0 {
+		return ErrChallengeConflict
+	}
+	s.notifyBoth(ch, "An organizer voided that ladder challenge — no position "+
+		"change. You're both free to challenge again.")
+	return nil
+}
+
 // DeclineChallenge concedes (the challenger wins by concession). Challenged (or
 // owner) only. Atomic via resolve_ladder_challenge (claim + reorder in one tx).
 func (s *Service) DeclineChallenge(userID, challengeID string) error {

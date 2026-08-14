@@ -92,10 +92,25 @@ type Service struct {
 // a freshly-run migration is picked up without a restart.
 const columnProbeCooldown = 2 * time.Minute
 
-// columnReady reports whether table.column exists (migration applied). Probed via
-// a cheap one-column select; cached only on success and re-probed while false, so
-// a transient error or pre-migration state never permanently disables a feature.
+// columnReady reports whether table.column exists (migration applied). Probed
+// via a cheap one-column select; cached only on success and re-probed while
+// false, so a transient error or pre-migration state never permanently disables
+// a feature.
+//
+// It answers false when it COULDN'T tell, which is right for the display paths
+// that use it (show the feature as unavailable rather than fail the page). Any
+// path where "couldn't tell" must not be treated as "not there" — anything that
+// would otherwise fall back to a default and change real standings — should
+// call [Service.columnReadyErr] and stop instead.
 func (s *Service) columnReady(table, column string) bool {
+	ready, _ := s.columnReadyErr(table, column)
+	return ready
+}
+
+// columnReadyErr is columnReady with the failure kept. A non-nil error means the
+// probe never got an answer (5xx, network, decode) — as opposed to a definitive
+// "that column does not exist", which returns (false, nil).
+func (s *Service) columnReadyErr(table, column string) (bool, error) {
 	key := table + "." + column
 	s.colProbeMu.Lock()
 	defer s.colProbeMu.Unlock()
@@ -106,20 +121,29 @@ func (s *Service) columnReady(table, column string) bool {
 		s.colProbeNeg = map[string]time.Time{}
 	}
 	if s.colProbe[key] {
-		return true
+		return true, nil
 	}
 	// Recently probed as missing → don't re-hit the DB (avoids 42703 log spam on
 	// hot paths when a migration hasn't been applied yet).
 	if last, ok := s.colProbeNeg[key]; ok && time.Since(last) < columnProbeCooldown {
-		return false
+		return false, nil
 	}
-	if _, err := s.sb.SelectOne(table, "select="+column+"&limit=1"); err == nil {
+	_, err := s.sb.SelectOne(table, "select="+column+"&limit=1")
+	if err == nil {
 		s.colProbe[key] = true
 		delete(s.colProbeNeg, key)
-	} else {
-		s.colProbeNeg[key] = time.Now()
+		return true, nil
 	}
-	return s.colProbe[key]
+	// Only a 4xx is an ANSWER about the schema ("no such column" is a 400 with
+	// PostgREST code 42703). A 5xx or a network failure means we never learned
+	// anything — so don't record it as "missing", or one blip poisons the cache
+	// for the whole cooldown and every caller spends two minutes believing a
+	// migration that HAS run hasn't.
+	if st := store.StatusOf(err); st >= 400 && st < 500 {
+		s.colProbeNeg[key] = time.Now()
+		return false, nil
+	}
+	return false, err
 }
 
 func New() *Service {

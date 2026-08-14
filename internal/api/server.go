@@ -174,6 +174,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}", optionalAuth(s.getEvent))
 	mux.HandleFunc("GET /events/{id}/brackets", s.getBrackets)
 	mux.HandleFunc("GET /events/{id}/standings", s.standings)
+	mux.HandleFunc("GET /events/{id}/session-days", s.sessionDays)
 	mux.HandleFunc("GET /events/{id}/rounds", s.rounds)
 	mux.HandleFunc("GET /events/{id}/matches", s.eventMatches)
 	// Public iCal court-block feed a facility subscribes to (CourtReserve/Skedda/
@@ -4459,12 +4460,41 @@ func (s *Server) setStartTime(w http.ResponseWriter, r *http.Request) {
 func (s *Server) standings(w http.ResponseWriter, r *http.Request) {
 	byWins := r.URL.Query().Get("by") != "points"
 	bracketID := r.URL.Query().Get("bracketId")
-	st, err := s.svc.Standings(r.PathValue("id"), bracketID, byWins)
+	// since/until (RFC3339, half-open) scope the board to games PLAYED in that
+	// window — the live board asks for today, Past Leaderboards asks for one
+	// past day. Absent, this is the all-time/season board exactly as before.
+	since := strings.TrimSpace(r.URL.Query().Get("since"))
+	until := strings.TrimSpace(r.URL.Query().Get("until"))
+	var st []model.Standing
+	var err error
+	if since != "" || until != "" {
+		st, err = s.svc.StandingsBetween(r.PathValue("id"), bracketID, byWins, since, until)
+	} else {
+		st, err = s.svc.Standings(r.PathValue("id"), bracketID, byWins)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// sessionDays lists the days this event actually played, newest first, for the
+// Past Leaderboards picker. tzOffset is the caller's UTC offset in minutes so a
+// day means THEIR day — an evening session on the US west coast belongs to that
+// evening, not to the next UTC date.
+func (s *Server) sessionDays(w http.ResponseWriter, r *http.Request) {
+	offset, _ := strconv.Atoi(r.URL.Query().Get("tzOffset"))
+	if offset < -14*60 || offset > 14*60 {
+		offset = 0 // outside any real timezone — treat as UTC rather than skew a day
+	}
+	days, err := s.svc.SessionDays(
+		r.PathValue("id"), r.URL.Query().Get("bracketId"), offset)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, days)
 }
 
 func (s *Server) recordScore(w http.ResponseWriter, r *http.Request) {

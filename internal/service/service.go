@@ -12849,6 +12849,14 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 	// the same season window when one is active.
 	h2h, _ := s.headToHead(eventID, bracketID, since)
 
+	return rankStandings(out, h2h, byWins), nil
+}
+
+// rankStandings applies the USAP ordering to a box score. Extracted so the
+// all-time board and a DAY/season window rank identically — a leaderboard that
+// broke ties differently depending on which window you were looking at would be
+// a different leaderboard, not the same one filtered.
+func rankStandings(out []model.Standing, h2h map[string]map[string]int, byWins bool) []model.Standing {
 	// h2hCmp: +1 if a beat b head-to-head more, -1 if b did, 0 if even/none.
 	// Pairwise (resolves the common 2-way tie; multi-way groups fall through).
 	h2hCmp := func(a, b model.Standing) int {
@@ -12907,7 +12915,7 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 			}
 			i = j
 		}
-		return out, nil
+		return out
 	}
 	// Points leaderboard (a user view, not USAP standings): points first.
 	sort.SliceStable(out, func(i, j int) bool {
@@ -12928,7 +12936,7 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 		// between polls (the RPC returns rows unordered).
 		return a.PlayerID < b.PlayerID
 	})
-	return out, nil
+	return out
 }
 
 // headToHead returns wins[a][b] = the number of completed pool matches in which

@@ -691,19 +691,30 @@ func (s *Service) ensurePerpetualLeagueEvent(league model.League, brackets []mod
 	if lt := league.LeagueType; lt == "team" || lt == "flex" {
 		return nil
 	}
-	// ROTATION ladders are excluded for now. They already have their own live
-	// sessions (rotation_sessions) and are in active use, so quietly creating an
-	// extra event under them risks disturbing something that works. Challenge
-	// ladders — which have no sessions at all — are the case this is for.
-	if league.LeagueType == "ladder" && league.LadderFormat == "rotation" {
-		return nil
-	}
 	// Already adopted → return the perpetual event.
 	for i := range events {
 		if events[i].Perpetual {
 			id := events[i].ID
 			return &id
 		}
+	}
+	// ROTATION ladders get one too, but they PROVISION rather than ADOPT.
+	//
+	// They used to be excluded outright, which is why a rotation ladder still
+	// opened the thin league shell while its own caller and the client redirect
+	// both said every ladder opens in the event shell — the intent landed in two
+	// places out of three. The event was never about the play (that lives in
+	// rotation_sessions, keyed off the division, and is untouched by any of
+	// this); it is what Feed, Players, Media, Finances, Info and Admin hang off.
+	//
+	// Skipping the adopt branch below is deliberate. That branch retitles the
+	// event it adopts to the league's name and clears its recurrence — fine for
+	// a recurring league whose head event IS the league, but a rotation ladder
+	// has no such head, so anything it found there would be an unrelated event
+	// getting silently renamed. provision re-checks under a lock and reuses an
+	// existing league event without retitling it, so it stays idempotent.
+	if league.LeagueType == "ladder" && league.LadderFormat == "rotation" {
+		return s.provisionPerpetualLeagueEvent(league, brackets)
 	}
 	// Adopt the "current session": the series head (the event the recurrence was
 	// set on), else the earliest event.

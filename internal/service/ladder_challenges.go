@@ -360,14 +360,36 @@ func (s *Service) ReportChallenge(userID, challengeID string, req model.ReportCh
 	// The challenged player reporting from pending is fine: they played it, which
 	// is acceptance in every sense that matters. So is the organizer recording a
 	// result they watched.
-	if asStr(ch, "status") == "pending" && party == "challenger" {
-		return errors.New("they haven't accepted this challenge yet — a result " +
-			"can only be reported once it's accepted")
+	// A CHALLENGER may not report a result the other player never agreed to.
+	//
+	// 'voided' has to be covered by the same rule, not just 'pending'. A void is
+	// written by voidActiveChallengesForEntrant whenever a reorder makes the
+	// positions stale — i.e. exactly the "this challenge is no longer valid"
+	// case — so a challenge that was voided while still PENDING carries status
+	// 'voided', and a guard that only looked at 'pending' let the challenger
+	// claim it anyway: no match, no acceptance, and the resolver leapfrogs them
+	// into the other player's rung with re-validation switched off.
+	if party == "challenger" {
+		switch asStr(ch, "status") {
+		case "pending":
+			return errors.New("they haven't accepted this challenge yet — a " +
+				"result can only be reported once it's accepted")
+		case "voided":
+			return errors.New("this challenge was cancelled — issue a new one " +
+				"rather than reporting a result on it")
+		}
 	}
 	// Report can claim from pending/accepted, and can even reverse a stale void
-	// (a real result should beat a play_by timeout).
+	// (a real result should beat a play_by timeout) — but only for the CHALLENGED
+	// player or the organizer, per the guard above.
+	//
+	// Re-validation is ON: the resolver recomputes the leapfrog from LIVE
+	// positions, so an old 2-rung challenge cashed after a party has climbed
+	// would otherwise apply a 9-rung jump and shift every uninvolved player in
+	// between. The range is the division's own.
 	if _, err := s.resolveChallenge(challengeID, []string{"pending", "accepted", "voided"},
-		"completed", side, true, strings.TrimSpace(req.Score), false, 0); err != nil {
+		"completed", side, true, strings.TrimSpace(req.Score), true,
+		s.ladderRangeForDivision(asStr(ch, "league_bracket_id"))); err != nil {
 		return err
 	}
 	s.notifyBoth(ch, "Your ladder challenge result was recorded")
@@ -669,9 +691,40 @@ func (s *Service) JoinLadder(userID, div string) (model.LadderEntrant, error) {
 	if strings.TrimSpace(div) == "" {
 		return model.LadderEntrant{}, errors.New("division is required")
 	}
-	// The division must exist (resolving its league owner proves it).
-	if _, err := s.LadderOwner(div); err != nil {
+	// Existence is not authorization.
+	//
+	// This only proved the bracket row was real, so any authenticated holder of a
+	// league_brackets uuid could insert themselves at the bottom of ANY ladder —
+	// including a private league's. And a ladder_entrants row counts as league
+	// participation elsewhere, so joining also handed them read access to that
+	// league's roster and media.
+	//
+	// Self-join is still the point of a PUBLIC ladder (the QR sign-up sheet), so
+	// listed leagues stay open. A private one requires being invited, already
+	// playing in it, or owning it.
+	brow, err := s.sb.SelectOne("league_brackets",
+		"id=eq."+store.Q(div)+"&select=league_id")
+	if err != nil {
 		return model.LadderEntrant{}, err
+	}
+	if brow == nil {
+		return model.LadderEntrant{}, ErrNotFound
+	}
+	leagueID := asStr(brow, "league_id")
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=owner_id,listed")
+	if err != nil {
+		return model.LadderEntrant{}, err
+	}
+	if lg == nil {
+		return model.LadderEntrant{}, ErrNotFound
+	}
+	if !asBool(lg, "listed") && asStr(lg, "owner_id") != userID {
+		email := s.emailOf(userID)
+		part, _ := s.IsLeagueParticipant(leagueID, userID, email)
+		if !part && !s.isActiveLeagueMember(leagueID, userID, email) {
+			return model.LadderEntrant{}, ErrForbidden
+		}
 	}
 	pid := s.ensurePlayerForUser(userID)
 	if pid == "" {

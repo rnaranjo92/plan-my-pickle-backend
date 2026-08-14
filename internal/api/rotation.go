@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -324,7 +325,22 @@ func (s *Server) reportRotationCourt(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID := r.PathValue("id")
 	owner, oerr := s.svc.OwnerOfRotationSession(sessionID)
-	isOwner := oerr == nil && owner != "" && owner == userID(r)
+	// A read failure is NOT "you're not the owner". Folding oerr into isOwner
+	// silently demoted the real organizer on a transient blip, so their taps
+	// started coming back "you can only report the result for your own court"
+	// mid-night with nothing to explain it.
+	if oerr != nil && !errors.Is(oerr, service.ErrNotFound) {
+		status(w, fmt.Errorf("%w: couldn't check who owns this session",
+			service.ErrUpstream))
+		return
+	}
+	// Super users too. rotationSessionActor already admits them, but this
+	// recomputed ownership without the grant — so the support account saw the
+	// who-won buttons on every court (the client keys them on owner OR super
+	// user) and every tap 400'd. On a tied court in scorecard mode that is a
+	// deadlock: /report is the only tie-break control, and advance refuses a tie.
+	isOwner := (owner != "" && owner == userID(r)) ||
+		(isSuperUser(userEmail(r)) && superUserAllowed(r))
 	if err := s.svc.ReportRotationCourt(sessionID, userID(r), isOwner, req); err != nil {
 		status(w, err)
 		return

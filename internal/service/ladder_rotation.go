@@ -241,16 +241,25 @@ func teamPoints(scoreOf map[string]int, team [2]string) (int, bool) {
 // without it the final round of a scorecard session recorded zero wins (points
 // counted, wins didn't — and wins is the tiebreak). Returns the derived winners
 // by court so the caller can reuse them. Best-effort.
-func (s *Service) persistScorecardWinners(sessionID string, round int) map[int]string {
+func (s *Service) persistScorecardWinners(sessionID string, round int) (map[int]string, error) {
 	out := map[int]string{}
 	if !s.rotationScoresReady() {
-		return out
+		return out, nil
 	}
 	srows, serr := s.sb.SelectAll("rotation_round_scores",
 		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+
 			"&select=rotation_player_id,score")
-	if serr != nil || len(srows) == 0 {
-		return out
+	// A failed read is NOT "nobody scored". Flattening the two meant a 502 here
+	// looked like an unplayed round: end_rotation_session credits wins only
+	// `where winner in ('a','b')`, and a second End returns already_done — so the
+	// LAST round of the night contributed zero wins, permanently, while its
+	// points still displayed. A Points-vs-Wins tiebreak then names the wrong
+	// winner and there is nothing left to recompute from.
+	if serr != nil {
+		return out, fmt.Errorf("%w: couldn't read the final round's scores", ErrUpstream)
+	}
+	if len(srows) == 0 {
+		return out, nil
 	}
 	scoreOf := map[string]int{}
 	for _, r := range srows {
@@ -262,7 +271,10 @@ func (s *Service) persistScorecardWinners(sessionID string, round int) map[int]s
 	courts, cerr := s.sb.Select("rotation_round_courts",
 		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round))
 	if cerr != nil {
-		return out
+		// Same reasoning as the score read above: without the courts there is
+		// nothing to attribute a winner to, and ending anyway banks the round
+		// with none.
+		return out, fmt.Errorf("%w: couldn't read the final round's courts", ErrUpstream)
 	}
 	for _, r := range courts {
 		teamA := [2]string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")}
@@ -284,7 +296,7 @@ func (s *Service) persistScorecardWinners(sessionID string, round int) map[int]s
 				"&court=eq."+fmt.Sprint(court),
 			map[string]any{"winner": w, "reported_at": nowRFC3339()})
 	}
-	return out
+	return out, nil
 }
 
 // maxScorecardRounds bounds the scorecard's column count. The grid renders one
@@ -1921,7 +1933,13 @@ func (s *Service) EndRotationSession(sessionID string) error {
 	// otherwise the last round of every scorecard session credits zero wins.
 	if srow, err := s.sb.SelectOne("rotation_sessions",
 		"id=eq."+store.Q(sessionID)+"&select=current_round"); err == nil && srow != nil {
-		s.persistScorecardWinners(sessionID, asInt(srow, "current_round"))
+		// Refuse to end on a failed read rather than bank a final round with no
+		// winners: End is one-way (a second call returns already_done), so the
+		// wins for that round would be gone for good.
+		if _, perr := s.persistScorecardWinners(
+			sessionID, asInt(srow, "current_round")); perr != nil {
+			return perr
+		}
 	}
 	if !s.columnReady("rotation_sessions", "auto_advance") {
 		_, err := s.sb.Update("rotation_sessions",

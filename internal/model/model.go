@@ -583,8 +583,8 @@ type RotationSession struct {
 	// deliberately left untouched by a pause so the remaining time survives, so
 	// a paused countdown must be read as RoundEndsAt - PausedAt; against "now"
 	// it would keep falling while nobody is playing.
-	PausedAt string `json:"pausedAt,omitempty"`
-	CreatedAt      string `json:"createdAt"`
+	PausedAt  string `json:"pausedAt,omitempty"`
+	CreatedAt string `json:"createdAt"`
 	// LoserMode ('down' | 'stay') is the league's loser rule, carried on the
 	// board so every player can see which of the two games is being played
 	// without opening the league.
@@ -642,6 +642,12 @@ type RotationScorecard struct {
 	// session into scorecard mode the moment the migration lands.
 	Available bool `json:"available"`
 	Enabled   bool `json:"enabled"`
+	// Played maps a round to the players who were ON COURT for it, so the grid
+	// can mark everyone else that round as resting — including in rounds already
+	// finished. Without it only the current round is knowable client-side, and
+	// scrolling back a column offered a score cell for a night someone spent on
+	// the bench. Absent for rounds whose layout doesn't exist yet.
+	Played map[int][]string `json:"played,omitempty"`
 }
 
 // RotationCourt is one court in one round: the four players as two teams (a/b),

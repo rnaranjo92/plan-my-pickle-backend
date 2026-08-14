@@ -340,6 +340,24 @@ func (s *Service) rotationScorecard(sessionID string, currentRound int) (model.R
 		return card, totals
 	}
 	card.Enabled = true
+	// Who was on court in each round, for the grid's resting markers. One read
+	// for the whole session: a long night is rounds x courts rows, which stays
+	// small (20 rounds x 6 courts = 120).
+	if crows, cerr := s.sb.SelectAll("rotation_round_courts",
+		"session_id=eq."+store.Q(sessionID)+
+			"&select=round,team_a_p1,team_a_p2,team_b_p1,team_b_p2"); cerr == nil {
+		played := make(map[int][]string, len(crows))
+		for _, r := range crows {
+			rd := asInt(r, "round")
+			for _, col := range []string{
+				"team_a_p1", "team_a_p2", "team_b_p1", "team_b_p2"} {
+				if id := asStr(r, col); id != "" {
+					played[rd] = append(played[rd], id)
+				}
+			}
+		}
+		card.Played = played
+	}
 	// Columns run to whichever is further along: the round the ENGINE is on, or
 	// the furthest round the organizer has created on the scorecard. A row with a
 	// NULL score is exactly that marker — "this column exists but is blank" —
@@ -530,6 +548,46 @@ func (s *Service) SetRotationScore(sessionID string, round int, playerID string,
 	// memory. No real ladder night runs anywhere near this many rounds.
 	if round < 1 || round > maxScorecardRounds || strings.TrimSpace(playerID) == "" {
 		return errors.New("round and player are required")
+	}
+	// A player who SAT OUT a round has no game in it, so there is nothing to
+	// score. Hiding the cell in the grid isn't enough: an organizer scrolling
+	// back through earlier columns could still type into a round the player
+	// spent on the bench, and because the leaderboard ranks by total points that
+	// silently promotes someone who wasn't on court.
+	//
+	// Only checked when the round's layout EXISTS. "Add round" can create a
+	// scorecard column ahead of the engine, and a round nobody has played yet
+	// has no bench to be on.
+	//
+	// Clearing (score == nil) is always allowed — that's how a score left on a
+	// player who was later benched or substituted gets removed.
+	if score != nil {
+		courtRows, cerr := s.sb.Select("rotation_round_courts",
+			"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+
+				"&select=team_a_p1,team_a_p2,team_b_p1,team_b_p2")
+		if cerr != nil {
+			return fmt.Errorf("couldn't check who was on court in round %d: %w",
+				round, cerr)
+		}
+		if len(courtRows) > 0 {
+			onCourt := false
+			for _, r := range courtRows {
+				for _, col := range []string{
+					"team_a_p1", "team_a_p2", "team_b_p1", "team_b_p2"} {
+					if asStr(r, col) == playerID {
+						onCourt = true
+						break
+					}
+				}
+				if onCourt {
+					break
+				}
+			}
+			if !onCourt {
+				return fmt.Errorf("they were resting in round %d — there's no "+
+					"game to score", round)
+			}
+		}
 	}
 	// The player must belong to THIS session — otherwise an organizer could write
 	// a score onto someone else's session by passing a foreign player id.

@@ -52,6 +52,24 @@ func (s *Service) ShortLink(target string) string {
 	return target
 }
 
+// StableShortLink is ShortLink that returns the SAME code for the same target.
+//
+// ShortLink mints a fresh code per call, which is right for one-shot SMS links
+// but wrong for a TV board: an organizer who opens the board twice would get two
+// different URLs, and the one they wrote on the whiteboard last week would be a
+// third. A board's link has to be the same every time it's asked for.
+//
+// Same best-effort contract: any failure falls back to the long URL.
+func (s *Service) StableShortLink(target string) string {
+	if row, err := s.sb.SelectOne("short_links",
+		"target=eq."+store.Q(target)+"&select=code"); err == nil && row != nil {
+		if code := asStr(row, "code"); code != "" {
+			return shortLinkBase + code
+		}
+	}
+	return s.ShortLink(target)
+}
+
 // ResolveShortLink returns the stored target for a code ("" = unknown).
 func (s *Service) ResolveShortLink(code string) (string, error) {
 	row, err := s.sb.SelectOne("short_links",

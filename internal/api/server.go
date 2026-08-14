@@ -385,6 +385,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// already get.
 	mux.HandleFunc("GET /public/rotation-sessions/{id}/board",
 		s.publicRotationBoard)
+	// Short, stable URL for a TV board — both kinds. Owner-gated: it's the
+	// organizer deciding to put the board on a screen.
+	mux.HandleFunc("GET /rotation-sessions/{id}/tv-link",
+		s.rotationSessionOwner("id", s.tvLink))
+	mux.HandleFunc("GET /events/{id}/tv-link", s.ownerOnly("event", "id", s.tvLink))
 	mux.HandleFunc("DELETE /rotation-sessions/{id}",
 		s.rotationSessionOwner("id", s.deleteRotationSession))
 	mux.HandleFunc("POST /rotation-sessions/{id}/players",

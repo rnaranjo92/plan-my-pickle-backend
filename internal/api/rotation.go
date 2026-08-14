@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/service"
@@ -210,6 +211,28 @@ func (s *Server) setRotationLimits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"plannedRounds": req.PlannedRounds,
 		"stopAt":        req.StopAt,
+	})
+}
+
+// tvLink returns a SHORT, stable URL for a live TV board — a rotation session's
+// or an event's.
+//
+// The long form is app.planmypickle.com/?ladder_tv=<uuid>: about sixty
+// characters, most of them a UUID nobody can read off a whiteboard or type into
+// a smart-TV remote. This hands back the /r/<code> short link instead (~38
+// chars), reusing the redirect that already exists for SMS.
+//
+// Stable by design: asking twice returns the same URL, so a link written down
+// last week still works.
+func (s *Server) tvLink(w http.ResponseWriter, r *http.Request) {
+	kind := "ladder_tv"
+	if strings.HasPrefix(r.URL.Path, "/events/") {
+		kind = "scoreboard"
+	}
+	target := "https://app.planmypickle.com/?" + kind + "=" + r.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{
+		"url":  s.svc.StableShortLink(target),
+		"full": target,
 	})
 }
 

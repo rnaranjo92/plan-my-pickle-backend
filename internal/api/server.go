@@ -380,6 +380,11 @@ func NewServer(svc *service.Service) http.Handler {
 		s.ladderDivisionOwner("id", s.createRotationSession))
 	mux.HandleFunc("GET /rotation-sessions/{id}/board",
 		s.rotationSessionViewer("id", s.rotationBoard))
+	// The courtside TV board — no auth, trimmed payload. A television can't sign
+	// in, and this is the same treatment the tournament scoreboard's endpoints
+	// already get.
+	mux.HandleFunc("GET /public/rotation-sessions/{id}/board",
+		s.publicRotationBoard)
 	mux.HandleFunc("DELETE /rotation-sessions/{id}",
 		s.rotationSessionOwner("id", s.deleteRotationSession))
 	mux.HandleFunc("POST /rotation-sessions/{id}/players",

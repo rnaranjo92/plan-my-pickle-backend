@@ -2096,6 +2096,66 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	return nil
 }
 
+// PublicRotationBoard is the courtside TV view: the same board, stripped to what
+// belongs on a wall.
+//
+// The TV needs no login — a board people read from across a gym can't ask a
+// television to sign in, and the tournament scoreboard has always worked this
+// way. But the authenticated board carries things a wall display has no reason
+// to publish: self-ratings, player and entrant ids, the whole scorecard, the
+// substitution log. Serving THAT endpoint publicly would expose all of it, and
+// every future addition to the board along with it.
+//
+// So this returns the same SHAPE with the extra fields blanked. What's left is
+// exactly what's already visible to everyone standing in the room: who's on
+// which court, who's resting, and the running order.
+func (s *Service) PublicRotationBoard(sessionID string) (model.RotationBoard, error) {
+	b, err := s.GetRotationBoard(sessionID)
+	if err != nil {
+		return model.RotationBoard{}, err
+	}
+	for i := range b.Players {
+		b.Players[i].ID = ""
+		b.Players[i].SessionID = ""
+		b.Players[i].EntrantID = nil
+		b.Players[i].SelfRating = 0
+		b.Players[i].StartCourt = nil
+	}
+	for i := range b.Standings {
+		b.Standings[i].ID = ""
+		b.Standings[i].SessionID = ""
+		b.Standings[i].EntrantID = nil
+		b.Standings[i].SelfRating = 0
+		b.Standings[i].StartCourt = nil
+	}
+	for i := range b.Byes {
+		b.Byes[i].ID = ""
+		b.Byes[i].SessionID = ""
+		b.Byes[i].EntrantID = nil
+		b.Byes[i].SelfRating = 0
+		b.Byes[i].StartCourt = nil
+	}
+	for i := range b.Courts {
+		for j := range b.Courts[i].TeamA {
+			b.Courts[i].TeamA[j].PlayerID = ""
+		}
+		for j := range b.Courts[i].TeamB {
+			b.Courts[i].TeamB[j].PlayerID = ""
+		}
+	}
+	// Keep Enabled (the board labels standings "by points" vs "by wins") and
+	// drop the grid itself — per-player scores keyed by player id are the
+	// organizer's working document, not signage.
+	b.Scorecard = model.RotationScorecard{
+		Rounds:    []int{},
+		Scores:    map[string]map[int]int{},
+		Available: b.Scorecard.Available,
+		Enabled:   b.Scorecard.Enabled,
+	}
+	b.Substitutions = nil
+	return b, nil
+}
+
 // EndRotationSession tallies the current round's reported courts AND marks the
 // session done in ONE transaction (the end_rotation_session RPC), so it can't
 // race a participant-fired auto-advance and double-count / drop the final round.

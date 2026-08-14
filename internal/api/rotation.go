@@ -213,6 +213,22 @@ func (s *Server) setRotationLimits(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// publicRotationBoard serves the courtside TV board with NO authentication — a
+// television can't sign in, and the tournament scoreboard has always worked
+// this way. The payload is the trimmed one (see PublicRotationBoard): names,
+// courts, the clock, the bench and the running order, and nothing else.
+//
+// Unlisted rather than advertised: reaching it needs the session's UUID, which
+// the organizer shares deliberately when they open the board.
+func (s *Server) publicRotationBoard(w http.ResponseWriter, r *http.Request) {
+	board, err := s.svc.PublicRotationBoard(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, board)
+}
+
 // rotationTestPush sends a sample rotation-round push to the organizer's own
 // device so they can verify delivery before a real session. Owner-gated.
 func (s *Server) rotationTestPush(w http.ResponseWriter, r *http.Request) {

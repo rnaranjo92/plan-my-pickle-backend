@@ -960,16 +960,29 @@ func (s *Service) ShuffleRotationStartCourts(sessionID string) (int, error) {
 	if asStr(srow, "status") != "setup" {
 		return 0, fmt.Errorf("the courts can't be redrawn once the session has started")
 	}
+	// The NOT NULL columns come along for the ride: an upsert is INSERT ... ON
+	// CONFLICT, so Postgres validates the INSERT shape even when every row
+	// conflicts and updates. Sending {id, start_court} alone was rejected with
+	// `null value in column "session_id" violates not-null constraint`, which
+	// meant the Shuffle button had never worked — it errored on every tap.
 	rows, err := s.sb.Select("rotation_players",
-		"session_id=eq."+store.Q(sessionID)+"&select=id,active")
+		"session_id=eq."+store.Q(sessionID)+
+			"&select=id,active,session_id,display_name,self_rating")
 	if err != nil {
 		return 0, err
 	}
+	keep := map[string]map[string]any{}
 	var ids, inactive []string
 	for _, r := range rows {
 		id := asStr(r, "id")
 		if id == "" {
 			continue
+		}
+		keep[id] = map[string]any{
+			"id":           id,
+			"session_id":   asStr(r, "session_id"),
+			"display_name": asStr(r, "display_name"),
+			"self_rating":  asFloatOr(r, "self_rating", 3.0),
 		}
 		if asBool(r, "active") {
 			ids = append(ids, id)
@@ -984,14 +997,22 @@ func (s *Service) ShuffleRotationStartCourts(sessionID string) (int, error) {
 	// the room on the new draw and half on the old one — a placement that is
 	// neither, and that the organizer can only make worse by tapping again.
 	batch := make([]map[string]any, 0, len(rows))
+	row := func(id string, court any) map[string]any {
+		out := map[string]any{}
+		for k, v := range keep[id] {
+			out[k] = v
+		}
+		out["start_court"] = court
+		return out
+	}
 	for i, id := range ids {
-		batch = append(batch, map[string]any{"id": id, "start_court": i/4 + 1})
+		batch = append(batch, row(id, i/4+1))
 	}
 	// Clear anyone sitting out. A stale placement on a benched player silently
 	// un-randomises the shuffle the moment they're brought back — they'd sort
 	// ahead of the players actually drawn onto that court.
 	for _, id := range inactive {
-		batch = append(batch, map[string]any{"id": id, "start_court": nil})
+		batch = append(batch, row(id, nil))
 	}
 	if len(batch) == 0 {
 		return 0, nil

@@ -350,6 +350,20 @@ func (s *Service) ReportChallenge(userID, challengeID string, req model.ReportCh
 	if side != "challenger" && side != "challenged" && side != "tie" {
 		return errors.New("winnerSide must be challenger, challenged, or tie")
 	}
+	// A CHALLENGER may not report a result on a challenge the other player never
+	// accepted. Allowing "pending" for everyone meant a player at rung 10 could
+	// issue a challenge to rung 8 and, a second later, report themselves the
+	// winner — no match played, the rung-8 player never even opening the app.
+	// The accept step and the whole respond-by timer were bypassable in two
+	// requests.
+	//
+	// The challenged player reporting from pending is fine: they played it, which
+	// is acceptance in every sense that matters. So is the organizer recording a
+	// result they watched.
+	if asStr(ch, "status") == "pending" && party == "challenger" {
+		return errors.New("they haven't accepted this challenge yet — a result " +
+			"can only be reported once it's accepted")
+	}
 	// Report can claim from pending/accepted, and can even reverse a stale void
 	// (a real result should beat a play_by timeout).
 	if _, err := s.resolveChallenge(challengeID, []string{"pending", "accepted", "voided"},

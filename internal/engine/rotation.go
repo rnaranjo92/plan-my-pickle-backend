@@ -435,8 +435,19 @@ func NextRoundFair(courts []RotCourt, results []RotResult, bench []string,
 			seats = append(seats, seatRef{court: ci, idx: i, id: id})
 		}
 	}
+	// Most-played first — and when counts TIE, take from the BOTTOM court.
+	//
+	// Stable-sorting on plays alone left seats in court order, so every tie
+	// resolved to court 1. Once the field levels out (which is the whole point of
+	// this pass) every round then stripped the TOP court, and the player who had
+	// just won their way onto it was benched before playing a single point there.
+	// The bottom court is the river's own exit; ties belong there.
 	sort.SliceStable(seats, func(a, b int) bool {
-		return plays(seats[a].id) > plays(seats[b].id)
+		pa, pb := plays(seats[a].id), plays(seats[b].id)
+		if pa != pb {
+			return pa > pb
+		}
+		return seats[a].court > seats[b].court
 	})
 
 	// Bench, longest-waiting first. Same stable ordering rule.

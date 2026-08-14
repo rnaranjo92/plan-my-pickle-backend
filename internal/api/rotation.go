@@ -395,3 +395,22 @@ func (s *Server) endRotation(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "done"})
 }
+
+// pauseRotation / resumeRotation stop and restart the round clock without
+// ending the night. Owner-gated like end: pausing everyone's session is an
+// organizer action, not something a player on the roster can do.
+func (s *Server) pauseRotation(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.PauseRotationSession(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "paused"})
+}
+
+func (s *Server) resumeRotation(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ResumeRotationSession(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
+}

@@ -420,6 +420,10 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionActor("id", s.advanceRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/end",
 		s.rotationSessionOwner("id", s.endRotation))
+	mux.HandleFunc("POST /rotation-sessions/{id}/pause",
+		s.rotationSessionOwner("id", s.pauseRotation))
+	mux.HandleFunc("POST /rotation-sessions/{id}/resume",
+		s.rotationSessionOwner("id", s.resumeRotation))
 
 	// --- Team League (organizer-driven, SIMPLE single-fixture model): a
 	// division's (league_bracket) teams + recorded fixtures. Standings (W-L +
@@ -674,6 +678,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// requireAuth keeps it from being an anonymous data-injection endpoint.
 	mux.HandleFunc("POST /dev/seed", requireAuth(s.seedDemo))
 	mux.HandleFunc("POST /dev/seed-perpetual-league", requireAuth(s.seedPerpetualLeague))
+	mux.HandleFunc("POST /dev/seed-rotation-ladder", requireAuth(s.seedRotationLadder))
 	mux.HandleFunc("POST /dev/seed-coach-led-league", requireAuth(s.seedCoachLedLeague))
 	mux.HandleFunc("POST /events/{id}/seed-test", s.ownerOnly("event", "id", s.seedPerpetualEventSessions))
 	mux.HandleFunc("POST /events/{id}/autoscore-session", s.ownerOnly("event", "id", s.autoScoreSession))
@@ -2347,6 +2352,23 @@ func (s *Server) seedDemo(w http.ResponseWriter, r *http.Request) {
 // seedPerpetualLeague (QA-only) stands up a perpetual-league test scenario:
 // a recurring league with 25 players, a scored session dated last Thursday, and a
 // fresh ongoing session today.
+// seedRotationLadder (QA-only) stands up a PRIVATE rotation ladder ready to
+// start: 14 entrants on 3 courts, so twelve play and two wait from round one.
+// Left in setup so the tester sees the random opening draw for themselves.
+func (s *Server) seedRotationLadder(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	id, err := s.svc.SeedRotationLadderDemo(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"leagueId": id})
+}
+
 func (s *Server) seedPerpetualLeague(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
 	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {

@@ -575,6 +575,11 @@ type RotationSession struct {
 	// every client renders; RoundEndsAt is the buzzer time.
 	RoundStartedAt string `json:"roundStartedAt,omitempty"`
 	RoundEndsAt    string `json:"roundEndsAt,omitempty"`
+	// PausedAt is when the clock was stopped ("" while running). RoundEndsAt is
+	// deliberately left untouched by a pause so the remaining time survives, so
+	// a paused countdown must be read as RoundEndsAt - PausedAt; against "now"
+	// it would keep falling while nobody is playing.
+	PausedAt string `json:"pausedAt,omitempty"`
 	CreatedAt      string `json:"createdAt"`
 	// LoserMode ('down' | 'stay') is the league's loser rule, carried on the
 	// board so every player can see which of the two games is being played

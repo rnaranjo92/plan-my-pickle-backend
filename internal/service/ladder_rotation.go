@@ -550,6 +550,85 @@ func (s *Service) SetRotationSessionAutoAdvance(sessionID string, auto bool) err
 	return err
 }
 
+// rotationPlayCounts returns games played so far this session, by player id.
+// Best-effort: on any error the map is nil and the fairness pass treats every
+// player as owed court time, which is the safe direction to be wrong in.
+func (s *Service) rotationPlayCounts(sessionID string) map[string]int {
+	rows, err := s.sb.Select("rotation_players",
+		"session_id=eq."+store.Q(sessionID)+"&select=id,games")
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		if id := asStr(r, "id"); id != "" {
+			out[id] = asInt(r, "games")
+		}
+	}
+	return out
+}
+
+// PauseRotationSession stops the round clock without ending the night.
+//
+// The 'paused' status was already honoured by advance and end, but nothing
+// could WRITE it — so an interruption (rain, an injury, a court taken back)
+// left the organizer choosing between letting the buzzer auto-advance people
+// who never played, and ending the session outright.
+//
+// round_ends_at is left ALONE and paused_at records the moment. Resume shifts
+// the deadline by exactly the pause, so the round keeps the time it had left.
+// Clearing the deadline instead would lose that; a pause that silently hands
+// back a full fresh round is worse than no pause at all.
+func (s *Service) PauseRotationSession(sessionID string) error {
+	if !s.columnReady("rotation_sessions", "paused_at") {
+		return errors.New("pause isn't available yet — run the migration")
+	}
+	rows, err := s.sb.Update("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&status=eq.live",
+		map[string]any{"status": "paused", "paused_at": now()})
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		// Already paused, already finished, or gone. Say so rather than
+		// reporting a pause that never happened.
+		return errors.New("this session isn't running")
+	}
+	return nil
+}
+
+// ResumeRotationSession restarts the clock with the time the round had left.
+func (s *Service) ResumeRotationSession(sessionID string) error {
+	if !s.columnReady("rotation_sessions", "paused_at") {
+		return errors.New("pause isn't available yet — run the migration")
+	}
+	row, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=status,paused_at,round_ends_at")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return ErrNotFound
+	}
+	if asStr(row, "status") != "paused" {
+		return errors.New("this session isn't paused")
+	}
+	patch := map[string]any{"status": "live", "paused_at": nil}
+	// Push the deadline forward by however long the pause lasted. If either
+	// timestamp is unreadable, resume WITHOUT touching the deadline: a round
+	// that ends early is recoverable (Ring now / advance manually), a deadline
+	// moved by a garbage delta is not.
+	pausedAt, perr := time.Parse(time.RFC3339, asStr(row, "paused_at"))
+	endsAt, eerr := time.Parse(time.RFC3339, asStr(row, "round_ends_at"))
+	if perr == nil && eerr == nil {
+		if d := time.Since(pausedAt); d > 0 {
+			patch["round_ends_at"] = endsAt.Add(d).UTC().Format(time.RFC3339)
+		}
+	}
+	_, err = s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID), patch)
+	return err
+}
+
 // rotationPlayers loads a session's roster and returns both the slice (roster
 // order: rating desc) and an id→player map (for resolving court seat names).
 func (s *Service) rotationPlayers(sessionID string) ([]model.RotationPlayer, map[string]model.RotationPlayer, error) {
@@ -1154,14 +1233,29 @@ func (s *Service) StartRotationSession(sessionID string) error {
 	// silently does the opposite: place two players on court 3, leave the rest
 	// unplaced, and those two sort to the front and open the TOP court.
 	seats := make([]engine.Seat, 0, len(rows))
+	anyPlaced := false
 	for _, r := range rows {
 		seat := engine.Seat{ID: asStr(r, "id")}
 		if placed {
 			if c := asIntPtr(r, "start_court"); c != nil {
 				seat.Court = *c
+				anyPlaced = true
 			}
 		}
 		seats = append(seats, seat)
+	}
+	// Nobody placed → draw the opening courts at RANDOM.
+	//
+	// The fallback was self_rating order, but every import seeds the whole roster
+	// at a flat 3.0 — so the "seeding" was really created_at, i.e. sign-up order
+	// wearing a rating's clothes, and the earliest sign-ups opened on the top
+	// court every week. The Shuffle button did this already but had to be
+	// remembered; a night that forgot it got the arbitrary order silently.
+	//
+	// Only when nobody was placed: a court the organizer typed, or a shuffle they
+	// already ran, is a decision — this must not overwrite it.
+	if !anyPlaced {
+		rand.Shuffle(len(seats), func(i, j int) { seats[i], seats[j] = seats[j], seats[i] })
 	}
 
 	courts, bench := engine.SeedPlacedCourts(seats, maxCourts)
@@ -1679,7 +1773,16 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		return fmt.Errorf("%w: couldn't read this ladder's loser rule, so the "+
 			"round was held rather than run under the wrong rules", ErrUpstream)
 	}
-	nextCourts, nextBench := engine.NextRound(cur, results, bench, mode)
+	// Equal court time: hand the engine each player's games so the fairness pass
+	// can swap the most-played off and the longest-waiting on. Without the counts
+	// only the BOTTOM court's losers ever sit, which measured as a 15x gap over a
+	// long night — one player 4 games, another 60.
+	//
+	// A failed read is NOT fatal here: fairness is a preference, and a night that
+	// keeps running slightly unfairly beats a night that stops. Missing players
+	// count as zero, which reads as "owed court time" — the safe direction.
+	played := s.rotationPlayCounts(sessionID)
+	nextCourts, nextBench := engine.NextRoundFair(cur, results, bench, mode, played)
 	// A no-op means engine.NextRound rejected its input (a blank or duplicated
 	// seat). It returns the courts unchanged, which the RPC would happily write
 	// back as a fresh round: the counter increments, the buzzer rings, and NOBODY
@@ -1846,6 +1949,7 @@ func rotationSessionFromRow(r map[string]any) model.RotationSession {
 		CurrentRound:    asInt(r, "current_round"),
 		RoundStartedAt:  asStr(r, "round_started_at"),
 		RoundEndsAt:     asStr(r, "round_ends_at"),
+		PausedAt:        asStr(r, "paused_at"),
 		CreatedAt:       asStr(r, "created_at"),
 	}
 }

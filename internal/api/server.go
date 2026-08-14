@@ -404,6 +404,9 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.setRotationCourts))
 	mux.HandleFunc("POST /rotation-sessions/{id}/auto-advance",
 		s.rotationSessionOwner("id", s.setRotationAutoAdvance))
+	// When the night stops: after N rounds, at a time, or neither.
+	mux.HandleFunc("POST /rotation-sessions/{id}/limits",
+		s.rotationSessionOwner("id", s.setRotationLimits))
 	mux.HandleFunc("POST /rotation-sessions/{id}/test-push",
 		s.rotationSessionOwner("id", s.rotationTestPush))
 	mux.HandleFunc("POST /rotation-sessions/{id}/start",

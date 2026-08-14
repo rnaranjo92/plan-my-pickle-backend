@@ -191,6 +191,28 @@ func (s *Server) setRotationCourts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"courtCount": req.CourtCount})
 }
 
+// setRotationLimits sets when the night stops: after N rounds, at a wall-clock
+// time, or neither. Owner-gated; allowed while live so an organizer who gets
+// another half hour of court time can move it.
+func (s *Server) setRotationLimits(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlannedRounds int    `json:"plannedRounds"`
+		StopAt        string `json:"stopAt"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationSessionLimits(
+		r.PathValue("id"), req.PlannedRounds, req.StopAt); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plannedRounds": req.PlannedRounds,
+		"stopAt":        req.StopAt,
+	})
+}
+
 // rotationTestPush sends a sample rotation-round push to the organizer's own
 // device so they can verify delivery before a real session. Owner-gated.
 func (s *Server) rotationTestPush(w http.ResponseWriter, r *http.Request) {

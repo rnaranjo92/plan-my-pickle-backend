@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"sort"
@@ -625,6 +626,67 @@ func autoAdvanceOf(r map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// SetRotationSessionLimits sets when the night should stop: after N rounds, at a
+// wall-clock time, or neither (the original behaviour — runs until the organizer
+// taps End).
+//
+// Editable while the session is LIVE, not just in setup. "We got the courts for
+// another half hour" is a normal thing to happen at 7:55, and a limit you can't
+// move is one organizers would simply stop setting.
+//
+// plannedRounds <= 0 clears the round limit; an empty stopAt clears the time.
+func (s *Service) SetRotationSessionLimits(sessionID string, plannedRounds int, stopAt string) error {
+	if !s.columnReady("rotation_sessions", "planned_rounds") {
+		return fmt.Errorf("%w: run add_rotation_session_limits.sql to set a "+
+			"round or time limit", ErrCoachingUnavailable)
+	}
+	if plannedRounds < 0 {
+		plannedRounds = 0
+	}
+	if plannedRounds > maxScorecardRounds {
+		return fmt.Errorf("a session can be at most %d rounds", maxScorecardRounds)
+	}
+	upd := map[string]any{"planned_rounds": plannedRounds}
+	if strings.TrimSpace(stopAt) == "" {
+		upd["stop_at"] = nil
+	} else {
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(stopAt))
+		if err != nil {
+			return errors.New("stopAt must be an RFC3339 time")
+		}
+		upd["stop_at"] = rfc3339(t)
+	}
+	_, err := s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID), upd)
+	return err
+}
+
+// rotationShouldStop reports whether the session has reached its end condition
+// after finishing [closedRound], and why.
+//
+// Neither limit ever cuts a round short — this is only consulted once a round is
+// already finished, so the game being played always completes. The time check
+// asks whether the NEXT round can finish, not whether the clock has passed:
+// starting an 8-minute round with 3 minutes of court time left is the thing an
+// organizer sets a stop time to avoid.
+func rotationShouldStop(sess model.RotationSession, closedRound int, now time.Time) (bool, string) {
+	if sess.PlannedRounds > 0 && closedRound >= sess.PlannedRounds {
+		return true, fmt.Sprintf("that was round %d of %d — session complete",
+			closedRound, sess.PlannedRounds)
+	}
+	if strings.TrimSpace(sess.StopAt) != "" {
+		if stop, err := time.Parse(time.RFC3339, sess.StopAt); err == nil {
+			mins := sess.RoundMinutes
+			if mins <= 0 {
+				mins = 1
+			}
+			if now.Add(time.Duration(mins) * time.Minute).After(stop) {
+				return true, "there isn't time for another full round — session complete"
+			}
+		}
+	}
+	return false, ""
 }
 
 // SetRotationSessionCourts sets the venue court count on a session (a positive
@@ -1990,6 +2052,21 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		return fmt.Errorf("%w: there are fewer than four players left — end the "+
 			"session to record the results", ErrRoundBlocked)
 	}
+	// The round just played is complete and valid — so this is the moment to ask
+	// whether another one should start. END rather than advance when the session
+	// has reached its limit.
+	//
+	// EndRotationSession (not a bare status write) because it tallies the closing
+	// round's courts and marks the session done in ONE transaction: stopping here
+	// must credit the round that was just played, exactly as tapping End would.
+	if stop, why := rotationShouldStop(
+		rotationSessionFromRow(srow), round, time.Now()); stop {
+		if eerr := s.EndRotationSession(sessionID); eerr != nil {
+			return eerr
+		}
+		log.Printf("rotation %s ended after round %d: %s", sessionID, round, why)
+		return nil
+	}
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_round":   round,
@@ -2144,6 +2221,8 @@ func rotationSessionFromRow(r map[string]any) model.RotationSession {
 		RoundEndsAt:     asStr(r, "round_ends_at"),
 		PausedAt:        asStr(r, "paused_at"),
 		CreatedAt:       asStr(r, "created_at"),
+		PlannedRounds:   asInt(r, "planned_rounds"),
+		StopAt:          asStr(r, "stop_at"),
 	}
 }
 

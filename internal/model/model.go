@@ -585,6 +585,13 @@ type RotationSession struct {
 	// it would keep falling while nobody is playing.
 	PausedAt  string `json:"pausedAt,omitempty"`
 	CreatedAt string `json:"createdAt"`
+	// PlannedRounds stops the night after N rounds (0 = run until the organizer
+	// ends it, which is the original behaviour). StopAt refuses to START a round
+	// that would run past that time — the courts are booked until then.
+	//
+	// Neither ever cuts a round short: whatever is being played finishes.
+	PlannedRounds int    `json:"plannedRounds,omitempty"`
+	StopAt        string `json:"stopAt,omitempty"`
 	// LoserMode ('down' | 'stay') is the league's loser rule, carried on the
 	// board so every player can see which of the two games is being played
 	// without opening the league.

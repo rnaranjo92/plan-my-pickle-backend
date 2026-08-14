@@ -7826,6 +7826,20 @@ func (s *Server) ownerOrPasscode(kind, idParam string, next http.HandlerFunc) ht
 			next(w, r)
 			return
 		}
+		// QA/support accounts, exactly as ownerOnly and ladderOwnerOK grant it.
+		// Without this a super user got the full organizer dashboard on someone
+		// else's event — the client honors isSuperUser — and then every score
+		// they saved came back 403, the UI offering a control the server would
+		// refuse. That is the mismatch ownerOnly's comment warns about, missing
+		// from the one gate that writes results.
+		//
+		// superUserAllowed still withholds the destructive deletes (a whole
+		// match, round or event stays with the real owner). Saving a score is an
+		// edit, which is the field work this account exists for.
+		if isSuperUser(userEmail(r)) && superUserAllowed(r) {
+			next(w, r)
+			return
+		}
 		// Passcode path: require a non-blank X-Event-Passcode, validated against the
 		// resource's event. (Only "match" is wired today.)
 		code := strings.TrimSpace(r.Header.Get("X-Event-Passcode"))

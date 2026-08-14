@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -79,6 +80,15 @@ func (s *Service) sendTestPushContent(externalID, heading, content string) error
 	// A populated `errors` (e.g. "All included players are not subscribed") is
 	// the genuine "no reachable device" signal.
 	if e := strings.TrimSpace(string(out.Errors)); e != "" && e != "null" && e != "[]" && e != "{}" {
+		// invalid_aliases means OneSignal has never seen a SUBSCRIPTION for this
+		// account — the send didn't fail, there's simply nothing to send to.
+		// Saying that plainly beats what this used to do, which was paste
+		// OneSignal's raw error JSON into a snackbar: the organizer got their own
+		// user id repeated half a dozen times and no idea what to do about it.
+		if strings.Contains(e, "invalid_aliases") {
+			return errors.New("no device is signed in to notifications for this " +
+				"account yet")
+		}
 		return fmt.Errorf("no reachable subscription: %s", e)
 	}
 	return nil

@@ -192,6 +192,22 @@ func (s *Server) setRotationCourts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"courtCount": req.CourtCount})
 }
 
+// setRotationRoundMinutes changes the round length before the session starts.
+func (s *Server) setRotationRoundMinutes(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RoundMinutes int `json:"roundMinutes"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationSessionRoundMinutes(
+		r.PathValue("id"), req.RoundMinutes); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"roundMinutes": req.RoundMinutes})
+}
+
 // setRotationLimits sets when the night stops: after N rounds, at a wall-clock
 // time, or neither. Owner-gated; allowed while live so an organizer who gets
 // another half hour of court time can move it.

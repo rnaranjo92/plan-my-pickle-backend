@@ -689,6 +689,36 @@ func rotationShouldStop(sess model.RotationSession, closedRound int, now time.Ti
 	return false, ""
 }
 
+// SetRotationSessionRoundMinutes changes how long a round runs. SETUP ONLY.
+//
+// Mid-session it would be ambiguous at best: the round already running has a
+// deadline computed from the old length, so a change would either not apply
+// until the next round (surprising) or move a buzzer people are playing
+// towards (worse). Before the session starts there's no such question.
+func (s *Service) SetRotationSessionRoundMinutes(sessionID string, mins int) error {
+	if mins < 1 {
+		mins = 1
+	}
+	if mins > 60 {
+		return errors.New("a round can be at most 60 minutes")
+	}
+	srow, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=status")
+	if err != nil {
+		return err
+	}
+	if srow == nil {
+		return ErrNotFound
+	}
+	if asStr(srow, "status") != "setup" {
+		return fmt.Errorf("%w: round length is fixed once the session starts",
+			ErrRoundBlocked)
+	}
+	_, err = s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID),
+		map[string]any{"round_minutes": mins})
+	return err
+}
+
 // SetRotationSessionCourts sets the venue court count on a session (a positive
 // number = cap; the extras become byes). Only meaningful before the session
 // starts; owner-gated at the route.

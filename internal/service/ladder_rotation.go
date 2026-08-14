@@ -625,8 +625,20 @@ func (s *Service) ResumeRotationSession(sessionID string) error {
 			patch["round_ends_at"] = endsAt.Add(d).UTC().Format(time.RFC3339)
 		}
 	}
-	_, err = s.sb.Update("rotation_sessions", "id=eq."+store.Q(sessionID), patch)
-	return err
+	// Compare-and-set on status. Read-modify-write here would clobber whatever
+	// happened in between: End during a long break would be undone and the night
+	// silently restarted, and a deadline computed from a stale paused_at would be
+	// written over a round that had already moved on.
+	rows, err := s.sb.Update("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&status=eq.paused", patch)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("this session changed while you were resuming — " +
+			"check the board before trying again")
+	}
+	return nil
 }
 
 // rotationPlayers loads a session's roster and returns both the slice (roster
@@ -1526,6 +1538,15 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	if status != "live" && status != "paused" {
 		return fmt.Errorf("session is not live")
 	}
+	// A PAUSED session must not advance. This accepted 'paused' as live, so any
+	// device whose poll hadn't caught up — the venue laptop, the TV board, a
+	// second organizer phone — would fire the buzzer straight through a rain
+	// delay, rotate everyone off courts they were still standing on, and clear
+	// the pause without anyone touching Resume.
+	if status == "paused" {
+		return fmt.Errorf("%w: the session is paused — resume it before the "+
+			"round advances", ErrRoundBlocked)
+	}
 	round := asInt(srow, "current_round")
 	// Someone already advanced past the round the caller saw → no-op (idempotent).
 	if expectedRound > 0 && expectedRound != round {
@@ -1548,15 +1569,24 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	// no scores were entered (or the scorecard migration hasn't run).
 	scoreOf := map[string]int{} // rotation_player_id -> this round's score
 	if s.rotationScoresReady() {
-		if srows, serr := s.sb.Select("rotation_round_scores",
+		srows, serr := s.sb.Select("rotation_round_scores",
 			"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(round)+
-				"&select=rotation_player_id,score"); serr == nil {
-			for _, r := range srows {
-				if r["score"] == nil {
-					continue
-				}
-				scoreOf[asStr(r, "rotation_player_id")] = asInt(r, "score")
+				"&select=rotation_player_id,score")
+		// A FAILED read is not "no scores". Discarding serr left scoreOf empty, so
+		// every court fell through to the default winner — team A on all of them —
+		// and the whole room moved by a coin flip nobody threw, permanently. One
+		// Supabase blip at the buzzer was enough. Hold the round instead: the
+		// organizer sees why and can advance again in a moment.
+		if serr != nil {
+			return fmt.Errorf("%w: couldn't read this round's scores, so the "+
+				"round was held rather than advanced by the default winner",
+				ErrUpstream)
+		}
+		for _, r := range srows {
+			if r["score"] == nil {
+				continue
 			}
+			scoreOf[asStr(r, "rotation_player_id")] = asInt(r, "score")
 		}
 	}
 	cur := make([]engine.RotCourt, 0, len(rows))

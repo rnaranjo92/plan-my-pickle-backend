@@ -312,6 +312,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /leagues/{id}/events/{eventId}", s.ownerOnly("league", "id", s.removeEventFromLeague))
 	mux.HandleFunc("GET /leagues/{id}/standings", s.leagueViewer("id", s.leagueStandings))
 	mux.HandleFunc("GET /leagues/{id}/videos", s.leagueViewer("id", s.leagueVideos))
+	mux.HandleFunc("GET /leagues/{id}/media", s.leagueViewer("id", s.leagueMedia))
 	mux.HandleFunc("POST /leagues/{id}/videos", requireAuth(s.addLeagueVideo))
 	mux.HandleFunc("POST /leagues/{id}/schedule", s.ownerOnly("league", "id", s.setLeagueSchedule))
 	mux.HandleFunc("DELETE /leagues/{id}/schedule", s.ownerOnly("league", "id", s.clearLeagueSchedule))
@@ -416,8 +417,15 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.addScorecardRound))
 	mux.HandleFunc("DELETE /rotation-sessions/{id}/scorecard/rounds/{round}",
 		s.rotationSessionOwner("id", s.deleteScorecardRound))
+	// ADVANCE is organizer-only. It rotates EVERY court on the night, and the
+	// participant grant on it let any rostered player — including one who had
+	// already gone home — POST an empty body thirty seconds into a round and
+	// move the whole room, with unreported courts falling through to the default
+	// winner. No client ever used the right: the app's auto-advance runs on the
+	// organizer's device (`if (!widget.isOwner) return`). Reporting a COURT stays
+	// open to participants, which is the thing players actually do.
 	mux.HandleFunc("POST /rotation-sessions/{id}/advance",
-		s.rotationSessionActor("id", s.advanceRotation))
+		s.rotationSessionOwner("id", s.advanceRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/end",
 		s.rotationSessionOwner("id", s.endRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/pause",

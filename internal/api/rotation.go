@@ -81,7 +81,13 @@ func (s *Server) rotationSessionActor(idParam string, next http.HandlerFunc) htt
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		if owner != userID(r) && !s.svc.IsRotationParticipant(sessionID, userID(r)) {
+		// Super users run other organizers' nights for support. Every other
+		// rotation gate goes through ladderOwnerOK, which grants this; without it
+		// here a supported night reached 0:00 and stalled — the board rendered
+		// every control and the server refused the one that matters.
+		if owner != userID(r) &&
+			!(isSuperUser(userEmail(r)) && superUserAllowed(r)) &&
+			!s.svc.IsRotationParticipant(sessionID, userID(r)) {
 			writeErr(w, http.StatusForbidden, errForbidden)
 			return
 		}
@@ -413,4 +419,16 @@ func (s *Server) resumeRotation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
+}
+
+// leagueMedia returns every photo and video posted anywhere in a league,
+// newest first, for the league's Media tab. Read-gated like the rest of a
+// league's content — the same people who can see the feed can see its pictures.
+func (s *Server) leagueMedia(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.LeagueMedia(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }

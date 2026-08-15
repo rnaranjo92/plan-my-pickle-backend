@@ -48,8 +48,11 @@ a{color:var(--green-dk)}
   gap:16px;padding-top:14px;padding-bottom:14px}
 .brand{color:var(--green);font-weight:800;text-decoration:none;font-size:18px}
 .top nav{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
-.top nav a{color:var(--muted);text-decoration:none;font-size:15px;font-weight:600}
-.top nav a:hover{color:var(--ink)}
+/* :not(.btn) so the nav's link colour can't override a button's own colour —
+   ".top nav a" outranks ".btn--green" on specificity, which rendered the CTA's
+   label muted grey on green instead of white. */
+.top nav a:not(.btn){color:var(--muted);text-decoration:none;font-size:15px;font-weight:600}
+.top nav a:not(.btn):hover{color:var(--ink)}
 .top nav a.back{color:var(--green-dk);font-weight:700}
 
 /* hero */

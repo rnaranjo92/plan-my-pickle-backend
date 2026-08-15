@@ -4983,6 +4983,66 @@ func (s *Service) ListFavoriteCoaches(userID string) ([]model.CoachProfile, erro
 	return out, nil
 }
 
+// PublicCoaches returns listed coaches for the CRAWLABLE web directory, newest
+// first, trimmed to what belongs on a public page.
+//
+// Deliberately not ListCoachesNearby: that serves a signed-in player searching
+// by location and hands back everything on the profile. This is the open web —
+// indexed by Google, readable by anyone — so it carries the professional facts
+// (name, city, skills, rate, certifications) and drops what a coach shared to be
+// FOUND BY PLAYERS rather than published: exact coordinates and the user id.
+//
+// A coach's opt-in says "appear in players' nearby-coach search", which is a
+// narrower promise than a public web page. Only VERIFIED coaches appear here —
+// people the owner has actually approved — so nobody is published onto the open
+// internet by a toggle they read as in-app discovery.
+func (s *Service) PublicCoaches() ([]model.CoachProfile, error) {
+	if !s.coachProfilesReady() {
+		return []model.CoachProfile{}, nil
+	}
+	if !s.columnReady("coach_profiles", "verified") {
+		return []model.CoachProfile{}, nil
+	}
+	rows, err := s.sb.Select("coach_profiles",
+		"listed=is.true&verified=is.true&order=created_at.desc&limit=500")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.CoachProfile, 0, len(rows))
+	for _, r := range rows {
+		p := mapCoachProfile(r)
+		if p.Name == "" {
+			p.Name = s.coachingName(p.UserID)
+		}
+		// Never publish precise coordinates. The city is the useful signal; the
+		// lat/lng is where somebody teaches, often their home.
+		p.Lat, p.Lng = nil, nil
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// PublicCoachByID is one verified, listed coach for their own public page.
+func (s *Service) PublicCoachByID(userID string) (model.CoachProfile, error) {
+	if !s.coachProfilesReady() || !s.columnReady("coach_profiles", "verified") {
+		return model.CoachProfile{}, ErrNotFound
+	}
+	row, err := s.sb.SelectOne("coach_profiles",
+		"user_id=eq."+store.Q(userID)+"&listed=is.true&verified=is.true")
+	if err != nil {
+		return model.CoachProfile{}, err
+	}
+	if row == nil {
+		return model.CoachProfile{}, ErrNotFound
+	}
+	p := mapCoachProfile(row)
+	if p.Name == "" {
+		p.Name = s.coachingName(p.UserID)
+	}
+	p.Lat, p.Lng = nil, nil
+	return p, nil
+}
+
 // ListCoachesNearby returns listed coaches ranked by distance from (lat,lng).
 // Coaches without coordinates sort last; radiusKm<=0 means no radius cap.
 func (s *Service) ListCoachesNearby(lat, lng, radiusKm float64, viewerID string) ([]model.CoachProfile, error) {

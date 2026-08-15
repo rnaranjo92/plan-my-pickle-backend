@@ -128,6 +128,7 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 		"/guides/how-to-run-a-pickleball-round-robin",
 		"/guides/pickleball-tournament-formats-explained",
 		"/guides/pickleball-skill-levels-explained",
+		"/coaches/apply",
 	} {
 		urls = append(urls, url{loc: seoCanonicalBase + p})
 	}
@@ -140,6 +141,10 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 			seenHub[st+"/"+co] = true
 			urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-tournaments/" + st + "/" + co})
 		}
+	}
+	// Public coach directory + verified coach profiles.
+	for _, p := range s.seoCoachURLs() {
+		urls = append(urls, url{loc: seoCanonicalBase + p})
 	}
 	// Public upcoming coaching classes.
 	if classes, _ := s.svc.PublicUpcomingClasses(seoMaxEvents); len(classes) > 0 {
@@ -185,6 +190,7 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 type seoEventData struct {
 	Title, Canonical, Description, H1 string
 	DateLine, VenueLine, FeeLine      string
+	Poster, OGImage                   string
 	Dupr                              bool
 	RegisterURL, ResultsURL           string
 	JSONLD                            template.HTML
@@ -255,6 +261,14 @@ func (s *Server) seoEventPage(w http.ResponseWriter, r *http.Request) {
 	}
 	ldJSON, _ := json.Marshal(ld)
 
+	poster := strings.TrimSpace(strOr(ev.PosterURL))
+	if poster != "" {
+		// Google's Event schema wants an image, and og:image is what makes a
+		// shared link render as a card instead of a bare URL.
+		ld["image"] = poster
+		ldJSON, _ = json.Marshal(ld)
+	}
+
 	data := seoEventData{
 		Title:       ev.Name + sanct + " — Pickleball Tournament | PlanMyPickle",
 		Canonical:   seoCanonicalBase + "/e/" + ev.ID,
@@ -263,6 +277,8 @@ func (s *Server) seoEventPage(w http.ResponseWriter, r *http.Request) {
 		DateLine:    dateLine,
 		VenueLine:   venue,
 		FeeLine:     feeLine,
+		Poster:      poster,
+		OGImage:     poster,
 		Dupr:        ev.DuprSanctioned,
 		RegisterURL: seoAppBase + "/?event=" + ev.ID,
 		ResultsURL:  seoCanonicalBase + "/e/" + ev.ID + "/results",
@@ -275,10 +291,15 @@ func (s *Server) seoEventPage(w http.ResponseWriter, r *http.Request) {
 
 type seoHubCard struct {
 	Name, DateLine, Venue, URL string
-	Dupr                       bool
+	// Poster is the organizer's flyer. Shown as a thumbnail, not full-bleed:
+	// event flyers are usually tall portrait art, and one at card width would
+	// push the second event off the screen entirely.
+	Poster string
+	Dupr   bool
 }
 type seoHubData struct {
 	Title, Canonical, Description, H1, Intro string
+	OGImage                                  string
 	Cards                                    []seoHubCard
 	JSONLD                                   template.HTML
 }
@@ -317,7 +338,8 @@ func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
 		}
 		cards = append(cards, seoHubCard{
 			Name: e.Name, DateLine: fmtEventDate(strOr(e.StartsAt)),
-			Venue: venue, URL: "/e/" + e.ID, Dupr: e.DuprSanctioned,
+			Venue: venue, URL: "/e/" + e.ID, Poster: strOr(e.PosterURL),
+			Dupr: e.DuprSanctioned,
 		})
 		itemList = append(itemList, map[string]any{
 			"@type": "ListItem", "position": i + 1,
@@ -331,7 +353,15 @@ func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
 	}
 	ldJSON, _ := json.Marshal(ld)
 
+	og := ""
+	for _, c := range cards {
+		if c.Poster != "" {
+			og = c.Poster
+			break
+		}
+	}
 	data := seoHubData{
+		OGImage:     og,
 		Title:       "Pickleball Tournaments in " + place + " — 2026 Schedule | PlanMyPickle",
 		Canonical:   seoCanonicalBase + "/pickleball-tournaments/" + stateSlug + "/" + countySlug,
 		Description: "Find and register for pickleball tournaments in " + place + ". Upcoming events, divisions, skill brackets, and DUPR-sanctioned play on PlanMyPickle.",
@@ -443,6 +473,7 @@ func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
 // --- coaching class page ---
 
 type seoClassData struct {
+	OGImage                                            string
 	Title, Canonical, Description, H1                  string
 	CoachLine, DateLine, VenueLine, FeeLine, SpotsLine string
 	RegisterURL                                        string
@@ -545,6 +576,7 @@ func (s *Server) seoClassPage(w http.ResponseWriter, r *http.Request) {
 // --- event results / standings page ---
 
 type seoResultsData struct {
+	OGImage                                          string
 	Title, Canonical, Description, H1, Sub, EventURL string
 	Body                                             template.HTML
 	JSONLD                                           template.HTML
@@ -664,6 +696,9 @@ const seoHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta property="og:description" content="{{.Description}}">
 <meta property="og:url" content="{{.Canonical}}">
 <meta property="og:type" content="website">
+{{if .OGImage}}<meta property="og:image" content="{{.OGImage}}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{{.OGImage}}">{{end}}
 <script type="application/ld+json">{{.JSONLD}}</script>
 <style>
 :root{--navy:#16245c;--green:#4f8b3b;--ink:#16203a;--muted:#5b6b80}
@@ -676,16 +711,24 @@ h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
 .cta{display:inline-block;margin:22px 0 6px;background:#f5c518;color:var(--ink);text-decoration:none;font-weight:800;padding:13px 22px;border-radius:999px}
 .card{display:block;background:#fff;border:1px solid #e7eedd;border-radius:14px;padding:16px 18px;margin:12px 0;text-decoration:none;color:var(--ink)}
 .card h2{margin:0 0 4px;color:var(--navy);font-size:18px}
+.card.has-img{display:flex;gap:14px;align-items:flex-start}
+.thumb{width:104px;height:104px;flex:none;border-radius:10px;object-fit:cover;background:#eef4e6}
+.cbody{min-width:0}
+.avatar{border-radius:50%}
+.portrait{width:120px;height:120px;border-radius:50%;object-fit:cover;background:#eef4e6;border:1px solid #e7eedd;margin:16px 0 0;display:block}
+.hero{width:100%;max-height:420px;object-fit:cover;border-radius:14px;border:1px solid #e7eedd;background:#eef4e6;margin:14px 0 4px;display:block}
 .foot{margin-top:40px;color:var(--muted);font-size:13px}
 .foot a{color:var(--green)}
 </style></head><body><div class="wrap">
 <header><a href="` + seoCanonicalBase + `">🥒 PlanMyPickle</a></header>`
 
-const seoFoot = `<p class="foot">Powered by <a href="` + seoCanonicalBase + `">PlanMyPickle</a> — run pickleball tournaments, minus the chaos.</p>
+const seoFoot = `<p class="foot"><a href="/coaches">Find a pickleball coach</a> · <a href="/coaches/apply">Coach with us</a></p>
+<p class="foot">Powered by <a href="` + seoCanonicalBase + `">PlanMyPickle</a> — run pickleball tournaments, minus the chaos.</p>
 </div></body></html>`
 
 var seoEventTmpl = template.Must(template.New("ev").Parse(seoHead + `
 <h1>{{.H1}}</h1>
+{{if .Poster}}<img class="hero" src="{{.Poster}}" alt="{{.H1}} event poster">{{end}}
 {{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
 {{if .VenueLine}}<p class="meta">📍 {{.VenueLine}}</p>{{end}}
 <p class="meta">💵 {{.FeeLine}}</p>
@@ -716,11 +759,14 @@ var seoResultsTmpl = template.Must(template.New("res").Parse(seoHead + `
 var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `
 <h1>{{.H1}}</h1>
 <p class="meta">{{.Intro}}</p>
-{{range .Cards}}<a class="card" href="{{.URL}}">
+{{range .Cards}}<a class="card{{if .Poster}} has-img{{end}}" href="{{.URL}}">
+{{if .Poster}}<img class="thumb" src="{{.Poster}}" alt="{{.Name}} event poster" loading="lazy" width="104" height="104">{{end}}
+<div class="cbody">
 <h2>{{.Name}}</h2>
 {{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
 {{if .Venue}}<p class="meta">📍 {{.Venue}}</p>{{end}}
 {{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
+</div>
 </a>{{end}}
 <p><a class="cta" href="` + seoAppBase + `">Organizing? Run your tournament free →</a></p>
 ` + seoFoot))

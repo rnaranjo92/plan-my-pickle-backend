@@ -40,7 +40,35 @@ func bestEffortGeocode(loc string) (lat, lng *float64) {
 	if q == "" {
 		return nil, nil
 	}
+	if la, ln := geocodeOnce(q); la != nil {
+		return la, ln
+	}
+	// The place picker hands back "Venue Name — 123 Main St, City, ST 00000",
+	// and Nominatim returns NOTHING for the whole string: it tries to match the
+	// venue name as part of the address. The street address on its own resolves
+	// fine. This is not an edge case — it's what the picker produces for any
+	// named venue, and a miss here makes the event invisible on every city page
+	// and in Nearby, permanently and silently.
+	if addr := addressPart(q); addr != "" && addr != q {
+		return geocodeOnce(addr)
+	}
+	return nil, nil
+}
 
+// addressPart drops a leading venue name from "Venue — 123 Main St, …".
+// Only splits on an em/en dash or a spaced hyphen, which is what the picker
+// emits; a plain comma is left alone because it's part of the address itself.
+func addressPart(q string) string {
+	for _, sep := range []string{" — ", " – ", " - "} {
+		if i := strings.Index(q, sep); i >= 0 {
+			return strings.TrimSpace(q[i+len(sep):])
+		}
+	}
+	return ""
+}
+
+// geocodeOnce is one rate-limited lookup.
+func geocodeOnce(q string) (lat, lng *float64) {
 	geocodeMu.Lock()
 	if wait := geocodeMinInterval - time.Since(geocodeLast); wait > 0 {
 		time.Sleep(wait)
@@ -105,6 +133,23 @@ func (s *Service) BackfillEventCoords(limit int) (int, error) {
 	}
 	log.Printf("BackfillEventCoords: stamped coords on %d/%d listed events", updated, len(rows))
 	return updated, nil
+}
+
+// BackfillEventGeo repairs BOTH halves of the chain in one pass: geocode the
+// events missing coords, then stamp county+state on everything that has coords
+// but no county.
+//
+// The two backfills were separate, and the gap between them was a trap: an event
+// whose create-time geocode missed has no coords, so BackfillEventCounties (which
+// requires coords) skips it forever. It stays off every city page with nothing
+// short of a console session to fix it. Coords first, county second, one call.
+func (s *Service) BackfillEventGeo(limit int) (coords, counties int, err error) {
+	coords, err = s.BackfillEventCoords(limit)
+	if err != nil {
+		return coords, 0, err
+	}
+	counties, err = s.BackfillEventCounties(limit)
+	return coords, counties, err
 }
 
 // BackfillEventCounties stamps county+state on LISTED events that already have

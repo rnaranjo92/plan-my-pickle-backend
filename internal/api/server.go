@@ -79,6 +79,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux := http.NewServeMux()
 	s.registerSEO(mux)        // public crawlable pages + sitemap (see seo.go)
 	s.registerCoachApply(mux) // public "apply to coach" page + owner review
+	s.registerSEOCoaches(mux) // public coach directory + profiles (seo_coaches.go)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		// Echo the deployed commit (Railway injects RAILWAY_GIT_COMMIT_SHA) so a
 		// deploy can be VERIFIED — a 200 alone doesn't prove the new build is live
@@ -2580,20 +2581,21 @@ func (s *Server) seedNearbyDemo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]int{"seeded": n})
 }
 
-// backfillCounty stamps county+state on listed events that have coords but no
-// county — the one-shot backfill for the Nearby county filter. QA-gated.
+// backfillCounty repairs event geo: geocodes listed events missing coords, then
+// stamps county+state on the ones that now have them. Safe to re-run. QA-gated.
 func (s *Server) backfillCounty(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
 	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
 		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
 		return
 	}
-	n, err := s.svc.BackfillEventCounties(0)
+	coords, counties, err := s.svc.BackfillEventGeo(0)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"stamped": n})
+	writeJSON(w, http.StatusOK, map[string]int{
+		"geocoded": coords, "stamped": counties})
 }
 
 // testPush fires a diagnostic push to the CALLER's own device(s). QA-gated.

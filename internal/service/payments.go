@@ -752,9 +752,19 @@ func (s *Service) ListCompedAccounts() ([]CompedAccount, error) {
 	}
 	out := make([]CompedAccount, 0, len(rows))
 	for _, r := range rows {
+		uid := asStr(r, "user_id")
+		// full_name is often empty — an organizer who never filled in a profile
+		// has none — and a comp list that says NULL is a list nobody can review.
+		// resolveDisplayName falls back through the players row, the signup name
+		// in auth metadata, and finally the email's local part, so every entry
+		// identifies somebody.
+		name := strings.TrimSpace(asStr(r, "full_name"))
+		if name == "" {
+			name = s.resolveDisplayName(uid, "")
+		}
 		out = append(out, CompedAccount{
-			UserID:   asStr(r, "user_id"),
-			Name:     asStr(r, "full_name"),
+			UserID:   uid,
+			Name:     name,
 			Reason:   asStr(r, "comp_reason"),
 			CompedAt: asStr(r, "comped_at"),
 			CompedBy: asStr(r, "comped_by"),

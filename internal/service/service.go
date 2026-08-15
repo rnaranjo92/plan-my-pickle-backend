@@ -12903,6 +12903,13 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 	// the same season window when one is active.
 	h2h, _ := s.headToHead(eventID, bracketID, since)
 
+	// League play ranks on point differential before head-to-head; tournaments
+	// keep the USAP order. Head-to-head assumes a full round robin and isn't
+	// shown on the row, so in drop-in league play it ranks people on data they
+	// can't see and often never generated.
+	if s.eventIsLeaguePlay(eventID) {
+		return rankStandingsDiffFirst(out, h2h, byWins), nil
+	}
 	return rankStandings(out, h2h, byWins), nil
 }
 
@@ -12910,7 +12917,31 @@ func (s *Service) Standings(eventID, bracketID string, byWins bool) ([]model.Sta
 // all-time board and a DAY/season window rank identically — a leaderboard that
 // broke ties differently depending on which window you were looking at would be
 // a different leaderboard, not the same one filtered.
+// rankStandings orders standings. [diffFirst] puts point DIFFERENTIAL ahead of
+// head-to-head within a tied group — see rankStandingsDiffFirst.
 func rankStandings(out []model.Standing, h2h map[string]map[string]int, byWins bool) []model.Standing {
+	return rankStandingsWith(out, h2h, byWins, false)
+}
+
+// rankStandingsDiffFirst is the LEAGUE ordering: wins, then point differential,
+// then head-to-head, then points scored.
+//
+// Head-to-head is the USAP round-robin criterion and stays that way for
+// tournaments, but it's the wrong first tiebreak for league and drop-in play,
+// for two reasons:
+//
+//   - It assumes everyone plays everyone. In a perpetual league most pairs never
+//     meet, so it settles some ties on a single arbitrary meeting and leaves the
+//     rest to fall through anyway.
+//   - It is INVISIBLE. The standings table shows W-L, points and differential;
+//     nothing on the row explains a head-to-head result, so a player ranked
+//     below someone with a far worse differential has no way to see why. That is
+//     not a hypothetical — it is the question that prompted this change.
+func rankStandingsDiffFirst(out []model.Standing, h2h map[string]map[string]int, byWins bool) []model.Standing {
+	return rankStandingsWith(out, h2h, byWins, true)
+}
+
+func rankStandingsWith(out []model.Standing, h2h map[string]map[string]int, byWins, diffFirst bool) []model.Standing {
 	// h2hCmp: +1 if a beat b head-to-head more, -1 if b did, 0 if even/none.
 	// Pairwise (resolves the common 2-way tie; multi-way groups fall through).
 	h2hCmp := func(a, b model.Standing) int {
@@ -12952,6 +12983,11 @@ func rankStandings(out []model.Standing, h2h map[string]map[string]int, byWins b
 				}
 				sort.SliceStable(grp, func(x, y int) bool {
 					a, b := grp[x], grp[y]
+					// Leagues compare the differential the table actually shows
+					// before the head-to-head it doesn't.
+					if diffFirst && a.PointDiff != b.PointDiff {
+						return a.PointDiff > b.PointDiff
+					}
 					if gw[a.PlayerID] != gw[b.PlayerID] {
 						return gw[a.PlayerID] > gw[b.PlayerID]
 					}

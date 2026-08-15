@@ -23,6 +23,25 @@ func roundCreatedAt(r map[string]any) string {
 // began, or "" when the event isn't a season-scoped perpetual league (so the
 // standings RPC path is used unchanged — every tournament and legacy league).
 // Gated on the column existing, so it's zero-cost until the migration runs.
+// eventIsLeaguePlay reports whether this event belongs to a league (including a
+// perpetual one), which decides the tiebreak order: leagues rank on the point
+// differential the table displays, tournaments keep the USAP head-to-head.
+//
+// A standalone tournament has no league_id, so the default when the lookup fails
+// is FALSE — a failed query must not quietly move a sanctioned tournament off
+// the USAP criteria.
+func (s *Service) eventIsLeaguePlay(eventID string) bool {
+	if strings.TrimSpace(eventID) == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=league_id")
+	if err != nil || row == nil {
+		return false
+	}
+	return strings.TrimSpace(asStr(row, "league_id")) != ""
+}
+
 func (s *Service) seasonStartFor(eventID string) string {
 	if !s.columnReady("events", "season_started_at") {
 		return ""

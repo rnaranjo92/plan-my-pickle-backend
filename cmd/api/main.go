@@ -203,6 +203,27 @@ func main() {
 		}
 	}()
 
+	// Event geo self-repair: geocode listed events missing coords, then stamp
+	// county+state. An event whose create-time geocode missed is invisible on
+	// every city page and in Nearby, silently and forever — and the only repair
+	// was a QA button somebody had to know to press. This makes it heal itself.
+	//
+	// The pass is a no-op once everything is stamped (the query matches nothing),
+	// bounded to 200 events, and rate-limited to ~1 req/sec by bestEffortGeocode,
+	// so the steady-state cost is one cheap SELECT per hour. Runs shortly after
+	// boot so a fix doesn't wait an hour, then hourly.
+	go func() {
+		time.Sleep(90 * time.Second) // let the instance finish coming up
+		for {
+			if geo, county, err := svc.BackfillEventGeo(0); err != nil {
+				log.Printf("geo-repair: pass failed (retrying next hour): %v", err)
+			} else if geo > 0 || county > 0 {
+				log.Printf("geo-repair: geocoded %d, stamped county on %d", geo, county)
+			}
+			time.Sleep(time.Hour)
+		}
+	}()
+
 	// Ladder challenge timers: auto-forfeit challenges past respond_by, void
 	// accepted ones past play_by, and send 24h deadline reminders. Day-scale
 	// deadlines, so a 5-minute tick is ample; each row is claimed atomically so

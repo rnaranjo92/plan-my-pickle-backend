@@ -795,8 +795,23 @@ func (s *Service) CoachPlanActive(userID string) bool {
 	if !SubscriptionsEnabled() {
 		return true
 	}
+	// If the plan can't be BOUGHT, it can't be enforced. SUBSCRIPTIONS_ENABLED is
+	// already on in production for organizer Premium, so without this the coach
+	// cap would switch itself on the moment add_coach_plan.sql ran — capping
+	// coaches while StartCoachPlanCheckout still refuses for want of a price.
+	// Blocked with no way to pay is worse than free.
+	if coachPriceID() == "" {
+		return true
+	}
 	if strings.TrimSpace(userID) == "" {
 		return false
+	}
+	// Founding and comped coaches, by email, from the env — so a comp can be
+	// granted or revoked in Railway without a deploy. These are the people who
+	// used the product before it had a price; charging them retroactively is
+	// how you lose the coaches who vouched for you.
+	if s.coachComped(userID) {
+		return true
 	}
 	if !s.columnReady("pmp_profiles", "coach_plan") {
 		return true // plan not migrated in yet — don't gate on a column that isn't there
@@ -809,6 +824,35 @@ func (s *Service) CoachPlanActive(userID string) bool {
 		return true
 	}
 	return asBool(row, "coach_plan")
+}
+
+// compedCoachEmails is the comma-separated COMPED_COACH_EMAILS allowlist.
+func compedCoachEmails() map[string]bool {
+	out := map[string]bool{}
+	for _, e := range strings.Split(os.Getenv("COMPED_COACH_EMAILS"), ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			out[e] = true
+		}
+	}
+	return out
+}
+
+// coachComped reports whether this coach is on the comped allowlist.
+//
+// Resolved through `instructors`, which is keyed by email and carries user_id —
+// the same table that grants coach access in the first place, so a comp can
+// only ever apply to somebody who is actually a coach.
+func (s *Service) coachComped(userID string) bool {
+	list := compedCoachEmails()
+	if len(list) == 0 || !s.columnReady("instructors", "id") {
+		return false
+	}
+	row, err := s.sb.SelectOne("instructors",
+		"user_id=eq."+store.Q(userID)+"&select=email")
+	if err != nil || row == nil {
+		return false
+	}
+	return list[strings.ToLower(strings.TrimSpace(asStr(row, "email")))]
 }
 
 // StartCoachPlanCheckout opens a Stripe subscription Checkout for the coach plan.

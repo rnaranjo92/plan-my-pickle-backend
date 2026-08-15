@@ -54,3 +54,31 @@ func TestFreeCoachStudentLimit(t *testing.T) {
 		t.Fatalf("free tier = %d students, advertised as 3", kFreeCoachStudents)
 	}
 }
+
+// SUBSCRIPTIONS_ENABLED is already true in production (organizer Premium runs on
+// it), so the coach cap must NOT switch itself on the moment the migration runs.
+// Without a purchasable price a capped coach has no way to pay — blocked with no
+// upgrade path is strictly worse than free.
+func TestCoachCapOffWhenPlanIsNotPurchasable(t *testing.T) {
+	t.Setenv("SUBSCRIPTIONS_ENABLED", "true")
+	t.Setenv("STRIPE_COACH_PRICE_ID", "")
+	if !(&Service{}).CoachPlanActive("some-coach") {
+		t.Fatal("with no coach price configured nobody may be capped")
+	}
+}
+
+func TestCompedCoachEmailsParsing(t *testing.T) {
+	t.Setenv("COMPED_COACH_EMAILS", " Austen@Example.com ,, second@example.com,")
+	got := compedCoachEmails()
+	if len(got) != 2 {
+		t.Fatalf("parsed %d emails, want 2 (blanks dropped)", len(got))
+	}
+	// Lower-cased and trimmed, so the env value doesn't have to be exact.
+	if !got["austen@example.com"] || !got["second@example.com"] {
+		t.Fatalf("emails should be normalised, got %v", got)
+	}
+	t.Setenv("COMPED_COACH_EMAILS", "")
+	if len(compedCoachEmails()) != 0 {
+		t.Fatal("an unset list must comp nobody")
+	}
+}

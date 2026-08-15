@@ -170,6 +170,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// for organizer Premium (or the reverse) is the thing this separation exists
 	// to prevent.
 	mux.HandleFunc("POST /me/subscribe-coach", requireAuth(s.subscribeCoachPlan))
+	// Comped accounts: the review list for manually-granted access. Owner-only —
+	// this both reveals who is on a free ride and can put someone there.
+	mux.HandleFunc("GET /comped", s.ownerEmailOnly(s.listComped))
+	mux.HandleFunc("POST /comped/{userId}", s.ownerEmailOnly(s.setComped))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
 	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
 	// Public: confirm a just-completed Checkout by session id (from the success
@@ -4841,6 +4845,34 @@ func (s *Server) stripeConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// listComped returns every manually-granted account, with the reason and date.
+func (s *Server) listComped(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.ListCompedAccounts()
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// setComped grants or revokes a comp. A grant must carry a reason — a comp
+// nobody can explain later is one nobody dares revoke.
+func (s *Server) setComped(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Comped bool   `json:"comped"`
+		Reason string `json:"reason"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetComped(
+		r.PathValue("userId"), req.Reason, userEmail(r), req.Comped); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // subscribeCoachPlan opens a Stripe subscription Checkout for the COACH plan —

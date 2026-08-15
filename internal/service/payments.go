@@ -706,9 +706,86 @@ func (s *Service) IsPremium(userID string) bool {
 	if userID == "" {
 		return false
 	}
+	sel := "premium"
+	// `comped` is manual access, recorded separately from `premium` because
+	// Stripe OWNS premium: a subscription webhook overwrites it, and a
+	// reconciler asking Stripe "who is actually subscribed?" would revoke every
+	// tester, since none of them are. Reading both means a comp survives billing.
+	comped := s.columnReady("pmp_profiles", "comped")
+	if comped {
+		sel = "premium,comped"
+	}
 	row, err := s.sb.SelectOne("pmp_profiles",
-		"user_id=eq."+store.Q(userID)+"&select=premium")
-	return err == nil && row != nil && asBool(row, "premium")
+		"user_id=eq."+store.Q(userID)+"&select="+sel)
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "premium") || (comped && asBool(row, "comped"))
+}
+
+// CompedAccount is one manually-granted account, for the owner's review list.
+type CompedAccount struct {
+	UserID   string `json:"userId"`
+	Name     string `json:"name,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	CompedAt string `json:"compedAt,omitempty"`
+	CompedBy string `json:"compedBy,omitempty"`
+	// Premium is the Stripe-owned flag. True alongside a comp usually means the
+	// comp was granted by hand on `premium` before comps had their own column.
+	Premium bool `json:"premium"`
+}
+
+// ListCompedAccounts returns every manually-granted account.
+//
+// Comps used to live in six places — two code allowlists, two env vars, and
+// hand-set premium rows — with no record of who granted one or why. This is the
+// list that makes them reviewable instead of archaeological.
+func (s *Service) ListCompedAccounts() ([]CompedAccount, error) {
+	if !s.columnReady("pmp_profiles", "comped") {
+		return nil, fmt.Errorf("%w: run add_comped_access.sql", ErrCoachingUnavailable)
+	}
+	rows, err := s.sb.Select("pmp_profiles",
+		"comped=is.true&select=user_id,full_name,premium,comp_reason,comped_at,comped_by"+
+			"&order=comped_at.desc&limit=500")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CompedAccount, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, CompedAccount{
+			UserID:   asStr(r, "user_id"),
+			Name:     asStr(r, "full_name"),
+			Reason:   asStr(r, "comp_reason"),
+			CompedAt: asStr(r, "comped_at"),
+			CompedBy: asStr(r, "comped_by"),
+			Premium:  asBool(r, "premium"),
+		})
+	}
+	return out, nil
+}
+
+// SetComped grants or revokes a comp, recording WHY and by whom.
+func (s *Service) SetComped(userID, reason, by string, on bool) error {
+	// Argument checks BEFORE touching the database: rejecting a blank user id
+	// shouldn't cost a round trip, and the caller gets the useful error rather
+	// than a migration message that isn't their problem.
+	if strings.TrimSpace(userID) == "" {
+		return errors.New("a user is required")
+	}
+	if on && strings.TrimSpace(reason) == "" {
+		return errors.New("give a reason for the comp")
+	}
+	if !s.columnReady("pmp_profiles", "comped") {
+		return fmt.Errorf("%w: run add_comped_access.sql", ErrCoachingUnavailable)
+	}
+	row := map[string]any{"user_id": userID, "comped": on}
+	if on {
+		row["comp_reason"] = strings.TrimSpace(reason)
+		row["comped_at"] = now()
+		row["comped_by"] = orNull(strings.TrimSpace(by))
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", row)
+	return err
 }
 
 // eventPremiumUnlocked reports whether an event has Premium features available —

@@ -20,7 +20,7 @@ func TestTownPageIsSubstantial(t *testing.T) {
 		County:    "San Diego County",
 		CountyURL: "/pickleball-tournaments/california/san-diego-county",
 		Cards:     []seoHubCard{{Name: "Battle of the Courts II", URL: "/e/1"}},
-		JSONLD:    template.HTML(`{}`),
+		JSONLD:    template.JS(`{}`),
 	})
 	body := w.Body.String()
 

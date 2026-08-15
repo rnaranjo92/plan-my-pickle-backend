@@ -199,7 +199,7 @@ type seoEventData struct {
 	Poster, OGImage                   string
 	Dupr                              bool
 	RegisterURL, ResultsURL           string
-	JSONLD                            template.HTML
+	JSONLD                            template.JS
 }
 
 func (s *Server) seoEventPage(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +288,7 @@ func (s *Server) seoEventPage(w http.ResponseWriter, r *http.Request) {
 		Dupr:        ev.DuprSanctioned,
 		RegisterURL: seoAppBase + "/?event=" + ev.ID,
 		ResultsURL:  seoCanonicalBase + "/e/" + ev.ID + "/results",
-		JSONLD:      template.HTML(ldJSON),
+		JSONLD:      template.JS(ldJSON),
 	}
 	s.seoRender(w, seoEventTmpl, data)
 }
@@ -310,7 +310,7 @@ type seoHubData struct {
 	OGImage                                  string
 	Cities                                   []seoPlaceLink
 	Cards                                    []seoHubCard
-	JSONLD                                   template.HTML
+	JSONLD                                   template.JS
 }
 
 // seoCityHub serves BOTH /pickleball-tournaments/{state}/{county} and the same
@@ -406,7 +406,7 @@ func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
 		H1:          "Pickleball Tournaments in " + place,
 		Intro:       plural(len(match), "upcoming pickleball tournament", "upcoming pickleball tournaments") + " in " + place + " — browse divisions, skill brackets, and fees, then register in a tap.",
 		Cards:       cards,
-		JSONLD:      template.HTML(ldJSON),
+		JSONLD:      template.JS(ldJSON),
 	}
 	s.seoRender(w, seoHubTmpl, data)
 }
@@ -488,7 +488,7 @@ func (s *Server) seoTownHub(
 		County:      countyName,
 		CountyURL:   countyLink,
 		Cards:       cards,
-		JSONLD:      template.HTML(ld),
+		JSONLD:      template.JS(ld),
 	})
 }
 
@@ -496,7 +496,7 @@ type seoTownData struct {
 	Title, Canonical, Description, H1, Intro string
 	City, Place, County, CountyURL, OGImage  string
 	Cards                                    []seoHubCard
-	JSONLD                                   template.HTML
+	JSONLD                                   template.JS
 }
 
 // --- league hub + per-league page ---
@@ -539,7 +539,7 @@ func (s *Server) seoLeagueHub(w http.ResponseWriter, r *http.Request) {
 		Description: "Find and join pickleball leagues in " + place + " — round-robin, ladder and team leagues on PlanMyPickle.",
 		H1:          "Pickleball Leagues in " + place,
 		Intro:       plural(len(match), "pickleball league", "pickleball leagues") + " in " + place + " — round-robin, ladder and team play. Join one or start your own.",
-		Cards:       cards, JSONLD: template.HTML(ld),
+		Cards:       cards, JSONLD: template.JS(ld),
 	})
 }
 
@@ -592,7 +592,7 @@ func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
 		Description: "Join " + lg.Name + ", a pickleball league" + titlePlace + ". Sessions, standings and live scores on PlanMyPickle.",
 		H1:          lg.Name,
 		Intro:       intro,
-		Cards:       cards, JSONLD: template.HTML(ld),
+		Cards:       cards, JSONLD: template.JS(ld),
 	})
 }
 
@@ -603,7 +603,7 @@ type seoClassData struct {
 	Title, Canonical, Description, H1                  string
 	CoachLine, DateLine, VenueLine, FeeLine, SpotsLine string
 	RegisterURL                                        string
-	JSONLD                                             template.HTML
+	JSONLD                                             template.JS
 }
 
 func (s *Server) seoClassPage(w http.ResponseWriter, r *http.Request) {
@@ -695,7 +695,7 @@ func (s *Server) seoClassPage(w http.ResponseWriter, r *http.Request) {
 		FeeLine:     fee,
 		SpotsLine:   spots,
 		RegisterURL: seoAppBase + "/?class=" + c.ID,
-		JSONLD:      template.HTML(ldJSON),
+		JSONLD:      template.JS(ldJSON),
 	})
 }
 
@@ -705,7 +705,7 @@ type seoResultsData struct {
 	OGImage                                          string
 	Title, Canonical, Description, H1, Sub, EventURL string
 	Body                                             template.HTML
-	JSONLD                                           template.HTML
+	JSONLD                                           template.JS
 }
 
 func (s *Server) seoEventResults(w http.ResponseWriter, r *http.Request) {
@@ -780,7 +780,7 @@ func (s *Server) seoEventResults(w http.ResponseWriter, r *http.Request) {
 		Description: "Final standings and results for " + ev.Name + " — division standings, wins and point differentials on PlanMyPickle.",
 		H1:          ev.Name + " — Results",
 		Sub:         sub, Body: template.HTML(body.String()),
-		EventURL: eventURL, JSONLD: template.HTML(ld),
+		EventURL: eventURL, JSONLD: template.JS(ld),
 	})
 }
 

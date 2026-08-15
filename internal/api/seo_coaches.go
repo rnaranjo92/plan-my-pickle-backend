@@ -37,7 +37,7 @@ type seoCoachHubData struct {
 	Title, Canonical, Description, H1, Intro string
 	OGImage                                  string
 	Cards                                    []seoCoachCard
-	JSONLD                                   template.HTML
+	JSONLD                                   template.JS
 }
 
 type seoCoachPageData struct {
@@ -48,7 +48,7 @@ type seoCoachPageData struct {
 	CertLine, ExpLine, Bio            string
 	Verified                          bool
 	BookURL                           string
-	JSONLD                            template.HTML
+	JSONLD                            template.JS
 }
 
 // coachRate renders an hourly rate, or "" when the coach hasn't set one.
@@ -121,7 +121,7 @@ func (s *Server) seoCoachHub(w http.ResponseWriter, r *http.Request) {
 		H1:          "Pickleball Coaches",
 		Intro:       intro,
 		Cards:       cards,
-		JSONLD:      template.HTML(ld),
+		JSONLD:      template.JS(ld),
 	})
 }
 
@@ -173,7 +173,7 @@ func (s *Server) seoCoachPage(w http.ResponseWriter, r *http.Request) {
 		Bio:         strings.TrimSpace(c.Bio),
 		Verified:    c.Verified,
 		BookURL:     seoAppBase + "/?coach=" + c.UserID,
-		JSONLD:      template.HTML(ld),
+		JSONLD:      template.JS(ld),
 	})
 }
 

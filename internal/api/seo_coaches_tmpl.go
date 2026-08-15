@@ -50,6 +50,7 @@ a{color:var(--green-dk)}
 .top nav{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
 .top nav a{color:var(--muted);text-decoration:none;font-size:15px;font-weight:600}
 .top nav a:hover{color:var(--ink)}
+.top nav a.back{color:var(--green-dk);font-weight:700}
 
 /* hero */
 .hero{background:linear-gradient(160deg,var(--deep) 0%,var(--navy) 100%);color:#fff;
@@ -139,15 +140,16 @@ details p{margin:10px 0 0;color:var(--muted);font-size:15px}
 <header class="top"><div class="wrap">
   <a class="brand" href="` + seoCanonicalBase + `">🥒 PlanMyPickle</a>
   <nav>
-    <a href="/coaches">Coaches</a>
-    <a href="/coaches/apply">Coach with us</a>
-    <a class="btn btn--green" style="padding:9px 18px;font-size:14px" href="` + seoAppBase + `">Open the app</a>
+    <a class="back" href="` + seoCanonicalBase + `">← Main site</a>
+    <a href="/coaches">Find a coach</a>
+    <a class="btn btn--green" style="padding:9px 18px;font-size:14px" href="/coaches/apply">Apply to coach</a>
   </nav>
 </div></header>`
 
 const coachFoot = `<div class="foot"><div class="wrap">
+  <p style="margin:0 0 14px"><a href="` + seoCanonicalBase + `"
+    style="font-weight:700">← Back to planmypickle.com</a></p>
   <nav>
-    <a href="` + seoCanonicalBase + `">Home</a>
     <a href="/coaches">Find a coach</a>
     <a href="/coaches/apply">Coach with us</a>
     <a href="` + seoCanonicalBase + `/guides">Guides</a>

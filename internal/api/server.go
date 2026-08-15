@@ -165,6 +165,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/otp/verify", requireAuth(s.verifyOtp))
 	mux.HandleFunc("POST /me/phone/save-unverified", requireAuth(s.savePhoneUnverified))
 	mux.HandleFunc("GET /me/verification", requireAuth(s.verificationStatus))
+	// Home's "what needs me" list — one call, not six.
+	mux.HandleFunc("GET /me/action-items", requireAuth(s.myActionItems))
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	// The coach plan is its own product on its own Stripe price — a coach paying
 	// for organizer Premium (or the reverse) is the thing this separation exists
@@ -4873,6 +4875,16 @@ func (s *Server) setComped(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// myActionItems returns the things waiting on the caller, for the home screen.
+func (s *Server) myActionItems(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ActionItems(userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 // subscribeCoachPlan opens a Stripe subscription Checkout for the COACH plan —

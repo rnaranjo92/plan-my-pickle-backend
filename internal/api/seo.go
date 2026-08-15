@@ -136,10 +136,16 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 	seenHub := map[string]bool{}
 	for _, e := range evs {
 		urls = append(urls, url{loc: seoCanonicalBase + "/e/" + e.ID, lastmod: isoDate(strOr(e.StartsAt))})
-		st, co := slugify(e.State), slugify(e.County)
+		st, co, ci := slugify(e.State), slugify(e.County), slugify(e.City)
 		if st != "" && co != "" && !seenHub[st+"/"+co] {
 			seenHub[st+"/"+co] = true
 			urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-tournaments/" + st + "/" + co})
+		}
+		// City pages share the county's URL shape, so they're deduped in the same
+		// set — which also stops a city named like its county emitting twice.
+		if st != "" && ci != "" && !seenHub[st+"/"+ci] {
+			seenHub[st+"/"+ci] = true
+			urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-tournaments/" + st + "/" + ci})
 		}
 	}
 	// Public coach directory + verified coach profiles.
@@ -297,27 +303,42 @@ type seoHubCard struct {
 	Poster string
 	Dupr   bool
 }
+type seoPlaceLink struct{ Name, URL string }
+
 type seoHubData struct {
 	Title, Canonical, Description, H1, Intro string
 	OGImage                                  string
+	Cities                                   []seoPlaceLink
 	Cards                                    []seoHubCard
 	JSONLD                                   template.HTML
 }
 
+// seoCityHub serves BOTH /pickleball-tournaments/{state}/{county} and the same
+// path with a city slug.
+//
+// One handler and one route on purpose: the two URL shapes are identical, Go's
+// mux can't tell them apart, and — more usefully — the existing CDN rewrite
+// already forwards this pattern, so city pages went live without touching the
+// edge config.
+//
+// County is tried first because those URLs are already indexed and must keep
+// resolving. A city page only answers when the slug isn't a county, which is
+// the common case for what people actually type: "pickleball tournaments san
+// diego", not "...san diego county".
 func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
-	stateSlug, countySlug := r.PathValue("state"), r.PathValue("county")
+	stateSlug, placeSlug := r.PathValue("state"), r.PathValue("county")
 	evs := s.seoPublicEvents()
 
 	var match []model.PublicEvent
 	var stateName, countyName string
 	for _, e := range evs {
-		if slugify(e.State) == stateSlug && slugify(e.County) == countySlug {
+		if slugify(e.State) == stateSlug && slugify(e.County) == placeSlug {
 			match = append(match, e)
 			stateName, countyName = e.State, e.County
 		}
 	}
 	if len(match) == 0 {
-		s.seoNotFound(w)
+		s.seoTownHub(w, stateSlug, placeSlug, evs)
 		return
 	}
 	// Soonest first (undated last).
@@ -360,10 +381,27 @@ func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// Link down to each city in this county: gives the city pages a crawl path
+	// and lets someone on the county page narrow to where they'll actually drive.
+	var cityLinks []seoPlaceLink
+	seenCity := map[string]bool{}
+	for _, e := range match {
+		if e.City == "" || seenCity[e.City] {
+			continue
+		}
+		seenCity[e.City] = true
+		cityLinks = append(cityLinks, seoPlaceLink{
+			Name: e.City,
+			URL:  "/pickleball-tournaments/" + stateSlug + "/" + slugify(e.City),
+		})
+	}
+	sort.Slice(cityLinks, func(i, j int) bool { return cityLinks[i].Name < cityLinks[j].Name })
+
 	data := seoHubData{
 		OGImage:     og,
+		Cities:      cityLinks,
 		Title:       "Pickleball Tournaments in " + place + " — 2026 Schedule | PlanMyPickle",
-		Canonical:   seoCanonicalBase + "/pickleball-tournaments/" + stateSlug + "/" + countySlug,
+		Canonical:   seoCanonicalBase + "/pickleball-tournaments/" + stateSlug + "/" + placeSlug,
 		Description: "Find and register for pickleball tournaments in " + place + ". Upcoming events, divisions, skill brackets, and DUPR-sanctioned play on PlanMyPickle.",
 		H1:          "Pickleball Tournaments in " + place,
 		Intro:       plural(len(match), "upcoming pickleball tournament", "upcoming pickleball tournaments") + " in " + place + " — browse divisions, skill brackets, and fees, then register in a tap.",
@@ -371,6 +409,94 @@ func (s *Server) seoCityHub(w http.ResponseWriter, r *http.Request) {
 		JSONLD:      template.HTML(ldJSON),
 	}
 	s.seoRender(w, seoHubTmpl, data)
+}
+
+// seoTownHub is the city-level page: /pickleball-tournaments/california/
+// chula-vista. Called only when the slug didn't match a county.
+//
+// This exists because the county pages target a phrase nobody types. People
+// search "pickleball tournaments san diego"; the county page is titled "San
+// Diego County". Same events, a name real queries use.
+func (s *Server) seoTownHub(
+	w http.ResponseWriter, stateSlug, citySlug string, evs []model.PublicEvent) {
+	var match []model.PublicEvent
+	var stateName, cityName, countyName string
+	for _, e := range evs {
+		if slugify(e.State) == stateSlug && e.City != "" &&
+			slugify(e.City) == citySlug {
+			match = append(match, e)
+			stateName, cityName, countyName = e.State, e.City, e.County
+		}
+	}
+	if len(match) == 0 {
+		s.seoNotFound(w)
+		return
+	}
+	sort.SliceStable(match, func(i, j int) bool {
+		return strOr(match[i].StartsAt) < strOr(match[j].StartsAt)
+	})
+
+	place := cityName
+	if stateName != "" {
+		place += ", " + stateName
+	}
+
+	var cards []seoHubCard
+	var items []any
+	og := ""
+	for i, e := range match {
+		venue := strings.TrimSpace(strOr(e.VenueName))
+		if venue == "" {
+			venue = strings.TrimSpace(strOr(e.Location))
+		}
+		poster := strOr(e.PosterURL)
+		if og == "" {
+			og = poster
+		}
+		cards = append(cards, seoHubCard{
+			Name: e.Name, DateLine: fmtEventDate(strOr(e.StartsAt)),
+			Venue: venue, URL: "/e/" + e.ID, Poster: poster,
+			Dupr: e.DuprSanctioned,
+		})
+		items = append(items, map[string]any{
+			"@type": "ListItem", "position": i + 1,
+			"url": seoCanonicalBase + "/e/" + e.ID, "name": e.Name,
+		})
+	}
+	ld, _ := json.Marshal(map[string]any{
+		"@context": "https://schema.org", "@type": "ItemList",
+		"name": "Pickleball Tournaments in " + place, "itemListElement": items,
+	})
+
+	// A link back up to the county page, so the city pages aren't orphans and
+	// the two levels pass authority to each other.
+	countyLink := ""
+	if countyName != "" {
+		countyLink = "/pickleball-tournaments/" + slugify(stateName) + "/" +
+			slugify(countyName)
+	}
+
+	s.seoRender(w, seoTownTmpl, seoTownData{
+		OGImage:     og,
+		Title:       "Pickleball Tournaments in " + cityName + " — 2026 Schedule | PlanMyPickle",
+		Canonical:   seoCanonicalBase + "/pickleball-tournaments/" + stateSlug + "/" + citySlug,
+		Description: "Upcoming pickleball tournaments in " + place + " — divisions, skill brackets, entry fees and DUPR-sanctioned play. Register in a tap on PlanMyPickle.",
+		H1:          "Pickleball Tournaments in " + place,
+		Intro:       plural(len(match), "upcoming pickleball tournament", "upcoming pickleball tournaments") + " in " + place + " — browse divisions, skill brackets and fees, then register in a tap.",
+		City:        cityName,
+		Place:       place,
+		County:      countyName,
+		CountyURL:   countyLink,
+		Cards:       cards,
+		JSONLD:      template.HTML(ld),
+	})
+}
+
+type seoTownData struct {
+	Title, Canonical, Description, H1, Intro string
+	City, Place, County, CountyURL, OGImage  string
+	Cards                                    []seoHubCard
+	JSONLD                                   template.HTML
 }
 
 // --- league hub + per-league page ---
@@ -756,6 +882,76 @@ var seoResultsTmpl = template.Must(template.New("res").Parse(seoHead + `
 <p><a class="cta" href="{{.EventURL}}">Event details &amp; registration →</a></p>
 ` + seoFoot))
 
+// The city page carries real editorial copy, not just a list.
+//
+// The county pages were ~265 words of listing chrome, competing against
+// directories with thousands of events and years of history. A page that thin
+// gives Google nothing to rank on beyond the event names themselves. What
+// follows is the substance a player searching the city actually wants — formats,
+// brackets, what sanctioning means, what it costs — and it's the same on every
+// city page by design: it's context, and it's true everywhere.
+var seoTownTmpl = template.Must(template.New("town").Parse(seoHead + `
+<h1>{{.H1}}</h1>
+<p class="meta">{{.Intro}}</p>
+{{range .Cards}}<a class="card{{if .Poster}} has-img{{end}}" href="{{.URL}}">
+{{if .Poster}}<img class="thumb" src="{{.Poster}}" alt="{{.Name}} event poster" loading="lazy" width="104" height="104">{{end}}
+<div class="cbody">
+<h2>{{.Name}}</h2>
+{{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
+{{if .Venue}}<p class="meta">📍 {{.Venue}}</p>{{end}}
+{{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
+</div>
+</a>{{end}}
+<p><a class="cta" href="` + seoAppBase + `">Organizing? Run your tournament free →</a></p>
+
+<h2>Playing a pickleball tournament in {{.City}}</h2>
+<p>Every event above runs on PlanMyPickle, so the same things are true of all of
+them: you register online, you get your schedule and court assignment on your
+phone, and scores go up live as they're entered — no crowding round a paper
+draw sheet taped to a fence.</p>
+<p>Most {{.City}} events are doubles, and you enter with a partner in a skill
+bracket. Some also run singles or mixed. If an event is listed as
+<b>DUPR&nbsp;Sanctioned</b>, your results are submitted to DUPR and count toward
+your rating — worth knowing before you enter, because sanctioned play is how you
+build a rating that other tournaments will seed you on.</p>
+
+<h2>Picking the right bracket</h2>
+<p>Brackets are set by skill, usually in half-point steps — 3.0, 3.5, 4.0 and up
+— and often split by age. Entering a bracket well above your level isn't
+ambitious, it's a short day. If you don't have a DUPR rating yet, enter where you
+honestly play; organizers can move you before the draw is built, and most would
+rather do that than have a mismatched first round.</p>
+
+<h2>What the format tells you about your day</h2>
+<p><b>Round robin</b> — you play everyone in your pool, so a bad first game
+doesn't end your tournament. Best value if you want court time.</p>
+<p><b>Single elimination</b> — lose once and you're done. Shortest day, highest
+stakes.</p>
+<p><b>Double elimination</b> — a losers' bracket gives you a second life, so one
+bad match doesn't decide it.</p>
+<p><b>Pools to playoff</b> — round-robin pools seed a knockout. The most common
+shape for a full-day event, and the one that rewards consistency.</p>
+
+<h2>Entry fees and what to bring</h2>
+<p>Entry fees are shown on each event page before you commit, and vary with the
+format and how many events you enter. Bring more water than you think, indoor
+and outdoor balls if the listing doesn't say which is used, and tape or a spare
+grip. Arrive early enough to warm up — first-round no-shows are usually people
+who budgeted for the drive but not the parking.</p>
+
+<h2>Running one in {{.City}}?</h2>
+<p>PlanMyPickle is free to run a tournament on: draws, scheduling, live scoring,
+standings and check-in. If you organize in {{.City}}, your event appears on this
+page automatically once it's published and listed publicly.</p>
+<p><a class="cta" href="` + seoAppBase + `">Create your event free →</a></p>
+{{if .CountyURL}}<p class="meta">Looking wider? See all
+<a href="{{.CountyURL}}">pickleball tournaments in {{.County}}</a>.</p>{{end}}
+<p class="meta">Also on PlanMyPickle:
+<a href="/coaches">pickleball coaches and lessons</a> ·
+<a href="` + seoCanonicalBase + `/guides/pickleball-tournament-formats-explained">tournament formats explained</a> ·
+<a href="` + seoCanonicalBase + `/guides/pickleball-skill-levels-explained">skill levels explained</a></p>
+` + seoFoot))
+
 var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `
 <h1>{{.H1}}</h1>
 <p class="meta">{{.Intro}}</p>
@@ -769,4 +965,6 @@ var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `
 </div>
 </a>{{end}}
 <p><a class="cta" href="` + seoAppBase + `">Organizing? Run your tournament free →</a></p>
+{{if .Cities}}<p class="meta">By city:
+{{range $i, $c := .Cities}}{{if $i}} · {{end}}<a href="{{$c.URL}}">{{$c.Name}}</a>{{end}}</p>{{end}}
 ` + seoFoot))

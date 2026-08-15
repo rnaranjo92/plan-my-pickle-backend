@@ -160,12 +160,21 @@ func (s *Service) BackfillEventCounties(limit int) (int, error) {
 	if limit <= 0 {
 		limit = DefaultBackfillCap
 	}
+	// county IS NULL *or* city IS NULL: events stamped before the city column
+	// existed have a county and would otherwise never get a city, keeping them
+	// off every city page permanently.
+	filter := "county=is.null"
+	if s.columnReady("events", "city") {
+		filter = "or=(county.is.null,city.is.null)"
+	}
 	rows, err := s.sb.Select("events",
-		"listed=eq.true&venue_lat=not.is.null&venue_lng=not.is.null&county=is.null"+
+		"listed=eq.true&venue_lat=not.is.null&venue_lng=not.is.null&"+filter+
 			"&select=id,venue_lat,venue_lng&limit="+strconv.Itoa(limit))
 	if err != nil {
 		return 0, err
 	}
+	// Checked once, not per row — columnReady caches, but the intent is clearer.
+	cityCol := s.columnReady("events", "city")
 	updated := 0
 	for _, r := range rows {
 		id := asStr(r, "id")
@@ -173,14 +182,15 @@ func (s *Service) BackfillEventCounties(limit int) (int, error) {
 		if id == "" || lat == nil || lng == nil {
 			continue
 		}
-		county, state := courts.ReverseCounty(*lat, *lng)
+		city, county, state := courts.ReverseCityCounty(*lat, *lng)
 		if strings.TrimSpace(county) == "" {
 			continue // geocoder unset / no match / transient — skip, retry later
 		}
-		if _, err := s.sb.Update("events", "id=eq."+store.Q(id), map[string]any{
-			"county": county,
-			"state":  state,
-		}); err != nil {
+		patch := map[string]any{"county": county, "state": state}
+		if strings.TrimSpace(city) != "" && cityCol {
+			patch["city"] = city
+		}
+		if _, err := s.sb.Update("events", "id=eq."+store.Q(id), patch); err != nil {
 			log.Printf("BackfillEventCounties: update %s failed (continuing): %v", id, err)
 			continue
 		}

@@ -53,6 +53,7 @@ var reverseCache sync.Map // string -> reverseResult
 type reverseResult struct {
 	Name    string
 	Address string
+	City    string
 	County  string
 	State   string
 }
@@ -63,6 +64,14 @@ type reverseResult struct {
 func ReverseCounty(lat, lng float64) (county, state string) {
 	r := reverseLookup(lat, lng)
 	return r.County, r.State
+}
+
+// ReverseCityCounty resolves a coordinate to city + county + state (US),
+// best-effort and cached. The city is what people actually search — "pickleball
+// tournaments san diego", not "san diego county" — so it gets its own pages.
+func ReverseCityCounty(lat, lng float64) (city, county, state string) {
+	r := reverseLookup(lat, lng)
+	return r.City, r.County, r.State
 }
 
 // EnrichLabels reverse-geocodes courts that still have no real name (the generic
@@ -241,6 +250,9 @@ func reverseGeoapify(lat, lng float64) (reverseResult, error) {
 			Name      string `json:"name"`
 			Street    string `json:"street"`
 			Formatted string `json:"formatted"`
+			City      string `json:"city"`
+			Town      string `json:"town"`
+			Village   string `json:"village"`
 			County    string `json:"county"`
 			State     string `json:"state"`
 		} `json:"results"`
@@ -253,9 +265,20 @@ func reverseGeoapify(lat, lng float64) (reverseResult, error) {
 	if name == "" {
 		name = r.Street
 	}
+	// Geoapify names the municipality differently by type — a venue in an
+	// unincorporated area comes back as `town` or `village` with `city` empty.
+	// Taking whichever is set keeps small-town events out of the "no city" bucket.
+	city := r.City
+	if city == "" {
+		city = r.Town
+	}
+	if city == "" {
+		city = r.Village
+	}
 	return reverseResult{
 		Name:    name,
 		Address: r.Formatted,
+		City:    city,
 		County:  r.County,
 		State:   r.State,
 	}, nil

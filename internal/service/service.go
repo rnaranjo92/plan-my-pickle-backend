@@ -599,9 +599,9 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	// county-filtered in Nearby WITHOUT any geocoding on the hot read path.
 	// Best-effort (empty when the geocoder is unset) — the Nearby fallback and
 	// the one-shot backfill cover the gaps.
-	var venueCounty, venueState string
+	var venueCity, venueCounty, venueState string
 	if venueLat != nil && venueLng != nil {
-		venueCounty, venueState = s.reverseCounty(*venueLat, *venueLng)
+		venueCity, venueCounty, venueState = s.reverseCityCounty(*venueLat, *venueLng)
 	}
 
 	// An event can be created under a club only by that club's owner.
@@ -790,10 +790,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	// no-ops. New events are then county-filterable in Nearby without any
 	// read-path geocoding; the backfill covers pre-existing ones.
 	if venueCounty != "" {
-		_, _ = s.sb.Update("events", "id=eq."+store.Q(id), map[string]any{
-			"county": venueCounty,
-			"state":  venueState,
-		})
+		geo := map[string]any{"county": venueCounty, "state": venueState}
+		// Separate guard: the city column may not exist yet on an older DB, and
+		// including it unconditionally would fail the whole county stamp with it.
+		if venueCity != "" && s.columnReady("events", "city") {
+			geo["city"] = venueCity
+		}
+		_, _ = s.sb.Update("events", "id=eq."+store.Q(id), geo)
 	}
 
 	divs := req.Brackets
@@ -1006,6 +1009,7 @@ func (s *Service) publicEventsSorted(limit int, county, sort string) ([]model.Pu
 			DuprSanctioned:   e.DuprSanctioned,
 			RegisteredCount:  e.RegisteredCount,
 			CreatedAt:        createdByID[e.ID],
+			City:             e.City,
 			County:           e.County,
 			State:            e.State,
 		})
@@ -1570,6 +1574,10 @@ func (s *Service) DeleteAccount(userID string) error {
 // still resolve a coordinate's county+state.
 func (s *Service) reverseCounty(lat, lng float64) (county, state string) {
 	return courts.ReverseCounty(lat, lng)
+}
+
+func (s *Service) reverseCityCounty(lat, lng float64) (city, county, state string) {
+	return courts.ReverseCityCounty(lat, lng)
 }
 
 func (s *Service) NearbyEvents(lat, lng float64, page, pageSize int) ([]model.Event, error) {

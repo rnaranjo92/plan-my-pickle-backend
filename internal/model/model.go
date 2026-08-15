@@ -74,6 +74,7 @@ type Event struct {
 	// County + state resolved from the venue coords — used to filter the public
 	// Nearby feed to the requester's own county (matched together, since county
 	// names collide across states). Best-effort; "" when unresolved.
+	City           string `json:"city,omitempty"`
 	County         string `json:"county,omitempty"`
 	State          string `json:"state,omitempty"`
 	DuprSanctioned bool   `json:"duprSanctioned"`
@@ -260,8 +261,10 @@ type PublicEvent struct {
 	RegisteredCount  int     `json:"registeredCount"`
 	// CreatedAt lets the "newly added" home rail sort/label by recency.
 	CreatedAt string `json:"createdAt,omitempty"`
-	// County + State power metro/programmatic-SEO directory pages (filterable
-	// via ?county= on the public feed).
+	// City + County + State power metro/programmatic-SEO directory pages
+	// (filterable via ?county= on the public feed). City is what people search;
+	// county is the fallback when the geocoder couldn't name a municipality.
+	City   string `json:"city,omitempty"`
 	County string `json:"county,omitempty"`
 	State  string `json:"state,omitempty"`
 }

@@ -33,6 +33,13 @@ type ActionItem struct {
 	Count int `json:"count,omitempty"`
 	// EventID, when tapping should open an event.
 	EventID string `json:"eventId,omitempty"`
+	// StartsAt (RFC3339) for time-based items, so the CLIENT can render it in
+	// the device's timezone.
+	//
+	// The server must not format this. It runs in UTC on Railway, so a 6:30 PM
+	// San Diego game rendered here says "1:30 AM" — and worse, the today/
+	// tomorrow boundary is computed against the wrong day entirely.
+	StartsAt string `json:"startsAt,omitempty"`
 	// Urgent items sort first and render in the alert colour. Reserved for
 	// things with a deadline attached, never for "you could do this".
 	Urgent bool `json:"urgent,omitempty"`
@@ -47,6 +54,9 @@ func countOf(n int, one, many string) string {
 	}
 	return fmt.Sprintf("%d %s", n, many)
 }
+
+// maxActionItems bounds the home list. See the cap in ActionItems.
+const maxActionItems = 5
 
 // gamesPlayedMilestones are the badges a player is working toward.
 //
@@ -83,21 +93,29 @@ func (s *Service) ActionItems(userID, email string) ([]ActionItem, error) {
 	if len(ids) > 0 {
 		// Players waiting on approval. Grouped by event: "3 waiting" across two
 		// events is two different jobs, and a combined count hides which.
-		if regs, err := s.sb.Select("registrations",
-			"event_id="+store.In(ids)+"&approved=is.false&select=event_id&limit=500"); err == nil {
-			perEvent := map[string]int{}
-			for _, r := range regs {
-				perEvent[asStr(r, "event_id")]++
-			}
-			for id, n := range perEvent {
-				out = append(out, ActionItem{
-					Kind:     "approvals",
-					Title:    countOf(n, "player waiting", "players waiting"),
-					Subtitle: nameByID[id],
-					Count:    n,
-					EventID:  id,
-					Urgent:   true, // somebody is waiting on a human
-				})
+		//
+		// not.is.true, NOT is.false: a pending registration can have `approved`
+		// NULL as well as false — Registrations() treats anything that isn't
+		// explicitly true as pending — and is.false would silently miss every
+		// NULL row. Guarded on the column existing at all, because it postdates
+		// some installs.
+		if s.columnReady("registrations", "approved") {
+			if regs, err := s.sb.Select("registrations",
+				"event_id="+store.In(ids)+"&approved=not.is.true&select=event_id&limit=500"); err == nil {
+				perEvent := map[string]int{}
+				for _, r := range regs {
+					perEvent[asStr(r, "event_id")]++
+				}
+				for id, n := range perEvent {
+					out = append(out, ActionItem{
+						Kind:     "approvals",
+						Title:    countOf(n, "player waiting", "players waiting"),
+						Subtitle: nameByID[id],
+						Count:    n,
+						EventID:  id,
+						Urgent:   true, // somebody is waiting on a human
+					})
+				}
 			}
 		}
 
@@ -139,10 +157,12 @@ func (s *Service) ActionItems(userID, email string) ([]ActionItem, error) {
 			if soonest == nil || t.Before(soonestAt) {
 				soonestAt = t
 				soonest = &ActionItem{
-					Kind:     "upcoming",
-					Title:    "You're playing " + humanWhen(t, now),
+					Kind: "upcoming",
+					// No time in the title — the client appends it in local time.
+					Title:    "You're playing",
 					Subtitle: e.Name,
 					EventID:  e.ID,
+					StartsAt: *e.StartsAt,
 					Urgent:   t.Sub(now) < 24*time.Hour,
 				}
 			}
@@ -171,14 +191,23 @@ func (s *Service) ActionItems(userID, email string) ([]ActionItem, error) {
 		}
 	}
 
-	// Urgent first, then by kind so the order is stable between refreshes —
-	// a list that reshuffles on every poll is one nobody trusts.
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Urgent != out[j].Urgent {
-			return out[i].Urgent
-		}
-		return out[i].Kind < out[j].Kind
-	})
+	// Urgent first, then kind, then EVENT ID.
+	//
+	// The event id is not decoration: the approvals and unscored rows are built
+	// by ranging a Go map, whose iteration order is randomised per run. Without a
+	// final deterministic key, two events with pending approvals swap places on
+	// every refresh — the exact reshuffling this ordering exists to prevent.
+	sortActionItems(out)
+	// Cap AFTER sorting, so what survives is the most urgent.
+	//
+	// An organizer running 25 events with pending approvals and unscored matches
+	// would otherwise get 50 rows — a wall that pushes the feed off the screen
+	// entirely, which is the opposite of the point. Five is about as many things
+	// as anyone acts on in one sitting, and the rest are still waiting inside
+	// their events.
+	if len(out) > maxActionItems {
+		out = out[:maxActionItems]
+	}
 	return out, nil
 }
 
@@ -192,17 +221,18 @@ func (s *Service) gamesPlayedFor(userID string) int {
 	return asInt(row, "games_played")
 }
 
-// humanWhen renders a nearby time the way a person says it.
-func humanWhen(t, now time.Time) string {
-	d := t.Sub(now)
-	switch {
-	case d < time.Hour:
-		return "within the hour"
-	case t.YearDay() == now.YearDay() && t.Year() == now.Year():
-		return "today at " + t.Local().Format("3:04 PM")
-	case t.YearDay() == now.AddDate(0, 0, 1).YearDay():
-		return "tomorrow at " + t.Local().Format("3:04 PM")
-	default:
-		return t.Local().Format("Mon") + " at " + t.Local().Format("3:04 PM")
-	}
+// sortActionItems applies the display order. Split out so it can be tested
+// directly — the randomised map iteration it defends against is invisible in a
+// single run.
+func sortActionItems(out []ActionItem) {
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Urgent != b.Urgent {
+			return a.Urgent
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.EventID < b.EventID
+	})
 }

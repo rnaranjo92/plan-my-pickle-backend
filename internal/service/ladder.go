@@ -247,8 +247,16 @@ func (s *Service) removeLadderMirrorRegistration(divisionID, playerID string) {
 	if err != nil || leagueID == "" {
 		return
 	}
+	// ONLY the perpetual event — the one syncLadderRegistrations writes to.
+	//
+	// This used to take the league's first five events and delete the player's
+	// registration on each. For a ladder that's one perpetual event, so it
+	// looked right; for a league carrying BOTH a ladder and dated session
+	// events, removing someone from the ladder would have stripped their
+	// registrations from sessions that have nothing to do with it. Undo exactly
+	// what the mirror created, and nothing else.
 	rows, err := s.sb.Select("events",
-		"league_id=eq."+store.Q(leagueID)+"&select=id&limit=5")
+		"league_id=eq."+store.Q(leagueID)+"&perpetual=is.true&select=id&limit=1")
 	if err != nil {
 		return
 	}

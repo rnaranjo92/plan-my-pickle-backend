@@ -368,6 +368,22 @@ func (s *Service) AddCoachStudent(coachID, email, phone, name, level string, fro
 		}
 		return model.CoachStudent{}, errors.New("enter the student's email or phone")
 	}
+	// Free tier caps the roster. Checked on ADD only: a coach who lapses keeps
+	// every student they already have — cutting off access to people they're
+	// mid-programme with would punish the student for the coach's billing, and
+	// it's the fastest way to make a lapse permanent.
+	//
+	// Students arriving FROM A LEAGUE bypass the cap: those are added by the
+	// league flow rather than chosen by the coach, and blocking them would make
+	// a coach-led league fail for a reason nobody in that flow can act on.
+	if !fromLeague && !s.CoachPlanActive(coachID) {
+		existing, cerr := s.ListCoachStudents(coachID)
+		if cerr == nil && len(existing) >= kFreeCoachStudents {
+			return model.CoachStudent{}, fmt.Errorf(
+				"the free plan covers %d students — upgrade to add more",
+				kFreeCoachStudents)
+		}
+	}
 	// Resolve to an existing account (by email, else phone) up front so we can
 	// also de-dupe by the ACCOUNT, not just the exact contact string.
 	resolved := s.userIDByEmail(email)

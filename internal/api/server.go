@@ -166,6 +166,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/phone/save-unverified", requireAuth(s.savePhoneUnverified))
 	mux.HandleFunc("GET /me/verification", requireAuth(s.verificationStatus))
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
+	// The coach plan is its own product on its own Stripe price — a coach paying
+	// for organizer Premium (or the reverse) is the thing this separation exists
+	// to prevent.
+	mux.HandleFunc("POST /me/subscribe-coach", requireAuth(s.subscribeCoachPlan))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
 	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
 	// Public: confirm a just-completed Checkout by session id (from the success
@@ -4811,6 +4815,39 @@ func (s *Server) stripeConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// subscribeCoachPlan opens a Stripe subscription Checkout for the COACH plan —
+// separate product, separate price, separate flag from Premium.
+func (s *Server) subscribeCoachPlan(w http.ResponseWriter, r *http.Request) {
+	if !service.SubscriptionsEnabled() {
+		writeErr(w, http.StatusServiceUnavailable,
+			errors.New("subscriptions aren't enabled yet"))
+		return
+	}
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SuccessURL) == "" || strings.TrimSpace(req.CancelURL) == "" {
+		writeErr(w, http.StatusBadRequest,
+			errors.New("successUrl and cancelUrl are required"))
+		return
+	}
+	url, err := s.svc.StartCoachPlanCheckout(
+		userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
+	if errors.Is(err, service.ErrPaymentsNotConfigured) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})

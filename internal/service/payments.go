@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -600,13 +601,77 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 // applySubscriptionEvent writes Premium subscription state onto the account.
 // Checkout-completed carries the user_id (upsert the row); a later
 // subscription.updated/deleted only has the Stripe customer id (update by it).
+// coachPriceID is the Stripe price for the coach plan. Empty = the plan isn't
+// configured, and every coach event is then ignored rather than being mistaken
+// for Premium.
+func coachPriceID() string {
+	return strings.TrimSpace(os.Getenv("STRIPE_COACH_PRICE_ID"))
+}
+
+func premiumPriceID() string {
+	return strings.TrimSpace(os.Getenv("STRIPE_PREMIUM_PRICE_ID"))
+}
+
+// isCoachPlanEvent decides which product a subscription webhook is about.
+//
+// Matching on the price is the ONLY safe test: the two plans are separate
+// products bought by different people, and without this every subscription
+// looked alike and set the same `premium` flag — so a coach would have been
+// granted organizer Premium they never bought, and cancelling one plan would
+// have revoked the other.
+func isCoachPlanEvent(priceID string) bool {
+	cp := coachPriceID()
+	return cp != "" && priceID == cp
+}
+
 func (s *Service) applySubscriptionEvent(ev gateway.SubscriptionEvent) error {
+	if isCoachPlanEvent(ev.PriceID) {
+		return s.applyCoachPlanEvent(ev)
+	}
+	// A price we don't recognise is NOT assumed to be Premium. An unknown price
+	// means a plan added in the Stripe dashboard that this build doesn't know
+	// about, and silently granting Premium for it is how a cheap add-on becomes
+	// a free upgrade. Only an unset premium price (older installs) falls through.
+	if pp := premiumPriceID(); pp != "" && ev.PriceID != "" && ev.PriceID != pp {
+		log.Printf("subscriptions: ignoring event for unknown price %q", ev.PriceID)
+		return nil
+	}
 	row := map[string]any{
 		"premium":             ev.Active,
 		"subscription_status": orNull(ev.Status),
 	}
 	if ev.SubscriptionID != "" {
 		row["stripe_subscription_id"] = ev.SubscriptionID
+	}
+	if ev.CustomerID != "" {
+		row["stripe_customer_id"] = ev.CustomerID
+	}
+	if ev.UserID != "" {
+		row["user_id"] = ev.UserID
+		_, err := s.sb.Upsert("pmp_profiles", "user_id", row)
+		return err
+	}
+	if ev.CustomerID != "" {
+		_, err := s.sb.Update("pmp_profiles",
+			"stripe_customer_id=eq."+store.Q(ev.CustomerID), row)
+		return err
+	}
+	return nil
+}
+
+// applyCoachPlanEvent writes the coach subscription onto its OWN columns, so
+// the two plans can be held, managed and cancelled independently.
+func (s *Service) applyCoachPlanEvent(ev gateway.SubscriptionEvent) error {
+	if !s.columnReady("pmp_profiles", "coach_plan") {
+		log.Printf("subscriptions: coach plan event ignored — run add_coach_plan.sql")
+		return nil
+	}
+	row := map[string]any{
+		"coach_plan":                ev.Active,
+		"coach_subscription_status": orNull(ev.Status),
+	}
+	if ev.SubscriptionID != "" {
+		row["coach_subscription_id"] = ev.SubscriptionID
 	}
 	if ev.CustomerID != "" {
 		row["stripe_customer_id"] = ev.CustomerID
@@ -708,6 +773,54 @@ func (s *Service) StartPremiumCheckout(userID, email, successURL, cancelURL stri
 	priceID := strings.TrimSpace(os.Getenv("STRIPE_PREMIUM_PRICE_ID"))
 	if priceID == "" {
 		return "", errors.New("premium plan is not configured")
+	}
+	return gw.CreateSubscriptionCheckout(email, userID, priceID, successURL, cancelURL)
+}
+
+// kFreeCoachStudents is how many students a coach can carry for free.
+//
+// The limit is on USAGE, not features: a coach on the free tier gets video
+// feedback, drills, skill ratings and bookings in full — they just can't grow
+// past a handful of students. Products that cap usage convert roughly 1.5-2x
+// better than products that withhold features, and it means nobody evaluates
+// the product with the good parts switched off.
+const kFreeCoachStudents = 3
+
+// CoachPlanActive reports whether this coach holds the paid coach plan.
+// Independent of Premium — the two are different products.
+//
+// While SUBSCRIPTIONS_ENABLED is off, everyone is treated as subscribed, so the
+// student cap can't strand a coach on a build where billing isn't live yet.
+func (s *Service) CoachPlanActive(userID string) bool {
+	if !SubscriptionsEnabled() {
+		return true
+	}
+	if strings.TrimSpace(userID) == "" {
+		return false
+	}
+	if !s.columnReady("pmp_profiles", "coach_plan") {
+		return true // plan not migrated in yet — don't gate on a column that isn't there
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select=coach_plan")
+	if err != nil || row == nil {
+		// Fail OPEN. A lookup failure must not lock a coach out of students they
+		// already teach; the worst case is a free month, not a broken roster.
+		return true
+	}
+	return asBool(row, "coach_plan")
+}
+
+// StartCoachPlanCheckout opens a Stripe subscription Checkout for the coach plan.
+func (s *Service) StartCoachPlanCheckout(
+	userID, email, successURL, cancelURL string) (string, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	priceID := coachPriceID()
+	if priceID == "" {
+		return "", errors.New("the coach plan is not configured")
 	}
 	return gw.CreateSubscriptionCheckout(email, userID, priceID, successURL, cancelURL)
 }

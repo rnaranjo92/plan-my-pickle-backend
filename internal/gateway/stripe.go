@@ -510,7 +510,15 @@ type SubscriptionEvent struct {
 	CustomerID     string
 	SubscriptionID string
 	Status         string // active | trialing | past_due | canceled | unpaid | ...
-	Active         bool   // status grants Premium (active or trialing)
+	Active         bool   // status grants the plan (active or trialing)
+	// PriceID identifies WHICH plan this event is about.
+	//
+	// Without it every subscription looked alike, and the handler set a single
+	// `premium` flag from any of them — so a second plan would grant organizer
+	// Premium to a coach who never bought it, and cancelling one plan would
+	// revoke the other. One boolean cannot represent two independent
+	// subscriptions.
+	PriceID string
 }
 
 // VerifyWebhook validates a webhook's signature (against STRIPE_WEBHOOK_SECRET)
@@ -590,6 +598,12 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 		}
 		if sub.Customer != nil {
 			ev.CustomerID = sub.Customer.ID
+		}
+		// First line item's price. Our plans are single-item, and a plan change
+		// arrives as an update on the same subscription with a new price — which
+		// is exactly the signal needed to move someone between plans.
+		if sub.Items != nil && len(sub.Items.Data) > 0 && sub.Items.Data[0].Price != nil {
+			ev.PriceID = sub.Items.Data[0].Price.ID
 		}
 		return WebhookEvent{Type: string(event.Type), Subscription: ev}, nil
 	case stripe.EventTypeAccountUpdated:

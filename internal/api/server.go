@@ -1177,6 +1177,18 @@ func ladderOnly(email string) bool {
 // the SMS "both channels" notification add-on. During early access it's the same
 // allowlist; PREMIUM_ALLOWLIST overrides ("*" opens it to everyone).
 func premiumAllowed(email string) bool {
+	// Early-access organizers are comped for Premium.
+	//
+	// They were invited to organize before there was anything to pay for, and
+	// they run ladders today. Gating ladders behind Premium without this would
+	// have silently locked them out of a league type they already use — the
+	// paywall would land on the people who agreed to try it first.
+	//
+	// PREMIUM_ALLOWLIST still overrides the QA default; this comp is additive so
+	// setting that env can't accidentally revoke an early-access organizer.
+	if emailInAllowlist(email, organizerGrants, organizerGrants) {
+		return true
+	}
 	return emailInAllowlist(email, os.Getenv("PREMIUM_ALLOWLIST"), qaAllowlist)
 }
 

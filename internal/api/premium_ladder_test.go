@@ -33,3 +33,21 @@ func TestRotationArrivesAsLadderNotRotation(t *testing.T) {
 		t.Fatal("the API never receives 'rotation'; matching it would be dead code")
 	}
 }
+
+// The organizers invited during early access must not be locked out of a league
+// type they already run by a paywall introduced afterwards.
+func TestEarlyAccessOrganizersAreCompedForPremium(t *testing.T) {
+	for _, email := range []string{
+		"michellecruzsd@gmail.com", // runs ladders
+		"motofreak26@hotmail.com",
+		"MichelleCruzSD@Gmail.com", // case must not defeat it
+		"rolando.naranjo0420@gmail.com",
+	} {
+		if !premiumAllowed(email) {
+			t.Errorf("%s must be comped for Premium", email)
+		}
+	}
+	if premiumAllowed("stranger@example.com") {
+		t.Error("an unknown email must not be comped")
+	}
+}

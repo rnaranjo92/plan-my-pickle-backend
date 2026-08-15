@@ -826,9 +826,24 @@ func (s *Service) CoachPlanActive(userID string) bool {
 	return asBool(row, "coach_plan")
 }
 
-// compedCoachEmails is the comma-separated COMPED_COACH_EMAILS allowlist.
+// foundingCoachEmails are comped in CODE, not config.
+//
+// These are the coaches who used the product before it had a price. The comp is
+// hardcoded rather than left to an env var because "Austen keeps his free plan"
+// must not depend on anyone remembering to set a variable in Railway — a
+// forgotten env is exactly how a founding user gets billed by accident.
+// COMPED_COACH_EMAILS extends this list; it can't shorten it.
+var foundingCoachEmails = []string{
+	"asveom@lt.life", // Austen — first coach on the platform, Life Time
+}
+
+// compedCoachEmails is the founding list plus the COMPED_COACH_EMAILS env
+// allowlist, so later comps can be granted without a deploy.
 func compedCoachEmails() map[string]bool {
 	out := map[string]bool{}
+	for _, e := range foundingCoachEmails {
+		out[strings.ToLower(strings.TrimSpace(e))] = true
+	}
 	for _, e := range strings.Split(os.Getenv("COMPED_COACH_EMAILS"), ",") {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
 			out[e] = true

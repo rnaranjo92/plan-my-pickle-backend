@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -70,15 +71,34 @@ func TestCoachCapOffWhenPlanIsNotPurchasable(t *testing.T) {
 func TestCompedCoachEmailsParsing(t *testing.T) {
 	t.Setenv("COMPED_COACH_EMAILS", " Austen@Example.com ,, second@example.com,")
 	got := compedCoachEmails()
-	if len(got) != 2 {
-		t.Fatalf("parsed %d emails, want 2 (blanks dropped)", len(got))
+	// Two from the env, plus the hardcoded founding coaches. Blanks dropped.
+	if want := 2 + len(foundingCoachEmails); len(got) != want {
+		t.Fatalf("parsed %d emails, want %d (2 env + %d founding, blanks dropped)",
+			len(got), want, len(foundingCoachEmails))
 	}
 	// Lower-cased and trimmed, so the env value doesn't have to be exact.
 	if !got["austen@example.com"] || !got["second@example.com"] {
 		t.Fatalf("emails should be normalised, got %v", got)
 	}
+	// An unset env must still comp the founding coaches — that's the point of
+	// hardcoding them.
 	t.Setenv("COMPED_COACH_EMAILS", "")
-	if len(compedCoachEmails()) != 0 {
-		t.Fatal("an unset list must comp nobody")
+	base := compedCoachEmails()
+	if len(base) != len(foundingCoachEmails) {
+		t.Fatalf("unset env comped %d, want the %d founding coaches",
+			len(base), len(foundingCoachEmails))
+	}
+}
+
+// Austen is the first coach on the platform and must never be billed by an
+// accident of configuration.
+func TestFoundingCoachIsCompedWithoutAnyEnv(t *testing.T) {
+	t.Setenv("COMPED_COACH_EMAILS", "")
+	if !compedCoachEmails()["asveom@lt.life"] {
+		t.Fatal("Austen must be comped with no env set")
+	}
+	// And case/whitespace in the stored email must not defeat it.
+	if !compedCoachEmails()[strings.ToLower(strings.TrimSpace(" ASVEOM@LT.LIFE "))] {
+		t.Fatal("comp lookup must be case-insensitive")
 	}
 }

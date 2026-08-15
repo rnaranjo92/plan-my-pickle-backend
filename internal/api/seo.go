@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/service"
 )
 
 // Local helpers (the api package has no shared *string / money formatters).
@@ -58,6 +59,15 @@ func slugify(s string) string {
 // registerSEO wires the public (no-auth) SEO routes onto the mux.
 func (s *Server) registerSEO(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sitemap.xml", s.seoSitemap)
+	// IndexNow ownership proof: the engines fetch https://<host>/<key>.txt and
+	// expect exactly the key back. Registered only when a key is configured, so
+	// an unset install serves nothing rather than an empty file.
+	if k := service.IndexNowKey(); k != "" {
+		mux.HandleFunc("GET /"+k+".txt", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte(k))
+		})
+	}
 	mux.HandleFunc("GET /e/{id}", s.seoEventPage)
 	mux.HandleFunc("GET /e/{id}/results", s.seoEventResults)
 	mux.HandleFunc("GET /pickleball-tournaments/{state}/{county}", s.seoCityHub)
@@ -111,7 +121,23 @@ func isoDate(rfc string) string {
 
 func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 	evs := s.seoPublicEvents()
+	// lastmod must mean "when this page's content last changed". It was set to
+	// the EVENT'S START DATE, so the sitemap claimed pages were modified in the
+	// future — 2026-09-20 on a page served in August. Google discards a lastmod
+	// it can't trust, and once discarded it stops helping schedule crawls at all,
+	// which is precisely the "Discovered - currently not indexed" problem.
+	//
+	// Now: a real past timestamp, or nothing. An omitted lastmod is honest and
+	// costs only the hint; a wrong one poisons the signal for the whole file.
 	type url struct{ loc, lastmod string }
+	today := time.Now().UTC().Format("2006-01-02")
+	// past keeps only dates that are actually in the past.
+	past := func(d string) string {
+		if d == "" || d > today {
+			return ""
+		}
+		return d
+	}
 	var urls []url
 	urls = append(urls, url{loc: seoCanonicalBase + "/"})
 	// Static free-tool + guide pages (served by the apex/Vercel, listed here so the
@@ -135,7 +161,7 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 
 	seenHub := map[string]bool{}
 	for _, e := range evs {
-		urls = append(urls, url{loc: seoCanonicalBase + "/e/" + e.ID, lastmod: isoDate(strOr(e.StartsAt))})
+		urls = append(urls, url{loc: seoCanonicalBase + "/e/" + e.ID, lastmod: past(isoDate(e.CreatedAt))})
 		st, co, ci := slugify(e.State), slugify(e.County), slugify(e.City)
 		if st != "" && co != "" && !seenHub[st+"/"+co] {
 			seenHub[st+"/"+co] = true
@@ -158,14 +184,14 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 			if seoIsDemoName(c.Title) {
 				continue
 			}
-			urls = append(urls, url{loc: seoCanonicalBase + "/class/" + c.ID, lastmod: isoDate(c.StartsAt)})
+			urls = append(urls, url{loc: seoCanonicalBase + "/class/" + c.ID, lastmod: past(isoDate(c.CreatedAt))})
 		}
 	}
 	// Public leagues + their per-metro league hubs.
 	if leagues, _ := s.svc.PublicLeagues(); len(leagues) > 0 {
 		seenLHub := map[string]bool{}
 		for _, lg := range leagues {
-			urls = append(urls, url{loc: seoCanonicalBase + "/l/" + lg.ID, lastmod: isoDate(lg.NextDate)})
+			urls = append(urls, url{loc: seoCanonicalBase + "/l/" + lg.ID, lastmod: past(isoDate(lg.NextDate))})
 			st, co := slugify(lg.State), slugify(lg.County)
 			if st != "" && co != "" && !seenLHub[st+"/"+co] {
 				seenLHub[st+"/"+co] = true

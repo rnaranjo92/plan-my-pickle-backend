@@ -799,6 +799,13 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 		_, _ = s.sb.Update("events", "id=eq."+store.Q(id), geo)
 	}
 
+	// Tell the IndexNow engines about the new event and the hub pages that now
+	// list it. Only for publicly-listed events — pinging a private event would
+	// invite a crawler to a page it will correctly be refused.
+	if req.Listed {
+		SubmitEventURLs(id, venueCity, venueCounty, venueState)
+	}
+
 	divs := req.Brackets
 	if len(divs) == 0 {
 		divs = []model.BracketInput{{Name: "Open"}}

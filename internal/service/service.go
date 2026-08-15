@@ -525,6 +525,15 @@ func premiumTournamentFormat(tf string) bool {
 	return strings.EqualFold(strings.TrimSpace(tf), "compass")
 }
 
+// premiumLeagueType reports whether creating this league type needs Premium.
+//
+// Ladders only. Round-robin and flex leagues stay free — they're the format a
+// first-time organizer starts with, and putting a wall in front of that costs
+// more in adoption than it earns.
+func PremiumLeagueType(lt string) bool {
+	return strings.EqualFold(strings.TrimSpace(lt), "ladder")
+}
+
 func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (string, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return "", errors.New("name is required")

@@ -1263,6 +1263,17 @@ func (s *Server) createLeague(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// Ladders are Premium, checked HERE rather than in the service because
+	// entitlement includes the comped allowlist, which is keyed by email — a
+	// service-layer IsPremium() check would lock out the early-access organizers
+	// who run ladders today and have never needed a subscription.
+	//
+	// CREATE only. An existing ladder is never re-gated: losing the league
+	// mid-season would punish the players for the organizer's billing.
+	if service.PremiumLeagueType(req.LeagueType) && !s.mayUsePremium(r) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	// Ladder-only comps may create a ladder league but no other league type.
 	if ladderOnly(userEmail(r)) && !strings.EqualFold(strings.TrimSpace(req.LeagueType), "ladder") {
 		writeErr(w, http.StatusForbidden,

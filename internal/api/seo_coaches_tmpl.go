@@ -28,6 +28,9 @@ const coachHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="{{.OGImage}}">{{end}}
 <script type="application/ld+json">{{.JSONLD}}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sour+Gummy:wght@400;500;600;700;800&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
   --navy:#16245c; --deep:#0e1733; --green:#4f8b3b; --green-dk:#3d6d2d;
@@ -35,25 +38,38 @@ const coachHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
   --gold:#f5c518; --card:#fff;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);line-height:1.55;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  -webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;
+  font-family:"Nunito",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Sour Gummy","Nunito",sans-serif;line-height:1.1}
 img{max-width:100%}
 a{color:var(--green-dk)}
 .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
 
-/* header */
-.top{background:var(--bg);border-bottom:1px solid var(--line)}
-.top .wrap{display:flex;align-items:center;justify-content:space-between;
-  gap:16px;padding-top:14px;padding-bottom:14px}
-.brand{color:var(--green);font-weight:800;text-decoration:none;font-size:18px}
-.top nav{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
-/* :not(.btn) so the nav's link colour can't override a button's own colour —
-   ".top nav a" outranks ".btn--green" on specificity, which rendered the CTA's
-   label muted grey on green instead of white. */
-.top nav a:not(.btn){color:var(--muted);text-decoration:none;font-size:15px;font-weight:600}
-.top nav a:not(.btn):hover{color:var(--ink)}
-.top nav a.back{color:var(--green-dk);font-weight:700}
+/* header — lifted from the marketing site's styles.css so the two match */
+.nav{position:sticky;top:0;z-index:20;display:flex;align-items:center;
+  justify-content:space-between;padding:0.8rem 1.4rem;
+  background:rgba(246,250,241,0.9);backdrop-filter:blur(8px);
+  border-bottom:1px solid #e4ecd9;flex-wrap:wrap;gap:10px}
+.brand{display:flex;align-items:center;gap:0.6rem;font-size:1.4rem;
+  font-weight:800;color:var(--navy);text-decoration:none}
+.brand__logo{width:40px;height:40px;border-radius:10px;object-fit:cover}
+.brand__accent{color:var(--green)}
+.nav__links{display:flex;align-items:center;gap:1.4rem;font-weight:700;
+  flex-wrap:wrap}
+/* :not(.btn) so a nav link colour can never override a button's own colour —
+   ".nav__links a" outranks ".btn--small" on specificity, which is exactly how
+   the last CTA ended up grey-on-green instead of using its own palette. */
+.nav__links a:not(.btn){color:var(--navy);text-decoration:none}
+.nav__links a:not(.btn):hover{color:var(--green-dk)}
+.btn--small{background:var(--gold);color:var(--ink);padding:0.55rem 1.1rem;
+  font-size:0.95rem;font-family:"Sour Gummy",sans-serif;font-weight:700;
+  border-radius:999px;text-decoration:none;display:inline-block}
+@media (max-width:720px){
+  .nav{padding:0.7rem 1rem}
+  .nav__links{gap:0.9rem;font-size:0.9rem}
+  .brand{font-size:1.15rem}
+  .brand__logo{width:32px;height:32px}
+}
 
 /* hero */
 .hero{background:linear-gradient(160deg,var(--deep) 0%,var(--navy) 100%);color:#fff;
@@ -64,8 +80,8 @@ a{color:var(--green-dk)}
   max-width:16ch;text-wrap:balance}
 .hero p{font-size:19px;color:#c9d3ea;margin:0 0 28px;max-width:56ch}
 .btns{display:flex;gap:12px;flex-wrap:wrap}
-.btn{display:inline-block;text-decoration:none;font-weight:800;font-size:16px;
-  padding:14px 24px;border-radius:999px}
+.btn{display:inline-block;text-decoration:none;font-weight:700;font-size:16px;
+  padding:14px 24px;border-radius:999px;font-family:"Sour Gummy",sans-serif}
 .btn--gold{background:var(--gold);color:#1b1b1f}
 .btn--ghost{background:transparent;color:#fff;box-shadow:inset 0 0 0 2px rgba(255,255,255,.35)}
 .btn--green{background:var(--green);color:#fff}
@@ -140,14 +156,21 @@ details p{margin:10px 0 0;color:var(--muted);font-size:15px}
   section{padding:40px 0}
 }
 </style></head><body>
-<header class="top"><div class="wrap">
-  <a class="brand" href="` + seoCanonicalBase + `">🥒 PlanMyPickle</a>
-  <nav>
-    <a class="back" href="` + seoCanonicalBase + `">← Main site</a>
-    <a href="/coaches">Find a coach</a>
-    <a class="btn btn--green" style="padding:9px 18px;font-size:14px" href="/coaches/apply">Apply to coach</a>
+<header class="nav">
+  <a class="brand" href="` + seoCanonicalBase + `/">
+    <img src="` + seoCanonicalBase + `/assets/mascot.png" alt="" class="brand__logo">
+    <span>Plan<span class="brand__accent">My</span>Pickle</span>
+  </a>
+  <nav class="nav__links">
+    <a href="` + seoCanonicalBase + `/#features">Features</a>
+    <a href="` + seoCanonicalBase + `/#how">How it works</a>
+    <a href="` + seoCanonicalBase + `/#tournaments">Live tournaments</a>
+    <a href="` + seoCanonicalBase + `/#audience">Organizers &amp; players</a>
+    <a href="/coaches">Coaches</a>
+    <a href="` + seoCanonicalBase + `/#pricing">Pricing</a>
+    <a href="/coaches/apply" class="btn btn--small">Apply to coach →</a>
   </nav>
-</div></header>`
+</header>`
 
 const coachFoot = `<div class="foot"><div class="wrap">
   <p style="margin:0 0 14px"><a href="` + seoCanonicalBase + `"

@@ -2668,3 +2668,25 @@ type BlockContactRequest struct {
 	Email  string `json:"email"`
 	Reason string `json:"reason"`
 }
+
+// CoachApplication is a coach asking to teach on the platform.
+//
+// Separate from Instructor: an application is a REQUEST, an instructor row is
+// ACCESS. Approving turns one into the other, and keeping them apart means the
+// allowlist never gains a row nobody decided on.
+type CoachApplication struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Phone string `json:"phone,omitempty"`
+	City  string `json:"city,omitempty"`
+	// Free text on purpose — a cert number, a club, a coaching history. A rigid
+	// schema would reject the honest applicant with an unusual answer.
+	Certifications string `json:"certifications,omitempty"`
+	Experience     string `json:"experience,omitempty"`
+	HasInsurance   bool   `json:"hasInsurance"`
+	Note           string `json:"note,omitempty"`
+	Status         string `json:"status"` // pending | approved | rejected
+	DecisionNote   string `json:"decisionNote,omitempty"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+}

@@ -1176,6 +1176,13 @@ type Standing struct {
 	PointsFor     int    `json:"pointsFor"`
 	PointsAgainst int    `json:"pointsAgainst"`
 	PointDiff     int    `json:"pointDiff"`
+	// WinPct is wins / (wins + losses), 0..1, or 0 with no matches played.
+	//
+	// Ranking league play on raw WINS rewarded turning up: a 2-8 player outranked
+	// a 1-1 player because losses were never compared. In a drop-in league where
+	// everyone plays a different number of matches, that isn't a tiebreak detail
+	// — it's the wrong primary criterion.
+	WinPct float64 `json:"winPct"`
 }
 
 // SeasonSnapshot is a perpetual league's archived season: the frozen final

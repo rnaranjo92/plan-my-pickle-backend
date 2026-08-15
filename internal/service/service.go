@@ -12942,6 +12942,16 @@ func rankStandingsDiffFirst(out []model.Standing, h2h map[string]map[string]int,
 }
 
 func rankStandingsWith(out []model.Standing, h2h map[string]map[string]int, byWins, diffFirst bool) []model.Standing {
+	// Filled HERE rather than in each producer: five different call sites build
+	// standings rows, and a derived field computed in five places drifts in four
+	// of them. Everything that ranks passes through this function.
+	for i := range out {
+		if played := out[i].Wins + out[i].Losses; played > 0 {
+			out[i].WinPct = float64(out[i].Wins) / float64(played)
+		} else {
+			out[i].WinPct = 0
+		}
+	}
 	// h2hCmp: +1 if a beat b head-to-head more, -1 if b did, 0 if even/none.
 	// Pairwise (resolves the common 2-way tie; multi-way groups fall through).
 	h2hCmp := func(a, b model.Standing) int {
@@ -12963,10 +12973,26 @@ func rankStandingsWith(out []model.Standing, h2h map[string]map[string]int, byWi
 		// count of wins vs the other tied teams, which is transitive, unlike a
 		// pairwise comparator), then point DIFFERENTIAL, then points scored. No
 		// "fewest losses" / "fewest points against" steps (not USAP criteria).
-		sort.SliceStable(out, func(i, j int) bool { return out[i].Wins > out[j].Wins })
+		// Leagues rank on WIN PERCENTAGE; tournaments on matches won.
+		//
+		// Raw wins ignore losses entirely, so in drop-in play a 2-8 player
+		// outranked a 1-1 player purely by turning up more often. That's fine in a
+		// tournament where everyone plays the same schedule — and wrong in a
+		// league where they never do.
+		if diffFirst {
+			sort.SliceStable(out, func(i, j int) bool { return out[i].WinPct > out[j].WinPct })
+		} else {
+			sort.SliceStable(out, func(i, j int) bool { return out[i].Wins > out[j].Wins })
+		}
+		sameRank := func(a, b model.Standing) bool {
+			if diffFirst {
+				return a.WinPct == b.WinPct
+			}
+			return a.Wins == b.Wins
+		}
 		for i := 0; i < len(out); {
 			j := i + 1
-			for j < len(out) && out[j].Wins == out[i].Wins {
+			for j < len(out) && sameRank(out[j], out[i]) {
 				j++
 			}
 			if grp := out[i:j]; len(grp) > 1 {

@@ -622,6 +622,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// Share a feed video to the coach leading this event's league (coaching clip).
 	mux.HandleFunc("POST /events/{id}/share-to-coach",
 		requireAuth(s.shareVideoToLeagueCoach))
+	// Same share addressed by LEAGUE — League Videos carry no event id, so this
+	// is the only way a clip posted there can reach a coach.
+	mux.HandleFunc("POST /leagues/{id}/share-to-coach",
+		requireAuth(s.shareVideoToCoachOfLeague))
 	// League session RSVP ("coming Thursday?"): read the poll, set your status.
 	mux.HandleFunc("GET /events/{id}/rsvp", optionalAuth(s.getSessionRsvp))
 	mux.HandleFunc("POST /events/{id}/rsvp", requireAuth(s.setSessionRsvp))
@@ -6121,6 +6125,24 @@ func (s *Server) shareVideoToLeagueCoach(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.svc.ShareVideoToLeagueCoach(
+		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.Title); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// shareVideoToCoachOfLeague shares a League Video to the league's coach. Same
+// as the event route, addressed by league id.
+func (s *Server) shareVideoToCoachOfLeague(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VideoURL string `json:"videoUrl"`
+		Title    string `json:"title"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.ShareVideoToCoachOfLeague(
 		r.PathValue("id"), userID(r), userEmail(r), req.VideoURL, req.Title); err != nil {
 		status(w, err)
 		return

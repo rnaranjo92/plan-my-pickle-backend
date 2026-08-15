@@ -3161,6 +3161,43 @@ func (s *Service) ShareVideoToLeagueCoach(eventID, userID, email, videoURL, titl
 	if leagueID == "" {
 		return errors.New("this event isn't part of a league")
 	}
+	return s.shareVideoToCoachOfLeague(leagueID, userID, email, videoURL, title)
+}
+
+// ShareVideoToCoachOfLeague is the same share, addressed by LEAGUE rather than
+// by event.
+//
+// League Videos are stored against a league and carry no event id, so the
+// event-shaped entry point couldn't reach them at all — a clip posted there was
+// the one kind you couldn't ask your coach about. The coach was always resolved
+// from the league anyway; the event lookup was just how we got there.
+func (s *Service) ShareVideoToCoachOfLeague(
+	leagueID, userID, email, videoURL, title string) error {
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return errors.New("no video to share")
+	}
+	if strings.TrimSpace(leagueID) == "" {
+		return errors.New("league is required")
+	}
+	return s.shareVideoToCoachOfLeague(leagueID, userID, email, videoURL, title)
+}
+
+func (s *Service) shareVideoToCoachOfLeague(
+	leagueID, userID, email, videoURL, title string) error {
+	// Only an uploaded MATCH VIDEO may be shared (not an arbitrary URL or a
+	// photo) — else it renders as a broken player on the coach's side.
+	low := videoURL
+	if i := strings.IndexByte(low, '?'); i >= 0 {
+		low = low[:i]
+	}
+	low = strings.ToLower(low)
+	if !strings.Contains(low, "/match-videos/") ||
+		strings.HasSuffix(low, ".jpg") || strings.HasSuffix(low, ".jpeg") ||
+		strings.HasSuffix(low, ".png") || strings.HasSuffix(low, ".webp") ||
+		strings.HasSuffix(low, ".heic") || strings.HasSuffix(low, ".gif") {
+		return errors.New("only an uploaded match video can be shared to a coach")
+	}
 	coach := s.leagueCoach(leagueID)
 	if coach == "" {
 		return errors.New("this league isn't coach-led")

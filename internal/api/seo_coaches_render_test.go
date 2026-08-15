@@ -36,10 +36,35 @@ func TestCoachTemplatesRender(t *testing.T) {
 	})
 	body = w.Body.String()
 	for _, want := range []string{"Ann Lee", "6 years coaching", "$75/hr",
-		"Bio here", "https://app/x", "Verified Coach"} {
+		"Bio here", "https://app/x", "Verified coach"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("profile missing %q\n%s", want, body)
 		}
 	}
 }
 
+// An empty directory is the normal state while coaches are being onboarded, so
+// the page still has to stand up on its own: the pitch, the how-it-works steps,
+// and a way for a coach to apply.
+func TestCoachHubRendersWithNoCoaches(t *testing.T) {
+	w := httptest.NewRecorder()
+	(&Server{}).seoRender(w, seoCoachHubTmpl, seoCoachHubData{
+		Title: "T", Canonical: "C", Description: "D", H1: "Pickleball Coaches",
+		Intro: "No coaches are listed in your area yet.",
+	})
+	body := w.Body.String()
+	for _, want := range []string{
+		"Get coached on the matches you actually play",
+		"Six skills, tracked over time",
+		"How it works",
+		"Apply to coach",
+		"Common questions",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("empty hub missing %q", want)
+		}
+	}
+	if strings.Contains(body, "class=\"coach\"") {
+		t.Fatal("empty hub should render no coach cards")
+	}
+}

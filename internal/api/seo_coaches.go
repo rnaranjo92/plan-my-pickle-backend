@@ -96,14 +96,13 @@ func (s *Server) seoCoachHub(w http.ResponseWriter, r *http.Request) {
 		"name": "Pickleball Coaches on PlanMyPickle", "itemListElement": items,
 	})
 
-	// An empty directory still renders: the page's other job is recruiting
-	// coaches, and a 404 would drop the /coaches URL out of the index on the
-	// exact day there's nobody listed yet.
-	intro := "Book a lesson with a verified pickleball coach — private sessions, " +
-		"group clinics, and video feedback on your own match footage."
+	// An empty directory still renders a full page: the rest of it explains what
+	// coaching here is and recruits coaches, and a 404 would drop the /coaches
+	// URL out of the index on the exact day there is nobody listed yet.
+	intro := "Every coach below applied and was reviewed by hand. Tap through for " +
+		"rates, certifications and what they teach."
 	if len(cards) == 0 {
-		intro = "We're onboarding coaches now. If you teach pickleball, apply below " +
-			"to get listed."
+		intro = "No coaches are listed yet — we're reviewing applications now."
 	}
 
 	og := ""
@@ -116,9 +115,9 @@ func (s *Server) seoCoachHub(w http.ResponseWriter, r *http.Request) {
 
 	s.seoRender(w, seoCoachHubTmpl, seoCoachHubData{
 		OGImage:     og,
-		Title:       "Pickleball Coaches & Lessons Near You | PlanMyPickle",
+		Title:       "Pickleball Coaches — Lessons & Video Coaching | PlanMyPickle",
 		Canonical:   seoCanonicalBase + "/coaches",
-		Description: "Find a verified pickleball coach — private lessons, group clinics, and video feedback on your matches. Book on PlanMyPickle.",
+		Description: "Find a verified pickleball coach — private lessons, group clinics, and video feedback on your own match footage. Coach in person or from anywhere, on PlanMyPickle.",
 		H1:          "Pickleball Coaches",
 		Intro:       intro,
 		Cards:       cards,
@@ -191,36 +190,3 @@ func (s *Server) seoCoachURLs() []string {
 	}
 	return out
 }
-
-var seoCoachHubTmpl = template.Must(template.New("coachhub").Parse(seoHead + `
-<h1>{{.H1}}</h1>
-<p class="meta">{{.Intro}}</p>
-{{range .Cards}}<a class="card{{if .Photo}} has-img{{end}}" href="{{.URL}}">
-{{if .Photo}}<img class="thumb avatar" src="{{.Photo}}" alt="{{.Name}}" loading="lazy" width="104" height="104">{{end}}
-<div class="cbody">
-<h2>{{.Name}}{{if .Verified}} <span class="badge">Verified</span>{{end}}</h2>
-{{if .City}}<p class="meta">📍 {{.City}}</p>{{end}}
-{{if .Skills}}<p class="meta">🎾 {{.Skills}}</p>{{end}}
-{{if .Rate}}<p class="meta">💵 {{.Rate}}</p>{{end}}
-</div>
-</a>{{end}}
-<p><a class="cta" href="/coaches/apply">Coach pickleball? Apply to get listed →</a></p>
-<p class="meta">Every coach here is reviewed by hand before they're listed.
-Lessons, clinics, and video feedback are booked in the PlanMyPickle app.</p>
-` + seoFoot))
-
-var seoCoachTmpl = template.Must(template.New("coach").Parse(seoHead + `
-{{if .Photo}}<img class="portrait" src="{{.Photo}}" alt="{{.H1}}">{{end}}
-<h1>{{.H1}}</h1>
-{{if .Verified}}<span class="badge">Verified Coach</span>{{end}}
-{{if .CityLine}}<p class="meta">📍 {{.CityLine}}</p>{{end}}
-{{if .ExpLine}}<p class="meta">⏳ {{.ExpLine}}</p>{{end}}
-{{if .SkillsLine}}<p class="meta">🎾 {{.SkillsLine}}</p>{{end}}
-{{if .CertLine}}<p class="meta">🎓 {{.CertLine}}</p>{{end}}
-{{if .RateLine}}<p class="meta">💵 {{.RateLine}}</p>{{end}}
-{{if .Bio}}<p>{{.Bio}}</p>{{end}}
-<p><a class="cta" href="{{.BookURL}}">Book a lesson →</a></p>
-<p class="meta">Lessons, clinics, and video feedback on your own match footage
-run in the PlanMyPickle app. Tap above to message this coach and book.</p>
-<p class="meta"><a href="/coaches">← All pickleball coaches</a></p>
-` + seoFoot))

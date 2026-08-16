@@ -430,3 +430,34 @@ func (s *Service) NotifyFollowersOfEvent(ownerID, eventID, eventName string) {
 	}
 	_ = s.sendPush(followers, "PlanMyPickle", body, notifPushURL(link))
 }
+
+// cardThemes are the colourways a player may choose. An allowlist, not free
+// text: the key becomes a gradient in the client, and an unknown value there
+// would render as nothing at all.
+var cardThemes = map[string]bool{
+	"":       true, // house default
+	"navy":   true,
+	"sunset": true,
+	"court":  true,
+	"carbon": true,
+	"gold":   true,
+}
+
+// SetCardTheme stores the caller's chosen card colourway.
+func (s *Service) SetCardTheme(userID, theme string) error {
+	if strings.TrimSpace(userID) == "" {
+		return ErrForbidden
+	}
+	theme = strings.ToLower(strings.TrimSpace(theme))
+	if !cardThemes[theme] {
+		return errors.New("unknown card theme")
+	}
+	if !s.columnReady("pmp_profiles", "card_theme") {
+		return nil // pre-migration: accept it quietly rather than fail a tap
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+		"user_id":    userID,
+		"card_theme": theme,
+	})
+	return err
+}

@@ -667,6 +667,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/notifications/dev-clear", requireAuth(s.clearDemoNotifications))
 	mux.HandleFunc("POST /me/push-subscription", requireAuth(s.recordPushSubscription))
 	mux.HandleFunc("GET /me/form", requireAuth(s.myForm))
+	mux.HandleFunc("POST /me/card-theme", requireAuth(s.saveCardTheme))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
@@ -975,6 +976,21 @@ func (s *Server) saveProfileDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetMyProfileDetails(userID(r), req.Gender, req.City, req.SeekingPartner); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// saveCardTheme stores the caller's chosen player-card colourway.
+func (s *Server) saveCardTheme(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Theme string `json:"theme"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetCardTheme(userID(r), req.Theme); err != nil {
 		status(w, err)
 		return
 	}

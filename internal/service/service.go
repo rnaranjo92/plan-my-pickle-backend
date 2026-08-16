@@ -10543,6 +10543,16 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 		p.City = asStr(pr, "city")
 		p.SeekingPartner = asBool(pr, "seeking_partner")
 	}
+	// Card colourway, in its own guarded read: the column postdates some
+	// installs, and folding it into the select above would fail that whole read
+	// and blank the photo with it.
+	if s.columnReady("pmp_profiles", "card_theme") {
+		if pr, err := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(userID)+"&select=card_theme"); err == nil &&
+			pr != nil {
+			p.CardTheme = asStr(pr, "card_theme")
+		}
+	}
 	// Onboarded flag in its OWN best-effort read so a pre-migration DB (no
 	// `onboarded` column) still returns the fields above instead of erroring.
 	if pr, err := s.sb.SelectOne("pmp_profiles",

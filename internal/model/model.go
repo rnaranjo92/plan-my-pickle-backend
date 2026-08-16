@@ -2607,6 +2607,9 @@ type Profile struct {
 	// GamesPlayed: completed real matches across all the user's player rows.
 	GamesPlayed int    `json:"gamesPlayed"`
 	PhotoURL    string `json:"photoUrl,omitempty"`
+	// CardTheme is the colourway key the player picked for their own card
+	// ('sunset', 'court', …). Empty = the house navy/green.
+	CardTheme string `json:"cardTheme,omitempty"`
 	// Partner-finder fields (account-level, pmp_profiles).
 	Gender         string `json:"gender,omitempty"`
 	City           string `json:"city,omitempty"`

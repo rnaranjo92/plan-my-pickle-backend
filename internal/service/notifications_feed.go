@@ -128,10 +128,62 @@ func (s *Service) SeedDemoNotifications(userID string) (int, error) {
 	if userID == "" {
 		return 0, ErrForbidden
 	}
-	demos := []struct {
-		typ, actor, body string
-		minsAgo          int
-	}{
+	n := 0
+	for _, d := range demoNotifications {
+		ts := time.Now().Add(-time.Duration(d.minsAgo) * time.Minute).
+			UTC().Format("2006-01-02T15:04:05.000Z")
+		if _, err := s.sb.Insert("user_notifications", map[string]any{
+			"recipient_id": userID,
+			"type":         d.typ,
+			"actor_name":   d.actor,
+			"body":         demoPrefix + d.body,
+			"link":         "",
+			"created_at":   ts,
+		}); err == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// demoPrefix marks a seeded row as fake IN THE ROW ITSELF.
+//
+// Without it these are indistinguishable from real activity: the seeder stamps
+// created_at as now-minus-N minutes, so they always read as "2m ago" no matter
+// when they were inserted, and the names are plausible. That combination cost a
+// real "who registered for an event I never created?" scare — the answer being
+// nobody, which is not a thing you should have to read code to find out.
+const demoPrefix = "DEMO · "
+
+// ClearDemoNotifications removes the caller's OWN seeded rows.
+//
+// Matches the un-prefixed bodies too, so rows seeded before demoPrefix existed
+// are still cleanable. Deletes by exact body against a fixed list rather than
+// by "link is empty" — real notifications can have an empty link, and a QA
+// convenience must never be able to eat somebody's actual activity feed.
+func (s *Service) ClearDemoNotifications(userID string) (int, error) {
+	if userID == "" {
+		return 0, ErrForbidden
+	}
+	n := 0
+	for _, d := range demoNotifications {
+		for _, body := range []string{demoPrefix + d.body, d.body} {
+			if err := s.sb.Delete("user_notifications",
+				"recipient_id=eq."+store.Q(userID)+"&body=eq."+store.Q(body)); err == nil {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+// demoNotifications is the fixed seed set — one of each type. Package-level so
+// the seeder and the cleaner can never drift apart; a body only in one of the
+// two lists is a row that can be created and not removed.
+var demoNotifications = []struct {
+	typ, actor, body string
+	minsAgo          int
+}{
 		{"match_start", "", "You're up on Court 3 — round 2", 1},
 		{"ondeck", "", "You're on deck — warm up for Court 3", 6},
 		{"score", "", "Confirm your score: opponents reported 11-7", 12},
@@ -143,23 +195,6 @@ func (s *Service) SeedDemoNotifications(userID string) (int, error) {
 		{"announcement", "", "Organizer: lunch break at noon — courts pause 12:00–12:45.", 400},
 		{"dispute", "", "A reported score was disputed — enter the final score to resolve it", 700},
 		{"session", "", "Tuesday Night Mixer: a new session is up — tap to RSVP", 1500},
-	}
-	n := 0
-	for _, d := range demos {
-		ts := time.Now().Add(-time.Duration(d.minsAgo) * time.Minute).
-			UTC().Format("2006-01-02T15:04:05.000Z")
-		if _, err := s.sb.Insert("user_notifications", map[string]any{
-			"recipient_id": userID,
-			"type":         d.typ,
-			"actor_name":   d.actor,
-			"body":         d.body,
-			"link":         "",
-			"created_at":   ts,
-		}); err == nil {
-			n++
-		}
-	}
-	return n, nil
 }
 
 // ListNotifications returns one page of a user's activity feed, newest first.

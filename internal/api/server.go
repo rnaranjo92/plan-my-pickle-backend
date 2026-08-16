@@ -664,6 +664,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/notifications/unread-count", requireAuth(s.myNotificationCount))
 	mux.HandleFunc("POST /me/notifications/read", requireAuth(s.markNotificationsRead))
 	mux.HandleFunc("POST /me/notifications/dev-seed", requireAuth(s.seedDemoNotifications))
+	mux.HandleFunc("POST /me/notifications/dev-clear", requireAuth(s.clearDemoNotifications))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
@@ -6191,6 +6192,15 @@ func (s *Server) seedDemoNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"count": n})
+}
+
+// clearDemoNotifications (dev/QA) removes the caller's own seeded rows.
+func (s *Server) clearDemoNotifications(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.svc.ClearDemoNotifications(userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // unblockUser reverses a block.

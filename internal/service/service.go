@@ -9870,6 +9870,26 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Fetch the event CARDS separately, or a busy account loses them.
+	//
+	// An event's card is written once, when the event is created. The query above
+	// takes the 60 newest rows of EVERY type across all your events — scores,
+	// champions, announcements — so a league playing weekly buries the cards for
+	// tournaments created earlier, and an organizer's own upcoming tournament
+	// silently vanishes from their feed while the row sits in the table.
+	// Confirmed on two public tournaments the account owns.
+	if evRows, evErr := s.sb.Select("feed_items",
+		"event_id="+inList+"&type=eq.event&select=*&order=created_at.desc&limit=40"); evErr == nil {
+		seen := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			seen[asStr(r, "id")] = true
+		}
+		for _, r := range evRows {
+			if id := asStr(r, "id"); id != "" && !seen[id] {
+				rows = append(rows, r)
+			}
+		}
+	}
 	out := make([]model.FeedItem, 0, len(rows))
 	itemIDs := make([]string, 0, len(rows))
 	for _, r := range rows {
@@ -10015,8 +10035,27 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	out = filtered
 	// Newest first across events + community posts (created_at is ISO → sorts lexically).
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	// Cap the CHATTER, never the event cards.
+	//
+	// A card is written once, when its event is created, so by created_at it is
+	// among the oldest rows in the feed and a plain out[:60] cuts exactly the
+	// items an organizer most expects to see. Trimming only the other types keeps
+	// every event visible while still bounding the response.
 	if len(out) > 60 {
-		out = out[:60]
+		cards := make([]model.FeedItem, 0, 16)
+		rest := make([]model.FeedItem, 0, len(out))
+		for _, fi := range out {
+			if fi.Type == "event" {
+				cards = append(cards, fi)
+			} else {
+				rest = append(rest, fi)
+			}
+		}
+		if len(rest) > 60-len(cards) && 60 > len(cards) {
+			rest = rest[:60-len(cards)]
+		}
+		out = append(cards, rest...)
+		sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	}
 	finalIDs := make([]string, len(out))
 	for i := range out {

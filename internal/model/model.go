@@ -2108,6 +2108,13 @@ type Instructor struct {
 	Email     string `json:"email"`
 	Name      string `json:"name,omitempty"`
 	CreatedAt string `json:"createdAt,omitempty"`
+	// UserID is the coach's account id, when their profile can be matched by
+	// email. Empty until they've signed in and created a coach profile — the
+	// allowlist is keyed on an email that may not belong to anyone yet.
+	UserID string `json:"userId,omitempty"`
+	// Verified drives the blue check on their public listing. Only meaningful
+	// alongside UserID.
+	Verified bool `json:"verified,omitempty"`
 }
 
 // AddInstructorRequest grants coach access to an email.

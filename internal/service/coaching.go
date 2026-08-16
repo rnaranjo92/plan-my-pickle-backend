@@ -193,6 +193,10 @@ func mapInstructor(row map[string]any) model.Instructor {
 }
 
 // ListInstructors returns the coach allowlist, newest first (owner-only surface).
+//
+// Each row is joined to the coach's profile by email so the manage screen can
+// show — and change — their verified state. That join is best-effort: the
+// allowlist is keyed on an email, which may not belong to an account yet.
 func (s *Service) ListInstructors() ([]model.Instructor, error) {
 	if !s.columnReady("instructors", "id") {
 		return []model.Instructor{}, nil
@@ -205,7 +209,61 @@ func (s *Service) ListInstructors() ([]model.Instructor, error) {
 	for _, r := range rows {
 		out = append(out, mapInstructor(r))
 	}
+	s.attachInstructorProfiles(out)
 	return out, nil
+}
+
+// attachInstructorProfiles fills UserID + Verified by matching allowlist emails
+// to accounts, in two batched reads rather than one per coach.
+func (s *Service) attachInstructorProfiles(list []model.Instructor) {
+	if len(list) == 0 || !s.coachProfilesReady() {
+		return
+	}
+	emails := make([]string, 0, len(list))
+	for _, in := range list {
+		if e := strings.ToLower(strings.TrimSpace(in.Email)); e != "" {
+			emails = append(emails, e)
+		}
+	}
+	if len(emails) == 0 {
+		return
+	}
+	// email -> user id, from the account table.
+	uidByEmail := map[string]string{}
+	if rows, err := s.sb.Select("pmp_profiles",
+		"email="+store.In(emails)+"&select=user_id,email"); err == nil {
+		for _, r := range rows {
+			if e := strings.ToLower(asStr(r, "email")); e != "" {
+				uidByEmail[e] = asStr(r, "user_id")
+			}
+		}
+	}
+	if len(uidByEmail) == 0 {
+		return
+	}
+	uids := make([]string, 0, len(uidByEmail))
+	for _, u := range uidByEmail {
+		if u != "" {
+			uids = append(uids, u)
+		}
+	}
+	verified := map[string]bool{}
+	if s.columnReady("coach_profiles", "verified") && len(uids) > 0 {
+		if rows, err := s.sb.Select("coach_profiles",
+			"user_id="+store.In(uids)+"&select=user_id,verified"); err == nil {
+			for _, r := range rows {
+				verified[asStr(r, "user_id")] = asBool(r, "verified")
+			}
+		}
+	}
+	for i := range list {
+		uid := uidByEmail[strings.ToLower(strings.TrimSpace(list[i].Email))]
+		if uid == "" {
+			continue
+		}
+		list[i].UserID = uid
+		list[i].Verified = verified[uid]
+	}
 }
 
 // AddInstructor grants coach access to an email (idempotent on the email).

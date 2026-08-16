@@ -985,10 +985,13 @@ func (s *Server) saveProfileDetails(w http.ResponseWriter, r *http.Request) {
 // saveCardTheme stores the caller's player-card look: colourway, typeface and
 // surface pattern. Fields are optional — sending one leaves the others alone.
 func (s *Server) saveCardTheme(w http.ResponseWriter, r *http.Request) {
+	// Pointers, so an omitted field and an empty one are different: every axis
+	// defaults to the empty string, and conflating the two made the default
+	// options impossible to choose.
 	var req struct {
-		Theme   string `json:"theme"`
-		Font    string `json:"font"`
-		Pattern string `json:"pattern"`
+		Theme   *string `json:"theme"`
+		Font    *string `json:"font"`
+		Pattern *string `json:"pattern"`
 	}
 	if !decode(w, r, &req) {
 		return

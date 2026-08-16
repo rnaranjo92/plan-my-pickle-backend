@@ -463,17 +463,20 @@ var cardPatterns = map[string]bool{
 
 // SetCardStyle stores the caller's card look: colourway, typeface and pattern.
 //
-// Each field is applied only when its column exists and its value is known, so
-// a partial request (just the colour, say) leaves the rest alone and a
-// pre-migration database quietly ignores the parts it can't store rather than
-// failing the whole tap.
-func (s *Service) SetCardStyle(userID, theme, font, pattern string) error {
+// Takes POINTERS so "not provided" and "the default" are different things. The
+// default for every axis is the empty string — 'House', 'Plain', 'Condensed' —
+// and treating empty as absent made those three options unselectable: you could
+// switch away from a default and never back to it.
+//
+// Each field is applied only when its column exists, so a partial migration
+// stores what it can rather than failing the whole tap.
+func (s *Service) SetCardStyle(userID string, theme, font, pattern *string) error {
 	if strings.TrimSpace(userID) == "" {
 		return ErrForbidden
 	}
 	row := map[string]any{"user_id": userID}
-	if theme != "" || pattern == "" && font == "" {
-		t := strings.ToLower(strings.TrimSpace(theme))
+	if theme != nil {
+		t := strings.ToLower(strings.TrimSpace(*theme))
 		if !cardThemes[t] {
 			return errors.New("unknown card theme")
 		}
@@ -481,8 +484,8 @@ func (s *Service) SetCardStyle(userID, theme, font, pattern string) error {
 			row["card_theme"] = t
 		}
 	}
-	if font != "" {
-		f := strings.ToLower(strings.TrimSpace(font))
+	if font != nil {
+		f := strings.ToLower(strings.TrimSpace(*font))
 		if !cardFonts[f] {
 			return errors.New("unknown card font")
 		}
@@ -490,8 +493,8 @@ func (s *Service) SetCardStyle(userID, theme, font, pattern string) error {
 			row["card_font"] = f
 		}
 	}
-	if pattern != "" {
-		p := strings.ToLower(strings.TrimSpace(pattern))
+	if pattern != nil {
+		p := strings.ToLower(strings.TrimSpace(*pattern))
 		if !cardPatterns[p] {
 			return errors.New("unknown card pattern")
 		}

@@ -239,7 +239,17 @@ func (s *Service) sendPushSound(externalIDs []string, heading, content, url stri
 			"contents":       map[string]string{"en": content},
 		}
 		if url != "" {
-			b["url"] = url
+			// web_url, NOT url. `url` applies to every platform, so on a phone
+			// OneSignal hands the link to the BROWSER — tapping "someone
+			// registered for your tournament" bounced people out of the app and
+			// into a web copy of it.
+			//
+			// Browsers keep the link (they have nowhere else to go). Native gets
+			// no URL, so the tap simply opens the app. The link also rides in
+			// `data` so a click handler can route on it once the app has a
+			// runtime router — today it opens to wherever the app was.
+			b["web_url"] = url
+			b["data"] = map[string]any{"link": url}
 		}
 		// Custom per-platform sound (no-op on web; falls back to default until
 		// the native build bundles the file).

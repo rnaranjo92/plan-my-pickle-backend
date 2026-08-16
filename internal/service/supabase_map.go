@@ -172,7 +172,7 @@ func asMap(m map[string]any, k string) map[string]any {
 // ---- row -> model mappers ----
 
 func mapEvent(m map[string]any) model.Event {
-	return model.Event{
+	e := model.Event{
 		OwnerID:                    asStr(m, "owner_id"),
 		RecurIntervalDays:          asInt(m, "recur_interval_days"),
 		RecurUntil:                 asStrPtr(m, "recur_until"),
@@ -266,6 +266,16 @@ func mapEvent(m map[string]any) model.Event {
 		Status:                   asStr(m, "status"),
 		ScoreboardTheme:          asMap(m, "scoreboard_theme"),
 	}
+	// A perpetual league's next occurrence, computed once here so every surface
+	// that lists events agrees on it — the Play tab's lifecycle buckets, the
+	// card's date line, the feed. Left nil for ordinary events, whose StartsAt
+	// already means what it says.
+	if e.Perpetual {
+		if next := feedStartFor(m); next != "" && next != asStr(m, "starts_at") {
+			e.NextSessionAt = &next
+		}
+	}
+	return e
 }
 
 func mapLeague(m map[string]any) model.League {

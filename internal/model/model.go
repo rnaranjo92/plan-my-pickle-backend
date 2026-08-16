@@ -105,6 +105,14 @@ type Event struct {
 	TeamSize int `json:"teamSize"`
 	// StartsAt is the scheduled tournament start (RFC3339 UTC), or nil.
 	StartsAt *string `json:"startsAt,omitempty"`
+	// NextSessionAt is the next occurrence for a PERPETUAL league, RFC3339.
+	//
+	// A perpetual league is one long-running event: its StartsAt is the day the
+	// league began and never moves. Read literally that makes it permanently
+	// in-progress ("Happening now", forever) and shows a date months past. This
+	// is the date such a league should actually present. Nil for everything
+	// else, where StartsAt already means what it says.
+	NextSessionAt *string `json:"nextSessionAt,omitempty"`
 	// EndsAt is the scheduled end (RFC3339 UTC), or nil — for multi-day events.
 	EndsAt      *string `json:"endsAt,omitempty"`
 	Description *string `json:"description,omitempty"`

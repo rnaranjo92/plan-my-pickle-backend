@@ -2657,7 +2657,13 @@ func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
 		SubscriptionID string `json:"subscriptionId"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in)
-	if err := s.svc.SendTestPush(userID(r), strings.TrimSpace(in.SubscriptionID)); err != nil {
+	// ?joke=1 previews today's joke-of-the-day instead of the generic test, so
+	// the daily push can be checked without waiting for 9am tomorrow.
+	send := s.svc.SendTestPush
+	if r.URL.Query().Get("joke") == "1" {
+		send = s.svc.SendJokePreview
+	}
+	if err := send(userID(r), strings.TrimSpace(in.SubscriptionID)); err != nil {
 		// A missing subscription is a diagnosis, not a crash. 500 sent everyone
 		// hunting a server bug when the answer was "this phone never registered".
 		if errors.Is(err, service.ErrNoPushSubscription) {

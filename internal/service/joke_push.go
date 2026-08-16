@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"log"
 	"time"
 
@@ -24,13 +25,43 @@ func (s *Service) SendJokeOfTheDay() {
 	if !s.claimDailyJob(jokeJobName) {
 		return // already sent today, or the marker table isn't there yet
 	}
-	joke := JokeOfTheDay(time.Now().UTC())
+	joke := JokeOfTheDay(jokeDay())
 	if joke == "" {
 		return
 	}
 	if err := s.sendPushToEveryoneAt9am("Joke of the day 🥒", joke); err != nil {
 		log.Printf("joke push: %v", err)
 	}
+}
+
+// jokeDay is the date the joke is chosen for.
+//
+// A single notification goes to everyone, so ONE day has to be picked — and it
+// can't be UTC's, which rolls over at 5pm Pacific. That put the push a day
+// ahead of the card for the whole US evening: two surfaces, same feature,
+// different joke.
+//
+// Anchored to Pacific, where the players are. When that changes, this is the
+// line to change.
+func jokeDay() time.Time {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		return time.Now().UTC() // zoneinfo missing — better a joke than none
+	}
+	return time.Now().In(loc)
+}
+
+// SendJokePreview sends today's joke to ONE device, immediately.
+//
+// The real broadcast is scheduled for 9am local and claimed once a day, so
+// there is otherwise no way to see the thing you just changed without waiting
+// until tomorrow morning.
+func (s *Service) SendJokePreview(externalID, subID string) error {
+	joke := JokeOfTheDay(jokeDay())
+	if joke == "" {
+		return errors.New("no jokes are loaded")
+	}
+	return s.sendTestPushRetrying(externalID, subID, "Joke of the day 🥒", joke)
 }
 
 // claimDailyJob atomically takes today's run of [name], returning false if

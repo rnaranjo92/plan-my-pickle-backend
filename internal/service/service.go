@@ -11610,9 +11610,9 @@ func (s *Service) UncheckIn(registrationID string) error {
 // the event. Distinct so the API can answer 409 with a date rather than 500.
 var ErrCheckInNotOpen = errors.New("check-in isn't open yet")
 
-// checkInWindowOpen guards SELF check-in (QR + phone). Organizers are not
-// subject to it — they set up early, and checking a player in at the desk the
-// night before is a legitimate thing to do.
+// checkInWindowOpen guards the player's OWN check-in (the phone form they reach
+// from a link). The organizer's desk — their roster button and their QR scanner
+// — is never subject to it: a desk has to work whenever the desk is open.
 //
 // FAILS OPEN. Every unknown — unreadable event, unparseable date, no date at
 // all — allows the check-in. The cost of wrongly blocking is a player standing
@@ -11651,10 +11651,11 @@ func (s *Service) checkInWindowOpen(eventID string) error {
 	return nil
 }
 
+// NOT window-guarded. This is the QR token the ORGANIZER scans at the desk —
+// their scanner and a player's own link share this route — and a desk has to
+// work whenever the desk is open, including setup the evening before. Only the
+// player-initiated path (CheckInByPhone) waits for the day.
 func (s *Service) CheckInByToken(eventID, token string) (string, error) {
-	if err := s.checkInWindowOpen(eventID); err != nil {
-		return "", err
-	}
 	row, err := s.sb.SelectOne("registrations",
 		"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+"&select=id")
 	if err != nil {

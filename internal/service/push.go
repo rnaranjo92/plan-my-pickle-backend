@@ -28,8 +28,10 @@ var pushHTTP = &http.Client{Timeout: 10 * time.Second}
 // create response is unreliable for external_id/alias sends (aliases resolve to
 // subscriptions asynchronously), so we do NOT gate on it — the reliable signal is
 // whether OneSignal accepted the notification (an id, no `errors`).
-func (s *Service) SendTestPush(externalID string) error {
-	return s.sendTestPushRetrying(externalID, "PlanMyPickle test 🥒",
+// [subID], when the client supplies one, addresses that DEVICE directly and
+// bypasses alias resolution entirely — see sendTestPushContent.
+func (s *Service) SendTestPush(externalID, subID string) error {
+	return s.sendTestPushRetrying(externalID, subID, "PlanMyPickle test 🥒",
 		"If you can see this, push notifications are working!")
 }
 
@@ -44,15 +46,17 @@ func (s *Service) SendTestPush(externalID string) error {
 // A single retry after a pause covers the propagation gap. If it fails twice
 // the alias genuinely isn't there, which is a different problem and now
 // distinguishable in the logs rather than guessed at.
-func (s *Service) sendTestPushRetrying(externalID, heading, content string) error {
-	err := s.sendTestPushContent(externalID, heading, content)
-	if err == nil || !errors.Is(err, ErrNoPushSubscription) {
+func (s *Service) sendTestPushRetrying(externalID, subID, heading, content string) error {
+	err := s.sendTestPushContent(externalID, subID, heading, content)
+	// A subscription-id send has no alias to propagate, so there is nothing a
+	// retry could fix — the id either addresses a live subscription or doesn't.
+	if err == nil || subID != "" || !errors.Is(err, ErrNoPushSubscription) {
 		return err
 	}
 	log.Printf("push: alias %s not found, retrying once after propagation delay",
 		externalID)
 	time.Sleep(3 * time.Second)
-	if err2 := s.sendTestPushContent(externalID, heading, content); err2 != nil {
+	if err2 := s.sendTestPushContent(externalID, subID, heading, content); err2 != nil {
 		log.Printf("push: alias %s still missing after retry — the account link "+
 			"never completed, not a race", externalID)
 		return err2
@@ -64,7 +68,7 @@ func (s *Service) sendTestPushRetrying(externalID, heading, content string) erro
 // SendRotationTestPush sends a SAMPLE rotation-round notification to the caller,
 // so an organizer can confirm delivery + see the exact format their players get.
 func (s *Service) SendRotationTestPush(externalID string) error {
-	return s.sendTestPushContent(externalID, "PlanMyPickle 🎾",
+	return s.sendTestPushContent(externalID, "", "PlanMyPickle 🎾",
 		"Round 1 — head to Court 2. (Test — your players get one like this each round.)")
 }
 
@@ -84,19 +88,39 @@ func PushConfigured() bool {
 var ErrNoPushSubscription = errors.New(
 	"no device is signed in to notifications for this account yet")
 
-func (s *Service) sendTestPushContent(externalID, heading, content string) error {
+func (s *Service) sendTestPushContent(externalID, subID, heading, content string) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" {
 		return fmt.Errorf("push is not configured (no OneSignal key)")
 	}
-	body, _ := json.Marshal(map[string]any{
-		"app_id":          onesignalAppID,
-		"target_channel":  "push",
-		"include_aliases": map[string]any{"external_id": []string{externalID}},
-		"headings":        map[string]string{"en": heading},
-		"contents":        map[string]string{"en": content},
-		"url":             "https://app.planmypickle.com",
-	})
+	payload := map[string]any{
+		"app_id":         onesignalAppID,
+		"target_channel": "push",
+		"headings":       map[string]string{"en": heading},
+		"contents":       map[string]string{"en": content},
+		"url":            "https://app.planmypickle.com",
+	}
+	// Address the DEVICE when we know it, the person otherwise.
+	//
+	// An external_id has to resolve through OneSignal's identity model, and that
+	// model can be wedged: a login-user 409 against a user that already holds the
+	// external_id pauses the SDK's op queue, leaving a live subscription owned by
+	// no addressable user. The send is then accepted and delivered to nobody —
+	// silently, because from OneSignal's side the alias did resolve, to a user
+	// with no subscriptions.
+	//
+	// A subscription id has no such indirection. When the client hands us one it
+	// has just verified the subscription is opted in, so it is strictly the
+	// better address for a diagnostic whose entire job is answering "can this
+	// browser receive a push at all".
+	if subID != "" {
+		payload["include_subscription_ids"] = []string{subID}
+	} else {
+		payload["include_aliases"] = map[string]any{
+			"external_id": []string{externalID},
+		}
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost,
 		"https://api.onesignal.com/notifications?c=push", bytes.NewReader(body))
 	if err != nil {

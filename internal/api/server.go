@@ -2650,7 +2650,13 @@ func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
 		return
 	}
-	if err := s.svc.SendTestPush(userID(r)); err != nil {
+	// Optional: the caller's own OneSignal subscription id, which it has just
+	// verified is opted in. Targeting it skips alias resolution entirely.
+	var in struct {
+		SubscriptionID string `json:"subscriptionId"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in)
+	if err := s.svc.SendTestPush(userID(r), strings.TrimSpace(in.SubscriptionID)); err != nil {
 		// A missing subscription is a diagnosis, not a crash. 500 sent everyone
 		// hunting a server bug when the answer was "this phone never registered".
 		if errors.Is(err, service.ErrNoPushSubscription) {

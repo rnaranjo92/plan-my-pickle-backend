@@ -11606,7 +11606,55 @@ func (s *Service) UncheckIn(registrationID string) error {
 }
 
 // CheckInByToken redeems a player's QR/check-in token. Returns the registration id.
+// ErrCheckInNotOpen: a player tried to check themselves in before the day of
+// the event. Distinct so the API can answer 409 with a date rather than 500.
+var ErrCheckInNotOpen = errors.New("check-in isn't open yet")
+
+// checkInWindowOpen guards SELF check-in (QR + phone). Organizers are not
+// subject to it — they set up early, and checking a player in at the desk the
+// night before is a legitimate thing to do.
+//
+// FAILS OPEN. Every unknown — unreadable event, unparseable date, no date at
+// all — allows the check-in. The cost of wrongly blocking is a player standing
+// at a desk unable to check in on the morning of a tournament; the cost of
+// wrongly allowing is an early check-in. Those are not close.
+func (s *Service) checkInWindowOpen(eventID string) error {
+	row, err := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=starts_at,perpetual")
+	if err != nil || row == nil {
+		return nil
+	}
+	// A perpetual league is ONE ongoing event whose starts_at is the day it
+	// began, and its check-ins reset every session. Comparing against that date
+	// would open check-in permanently — harmless — but the intent matters if
+	// this is ever tightened: a recurring league has no single "day of".
+	if asBool(row, "perpetual") {
+		return nil
+	}
+	st := asStr(row, "starts_at")
+	if st == "" {
+		return nil // undated draft — nothing to be early for
+	}
+	t, perr := time.Parse(time.RFC3339, st)
+	if perr != nil {
+		return nil
+	}
+	// The event's OWN zone, from its offset — not the server's (UTC) and not the
+	// player's. A 9am Saturday event in California opens at Pacific midnight,
+	// whoever is asking and wherever they are.
+	loc := t.Location()
+	start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	if time.Now().In(loc).Before(start) {
+		return fmt.Errorf("%w — check-in opens %s", ErrCheckInNotOpen,
+			start.Format("Mon, Jan 2"))
+	}
+	return nil
+}
+
 func (s *Service) CheckInByToken(eventID, token string) (string, error) {
+	if err := s.checkInWindowOpen(eventID); err != nil {
+		return "", err
+	}
 	row, err := s.sb.SelectOne("registrations",
 		"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+"&select=id")
 	if err != nil {
@@ -11652,6 +11700,9 @@ func normPhone(s string) string {
 // on the normalized number (country-code tolerant): a partial/short number
 // never matches, so this can't be used as an oracle to enumerate registrants.
 func (s *Service) CheckInByPhone(eventID, phone string) (string, string, error) {
+	if err := s.checkInWindowOpen(eventID); err != nil {
+		return "", "", err
+	}
 	want := normPhone(phone)
 	if len(want) < 10 {
 		return "", "", errors.New("enter the full phone number you registered with")

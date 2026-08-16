@@ -8223,6 +8223,12 @@ func status(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusPaymentRequired, err)
 		return
 	}
+	// Too early to check in: a refusal the player can act on (come back on the
+	// day), not a failure — 409 with the date, never a 500.
+	if errors.Is(err, service.ErrCheckInNotOpen) {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
 	if errors.Is(err, service.ErrDrawExists) || errors.Is(err, service.ErrDrawHasScores) {
 		writeErr(w, http.StatusConflict, err)
 		return

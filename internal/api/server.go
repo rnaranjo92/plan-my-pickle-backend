@@ -98,6 +98,11 @@ func NewServer(svc *service.Service) http.Handler {
 			// feature is free-for-all (IsPremium short-circuits true); true = the
 			// paid plan is live and Premium features are really gated.
 			"subscriptions": service.SubscriptionsEnabled(),
+			// Whether ONESIGNAL_REST_API_KEY is present — the boolean only, never
+			// the key. Without this, "push isn't working" and "push isn't
+			// configured" are indistinguishable from outside, and we spent a round
+			// trip each way guessing which.
+			"push": service.PushConfigured(),
 		})
 	})
 	// --- Public: spectator/shareable reads + the on-site self-service flows

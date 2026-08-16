@@ -43,6 +43,12 @@ func (s *Service) SendRotationTestPush(externalID string) error {
 // sendTestPushContent sends a single diagnostic push to one external id with the
 // given heading/content, returning a descriptive error when push is unconfigured
 // or the device isn't reachable (so the UI can guide the organizer).
+// PushConfigured reports whether a OneSignal REST key is present. The boolean
+// only — a health endpoint must never echo a credential.
+func PushConfigured() bool {
+	return strings.TrimSpace(os.Getenv("ONESIGNAL_REST_API_KEY")) != ""
+}
+
 // ErrNoPushSubscription: the send didn't fail, there is simply no device
 // registered for this account. A distinct error so the API can say 409 instead
 // of 500 — "we broke" and "there's nothing to send to" are different answers

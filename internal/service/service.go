@@ -9850,10 +9850,19 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	// creation) so a poster added/changed after the post exists still shows.
 	names := map[string]string{}
 	posters := map[string]string{}
-	if rows, err := s.sb.Select("events", "id="+inList+"&select=id,name,poster_url"); err == nil {
+	// Live start time, for the same reason as the poster: meta's copy is frozen
+	// at post creation. A perpetual league never moves its starts_at at all — it
+	// IS one ongoing event — so its card sat on the first session's date and went
+	// on calling it "Upcoming" for weeks after that date had passed.
+	starts := map[string]string{}
+	if rows, err := s.sb.Select("events",
+		"id="+inList+"&select=id,name,poster_url,starts_at,perpetual,"+
+			"recur_skip_until,recur_paused"); err == nil {
 		for _, r := range rows {
-			names[asStr(r, "id")] = asStr(r, "name")
-			posters[asStr(r, "id")] = asStr(r, "poster_url")
+			id := asStr(r, "id")
+			names[id] = asStr(r, "name")
+			posters[id] = asStr(r, "poster_url")
+			starts[id] = feedStartFor(r)
 		}
 	}
 	rows, err := s.sb.Select("feed_items",
@@ -9996,6 +10005,9 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		if fi.Type == "event" {
 			if p := posters[fi.EventID]; p != "" {
 				fi.PosterURL = &p
+			}
+			if st := starts[fi.EventID]; st != "" {
+				fi.StartsAt = &st
 			}
 		}
 		filtered = append(filtered, fi)

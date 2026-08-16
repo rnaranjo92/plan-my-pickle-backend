@@ -91,6 +91,40 @@ func nextSessionDate(startsAt, skipUntil string, paused bool) (string, time.Week
 	return d.Format("2006-01-02"), wd, true
 }
 
+// feedStartFor returns the start time a feed card should show for an event row.
+//
+// For a PERPETUAL league that's the next session, not starts_at: a perpetual
+// league is one long-running event whose starts_at is the day it began and never
+// moves, so the card would advertise a date months in the past. Everything else
+// gets its own starts_at, read live rather than from the post's frozen meta.
+//
+// Returns "" when there's no upcoming session (paused, or unparseable) — the
+// caller then leaves whatever it had rather than blanking a usable date.
+func feedStartFor(ev map[string]any) string {
+	startsAt := asStr(ev, "starts_at")
+	if !asBool(ev, "perpetual") {
+		return startsAt
+	}
+	day, _, ok := nextSessionDate(startsAt,
+		asStr(ev, "recur_skip_until"), asBool(ev, "recur_paused"))
+	if !ok {
+		return startsAt
+	}
+	// Keep the session's TIME OF DAY (and its offset) — only the date moves. A
+	// 10:00 AM league that rolled to next Thursday is still at 10:00 AM, and
+	// dropping to midnight would show "12:00 AM" on every recurring card.
+	st, err := time.Parse(time.RFC3339, startsAt)
+	if err != nil {
+		return startsAt
+	}
+	d, err := time.ParseInLocation("2006-01-02", day, st.Location())
+	if err != nil {
+		return startsAt
+	}
+	return time.Date(d.Year(), d.Month(), d.Day(), st.Hour(), st.Minute(),
+		st.Second(), 0, st.Location()).Format(time.RFC3339)
+}
+
 func (s *Service) nextSessionForEvent(eventID string) (string, time.Weekday, bool) {
 	row, err := s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+

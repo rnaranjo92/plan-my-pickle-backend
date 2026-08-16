@@ -2610,6 +2610,9 @@ type Profile struct {
 	// CardTheme is the colourway key the player picked for their own card
 	// ('sunset', 'court', …). Empty = the house navy/green.
 	CardTheme string `json:"cardTheme,omitempty"`
+	// CardFont / CardPattern are the other two axes of the card's look.
+	CardFont    string `json:"cardFont,omitempty"`
+	CardPattern string `json:"cardPattern,omitempty"`
 	// Partner-finder fields (account-level, pmp_profiles).
 	Gender         string `json:"gender,omitempty"`
 	City           string `json:"city,omitempty"`

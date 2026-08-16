@@ -10547,10 +10547,16 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 	// installs, and folding it into the select above would fail that whole read
 	// and blank the photo with it.
 	if s.columnReady("pmp_profiles", "card_theme") {
+		sel := "card_theme"
+		if s.columnReady("pmp_profiles", "card_font") {
+			sel += ",card_font,card_pattern"
+		}
 		if pr, err := s.sb.SelectOne("pmp_profiles",
-			"user_id=eq."+store.Q(userID)+"&select=card_theme"); err == nil &&
+			"user_id=eq."+store.Q(userID)+"&select="+sel); err == nil &&
 			pr != nil {
 			p.CardTheme = asStr(pr, "card_theme")
+			p.CardFont = asStr(pr, "card_font")
+			p.CardPattern = asStr(pr, "card_pattern")
 		}
 	}
 	// Onboarded flag in its OWN best-effort read so a pre-migration DB (no

@@ -443,21 +443,65 @@ var cardThemes = map[string]bool{
 	"gold":   true,
 }
 
-// SetCardTheme stores the caller's chosen card colourway.
-func (s *Service) SetCardTheme(userID, theme string) error {
+// cardFonts and cardPatterns are the other two axes of the card's look. Same
+// reasoning as the colourways: an allowlist, because each key becomes a
+// typeface or a painter in the client and an unknown one renders as nothing.
+var cardFonts = map[string]bool{
+	"":        true, // condensed house default
+	"rounded": true,
+	"system":  true,
+	"mono":    true,
+}
+
+var cardPatterns = map[string]bool{
+	"":         true, // plain gradient
+	"court":    true,
+	"stripes":  true,
+	"mesh":     true,
+	"confetti": true,
+}
+
+// SetCardStyle stores the caller's card look: colourway, typeface and pattern.
+//
+// Each field is applied only when its column exists and its value is known, so
+// a partial request (just the colour, say) leaves the rest alone and a
+// pre-migration database quietly ignores the parts it can't store rather than
+// failing the whole tap.
+func (s *Service) SetCardStyle(userID, theme, font, pattern string) error {
 	if strings.TrimSpace(userID) == "" {
 		return ErrForbidden
 	}
-	theme = strings.ToLower(strings.TrimSpace(theme))
-	if !cardThemes[theme] {
-		return errors.New("unknown card theme")
+	row := map[string]any{"user_id": userID}
+	if theme != "" || pattern == "" && font == "" {
+		t := strings.ToLower(strings.TrimSpace(theme))
+		if !cardThemes[t] {
+			return errors.New("unknown card theme")
+		}
+		if s.columnReady("pmp_profiles", "card_theme") {
+			row["card_theme"] = t
+		}
 	}
-	if !s.columnReady("pmp_profiles", "card_theme") {
-		return nil // pre-migration: accept it quietly rather than fail a tap
+	if font != "" {
+		f := strings.ToLower(strings.TrimSpace(font))
+		if !cardFonts[f] {
+			return errors.New("unknown card font")
+		}
+		if s.columnReady("pmp_profiles", "card_font") {
+			row["card_font"] = f
+		}
 	}
-	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
-		"user_id":    userID,
-		"card_theme": theme,
-	})
+	if pattern != "" {
+		p := strings.ToLower(strings.TrimSpace(pattern))
+		if !cardPatterns[p] {
+			return errors.New("unknown card pattern")
+		}
+		if s.columnReady("pmp_profiles", "card_pattern") {
+			row["card_pattern"] = p
+		}
+	}
+	if len(row) == 1 {
+		return nil // nothing storable — a pre-migration database
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", row)
 	return err
 }

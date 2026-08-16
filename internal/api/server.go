@@ -982,15 +982,19 @@ func (s *Server) saveProfileDetails(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// saveCardTheme stores the caller's chosen player-card colourway.
+// saveCardTheme stores the caller's player-card look: colourway, typeface and
+// surface pattern. Fields are optional — sending one leaves the others alone.
 func (s *Server) saveCardTheme(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Theme string `json:"theme"`
+		Theme   string `json:"theme"`
+		Font    string `json:"font"`
+		Pattern string `json:"pattern"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.SetCardTheme(userID(r), req.Theme); err != nil {
+	if err := s.svc.SetCardStyle(
+		userID(r), req.Theme, req.Font, req.Pattern); err != nil {
 		status(w, err)
 		return
 	}

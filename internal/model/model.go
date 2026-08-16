@@ -328,6 +328,13 @@ type League struct {
 	// (Happening now / Upcoming / Past). Nil when the league has no dated session.
 	FirstSessionAt *string `json:"firstSessionAt,omitempty"`
 	LastSessionAt  *string `json:"lastSessionAt,omitempty"`
+	// NextSessionAt is the next occurrence of a RECURRING league (RFC3339).
+	//
+	// Such a league runs as one perpetual event whose starts_at is the day it
+	// began and never moves, so neither First nor Last says when it next plays.
+	// Without this the card can only claim it's happening now — every day,
+	// forever — or file it under a date that has long passed.
+	NextSessionAt *string `json:"nextSessionAt,omitempty"`
 	// Ladder is the rule config for ladder-type leagues (nil for others).
 	Ladder *LadderConfig `json:"ladder,omitempty"`
 	// Location is a free-text venue/place for the league (esp. ladders).

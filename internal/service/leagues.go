@@ -597,7 +597,8 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		ids[i] = l.ID
 	}
 	rows, err := s.sb.Select("events",
-		"league_id="+store.In(ids)+"&select=league_id,starts_at,ends_at,poster_url,perpetual")
+		"league_id="+store.In(ids)+"&select=league_id,starts_at,ends_at,poster_url,"+
+			"perpetual,recur_skip_until,recur_paused")
 	if err != nil {
 		return err
 	}
@@ -608,6 +609,8 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 	// Prefer the perpetual (ongoing) event's poster; otherwise any session's.
 	type span struct {
 		first, last string
+		// next is the perpetual session's upcoming date — see model.League.
+		next string
 		posterURL   string
 		posterFixed bool // true once a perpetual event's poster locked it in
 	}
@@ -634,6 +637,13 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		if end != "" && (sp.last == "" || end > sp.last) {
 			sp.last = end
 		}
+		// Only the perpetual row carries the recurrence, so it's the one that
+		// knows when the league next plays. Read OUTSIDE the poster branch below:
+		// a perpetual event without a poster still has a next session, and
+		// nesting this under "has a poster" would have silently skipped it.
+		if asBool(r, "perpetual") {
+			sp.next = feedStartFor(r)
+		}
 		if p := asStr(r, "poster_url"); p != "" {
 			// A perpetual event's poster wins and is sticky; otherwise take the
 			// first non-empty session poster seen.
@@ -657,6 +667,10 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 		if sp.last != "" {
 			l := sp.last
 			leagues[i].LastSessionAt = &l
+		}
+		if sp.next != "" {
+			n := sp.next
+			leagues[i].NextSessionAt = &n
 		}
 		// Fallback banner: only when the league has no poster of its own.
 		if sp.posterURL != "" &&

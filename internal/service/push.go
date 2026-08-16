@@ -98,7 +98,12 @@ func (s *Service) sendTestPushContent(externalID, subID, heading, content string
 		"target_channel": "push",
 		"headings":       map[string]string{"en": heading},
 		"contents":       map[string]string{"en": content},
-		"url":            "https://app.planmypickle.com",
+		// web_url, NOT url. `url` applies to every platform, so on a phone it
+		// launches the BROWSER — tapping a notification from the app to be
+		// dropped into a web copy of the app is a strange thing to do to
+		// someone. Web push has nowhere else to go, so it keeps the link; on
+		// native, no URL means the app simply opens.
+		"web_url": "https://app.planmypickle.com",
 	}
 	// Address the DEVICE when we know it, the person otherwise.
 	//

@@ -665,6 +665,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/notifications/read", requireAuth(s.markNotificationsRead))
 	mux.HandleFunc("POST /me/notifications/dev-seed", requireAuth(s.seedDemoNotifications))
 	mux.HandleFunc("POST /me/notifications/dev-clear", requireAuth(s.clearDemoNotifications))
+	mux.HandleFunc("POST /me/push-subscription", requireAuth(s.recordPushSubscription))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
@@ -6198,6 +6199,25 @@ func (s *Server) seedDemoNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"count": n})
+}
+
+// recordPushSubscription stores the caller's own device subscription id, so
+// targeted sends can address the DEVICE instead of resolving an alias.
+func (s *Server) recordPushSubscription(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		SubscriptionID string `json:"subscriptionId"`
+		Platform       string `json:"platform"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.RecordPushSubscription(
+		userID(r), in.SubscriptionID, in.Platform); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // clearDemoNotifications (dev/QA) removes the caller's own seeded rows.

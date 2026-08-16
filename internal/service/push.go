@@ -209,7 +209,8 @@ func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 		"delayed_option":       "timezone",
 		"delivery_time_of_day": "9:00AM",
 	}
-	return s.postPush(restKey, body)
+	_, err := s.postPush(restKey, body)
+	return err
 }
 
 func (s *Service) sendPush(externalIDs []string, heading, content, url string) error {
@@ -224,44 +225,82 @@ func (s *Service) sendPushSound(externalIDs []string, heading, content, url stri
 		return nil // not configured, or nobody to notify — no-op
 	}
 
-	body := map[string]any{
-		"app_id":         onesignalAppID,
-		"target_channel": "push",
-		"include_aliases": map[string]any{
-			"external_id": externalIDs,
-		},
-		"headings": map[string]string{"en": heading},
-		"contents": map[string]string{"en": content},
-	}
-	if url != "" {
-		body["url"] = url
-	}
-	// Custom per-platform sound (no-op on web; falls back to default until the
-	// native build bundles the file).
-	if sound.iOS != "" {
-		body["ios_sound"] = sound.iOS
-	}
-	if sound.android != "" {
-		body["android_sound"] = sound.android
+	// Build the shared half of the payload once; only the targeting differs.
+	base := func() map[string]any {
+		b := map[string]any{
+			"app_id":         onesignalAppID,
+			"target_channel": "push",
+			"headings":       map[string]string{"en": heading},
+			"contents":       map[string]string{"en": content},
+		}
+		if url != "" {
+			b["url"] = url
+		}
+		// Custom per-platform sound (no-op on web; falls back to default until
+		// the native build bundles the file).
+		if sound.iOS != "" {
+			b["ios_sound"] = sound.iOS
+		}
+		if sound.android != "" {
+			b["android_sound"] = sound.android
+		}
+		return b
 	}
 
-	return s.postPush(restKey, body)
+	// Prefer device ids, fall back to aliases — and do BOTH when the recipients
+	// are split, which is the normal case while devices are still recording
+	// themselves.
+	//
+	// Two requests rather than one: OneSignal takes a single targeting method
+	// per notification, so include_subscription_ids and include_aliases can't
+	// ride together.
+	subIDs, covered := s.pushSubscriptionsFor(externalIDs)
+
+	var firstErr error
+	if len(subIDs) > 0 {
+		b := base()
+		b["include_subscription_ids"] = subIDs
+		invalid, err := s.postPush(restKey, b)
+		// OneSignal names the ids it rejected. Dropping them here is what stops
+		// dead devices being retried on every send from now on.
+		s.forgetPushSubscriptions(invalid)
+		firstErr = err
+	}
+
+	// Anyone with no recorded device still goes out by alias.
+	rest := make([]string, 0, len(externalIDs))
+	for _, id := range externalIDs {
+		if !covered[id] {
+			rest = append(rest, id)
+		}
+	}
+	if len(rest) > 0 {
+		b := base()
+		b["include_aliases"] = map[string]any{"external_id": rest}
+		if _, err := s.postPush(restKey, b); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // postPush sends a prepared OneSignal payload. Never returns a hard error: a
 // missed push must not fail whatever the caller was actually doing.
-func (s *Service) postPush(restKey string, body map[string]any) error {
+//
+// Returns any subscription ids OneSignal rejected as invalid, so the caller can
+// forget them — see forgetPushSubscriptions.
+func (s *Service) postPush(restKey string, body map[string]any) ([]string, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("onesignal: marshal payload failed: %v", err)
-		return nil
+		return nil, nil
 	}
 
 	req, err := http.NewRequest(http.MethodPost,
 		"https://api.onesignal.com/notifications?c=push", bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("onesignal: build request failed: %v", err)
-		return nil
+		return nil, nil
 	}
 	req.Header.Set("Authorization", "Key "+restKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -269,13 +308,34 @@ func (s *Service) postPush(restKey string, body map[string]any) error {
 	resp, err := pushHTTP.Do(req)
 	if err != nil {
 		log.Printf("onesignal: send failed: %v", err)
-		return nil
+		return nil, nil
 	}
 	defer resp.Body.Close()
 
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 		log.Printf("onesignal: send rejected (http %d): %s", resp.StatusCode, raw)
 	}
-	return nil
+	return invalidSubscriptionIDs(raw), nil
+}
+
+// invalidSubscriptionIDs pulls the ids OneSignal refused out of a send response.
+//
+// They arrive as {"errors":{"invalid_player_ids":[...]}} — the same shape that
+// named the Android FCM failure, where devices held a locally-generated id the
+// server had never seen. A 200 can carry these, so it's parsed on every reply
+// rather than only on failures.
+func invalidSubscriptionIDs(raw []byte) []string {
+	var out struct {
+		Errors struct {
+			InvalidPlayerIDs []string `json:"invalid_player_ids"`
+		} `json:"errors"`
+	}
+	// Errors is polymorphic — an ARRAY of strings for some failures, an object
+	// for others — so a decode failure here is expected and simply means there
+	// were no invalid ids to report.
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out.Errors.InvalidPlayerIDs
 }

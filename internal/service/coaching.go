@@ -8134,9 +8134,15 @@ func (s *Service) SeedDemoCoaches() (int, error) {
 	for _, d := range demoCoaches {
 		uid := newID()
 		row := map[string]any{
-			"user_id":           uid,
-			"name":              d.Name,
-			"listed":            true,
+			"user_id": uid,
+			"name":    d.Name,
+			// A marker the CLEANUP can find. Matching demo rows by name meant a
+			// renamed row became permanently unremovable — which is exactly what
+			// happened to one of these, editable as it is from the profile
+			// editor. business_name is not shown on the card, so it costs
+			// nothing to spend it on this.
+			"business_name": demoCoachMarker,
+			"listed":        true,
 			"bio":               d.Bio,
 			"city":              d.City,
 			"lat":               demoCoachBaseLat + d.DLat,
@@ -8188,16 +8194,44 @@ func (s *Service) seedDemoReviews(coachUID string) {
 	}
 }
 
-// RemoveDemoCoaches deletes the seeded dummy coaches (matched by name).
+// demoCoachMarker is stamped into business_name so seeded rows stay findable
+// however they're later edited.
+const demoCoachMarker = "PlanMyPickle demo"
+
+// RemoveDemoCoaches deletes the seeded dummy coaches.
+//
+// Three matchers, because the first one alone failed in practice: a seeded row
+// was renamed and became unremovable, still listed as a verified coach in the
+// live directory with no way to clear it from the app.
+//
+//   - the marker, for anything seeded from now on;
+//   - the demo NAMES, for rows seeded before the marker existed;
+//   - the demo BIOS, for rows whose name was changed — long and distinctive
+//     enough that a real coach won't collide with one.
 func (s *Service) RemoveDemoCoaches() error {
 	if !s.coachProfilesReady() {
 		return nil
 	}
 	names := make([]string, len(demoCoaches))
+	bios := make([]string, len(demoCoaches))
 	for i, d := range demoCoaches {
 		names[i] = d.Name
+		bios[i] = d.Bio
 	}
-	return s.sb.Delete("coach_profiles", "name="+store.In(names))
+	// Separate statements: PostgREST ANDs its filters, so these can't be one
+	// call without an `or=` expression, and three plain deletes are clearer
+	// than one nested filter string.
+	var firstErr error
+	for _, q := range []string{
+		"business_name=eq." + store.Q(demoCoachMarker),
+		"name=" + store.In(names),
+		"bio=" + store.In(bios),
+	} {
+		if err := s.sb.Delete("coach_profiles", q); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // RemoveDemoStudents clears the calling coach's seeded dummy students (the

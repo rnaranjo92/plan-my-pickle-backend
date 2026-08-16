@@ -1268,6 +1268,13 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// Tell the organizer's followers, but only about a PUBLIC event and only
+	// from HERE — the human-pressed route. CreateEvent is also how leagues,
+	// perpetual sessions, MLP and add-ons build their events, so announcing
+	// inside it would fire on every weekly session.
+	if req.Listed {
+		go s.svc.NotifyFollowersOfEvent(userID(r), id, req.Name)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 

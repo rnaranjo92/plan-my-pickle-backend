@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"log"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -377,4 +378,55 @@ func (s *Service) decorateUsers(callerID string, ids []string,
 		})
 	}
 	return out
+}
+
+// maxFollowerFanout caps one announcement. Beyond this the bell inserts and the
+// alias list stop being a background task and start being a job — and nobody
+// with that many followers should discover the limit during their first big
+// event. Raise it when there's a queue behind it.
+const maxFollowerFanout = 500
+
+// NotifyFollowersOfEvent tells an organizer's followers about a new PUBLIC
+// event.
+//
+// Events only, never posts. A new public tournament is news; a feed post is
+// not, and the surest way to get notifications switched off is to send one for
+// everything.
+//
+// Best-effort throughout: this runs off the request path and a failure must
+// never affect whether the event was created.
+func (s *Service) NotifyFollowersOfEvent(ownerID, eventID, eventName string) {
+	if ownerID == "" || eventID == "" {
+		return
+	}
+	followers, err := s.followEdges(ownerID, "followee_id", "follower_id")
+	if err != nil || len(followers) == 0 {
+		return
+	}
+	if len(followers) > maxFollowerFanout {
+		log.Printf("follower fanout: %s has %d followers, notifying the first %d",
+			ownerID, len(followers), maxFollowerFanout)
+		followers = followers[:maxFollowerFanout]
+	}
+	name := s.resolveDisplayName(ownerID, "")
+	if name == "" {
+		name = "An organizer"
+	}
+	title := strings.TrimSpace(eventName)
+	if title == "" {
+		title = "a new event"
+	}
+	body := name + " posted a new event: " + title
+	link := "event:" + eventID
+
+	// Bell rows one at a time (recordNotification is the single writer, and it
+	// skips its own duplicates), then ONE push for everybody. A push per
+	// follower would be N requests to OneSignal to say one sentence.
+	for _, f := range followers {
+		if f == "" || f == ownerID {
+			continue
+		}
+		s.recordNotification(f, "event_posted", ownerID, name, body, link)
+	}
+	_ = s.sendPush(followers, "PlanMyPickle", body, notifPushURL(link))
 }

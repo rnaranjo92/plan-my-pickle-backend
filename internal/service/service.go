@@ -813,6 +813,17 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	// invite a crawler to a page it will correctly be refused.
 	if req.Listed {
 		SubmitEventURLs(id, venueCity, venueCounty, venueState)
+		// Tell the organizer's followers — the one thing following has never
+		// actually delivered. Until now it only changed what appeared in a feed
+		// if you happened to open the app, so a follower learned nothing about a
+		// new tournament.
+		//
+		// NOTE: follower announcements are NOT fired here. CreateEvent is also
+		// how leagues, perpetual sessions, MLP and add-ons build their events —
+		// announcing from here would notify every follower of every weekly
+		// session, which is how someone decides to mute all of this. The
+		// announcement belongs to the HTTP handler a human presses (createEvent
+		// in the api package).
 	}
 
 	divs := req.Brackets

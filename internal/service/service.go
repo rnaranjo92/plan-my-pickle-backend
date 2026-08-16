@@ -9855,14 +9855,20 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	// IS one ongoing event — so its card sat on the first session's date and went
 	// on calling it "Upcoming" for weeks after that date had passed.
 	starts := map[string]string{}
+	// An event CARD is an announcement — it exists to be seen and shared. A
+	// private/unlisted event has opted out of exactly that, so its card stays out
+	// of the feed even for the organizer. Other item types (scores, posts) are
+	// unaffected: those belong to people already inside the event.
+	listed := map[string]bool{}
 	if rows, err := s.sb.Select("events",
 		"id="+inList+"&select=id,name,poster_url,starts_at,perpetual,"+
-			"recur_skip_until,recur_paused"); err == nil {
+			"recur_skip_until,recur_paused,listed"); err == nil {
 		for _, r := range rows {
 			id := asStr(r, "id")
 			names[id] = asStr(r, "name")
 			posters[id] = asStr(r, "poster_url")
 			starts[id] = feedStartFor(r)
+			listed[id] = asBool(r, "listed")
 		}
 	}
 	rows, err := s.sb.Select("feed_items",
@@ -10023,6 +10029,14 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		// snapshotted at post-creation and goes stale when the organizer adds/swaps
 		// a poster later), so the feed card matches the Organize card.
 		if fi.Type == "event" {
+			// Unlisted events don't get a card. Guaranteeing the cards survive
+			// the fetch window (above) also surfaced private ones that had been
+			// buried by chatter — technically only ever visible to their own
+			// organizer, but a private event should not be announcing itself
+			// anywhere, including back at the person who made it private.
+			if !listed[fi.EventID] {
+				continue
+			}
 			if p := posters[fi.EventID]; p != "" {
 				fi.PosterURL = &p
 			}

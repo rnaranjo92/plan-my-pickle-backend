@@ -1182,6 +1182,23 @@ type AddTrackRequest struct {
 	DurationMs int    `json:"durationMs"`
 }
 
+// PlayerFormEntry is one event on a player's form chart.
+//
+// Derived per request from that event's box score — nothing stores a player's
+// history, so this is computed rather than read.
+type PlayerFormEntry struct {
+	EventID   string `json:"eventId"`
+	EventName string `json:"eventName"`
+	// PlayedAt is the event's start (RFC3339). The client renders it locally.
+	PlayedAt    string `json:"playedAt"`
+	GamesPlayed int    `json:"gamesPlayed"`
+	Wins        int    `json:"wins"`
+	Losses      int    `json:"losses"`
+	// PointDiff is what the chart plots: signed, so it has a zero line to read
+	// against, and it distinguishes a narrow loss from a hiding.
+	PointDiff int `json:"pointDiff"`
+}
+
 type Standing struct {
 	PlayerID      string `json:"playerId"`
 	FullName      string `json:"fullName"`

@@ -666,6 +666,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/notifications/dev-seed", requireAuth(s.seedDemoNotifications))
 	mux.HandleFunc("POST /me/notifications/dev-clear", requireAuth(s.clearDemoNotifications))
 	mux.HandleFunc("POST /me/push-subscription", requireAuth(s.recordPushSubscription))
+	mux.HandleFunc("GET /me/form", requireAuth(s.myForm))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
 	// Scorekeeper auth: the event owner (JWT) OR a volunteer holding the event's
 	// admin passcode (X-Event-Passcode) may record a match score.
@@ -4933,6 +4934,17 @@ func (s *Server) jokeOfTheDay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"joke": service.JokeOfTheDay(day),
 	})
+}
+
+// myForm returns the caller's recent per-event results, for the chart on their
+// own card. Derived per request — see service.MyForm.
+func (s *Server) myForm(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.MyForm(userID(r), userEmail(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // myActionItems returns the things waiting on the caller, for the home screen.

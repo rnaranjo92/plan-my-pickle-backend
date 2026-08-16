@@ -7142,7 +7142,44 @@ func (s *Service) ApplyDuprRating(duprID string, doubles, singles *float64) erro
 		upd["singles_rating"] = *singles
 	}
 	_, err := s.sb.Update("dupr_connections", "dupr_id=eq."+store.Q(duprID), upd)
+	if err == nil {
+		go s.snapshotRating(duprID, doubles, singles)
+	}
 	return err
+}
+
+// snapshotRating records today's rating so a chart can exist later.
+//
+// dupr_connections only ever holds the CURRENT value — the webhook overwrites
+// it — so without this there is no history, and none that can be backfilled.
+// One row per player per day; the primary key makes a second update the same
+// day an upsert rather than a duplicate point.
+//
+// Entirely best-effort and off the request path: a missing table (pre-migration)
+// or a failed write must never affect the rating update itself.
+func (s *Service) snapshotRating(duprID string, doubles, singles *float64) {
+	if !s.columnReady("rating_history", "day") {
+		return
+	}
+	row := map[string]any{
+		"dupr_id": duprID,
+		"day":     time.Now().UTC().Format("2006-01-02"),
+	}
+	if doubles != nil {
+		row["doubles"] = *doubles
+	}
+	if singles != nil {
+		row["singles"] = *singles
+	}
+	// Denormalise the account when we can, so the chart reads by user without a
+	// join. Absent for a connection nobody has linked yet.
+	if c, err := s.sb.SelectOne("dupr_connections",
+		"dupr_id=eq."+store.Q(duprID)+"&select=user_id"); err == nil && c != nil {
+		row["user_id"] = asStr(c, "user_id")
+	}
+	if _, err := s.sb.Upsert("rating_history", "dupr_id,day", row); err != nil {
+		log.Printf("rating snapshot (%s): %v", duprID, err)
+	}
 }
 
 // RegisterDuprWebhook registers our webhook URL with DUPR (called at startup).

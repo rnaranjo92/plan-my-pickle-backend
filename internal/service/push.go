@@ -29,8 +29,36 @@ var pushHTTP = &http.Client{Timeout: 10 * time.Second}
 // subscriptions asynchronously), so we do NOT gate on it — the reliable signal is
 // whether OneSignal accepted the notification (an id, no `errors`).
 func (s *Service) SendTestPush(externalID string) error {
-	return s.sendTestPushContent(externalID, "PlanMyPickle test 🥒",
+	return s.sendTestPushRetrying(externalID, "PlanMyPickle test 🥒",
 		"If you can see this, push notifications are working!")
+}
+
+// sendTestPushRetrying retries once when OneSignal reports no such alias.
+//
+// OneSignal.login() is fire-and-forget on the client, and the readiness check
+// there polls the DEVICE's subscription state — which proves a subscription
+// exists, not that the external_id alias has propagated to OneSignal's servers.
+// So the app can honestly report "ready" while the alias write is still in
+// flight, and a send that lands in that window fails with invalid_aliases.
+//
+// A single retry after a pause covers the propagation gap. If it fails twice
+// the alias genuinely isn't there, which is a different problem and now
+// distinguishable in the logs rather than guessed at.
+func (s *Service) sendTestPushRetrying(externalID, heading, content string) error {
+	err := s.sendTestPushContent(externalID, heading, content)
+	if err == nil || !errors.Is(err, ErrNoPushSubscription) {
+		return err
+	}
+	log.Printf("push: alias %s not found, retrying once after propagation delay",
+		externalID)
+	time.Sleep(3 * time.Second)
+	if err2 := s.sendTestPushContent(externalID, heading, content); err2 != nil {
+		log.Printf("push: alias %s still missing after retry — the account link "+
+			"never completed, not a race", externalID)
+		return err2
+	}
+	log.Printf("push: alias %s resolved on retry (propagation race)", externalID)
+	return nil
 }
 
 // SendRotationTestPush sends a SAMPLE rotation-round notification to the caller,

@@ -8200,38 +8200,62 @@ const demoCoachMarker = "PlanMyPickle demo"
 
 // RemoveDemoCoaches deletes the seeded dummy coaches.
 //
-// Three matchers, because the first one alone failed in practice: a seeded row
-// was renamed and became unremovable, still listed as a verified coach in the
-// live directory with no way to clear it from the app.
+// SELECTS first, logs what it found, then deletes BY ID. A blind DELETE with a
+// filter is unauditable — you cannot tell afterwards whether it removed the two
+// rows you meant or somebody's real listing, and coach_profiles holds other
+// people's livelihoods.
 //
-//   - the marker, for anything seeded from now on;
-//   - the demo NAMES, for rows seeded before the marker existed;
-//   - the demo BIOS, for rows whose name was changed — long and distinctive
-//     enough that a real coach won't collide with one.
+// Three matchers, because matching on name alone failed in practice: a seeded
+// row was renamed and became unremovable, still listed as a verified coach in
+// the live directory.
+//
+//   - the marker, alone, for anything seeded from now on;
+//   - a demo NAME *and* a demo CITY, for rows seeded before the marker;
+//   - a demo BIO *and* a demo CITY, for rows whose name was changed.
+//
+// The name and bio matchers are ANDed with the city so a real coach would have
+// to share BOTH a fabricated biography and its town to be caught. Neither
+// matcher is trusted on its own.
 func (s *Service) RemoveDemoCoaches() error {
 	if !s.coachProfilesReady() {
 		return nil
 	}
 	names := make([]string, len(demoCoaches))
 	bios := make([]string, len(demoCoaches))
+	cities := make([]string, len(demoCoaches))
 	for i, d := range demoCoaches {
 		names[i] = d.Name
 		bios[i] = d.Bio
+		cities[i] = d.City
 	}
-	// Separate statements: PostgREST ANDs its filters, so these can't be one
-	// call without an `or=` expression, and three plain deletes are clearer
-	// than one nested filter string.
-	var firstErr error
-	for _, q := range []string{
+	cityIn := "&city=" + store.In(cities)
+	queries := []string{
 		"business_name=eq." + store.Q(demoCoachMarker),
-		"name=" + store.In(names),
-		"bio=" + store.In(bios),
-	} {
-		if err := s.sb.Delete("coach_profiles", q); err != nil && firstErr == nil {
-			firstErr = err
+		"name=" + store.In(names) + cityIn,
+		"bio=" + store.In(bios) + cityIn,
+	}
+	ids := map[string]string{} // id -> name, for the log
+	for _, q := range queries {
+		rows, err := s.sb.Select("coach_profiles", q+"&select=id,name,city")
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			if id := asStr(r, "id"); id != "" {
+				ids[id] = asStr(r, "name") + " (" + asStr(r, "city") + ")"
+			}
 		}
 	}
-	return firstErr
+	if len(ids) == 0 {
+		log.Printf("demo coaches: nothing matched, nothing deleted")
+		return nil
+	}
+	list := make([]string, 0, len(ids))
+	for id, label := range ids {
+		list = append(list, id)
+		log.Printf("demo coaches: deleting %s — %s", id, label)
+	}
+	return s.sb.Delete("coach_profiles", "id="+store.In(list))
 }
 
 // RemoveDemoStudents clears the calling coach's seeded dummy students (the

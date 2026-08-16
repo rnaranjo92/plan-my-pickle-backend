@@ -4900,12 +4900,25 @@ func (s *Server) setComped(w http.ResponseWriter, r *http.Request) {
 }
 
 // jokeOfTheDay returns today's joke — the same one the daily push sends.
+//
+// ?day=YYYY-MM-DD is the CALLER's local date. Without it the day was UTC's,
+// which turns over at 5pm in California: today's joke appeared mid-afternoon
+// yesterday, and the morning it was supposed to be new it hadn't changed. A
+// joke-of-the-day that changes during the afternoon isn't one.
 func (s *Server) jokeOfTheDay(w http.ResponseWriter, r *http.Request) {
-	// Cache for an hour: it changes once a day, and every app open asking again
-	// is a request that could simply not happen.
+	day := time.Now().UTC()
+	if q := strings.TrimSpace(r.URL.Query().Get("day")); q != "" {
+		// Parsed as UTC midnight purely to get a stable YearDay for that date —
+		// no zone conversion is wanted here, the client already did it.
+		if d, err := time.Parse("2006-01-02", q); err == nil {
+			day = d
+		}
+	}
+	// Cache for an hour, and VARY on the query: without that a shared cache
+	// could hand one timezone's joke to another.
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"joke": service.JokeOfTheDay(time.Now().UTC()),
+		"joke": service.JokeOfTheDay(day),
 	})
 }
 

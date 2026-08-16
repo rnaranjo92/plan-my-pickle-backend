@@ -203,6 +203,18 @@ func main() {
 		}
 	}()
 
+	// Joke of the day. The SEND is once per day (claimed in daily_jobs), but the
+	// tick is hourly because OneSignal schedules it per-timezone from whenever
+	// we hand it over — so the earlier in the UTC day it's queued, the more
+	// timezones are still ahead of their own 9am.
+	go func() {
+		time.Sleep(2 * time.Minute) // let the instance settle before any send
+		for {
+			svc.SendJokeOfTheDay()
+			time.Sleep(time.Hour)
+		}
+	}()
+
 	// Event geo self-repair: geocode listed events missing coords, then stamp
 	// county+state. An event whose create-time geocode missed is invisible on
 	// every city page and in Nearby, silently and forever — and the only repair

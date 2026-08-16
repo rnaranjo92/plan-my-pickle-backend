@@ -167,6 +167,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /me/verification", requireAuth(s.verificationStatus))
 	// Home's "what needs me" list — one call, not six.
 	mux.HandleFunc("GET /me/action-items", requireAuth(s.myActionItems))
+	// Today's joke. Public: it's a joke, and gating it behind auth would only
+	// mean the signed-out home screen has a hole where it goes.
+	mux.HandleFunc("GET /joke-of-the-day", s.jokeOfTheDay)
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	// The coach plan is its own product on its own Stripe price — a coach paying
 	// for organizer Premium (or the reverse) is the thing this separation exists
@@ -2642,6 +2645,12 @@ func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SendTestPush(userID(r)); err != nil {
+		// A missing subscription is a diagnosis, not a crash. 500 sent everyone
+		// hunting a server bug when the answer was "this phone never registered".
+		if errors.Is(err, service.ErrNoPushSubscription) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -4875,6 +4884,16 @@ func (s *Server) setComped(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// jokeOfTheDay returns today's joke — the same one the daily push sends.
+func (s *Server) jokeOfTheDay(w http.ResponseWriter, r *http.Request) {
+	// Cache for an hour: it changes once a day, and every app open asking again
+	// is a request that could simply not happen.
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"joke": service.JokeOfTheDay(time.Now().UTC()),
+	})
 }
 
 // myActionItems returns the things waiting on the caller, for the home screen.

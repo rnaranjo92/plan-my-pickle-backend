@@ -43,6 +43,13 @@ func (s *Service) SendRotationTestPush(externalID string) error {
 // sendTestPushContent sends a single diagnostic push to one external id with the
 // given heading/content, returning a descriptive error when push is unconfigured
 // or the device isn't reachable (so the UI can guide the organizer).
+// ErrNoPushSubscription: the send didn't fail, there is simply no device
+// registered for this account. A distinct error so the API can say 409 instead
+// of 500 — "we broke" and "there's nothing to send to" are different answers
+// and only one of them is our fault.
+var ErrNoPushSubscription = errors.New(
+	"no device is signed in to notifications for this account yet")
+
 func (s *Service) sendTestPushContent(externalID, heading, content string) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" {
@@ -86,8 +93,13 @@ func (s *Service) sendTestPushContent(externalID, heading, content string) error
 		// OneSignal's raw error JSON into a snackbar: the organizer got their own
 		// user id repeated half a dozen times and no idea what to do about it.
 		if strings.Contains(e, "invalid_aliases") {
-			return errors.New("no device is signed in to notifications for this " +
-				"account yet")
+			return ErrNoPushSubscription
+		}
+		// "All included players are not subscribed" is the same situation with
+		// different wording: the alias exists, the device isn't subscribed.
+		if strings.Contains(e, "not subscribed") {
+			return fmt.Errorf("%w (device found, but not subscribed)",
+				ErrNoPushSubscription)
 		}
 		return fmt.Errorf("no reachable subscription: %s", e)
 	}
@@ -116,6 +128,32 @@ var courtCallSound = pushSound{iOS: "court_call.caf", android: "court_call"}
 // REST key isn't configured or there are no recipients.
 //
 // url is optional — when non-empty it becomes the notification's launch URL.
+// sendPushToEveryoneAt9am broadcasts to all subscribers, delivered at 9am in
+// EACH subscriber's own timezone.
+//
+// OneSignal resolves the timezone per device (delayed_option=timezone), so
+// nothing here has to know or store where anybody is. Segment-targeted rather
+// than a list of external ids: this goes to everyone, and naming every user to
+// say one sentence is a lot of payload for nothing.
+func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
+	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
+	if restKey == "" {
+		return nil // not configured — no-op, same as every other push path
+	}
+	body := map[string]any{
+		"app_id":            onesignalAppID,
+		"target_channel":    "push",
+		"included_segments": []string{"Subscribed Users"},
+		"headings":          map[string]string{"en": heading},
+		"contents":          map[string]string{"en": content},
+		// Per-subscriber local time. Without these two it sends immediately,
+		// which for a good-morning message means 2am for a third of them.
+		"delayed_option":       "timezone",
+		"delivery_time_of_day": "9:00AM",
+	}
+	return s.postPush(restKey, body)
+}
+
 func (s *Service) sendPush(externalIDs []string, heading, content, url string) error {
 	return s.sendPushSound(externalIDs, heading, content, url, pushSound{})
 }
@@ -149,6 +187,12 @@ func (s *Service) sendPushSound(externalIDs []string, heading, content, url stri
 		body["android_sound"] = sound.android
 	}
 
+	return s.postPush(restKey, body)
+}
+
+// postPush sends a prepared OneSignal payload. Never returns a hard error: a
+// missed push must not fail whatever the caller was actually doing.
+func (s *Service) postPush(restKey string, body map[string]any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("onesignal: marshal payload failed: %v", err)

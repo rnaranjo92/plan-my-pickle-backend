@@ -715,6 +715,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/notifications/dev-seed", requireAuth(s.seedDemoNotifications))
 	mux.HandleFunc("POST /me/notifications/dev-clear", requireAuth(s.clearDemoNotifications))
 	mux.HandleFunc("POST /me/push-subscription", requireAuth(s.recordPushSubscription))
+	// "Why didn't I get that push?" answered in the app, for the person who
+	// can't reach the server logs — which is everyone who has hit this bug.
+	mux.HandleFunc("GET /me/push-status", requireAuth(s.pushStatus))
 	mux.HandleFunc("GET /me/form", requireAuth(s.myForm))
 	mux.HandleFunc("POST /me/card-theme", requireAuth(s.saveCardTheme))
 	mux.HandleFunc("POST /events/{id}/dupr/import", s.ownerOnly("event", "id", s.duprImport))
@@ -8358,6 +8361,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// pushStatus reports whether this account is actually reachable by push, and
+// which of the silent failures is in the way if it isn't.
+func (s *Server) pushStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.PushStatusFor(userID(r)))
 }
 
 func status(w http.ResponseWriter, err error) {

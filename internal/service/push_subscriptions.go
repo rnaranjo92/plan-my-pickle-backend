@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -129,4 +130,54 @@ func (s *Service) forgetPushSubscriptions(ids []string) {
 		return
 	}
 	_ = s.sb.Delete("push_subscriptions", "subscription_id="+store.In(ids))
+}
+
+// PushStatus answers "can this account actually receive a push, and why not".
+//
+// It exists because every previous round of this bug was diagnosed by reading
+// server logs — which the person who needs the answer usually can't reach. Each
+// field is one of the ways a send silently reaches nobody.
+type PushStatus struct {
+	// Configured: the OneSignal REST key is present. Without it every push in
+	// the product is a silent no-op.
+	Configured bool `json:"configured"`
+	// TableReady: push_subscriptions exists. When it doesn't, recorded device
+	// ids are DISCARDED and every send falls back to the alias — the exact path
+	// that wedges and delivers to nobody.
+	TableReady bool `json:"tableReady"`
+	// Devices recorded for this user, and how many are fresh enough to be used
+	// (a stale row hands the user back to the alias — see pushSubscriptionsFor).
+	Devices int `json:"devices"`
+	Fresh   int `json:"fresh"`
+	// LastSeen is the most recent recording, RFC3339, "" if none.
+	LastSeen string `json:"lastSeen,omitempty"`
+}
+
+// PushStatusFor reports the push reachability of one account.
+func (s *Service) PushStatusFor(userID string) PushStatus {
+	out := PushStatus{
+		Configured: os.Getenv("ONESIGNAL_REST_API_KEY") != "",
+		TableReady: s.pushSubsReady(),
+	}
+	if !out.TableReady || strings.TrimSpace(userID) == "" {
+		return out
+	}
+	rows, err := s.sb.Select("push_subscriptions",
+		"user_id=eq."+store.Q(userID)+
+			"&select=updated_at&order=updated_at.desc&limit=50")
+	if err != nil {
+		return out
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -45)
+	for i, r := range rows {
+		out.Devices++
+		at := asStr(r, "updated_at")
+		if i == 0 {
+			out.LastSeen = at
+		}
+		if t, perr := time.Parse(time.RFC3339, at); perr == nil && t.After(cutoff) {
+			out.Fresh++
+		}
+	}
+	return out
 }

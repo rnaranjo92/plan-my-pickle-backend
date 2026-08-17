@@ -8387,6 +8387,13 @@ func status(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	// A name already on the ladder: a question, not a failure. 409 is what the
+	// client turns into "add anyway?" — without this mapping it would fall
+	// through to a 500 and the organizer would just see "Add failed".
+	if errors.Is(err, service.ErrDuplicateName) {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
 	// 422, deliberately NOT 409: the move screen already treats 409 as "the draw
 	// is built, offer to clear it", and this needs the opposite remedy — remove
 	// the duplicate entry rather than touch the draw.

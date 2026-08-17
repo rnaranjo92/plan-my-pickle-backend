@@ -216,7 +216,10 @@ func (s *Service) EventRotationSessionID(eventID string) (string, error) {
 		return "", nil
 	}
 	rows, err := s.sb.Select("rotation_sessions",
-		"league_bracket_id=in."+store.In(ids)+
+		// store.In already carries the "in." operator — writing it again made
+		// every one of these a 400, which is why the TV link kept landing on
+		// the empty tournament board no matter what else was fixed.
+		"league_bracket_id="+store.In(ids)+
 			"&order=created_at.desc&limit=50&select=id,status")
 	if err != nil {
 		return "", err

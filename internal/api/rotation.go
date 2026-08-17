@@ -242,13 +242,33 @@ func (s *Server) setRotationLimits(w http.ResponseWriter, r *http.Request) {
 // last week still works.
 func (s *Server) tvLink(w http.ResponseWriter, r *http.Request) {
 	kind := "ladder_tv"
+	id := r.PathValue("id")
 	if strings.HasPrefix(r.URL.Path, "/events/") {
 		kind = "scoreboard"
+		// A rotation-ladder event's live play is in a rotation SESSION, and the
+		// tournament board it would otherwise link to stays permanently empty —
+		// the organizer put "Live scoreboard (TV)" on the venue screen and got
+		// "No games in progress" all night. Point this at the session's board
+		// instead, from the same control, so there is one TV button that is
+		// always right rather than two the organizer has to choose between.
+		//
+		// Best effort: no session (or a lookup failure) falls through to the
+		// event board, which is the correct destination for every other format
+		// and an honest empty state for this one.
+		if sid, err := s.svc.EventRotationSessionID(id); err == nil && sid != "" {
+			kind, id = "ladder_tv", sid
+		}
 	}
-	target := "https://app.planmypickle.com/?" + kind + "=" + r.PathValue("id")
+	target := "https://app.planmypickle.com/?" + kind + "=" + id
 	writeJSON(w, http.StatusOK, map[string]string{
 		"url":  s.svc.StableShortLink(target),
 		"full": target,
+		// What this link actually points at. The in-app "Open" button pushes a
+		// board directly rather than following the URL, so without this it would
+		// keep opening the event scoreboard while the copied link, the QR and
+		// the printed flyer all went somewhere else.
+		"kind":      kind,
+		"sessionId": map[bool]string{true: id, false: ""}[kind == "ladder_tv"],
 	})
 }
 

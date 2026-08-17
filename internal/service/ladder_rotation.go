@@ -107,6 +107,13 @@ func (s *Service) CreateRotationSession(divisionID string, req model.CreateRotat
 		"name":              name,
 		"court_count":       courts,
 		"round_minutes":     mins,
+		// Stated explicitly rather than left to the column default. Everything
+		// downstream branches on this exact string — the organizer screen shows
+		// setup vs the live board, and every setup-only operation refuses when
+		// it isn't "setup" — so a row that arrives without it is a session that
+		// renders as live, with a running clock, and no way to start it. Too
+		// much rests on it to leave it implicit in a schema this code can't see.
+		"status": "setup",
 	}
 	if req.AutoAdvance != nil && s.columnReady("rotation_sessions", "auto_advance") {
 		body["auto_advance"] = *req.AutoAdvance
@@ -156,6 +163,72 @@ func (s *Service) ListRotationSessions(divisionID string) ([]model.RotationSessi
 		out = append(out, rotationSessionFromRow(r))
 	}
 	return out, nil
+}
+
+// EventRotationSessionID returns the session a rotation-ladder event's TV board
+// should show, or "" when the event has none.
+//
+// This exists because the event page's "Live scoreboard (TV)" opened the
+// TOURNAMENT board for every event — and a rotation night never puts anything
+// on that board, so the organizer got a permanent "No games in progress" from
+// the one control most obviously labelled as the TV.
+//
+// Which session: prefer one that is live or paused (that IS tonight), otherwise
+// the most recent one still in setup (the organizer is setting up the TV before
+// starting, which is exactly when they reach for this). Finished sessions are
+// never chosen — a board showing last week's final standings is worse than
+// telling the organizer there's nothing to show.
+//
+// The chain is event → league → its divisions → their sessions, which is three
+// round trips from the client. Doing it here keeps "which session is on the TV"
+// as one rule in one place rather than duplicated per caller.
+func (s *Service) EventRotationSessionID(eventID string) (string, error) {
+	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+"&select=league_id")
+	if err != nil {
+		return "", err
+	}
+	if ev == nil {
+		return "", ErrNotFound
+	}
+	leagueID := asStr(ev, "league_id")
+	if leagueID == "" {
+		return "", nil
+	}
+	divs, err := s.sb.Select("league_brackets",
+		"league_id=eq."+store.Q(leagueID)+"&select=id")
+	if err != nil {
+		return "", err
+	}
+	ids := make([]string, 0, len(divs))
+	for _, d := range divs {
+		if id := asStr(d, "id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return "", nil
+	}
+	rows, err := s.sb.Select("rotation_sessions",
+		"league_bracket_id=in."+store.In(ids)+
+			"&status=in.(live,paused,setup)&order=created_at.desc&limit=50"+
+			"&select=id,status")
+	if err != nil {
+		return "", err
+	}
+	// Newest-first already, so the first running session wins; the setup
+	// fallback is only used when nothing is actually under way.
+	fallback := ""
+	for _, r := range rows {
+		switch asStr(r, "status") {
+		case "live", "paused":
+			return asStr(r, "id"), nil
+		case "setup":
+			if fallback == "" {
+				fallback = asStr(r, "id")
+			}
+		}
+	}
+	return fallback, nil
 }
 
 // DeleteRotationSession removes a session and (via ON DELETE CASCADE) its roster

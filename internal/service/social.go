@@ -447,10 +447,14 @@ var cardThemes = map[string]bool{
 // reasoning as the colourways: an allowlist, because each key becomes a
 // typeface or a painter in the client and an unknown one renders as nothing.
 var cardFonts = map[string]bool{
-	"":        true, // condensed house default
-	"rounded": true,
-	"system":  true,
-	"mono":    true,
+	"":          true, // condensed house default
+	"rounded":   true,
+	"system":    true,
+	"mono":      true,
+	"bebas":     true,
+	"anton":     true,
+	"orbitron":  true,
+	"righteous": true,
 }
 
 var cardPatterns = map[string]bool{
@@ -459,6 +463,11 @@ var cardPatterns = map[string]bool{
 	"stripes":  true,
 	"mesh":     true,
 	"confetti": true,
+	"chevron":  true,
+	"topo":     true,
+	"net":      true,
+	"rays":     true,
+	"dots":     true,
 }
 
 // SetCardStyle stores the caller's card look: colourway, typeface and pattern.

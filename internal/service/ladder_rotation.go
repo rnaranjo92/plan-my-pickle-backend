@@ -619,6 +619,40 @@ func (s *Service) DeleteScorecardRound(sessionID string, round int) error {
 
 // SetRotationScore upserts ONE cell of the scorecard (a player's score for a
 // round). A nil score clears the cell. Owner-gated at the route.
+// RotationScoreEntry is one player's score in a batch write.
+type RotationScoreEntry struct {
+	PlayerID string `json:"playerId"`
+	Score    *int   `json:"score"`
+}
+
+// SetRotationScores writes a whole court's scores in ONE request.
+//
+// A doubles court is four players, and scoring it a player at a time meant four
+// sequential HTTP round trips from the organizer's phone — on gym wifi that is
+// a second or more of spinner per court, several times a round, for what the
+// organizer experiences as typing two numbers. Every one of those trips was
+// also repeating the same "who was on court this round" lookup.
+//
+// Same per-player rules apply (see SetRotationScore): a resting player still
+// can't be scored, a substituted-out player still doesn't own later rounds.
+// Validation is unchanged because this reuses that function rather than
+// reimplementing it — the checks it performs are the ones that stop a court
+// becoming unresolvable, and a second copy of them would be a second thing to
+// keep right.
+//
+// NOT atomic: a failure partway leaves the earlier entries written. That is the
+// same exposure the old per-player loop had, but the window is now server-side
+// rather than spread across a phone's connection, and the retry is one tap on
+// one court instead of guessing which of four calls got through.
+func (s *Service) SetRotationScores(sessionID string, round int, entries []RotationScoreEntry) error {
+	for _, e := range entries {
+		if err := s.SetRotationScore(sessionID, round, e.PlayerID, e.Score); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) SetRotationScore(sessionID string, round int, playerID string, score *int) error {
 	// A player who was substituted out doesn't own the rounds after they left.
 	// The grid still shows their row (it carries every round they DID play), so

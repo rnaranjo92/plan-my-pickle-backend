@@ -486,6 +486,24 @@ func (s *Server) setRotationScore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
+// setRotationScores writes a whole court's scores in one request — see
+// SetRotationScores. The per-player endpoint stays for the single-cell edit in
+// the grid.
+func (s *Server) setRotationScores(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Round   int                          `json:"round"`
+		Entries []service.RotationScoreEntry `json:"entries"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationScores(r.PathValue("id"), req.Round, req.Entries); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
 // addScorecardRound appends an empty column to the ladder scorecard.
 func (s *Server) addScorecardRound(w http.ResponseWriter, r *http.Request) {
 	round, err := s.svc.AddScorecardRound(r.PathValue("id"))

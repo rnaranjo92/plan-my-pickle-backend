@@ -463,6 +463,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// Ladder scorecard: the organizer types a score per player per round. This is
 	// the primary way a rotation ladder records results (the court winner is
 	// derived from these), so it is OWNER-gated, unlike /report.
+	// A whole court in one request — four sequential round trips from a phone
+	// on gym wifi is what "scoring is slow" actually was.
+	mux.HandleFunc("POST /rotation-sessions/{id}/scores/batch",
+		s.rotationSessionOwner("id", s.setRotationScores))
 	mux.HandleFunc("POST /rotation-sessions/{id}/scores",
 		s.rotationSessionOwner("id", s.setRotationScore))
 	mux.HandleFunc("POST /rotation-sessions/{id}/scorecard/rounds",

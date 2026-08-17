@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -128,6 +129,29 @@ func (s *Service) selectAllPushRows(
 func (s *Service) forgetPushSubscriptions(ids []string) {
 	if len(ids) == 0 || !s.pushSubsReady() {
 		return
+	}
+	// Name the ACCOUNT before deleting the row, because an invalid id is the
+	// signature of a wedged identity, not just a dead device: OneSignal issues
+	// ids, so one it has never seen means the device generated it locally and
+	// its registration never completed — which is what happens when login-user
+	// 409s against a stale user already holding that external_id and the SDK's
+	// op queue stalls.
+	//
+	// Without this line the row vanishes and the account looks merely
+	// unregistered, which is indistinguishable from someone who has not opened
+	// the app yet. With it, `grep 'push WEDGED'` is the list of people whose
+	// external_id needs freeing in OneSignal → Audience → Users.
+	if rows, err := s.sb.Select("push_subscriptions",
+		"subscription_id="+store.In(ids)+
+			"&select=user_id,platform,subscription_id"); err == nil {
+		for _, r := range rows {
+			log.Printf("push WEDGED: user=%s platform=%s held an id OneSignal "+
+				"never issued (%s) — its registration never completed; free the "+
+				"external_id in OneSignal Audience → Users, then clear the app's "+
+				"storage on that device",
+				asStr(r, "user_id"), asStr(r, "platform"),
+				asStr(r, "subscription_id"))
+		}
 	}
 	_ = s.sb.Delete("push_subscriptions", "subscription_id="+store.In(ids))
 }

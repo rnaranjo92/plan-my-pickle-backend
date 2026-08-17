@@ -1268,7 +1268,30 @@ func ladderOnly(email string) bool {
 // premiumAllowed reports whether the caller may use premium-gated features — e.g.
 // the SMS "both channels" notification add-on. During early access it's the same
 // allowlist; PREMIUM_ALLOWLIST overrides ("*" opens it to everyone).
+// foundingPremiumEmails are comped for PREMIUM in code, not config.
+//
+// The same reasoning as foundingCoachEmails in payments.go: these are people who
+// used the product before it had a price, and "they keep their free access" must
+// not depend on anyone remembering to set an env var in Railway — a forgotten
+// variable is exactly how a founding user gets a paywall by accident.
+//
+// Austen was comped for the COACH plan (payments.go) but nothing else, so the
+// day SUBSCRIPTIONS_ENABLED flips on he would keep his coaching and lose
+// everything gated by mayUsePremium — starting with creating a ladder league.
+// Two separate comps for one founding user is a trap; this closes it.
+//
+// Additive only: PREMIUM_ALLOWLIST can extend entitlement but can never revoke
+// what is listed here.
+var foundingPremiumEmails = []string{
+	"asveom@lt.life", // Austen — first coach on the platform, Life Time
+}
+
 func premiumAllowed(email string) bool {
+	for _, e := range foundingPremiumEmails {
+		if strings.EqualFold(strings.TrimSpace(email), e) {
+			return true
+		}
+	}
 	// Early-access organizers are comped for Premium.
 	//
 	// They were invited to organize before there was anything to pay for, and

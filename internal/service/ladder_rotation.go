@@ -410,6 +410,11 @@ func (s *Service) persistScorecardWinners(sessionID string, round int) (map[int]
 	return out, nil
 }
 
+// maxRotationScore bounds a single round's score for one player. Generous —
+// games to 11 or 15 win by 2, and rally-point formats stay well inside this —
+// while still refusing the digit-slip that reorders the standings.
+const maxRotationScore = 99
+
 // maxScorecardRounds bounds the scorecard's column count. The grid renders one
 // column per round from 1..max, so an unbounded round would brick the board.
 const maxScorecardRounds = 60
@@ -721,6 +726,13 @@ func (s *Service) SetRotationScore(sessionID string, round int, playerID string,
 	// memory. No real ladder night runs anywhere near this many rounds.
 	if round < 1 || round > maxScorecardRounds || strings.TrimSpace(playerID) == "" {
 		return errors.New("round and player are required")
+	}
+	// Bound the SCORE too. The round was bounded hard and the score not at all,
+	// so a fat-fingered '111' for 11 (or a negative) was accepted, flowed into
+	// the totals, and silently reordered the points-ranked standings — on the
+	// board and on the venue TV. No pickleball game total is three digits.
+	if score != nil && (*score < 0 || *score > maxRotationScore) {
+		return fmt.Errorf("a score has to be between 0 and %d", maxRotationScore)
 	}
 	// A player who SAT OUT a round has no game in it, so there is nothing to
 	// score. Hiding the cell in the grid isn't enough: an organizer scrolling

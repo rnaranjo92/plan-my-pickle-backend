@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
@@ -188,4 +189,23 @@ func (s *Service) ReopenRotationSession(sessionID string) error {
 			"check the board before trying again")
 	}
 	return nil
+}
+
+// RotationRoundCourts returns one round's court layout and results.
+//
+// The board only ever carried the CURRENT round, so in who-won mode a finished
+// round was unreachable: nothing could show the organizer what was recorded,
+// which made "fix the court we got wrong" impossible to even offer. (Scorecard
+// mode had the grid, which is why the gap went unnoticed.)
+func (s *Service) RotationRoundCourts(
+	sessionID string, round int,
+) ([]model.RotationCourt, error) {
+	if round < 1 {
+		return []model.RotationCourt{}, nil
+	}
+	_, byID, err := s.rotationPlayers(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.rotationCourtsForRound(sessionID, round, byID)
 }

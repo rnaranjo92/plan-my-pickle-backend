@@ -497,6 +497,10 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.endRotation))
 	// Corrections. Both owner-only: they rewrite the record of a night that has
 	// already been played, which is never a participant's call.
+	// A past round's courts — readable by anyone who can read the board, since
+	// it is the same information one round later.
+	mux.HandleFunc("GET /rotation-sessions/{id}/rounds/{round}/courts",
+		s.rotationSessionViewer("id", s.rotationRoundCourts))
 	mux.HandleFunc("POST /rotation-sessions/{id}/reopen",
 		s.rotationSessionOwner("id", s.reopenRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/court-winner",

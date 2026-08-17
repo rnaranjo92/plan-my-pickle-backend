@@ -543,7 +543,14 @@ func (s *Server) advanceRotation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Round int `json:"round"`
 	}
-	_ = decode(w, r, &req) // body is optional; round 0 = advance whatever's current
+	// CHECKED, not discarded. decode already treats an empty body as success, so
+	// the optional-body case never needed the discard — what the discard actually
+	// did was let MALFORMED json through: decode wrote a 400 and returned false,
+	// and the handler rotated the entire room anyway, with req.Round=0 skipping
+	// the stale-round check. The client saw an error while every court moved.
+	if !decode(w, r, &req) {
+		return
+	}
 	if err := s.svc.AdvanceRotationSession(r.PathValue("id"), req.Round); err != nil {
 		status(w, err)
 		return
@@ -591,6 +598,22 @@ func (s *Server) setRotationCourtWinner(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "corrected"})
+}
+
+// rotationRoundCourts returns a past round's courts and results, so a finished
+// round can be reviewed (and corrected) rather than only remembered.
+func (s *Server) rotationRoundCourts(w http.ResponseWriter, r *http.Request) {
+	round, err := strconv.Atoi(r.PathValue("round"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("bad round"))
+		return
+	}
+	courts, cerr := s.svc.RotationRoundCourts(r.PathValue("id"), round)
+	if cerr != nil {
+		status(w, cerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, courts)
 }
 
 // pauseRotation / resumeRotation stop and restart the round clock without

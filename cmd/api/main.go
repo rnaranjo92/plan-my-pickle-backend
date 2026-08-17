@@ -208,6 +208,13 @@ func main() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
+			// Close out rotation nights nobody ended. Until this existed, a
+			// forgotten session stayed live forever — standings never locked,
+			// last round never credited, and it outranked every later session
+			// on the event's TV link.
+			if err := svc.EndAbandonedRotationSessions(); err != nil {
+				log.Printf("rotation sweep: abandoned pass failed: %v", err)
+			}
 			if err := svc.MaterializeRecurringEvents(); err != nil {
 				log.Printf("recurring: materialize pass failed: %v", err)
 			}

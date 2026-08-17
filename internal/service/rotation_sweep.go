@@ -90,3 +90,57 @@ func rotationSweepFilter(cutoff string) string {
 		"&round_ends_at=lt." + cutoff +
 		"&select=id,current_round,round_ends_at&limit=200"
 }
+
+// rotationAbandonedAfter is how long past its last round deadline a session has
+// to sit before it counts as walked away from rather than merely paused.
+//
+// Comfortably longer than any real night, including a long dinner break or an
+// organizer who pauses and comes back — but short enough that next week's
+// session doesn't inherit last week's board.
+const rotationAbandonedAfter = 12 * time.Hour
+
+// rotationSessionAbandoned reports whether a live/paused session's round
+// deadline is so far in the past that nobody is coming back to it. Pure.
+//
+// An unparseable or missing deadline is NOT abandoned: a session that has been
+// created but never started has no deadline, and calling that abandoned would
+// hide the night the organizer is setting up right now.
+func rotationSessionAbandoned(roundEndsAt string, now time.Time) bool {
+	ends, err := time.Parse(time.RFC3339, roundEndsAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(ends) > rotationAbandonedAfter
+}
+
+// EndAbandonedRotationSessions closes out sessions nobody ever ended.
+//
+// Challenge ladders got a sweep; rotation never did. So a night the organizer
+// walked away from stayed 'live' forever: its standings were never locked, its
+// last round was never credited, and it outranked every later session on the
+// event's TV link. Ending it is exactly what the organizer would have done, and
+// EndRotationSession is used rather than a bare status write so the closing
+// round is tallied the same way tapping End would.
+func (s *Service) EndAbandonedRotationSessions() error {
+	cutoff := time.Now().UTC().Add(-rotationAbandonedAfter).Format(time.RFC3339)
+	rows, err := s.sb.Select("rotation_sessions",
+		"status=in.(live,paused)"+
+			"&round_ends_at=lt."+cutoff+
+			"&select=id,round_ends_at&limit=100")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		id := asStr(r, "id")
+		if id == "" {
+			continue
+		}
+		if err := s.EndRotationSession(id); err != nil {
+			log.Printf("rotation sweep: couldn't end abandoned %s: %v", id, err)
+			continue
+		}
+		log.Printf("rotation sweep: ended abandoned session %s "+
+			"(last round ended %s)", id, asStr(r, "round_ends_at"))
+	}
+	return nil
+}

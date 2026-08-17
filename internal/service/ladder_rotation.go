@@ -220,12 +220,19 @@ func (s *Service) EventRotationSessionID(eventID string) (string, error) {
 		// every one of these a 400, which is why the TV link kept landing on
 		// the empty tournament board no matter what else was fixed.
 		"league_bracket_id="+store.In(ids)+
-			"&order=created_at.desc&limit=50&select=id,status")
+			"&order=created_at.desc&limit=50&select=id,status,round_ends_at")
 	if err != nil {
 		return "", err
 	}
-	// Newest-first already, so the first running session wins. Below that,
+	// Newest-first already, so the first RUNNING session wins. Below that,
 	// setup beats finished, and finished beats nothing at all.
+	//
+	// "Running" excludes an ABANDONED session. Nothing auto-ended a night the
+	// organizer walked away from, so a session left live last week outranked
+	// tonight's — which starts in `setup` and therefore lost to it — and the
+	// venue TV showed a dead 0:00 clock with last week's names on it until
+	// somebody went and ended the old session by hand.
+	now := time.Now()
 	setup, newest := "", ""
 	for _, r := range rows {
 		id := asStr(r, "id")
@@ -237,7 +244,9 @@ func (s *Service) EventRotationSessionID(eventID string) (string, error) {
 		}
 		switch asStr(r, "status") {
 		case "live", "paused":
-			return id, nil
+			if !rotationSessionAbandoned(asStr(r, "round_ends_at"), now) {
+				return id, nil
+			}
 		case "setup":
 			if setup == "" {
 				setup = id

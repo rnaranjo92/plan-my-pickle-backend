@@ -73,3 +73,34 @@ func TestRotationSweepGraceIsABackstop(t *testing.T) {
 			rotationSweepGrace)
 	}
 }
+
+// A session that is merely paused for dinner must not be mistaken for one the
+// organizer walked away from — and a session in setup (no deadline at all) must
+// never be swept, because that's the night being prepared right now.
+func TestRotationSessionAbandoned(t *testing.T) {
+	now := time.Date(2026, 8, 17, 21, 0, 0, 0, time.UTC)
+	fmtT := func(d time.Duration) string {
+		return now.Add(d).Format(time.RFC3339)
+	}
+	cases := []struct {
+		name   string
+		endsAt string
+		want   bool
+	}{
+		{"round still running", fmtT(5 * time.Minute), false},
+		{"finished ten minutes ago", fmtT(-10 * time.Minute), false},
+		{"a long dinner break", fmtT(-3 * time.Hour), false},
+		{"paused all evening", fmtT(-11 * time.Hour), false},
+		{"left running overnight", fmtT(-13 * time.Hour), true},
+		{"left running since last week", fmtT(-7 * 24 * time.Hour), true},
+		{"never started — no deadline", "", false},
+		{"unparseable deadline", "not a timestamp", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := rotationSessionAbandoned(c.endsAt, now); got != c.want {
+				t.Errorf("abandoned = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

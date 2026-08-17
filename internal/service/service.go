@@ -5303,7 +5303,7 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 	}
 	base := "event_id=eq." + store.Q(eventID) +
 		"&select=id,event_id,player_id,partner_id,bracket_id,payment_status,checked_in,check_in_token,addon_tee,addon_grips," + approvedCol + "%s" +
-		"player:players!player_id(full_name,phone,dupr_id,dupr_rating,skill_level,user_id)," +
+		"player:players!player_id(full_name,phone,email,dupr_id,dupr_rating,skill_level,user_id)," +
 		"partner:players!partner_id(full_name)," +
 		"bracket:brackets(min_rating,max_rating)"
 	rows, err := s.sb.Select("registrations", fmt.Sprintf(base, "partner_name,"))
@@ -5332,6 +5332,20 @@ func (s *Service) Registrations(eventID string) ([]model.Registration, error) {
 			out[i].PhotoURL = photos[uids[i]]
 			out[i].HasAccount = true
 		}
+	}
+	// CanInvite: is there anywhere to send an invite TO?
+	//
+	// "Send invite" reads players.email / players.phone. A roster row typed in
+	// as a bare name off a signup sheet has neither, so the button could only
+	// ever fail — it was offered on exactly the rows least able to use it. The
+	// answer lives here because the client can't see the email at all.
+	for i, r := range rows {
+		p := asMap(r, "player")
+		if p == nil {
+			continue
+		}
+		out[i].CanInvite = strings.TrimSpace(asStr(p, "email")) != "" ||
+			strings.TrimSpace(asStr(p, "phone")) != ""
 	}
 	return out, nil
 }

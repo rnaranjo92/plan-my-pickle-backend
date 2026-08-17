@@ -996,7 +996,13 @@ type Registration struct {
 	// means they were added by name/contact only: they cannot see the event, and
 	// nothing was ever sent to them. The roster surfaces an Invite action for
 	// exactly these rows.
-	HasAccount bool     `json:"hasAccount"`
+	HasAccount bool `json:"hasAccount"`
+	// CanInvite = there is an email or phone on file to send an invite to. A
+	// name typed off a signup sheet has neither, and offering "Send invite" on
+	// those rows promises something that can only fail. Use the claim link for
+	// them instead — it needs no contact details, the organizer passes it on
+	// themselves.
+	CanInvite  bool     `json:"canInvite"`
 	DuprID     *string  `json:"duprId,omitempty"`
 	DuprRating *float64 `json:"duprRating,omitempty"`
 	// OutsideRating is true when the player's DUPR rating falls outside their

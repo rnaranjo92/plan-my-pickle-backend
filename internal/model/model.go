@@ -558,6 +558,10 @@ type AddLadderEntrantRequest struct {
 	DisplayName string  `json:"displayName"`
 	PlayerID    *string `json:"playerId,omitempty"`
 	IsTeam      bool    `json:"isTeam"`
+	// AllowDuplicateName confirms an add whose name is already on this ladder.
+	// The first attempt is refused so the organizer sees it; sending it again
+	// with this set goes through, because two real people can share a name.
+	AllowDuplicateName bool `json:"allowDuplicateName,omitempty"`
 }
 
 // RecordLadderResultRequest records a match between two entrants and applies the

@@ -375,6 +375,13 @@ func NewServer(svc *service.Service) http.Handler {
 		s.ladderEntrantOwner("id", s.removeLadderEntrant))
 	mux.HandleFunc("POST /ladder-entrants/{id}/move",
 		s.ladderEntrantOwner("id", s.moveLadderEntrant))
+	// Identity: rename an entrant, and merge two that turned out to be the same
+	// person. Gated on the entrant being merged INTO, and the service refuses a
+	// pair from different ladders.
+	mux.HandleFunc("POST /ladder-entrants/{id}/name",
+		s.ladderEntrantOwner("id", s.setLadderEntrantName))
+	mux.HandleFunc("POST /ladder-entrants/{id}/merge",
+		s.ladderEntrantOwner("id", s.mergeLadderEntrant))
 	// Ladder rule config (reorder model, challenge range, windows, inactivity) —
 	// keyed on the league id, so ownerOnly fits.
 	mux.HandleFunc("POST /leagues/{id}/ladder-format",
@@ -501,6 +508,12 @@ func NewServer(svc *service.Service) http.Handler {
 	// it is the same information one round later.
 	mux.HandleFunc("GET /rotation-sessions/{id}/rounds/{round}/courts",
 		s.rotationSessionViewer("id", s.rotationRoundCourts))
+	// Walk-ups: who played tonight without being on the ladder, and putting the
+	// ticked ones on it so next week knows them.
+	mux.HandleFunc("GET /rotation-sessions/{id}/walk-ups",
+		s.rotationSessionOwner("id", s.rotationWalkUps))
+	mux.HandleFunc("POST /rotation-sessions/{id}/walk-ups",
+		s.rotationSessionOwner("id", s.promoteRotationWalkUps))
 	mux.HandleFunc("POST /rotation-sessions/{id}/reopen",
 		s.rotationSessionOwner("id", s.reopenRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/court-winner",
@@ -1765,6 +1778,38 @@ func (s *Server) moveLadderEntrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "moved"})
+}
+
+// setLadderEntrantName renames an entrant on the ladder itself — the copy that
+// outlives every session, and the one a typo used to be permanent in.
+func (s *Server) setLadderEntrantName(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetLadderEntrantName(r.PathValue("id"), req.Name); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "renamed"})
+}
+
+// mergeLadderEntrant folds another entrant into this one, moving its matches,
+// challenges and session appearances across. The path id is the SURVIVOR.
+func (s *Server) mergeLadderEntrant(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MergeID string `json:"mergeId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.MergeLadderEntrants(r.PathValue("id"), req.MergeID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "merged"})
 }
 
 // setLadderFormat switches a ladder league between challenge + rotation formats.

@@ -616,6 +616,32 @@ func (s *Server) rotationRoundCourts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, courts)
 }
 
+// rotationWalkUps lists tonight's players who aren't on the division's ladder.
+func (s *Server) rotationWalkUps(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.UnlinkedRotationPlayers(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// promoteRotationWalkUps puts the chosen walk-ups on the ladder.
+func (s *Server) promoteRotationWalkUps(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerIDs []string `json:"playerIds"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.PromoteRotationPlayersToLadder(r.PathValue("id"), req.PlayerIDs)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"added": n})
+}
+
 // pauseRotation / resumeRotation stop and restart the round clock without
 // ending the night. Owner-gated like end: pausing everyone's session is an
 // organizer action, not something a player on the roster can do.

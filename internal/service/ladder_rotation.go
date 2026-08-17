@@ -1421,16 +1421,116 @@ func (s *Service) SetRotationPlayerName(playerID, name string) error {
 	if name == "" {
 		return fmt.Errorf("a name is required")
 	}
-	row, err := s.sb.SelectOne("rotation_players", "id=eq."+store.Q(playerID)+"&select=id")
+	row, err := s.sb.SelectOne("rotation_players",
+		"id=eq."+store.Q(playerID)+"&select=id,entrant_id")
 	if err != nil {
 		return err
 	}
 	if row == nil {
 		return ErrNotFound
 	}
-	_, err = s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
-		map[string]any{"display_name": name})
-	return err
+	if _, err = s.sb.Update("rotation_players", "id=eq."+store.Q(playerID),
+		map[string]any{"display_name": name}); err != nil {
+		return err
+	}
+	// Fix it on the LADDER too, when this roster row came from one.
+	//
+	// The session's copy dies with the session, so a rename that stopped here
+	// corrected tonight and nothing else: the misspelling stayed on the ladder
+	// and re-imported, wrong, into every session after it. Someone fixing a name
+	// means the name is wrong, not that it's wrong tonight.
+	//
+	// Best-effort — the rename the organizer asked for has already succeeded,
+	// and failing it now would be a lie about what happened.
+	if eid := strings.TrimSpace(asStr(row, "entrant_id")); eid != "" {
+		if lerr := s.SetLadderEntrantName(eid, name); lerr != nil {
+			log.Printf("rename: session player %s renamed, ladder entrant %s not: %v",
+				playerID, eid, lerr)
+		}
+	}
+	return nil
+}
+
+// UnlinkedRotationPlayers lists the session's players who are NOT on the
+// division's ladder — the walk-ups.
+//
+// They exist only inside the session, so unless they are put on the ladder they
+// are typed in again next week, re-rated from scratch, with no history: the
+// regular who has played every Tuesday since March still arrives as a stranger.
+// Offered at the end of the night rather than added automatically, because a
+// genuine one-off guest should not silently accumulate on the ladder.
+func (s *Service) UnlinkedRotationPlayers(sessionID string) ([]model.RotationPlayer, error) {
+	rows, err := s.sb.Select("rotation_players",
+		"session_id=eq."+store.Q(sessionID)+
+			"&entrant_id=is.null&order=display_name.asc&limit=200")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.RotationPlayer, 0, len(rows))
+	for _, r := range rows {
+		p := rotationPlayerFromRow(r)
+		// Placeholder rows exist to fill a court in testing and are not people.
+		if strings.TrimSpace(p.DisplayName) == "" ||
+			strings.HasPrefix(p.DisplayName, "+15553") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// PromoteRotationPlayersToLadder puts walk-ups onto the division's ladder and
+// links the session rows to their new entrants, so tonight's scores stay
+// attached to the person rather than to a row that is about to be forgotten.
+//
+// Returns how many were added. Already-linked ids are skipped rather than
+// refused: the organizer ticking a box twice is not an error.
+func (s *Service) PromoteRotationPlayersToLadder(
+	sessionID string, playerIDs []string,
+) (int, error) {
+	if len(playerIDs) == 0 {
+		return 0, nil
+	}
+	div, err := s.DivisionOfRotationSession(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, pid := range playerIDs {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		row, rerr := s.sb.SelectOne("rotation_players",
+			"id=eq."+store.Q(pid)+"&session_id=eq."+store.Q(sessionID)+
+				"&select=id,display_name,entrant_id,self_rating")
+		if rerr != nil {
+			return added, rerr
+		}
+		// Not in this session, or already on the ladder — nothing to do.
+		if row == nil || strings.TrimSpace(asStr(row, "entrant_id")) != "" {
+			continue
+		}
+		name := strings.TrimSpace(asStr(row, "display_name"))
+		if name == "" {
+			continue
+		}
+		ent, aerr := s.AddLadderEntrant(div, model.AddLadderEntrantRequest{
+			DisplayName: name,
+			// The organizer has already been shown this list and ticked these
+			// names, which IS the duplicate confirmation.
+			AllowDuplicateName: true,
+		})
+		if aerr != nil {
+			return added, aerr
+		}
+		if _, uerr := s.sb.Update("rotation_players", "id=eq."+store.Q(pid),
+			map[string]any{"entrant_id": ent.ID}); uerr != nil {
+			return added, uerr
+		}
+		added++
+	}
+	return added, nil
 }
 
 // SubstituteRotationPlayer hands one player's seat to another mid-session.

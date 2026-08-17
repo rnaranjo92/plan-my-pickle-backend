@@ -181,6 +181,15 @@ func (s *Service) AddLadderEntrant(leagueBracketID string, req model.AddLadderEn
 			return mapLadderEntrant(ex), nil
 		}
 	}
+	// A name already on this ladder is almost always the same human being added
+	// twice — the ladder is typed at the door, and "Jen W" tonight is "Jen
+	// Whitfield" next week. Refuse ONCE so it's seen; the organizer confirms if
+	// they really do have two Chrises.
+	if !req.AllowDuplicateName &&
+		s.ladderNameTaken(leagueBracketID, req.DisplayName) {
+		return model.LadderEntrant{}, fmt.Errorf("%w: %s is already on this ladder",
+			ErrDuplicateName, strings.TrimSpace(req.DisplayName))
+	}
 	// A new entrant joins at the bottom: position = (max existing) + 1. Reading
 	// the current count is fine for an organizer-driven, single-writer flow; the
 	// DEFERRABLE unique(position) constraint backstops any race.

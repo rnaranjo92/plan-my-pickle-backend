@@ -595,6 +595,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/email", s.ownerOnly("event", "id", s.emailCustom))
 	mux.HandleFunc("POST /events/{id}/sms", s.ownerOnly("event", "id", s.smsCustom))
 	mux.HandleFunc("POST /events/{id}/season/roll", s.ownerOnly("event", "id", s.rollSeason))
+	// The season ARCHIVE is the paid half of a league (see ArchiveAllowed): the
+	// current season is free, past seasons are the durable record a club pays to
+	// keep. Reads stay public — gating is on the OWNER's entitlement, so a
+	// player is never asked to pay to see their own club's history.
 	mux.HandleFunc("GET /events/{id}/seasons", s.listSeasons)
 	mux.HandleFunc("GET /events/{id}/seasons/{n}", s.getSeason)
 
@@ -3530,6 +3534,14 @@ func (s *Server) copyRoster(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// Carrying a roster forward is the other half of the durable record: it is
+	// what makes last season's club into this season's club instead of a list
+	// to retype. Gated on the SOURCE event — you are reaching into that
+	// league's history, and that is the thing being paid for.
+	if !s.svc.ArchiveAllowed(strings.TrimSpace(req.FromEventID)) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	added, skipped, err := s.svc.CopyRoster(r.PathValue("id"), req.FromEventID, userID(r))
 	if err != nil {
 		status(w, err)
@@ -4226,8 +4238,15 @@ func (s *Server) rollSeason(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"archivedSeason": n})
 }
 
-// listSeasons returns a league's archived seasons (metadata only). Public read.
+// listSeasons returns a league's archived seasons (metadata only). Public read,
+// gated on the OWNER's plan — see Service.ArchiveAllowed. 402 rather than 403:
+// this is a door that opens if you pay, and the client turns it into an upsell
+// instead of an error.
 func (s *Server) listSeasons(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.ArchiveAllowed(r.PathValue("id")) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	snaps, err := s.svc.ListSeasonSnapshots(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -4236,8 +4255,14 @@ func (s *Server) listSeasons(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snaps)
 }
 
-// getSeason returns one archived season's frozen standings. Public read.
+// getSeason returns one archived season's frozen standings. Public read, gated
+// on the owner's plan like listSeasons — otherwise the list could be locked
+// while a direct link to season 3 still opened.
 func (s *Server) getSeason(w http.ResponseWriter, r *http.Request) {
+	if !s.svc.ArchiveAllowed(r.PathValue("id")) {
+		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
+		return
+	}
 	n, _ := strconv.Atoi(r.PathValue("n"))
 	snap, err := s.svc.GetSeasonSnapshot(r.PathValue("id"), n)
 	if err != nil {

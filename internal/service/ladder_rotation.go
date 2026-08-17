@@ -2241,6 +2241,22 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 		log.Printf("rotation %s ended after round %d: %s", sessionID, round, why)
 		return nil
 	}
+	// RE-CHECK the pause immediately before handing over.
+	//
+	// The guard at the top of this function runs before all the seeding work
+	// above, and the RPC force-writes status='live' — so an organizer who
+	// pauses DURING that window has their pause silently undone and the room
+	// rotated out of a game nobody finished. This narrows the window to the
+	// RPC call itself; closing it entirely belongs in the RPC (see
+	// migrations/add_advance_pause_guard.sql), which must also refuse a paused
+	// session rather than trusting its caller.
+	if cur, cerr := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=status"); cerr == nil && cur != nil {
+		if asStr(cur, "status") == "paused" {
+			return fmt.Errorf("%w: the session was paused — resume it before the "+
+				"next round", ErrRoundBlocked)
+		}
+	}
 	payload := map[string]any{
 		"p_session": sessionID,
 		"p_round":   round,
@@ -2250,6 +2266,13 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	}
 	body, err := s.sb.RPC("advance_rotation_session", payload)
 	if err != nil {
+		// The database-side guard (migrations/add_advance_pause_guard.sql) is
+		// what catches a pause that lands after the re-check above. It speaks
+		// SQL; the organizer should hear the same sentence a pause always gets.
+		if strings.Contains(strings.ToLower(err.Error()), "is paused") {
+			return fmt.Errorf("%w: the session was paused — resume it before the "+
+				"next round", ErrRoundBlocked)
+		}
 		return err
 	}
 	var res struct {

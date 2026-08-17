@@ -173,11 +173,18 @@ func (s *Service) ListRotationSessions(divisionID string) ([]model.RotationSessi
 // on that board, so the organizer got a permanent "No games in progress" from
 // the one control most obviously labelled as the TV.
 //
-// Which session: prefer one that is live or paused (that IS tonight), otherwise
-// the most recent one still in setup (the organizer is setting up the TV before
-// starting, which is exactly when they reach for this). Finished sessions are
-// never chosen — a board showing last week's final standings is worse than
-// telling the organizer there's nothing to show.
+// Which session: live or paused first (that IS tonight), then one still in
+// setup (the organizer is setting the TV up before starting, exactly when they
+// reach for this), and failing both, the most recent session whatever its
+// state — including finished.
+//
+// Finished sessions used to be excluded here, on the reasoning that stale final
+// standings were worse than an honest empty state. That was wrong, and the
+// screenshot of it proved so: the fallback is the TOURNAMENT board, which for a
+// rotation-ladder event is empty in every possible circumstance. So the choice
+// was never "last night's standings vs. an honest nothing" — it was "last
+// night's standings vs. a permanently wrong screen that says No games in
+// progress". Between those, the real result wins.
 //
 // The chain is event → league → its divisions → their sessions, which is three
 // round trips from the client. Doing it here keeps "which session is on the TV"
@@ -210,25 +217,34 @@ func (s *Service) EventRotationSessionID(eventID string) (string, error) {
 	}
 	rows, err := s.sb.Select("rotation_sessions",
 		"league_bracket_id=in."+store.In(ids)+
-			"&status=in.(live,paused,setup)&order=created_at.desc&limit=50"+
-			"&select=id,status")
+			"&order=created_at.desc&limit=50&select=id,status")
 	if err != nil {
 		return "", err
 	}
-	// Newest-first already, so the first running session wins; the setup
-	// fallback is only used when nothing is actually under way.
-	fallback := ""
+	// Newest-first already, so the first running session wins. Below that,
+	// setup beats finished, and finished beats nothing at all.
+	setup, newest := "", ""
 	for _, r := range rows {
+		id := asStr(r, "id")
+		if id == "" {
+			continue
+		}
+		if newest == "" {
+			newest = id
+		}
 		switch asStr(r, "status") {
 		case "live", "paused":
-			return asStr(r, "id"), nil
+			return id, nil
 		case "setup":
-			if fallback == "" {
-				fallback = asStr(r, "id")
+			if setup == "" {
+				setup = id
 			}
 		}
 	}
-	return fallback, nil
+	if setup != "" {
+		return setup, nil
+	}
+	return newest, nil
 }
 
 // DeleteRotationSession removes a session and (via ON DELETE CASCADE) its roster

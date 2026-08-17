@@ -201,7 +201,10 @@ var courtCallSound = pushSound{iOS: "court_call.caf", android: "court_call"}
 func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" {
-		return nil // not configured — no-op, same as every other push path
+		// Loud, because this path runs unattended: a missing key silently
+		// cancelled the whole broadcast with nothing in the logs to find.
+		log.Printf("9am broadcast skipped: ONESIGNAL_REST_API_KEY is not set")
+		return nil
 	}
 	body := map[string]any{
 		"app_id":            onesignalAppID,

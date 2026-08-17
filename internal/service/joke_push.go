@@ -27,11 +27,19 @@ func (s *Service) SendJokeOfTheDay() {
 	}
 	joke := JokeOfTheDay(jokeDay())
 	if joke == "" {
+		log.Printf("joke push: no joke for %s — nothing sent",
+			jokeDay().Format("2006-01-02"))
 		return
 	}
 	if err := s.sendPushToEveryoneAt9am("Joke of the day 🥒", joke); err != nil {
-		log.Printf("joke push: %v", err)
+		log.Printf("joke push: FAILED to hand to OneSignal: %v", err)
+		return
 	}
+	// A success line, not just a failure one. This job runs unattended once a
+	// day and every one of its exits was previously silent, so "did it go?" had
+	// no answer short of waiting for 9am and asking a human.
+	log.Printf("joke push: queued for 9am local (claimed %s UTC, joke day %s)",
+		time.Now().UTC().Format("2006-01-02"), jokeDay().Format("2006-01-02"))
 }
 
 // jokeDay is the date the joke is chosen for.
@@ -71,7 +79,11 @@ func (s *Service) SendJokePreview(externalID, subID string) error {
 // two instances booting together would both read "not run today" and both send.
 func (s *Service) claimDailyJob(name string) bool {
 	if !s.columnReady("daily_jobs", "name") {
-		return false // run add_daily_jobs.sql — silence beats double-sending
+		// Silence beats double-sending — but silence with no log meant a
+		// missing migration disabled every daily job FOREVER with nothing to
+		// find. Say so on each attempt; hourly is rare enough to be signal.
+		log.Printf("daily job %q skipped: daily_jobs is not there — run add_daily_jobs.sql", name)
+		return false
 	}
 	today := time.Now().UTC().Format("2006-01-02")
 	rows, err := s.sb.Update("daily_jobs",

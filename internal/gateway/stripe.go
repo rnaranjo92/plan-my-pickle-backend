@@ -13,7 +13,9 @@ import (
 	"github.com/stripe/stripe-go/v79/accountlink"
 	billingportalsession "github.com/stripe/stripe-go/v79/billingportal/session"
 	checkoutsession "github.com/stripe/stripe-go/v79/checkout/session"
+	"github.com/stripe/stripe-go/v79/customer"
 	"github.com/stripe/stripe-go/v79/refund"
+	"github.com/stripe/stripe-go/v79/subscription"
 	"github.com/stripe/stripe-go/v79/webhook"
 )
 
@@ -49,6 +51,13 @@ type stripeClient struct {
 	sessions *checkoutsession.Client
 	portal   *billingportalsession.Client
 	refunds  *refund.Client
+	// subs reads subscriptions back OUT of Stripe. The webhook is push-only, so
+	// a delivery that never lands leaves our copy of who-is-subscribed wrong
+	// forever; the reconciler needs to be able to ask.
+	subs *subscription.Client
+	// customers resolves a subscription's billing email — the last thread back
+	// to a person when a subscription predates user-id metadata.
+	customers *customer.Client
 }
 
 // NewStripeGateway builds a Stripe-backed payment gateway from the platform's
@@ -64,11 +73,13 @@ func NewStripeGateway(secretKey, webhookSecret string) *StripeGateway {
 	}
 	return &StripeGateway{
 		client: &stripeClient{
-			accounts: &account.Client{B: backends.API, Key: secretKey},
-			links:    &accountlink.Client{B: backends.API, Key: secretKey},
-			sessions: &checkoutsession.Client{B: backends.API, Key: secretKey},
-			portal:   &billingportalsession.Client{B: backends.API, Key: secretKey},
-			refunds:  &refund.Client{B: backends.API, Key: secretKey},
+			accounts:  &account.Client{B: backends.API, Key: secretKey},
+			links:     &accountlink.Client{B: backends.API, Key: secretKey},
+			sessions:  &checkoutsession.Client{B: backends.API, Key: secretKey},
+			portal:    &billingportalsession.Client{B: backends.API, Key: secretKey},
+			refunds:   &refund.Client{B: backends.API, Key: secretKey},
+			subs:      &subscription.Client{B: backends.API, Key: secretKey},
+			customers: &customer.Client{B: backends.API, Key: secretKey},
 		},
 		webhookSecret: webhookSecret,
 		mode:          mode,
@@ -351,11 +362,119 @@ func (g *StripeGateway) CreateSubscriptionCheckout(email, userID, priceID, succe
 	}
 	params.Context = ctx
 	params.AddMetadata("user_id", userID)
+	// Stamp the user onto the SUBSCRIPTION as well, not just the session.
+	//
+	// Stripe does not copy session metadata onto the subscription it creates, and
+	// the session is the only place that ever knew who this was. Without this, a
+	// subscription read back from Stripe later (see ListSubscriptionsForPrice) is
+	// anonymous — recoverable only by matching the customer id we may never have
+	// stored, precisely in the missed-webhook case that most needs recovering.
+	if userID != "" {
+		params.SubscriptionData = &stripe.CheckoutSessionSubscriptionDataParams{
+			Metadata: map[string]string{"user_id": userID},
+		}
+	}
 	sess, err := g.client.sessions.New(params)
 	if err != nil {
 		return "", err
 	}
 	return sess.URL, nil
+}
+
+// subEvent maps a Stripe subscription object onto our SubscriptionEvent, so a
+// subscription READ from the API and one that arrived by webhook are described
+// the same way. UserID comes from subscription metadata, which only exists on
+// subscriptions created after CreateSubscriptionCheckout began stamping it —
+// callers must be able to cope with it being empty.
+func subEvent(sub *stripe.Subscription) SubscriptionEvent {
+	ev := SubscriptionEvent{
+		SubscriptionID: sub.ID,
+		Status:         string(sub.Status),
+		Active: sub.Status == stripe.SubscriptionStatusActive ||
+			sub.Status == stripe.SubscriptionStatusTrialing,
+		UserID: sub.Metadata["user_id"],
+	}
+	if sub.Customer != nil {
+		ev.CustomerID = sub.Customer.ID
+	}
+	if sub.Items != nil && len(sub.Items.Data) > 0 && sub.Items.Data[0].Price != nil {
+		ev.PriceID = sub.Items.Data[0].Price.ID
+	}
+	return ev
+}
+
+// ListSubscriptionsForPrice returns every subscription on a price, whatever its
+// status — the reconciler needs the cancelled ones too, since a missed
+// cancellation webhook is exactly as wrong as a missed signup.
+//
+// The page cap is a runaway guard, not a real limit: it is far above any
+// plausible subscriber count, and truncation is reported as an error rather
+// than a short list, because a caller that mistook a truncated list for the
+// whole truth would revoke everyone past the cut.
+func (g *StripeGateway) ListSubscriptionsForPrice(priceID string) ([]SubscriptionEvent, error) {
+	if strings.TrimSpace(priceID) == "" {
+		return nil, errors.New("no price id")
+	}
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.SubscriptionListParams{
+		Price:  stripe.String(priceID),
+		Status: stripe.String("all"),
+	}
+	params.Context = ctx
+	params.Limit = stripe.Int64(100)
+	const maxSubs = 5000
+	out := []SubscriptionEvent{}
+	it := g.client.subs.List(params)
+	for it.Next() {
+		out = append(out, subEvent(it.Subscription()))
+		if len(out) > maxSubs {
+			return nil, fmt.Errorf("more than %d subscriptions on price %s", maxSubs, priceID)
+		}
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetSubscription reads one subscription by id. Used to CONFIRM before revoking
+// somebody's plan, so a truncated or stale list can never be the sole reason an
+// account loses what it paid for.
+func (g *StripeGateway) GetSubscription(subID string) (SubscriptionEvent, error) {
+	if strings.TrimSpace(subID) == "" {
+		return SubscriptionEvent{}, errors.New("no subscription id")
+	}
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.SubscriptionParams{}
+	params.Context = ctx
+	sub, err := g.client.subs.Get(subID, params)
+	if err != nil {
+		return SubscriptionEvent{}, err
+	}
+	return subEvent(sub), nil
+}
+
+// CustomerEmail returns the billing email on a Stripe customer, or "" if the
+// customer has none or was deleted. A deleted customer is not an error here —
+// it just means that thread back to a person has been cut.
+func (g *StripeGateway) CustomerEmail(customerID string) (string, error) {
+	if strings.TrimSpace(customerID) == "" {
+		return "", nil
+	}
+	ctx, cancel := stripeCtx()
+	defer cancel()
+	params := &stripe.CustomerParams{}
+	params.Context = ctx
+	cust, err := g.client.customers.Get(customerID, params)
+	if err != nil {
+		return "", err
+	}
+	if cust == nil || cust.Deleted {
+		return "", nil
+	}
+	return cust.Email, nil
 }
 
 // CreateBillingPortalSession opens the Stripe-hosted billing portal so a

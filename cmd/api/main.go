@@ -203,6 +203,21 @@ func main() {
 		}
 	}()
 
+	// Subscription reconciliation. The Stripe webhook is the ONLY thing that
+	// grants or revokes a plan, and it is push-once: a delivery lost to a deploy
+	// or a restart means someone paid and silently didn't get it. This asks
+	// Stripe hourly who is actually subscribed and repairs the difference.
+	//
+	// The first pass waits a few minutes rather than running at boot — a restart
+	// loop would otherwise hammer Stripe's API on every attempt.
+	go func() {
+		time.Sleep(3 * time.Minute)
+		for {
+			svc.ReconcileSubscriptions()
+			time.Sleep(time.Hour)
+		}
+	}()
+
 	// Joke of the day. The SEND is once per day (claimed in daily_jobs), but the
 	// tick is hourly because OneSignal schedules it per-timezone from whenever
 	// we hand it over — so the earlier in the UTC day it's queued, the more

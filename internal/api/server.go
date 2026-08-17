@@ -184,6 +184,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// this both reveals who is on a free ride and can put someone there.
 	mux.HandleFunc("GET /comped", s.ownerEmailOnly(s.listComped))
 	mux.HandleFunc("POST /comped/{userId}", s.ownerEmailOnly(s.setComped))
+	// Run the Stripe reconciliation on demand instead of waiting for the hourly
+	// tick — the pass that repairs plans a missed webhook left wrong.
+	mux.HandleFunc("POST /subscriptions/reconcile", s.ownerEmailOnly(s.reconcileSubs))
 	mux.HandleFunc("GET /me/subscription", requireAuth(s.subscriptionStatus))
 	mux.HandleFunc("POST /me/billing-portal", requireAuth(s.billingPortal))
 	// Public: confirm a just-completed Checkout by session id (from the success
@@ -4906,6 +4909,12 @@ func (s *Server) stripeConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, model.URLResponse{URL: url})
+}
+
+// reconcileSubs runs the Stripe reconciliation now and returns what it changed.
+// Owner-only: it reads the full subscriber list and can grant or revoke plans.
+func (s *Server) reconcileSubs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.ReconcileSubscriptions())
 }
 
 // listComped returns every manually-granted account, with the reason and date.

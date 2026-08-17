@@ -3,7 +3,9 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
@@ -166,6 +168,18 @@ func (s *Service) MoveLadderEntrant(entrantID string, newPosition int) error {
 func (s *Service) AddLadderEntrant(leagueBracketID string, req model.AddLadderEntrantRequest) (model.LadderEntrant, error) {
 	if strings.TrimSpace(req.DisplayName) == "" {
 		return model.LadderEntrant{}, errors.New("displayName is required")
+	}
+	// A linked player can only be on a ladder ONCE. Callers used to each carry
+	// their own check (join did, the seeder did, the sync did) — and any two of
+	// them racing still inserted twice, because the check lived outside this
+	// function. Doing it here covers every caller; a re-add returns the existing
+	// entrant, which is what "add someone who's already on" should mean.
+	if pid := strings.TrimSpace(strOr(req.PlayerID)); pid != "" {
+		if ex, _ := s.sb.SelectOne("ladder_entrants",
+			"league_bracket_id=eq."+store.Q(leagueBracketID)+
+				"&player_id=eq."+store.Q(pid)+"&select=*&limit=1"); ex != nil {
+			return mapLadderEntrant(ex), nil
+		}
 	}
 	// A new entrant joins at the bottom: position = (max existing) + 1. Reading
 	// the current count is fine for an organizer-driven, single-writer flow; the
@@ -526,7 +540,13 @@ type LadderSyncStatus struct {
 // accumulating ghosts — and would silently map event brackets onto ladder
 // divisions, and silently put +1555 placeholders on the ladder. An organizer
 // pressing a button that says how many is legible; all of that is not.
-func (s *Service) missingLadderPlayers(div string) (map[string]string, int, error) {
+// missingEntry is one registered player absent from the league's ladders.
+type missingEntry struct {
+	playerID string
+	name     string
+}
+
+func (s *Service) missingLadderPlayers(div string) ([]missingEntry, int, error) {
 	row, err := s.sb.SelectOne("league_brackets",
 		"id=eq."+store.Q(div)+"&select=league_id")
 	if err != nil {
@@ -549,44 +569,96 @@ func (s *Service) missingLadderPlayers(div string) (map[string]string, int, erro
 			eventIDs = append(eventIDs, id)
 		}
 	}
-	entrants, err := s.ListLadder(div)
+	// Dedupe against EVERY division's ladder, not just the pressed one.
+	//
+	// Registrations belong to the league; ladders belong to divisions; nothing
+	// maps one to the other. Checking only the pressed division meant a
+	// two-division league reported (and on Add, inserted) division B's players
+	// as "missing" from division A — pressing the button on each tab in turn
+	// would put the entire league on both ladders. Cross-division dedupe keeps
+	// a human on at most one ladder; WHICH ladder a genuinely missing player
+	// joins is the division whose tab the organizer pressed, which is the one
+	// piece of mapping only they can decide.
+	divs, err := s.sb.Select("league_brackets",
+		"league_id=eq."+store.Q(leagueID)+"&select=id")
 	if err != nil {
 		return nil, 0, err
 	}
 	onLadder := map[string]bool{}
-	for _, e := range entrants {
-		if e.PlayerID != nil && *e.PlayerID != "" {
-			onLadder[*e.PlayerID] = true
+	onThisLadder := 0
+	for _, d := range divs {
+		divID := asStr(d, "id")
+		if divID == "" {
+			continue
+		}
+		entrants, lerr := s.ListLadder(divID)
+		if lerr != nil {
+			return nil, 0, lerr
+		}
+		if divID == div {
+			onThisLadder = len(entrants)
+		}
+		for _, e := range entrants {
+			if e.PlayerID != nil && *e.PlayerID != "" {
+				onLadder[*e.PlayerID] = true
+			}
 		}
 	}
 	if len(eventIDs) == 0 {
-		return map[string]string{}, len(entrants), nil
+		return nil, onThisLadder, nil
 	}
-	regs, err := s.sb.Select("registrations",
-		"event_id="+store.In(eventIDs)+
-			"&select=player_id,player:players!player_id(full_name)&limit=2000")
-	if err != nil {
-		return nil, 0, err
+	// PAGE through the registrations. PostgREST silently caps a single response
+	// at ~1000 rows regardless of the limit written on the URL, so one read of
+	// "limit=2000" quietly dropped everyone past the cap — and a dropped row
+	// here means a player who never shows up as missing at all.
+	//
+	// Approval matters too: the sync must not promote a PENDING registration
+	// onto the ladder. The approval queue exists so an organizer decides who's
+	// in; a side door through the ladder would make that queue decorative.
+	seen := map[string]bool{}
+	missing := []missingEntry{}
+	const page = 1000
+	for offset := 0; offset < 10000; offset += page {
+		regs, rerr := s.sb.Select("registrations",
+			"event_id="+store.In(eventIDs)+s.approvedRegFilter()+
+				"&select=player_id,player:players!player_id(full_name,phone)"+
+				fmt.Sprintf("&limit=%d&offset=%d", page, offset))
+		if rerr != nil {
+			return nil, 0, rerr
+		}
+		for _, r := range regs {
+			pid := asStr(r, "player_id")
+			if pid == "" || onLadder[pid] || seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			pl := asMap(r, "player")
+			if pl == nil {
+				continue
+			}
+			// Placeholders (the +1555 test rows) never belong on a real
+			// ladder — they'd render on the public TV board and in standings.
+			if strings.HasPrefix(asStr(pl, "phone"), "+15553") {
+				continue
+			}
+			name := strings.TrimSpace(asStr(pl, "full_name"))
+			if name == "" {
+				// A ladder entrant must have a name — the board, the standings
+				// and the spoken court calls all render it.
+				continue
+			}
+			missing = append(missing, missingEntry{playerID: pid, name: name})
+		}
+		if len(regs) < page {
+			break
+		}
 	}
-	missing := map[string]string{}
-	for _, r := range regs {
-		pid := asStr(r, "player_id")
-		if pid == "" || onLadder[pid] {
-			continue
-		}
-		name := ""
-		if p := asMap(r, "player"); p != nil {
-			name = strings.TrimSpace(asStr(p, "full_name"))
-		}
-		if name == "" {
-			// A ladder entrant must have a name — the board, the standings and
-			// the spoken court calls all render it. Skip rather than create a
-			// blank row somebody would have to hunt down later.
-			continue
-		}
-		missing[pid] = name
-	}
-	return missing, len(entrants), nil
+	// Deterministic order. Iterating a map meant every press appended the
+	// missing players to the bottom of the ladder in a DIFFERENT random order —
+	// and bottom-of-ladder position is a real thing on a ladder. Alphabetical
+	// is at least explainable to the people standing at the bottom.
+	sort.Slice(missing, func(i, j int) bool { return missing[i].name < missing[j].name })
+	return missing, onThisLadder, nil
 }
 
 // LadderSync reports how many registered players aren't on this ladder.
@@ -598,26 +670,27 @@ func (s *Service) LadderSync(div string) (LadderSyncStatus, error) {
 	return LadderSyncStatus{Missing: len(missing), OnLadder: onLadder}, nil
 }
 
-// AddRegisteredToLadder puts every registered player who isn't on this ladder
-// onto it, and returns how many were added.
+// AddRegisteredToLadder puts every registered player who isn't on any of the
+// league's ladders onto THIS division's, and returns how many were added.
 //
 // Idempotent by construction: it only ever adds players missing at the moment
-// it runs, so pressing it twice adds nothing the second time.
+// it runs, and AddLadderEntrant itself refuses to duplicate a linked player,
+// so pressing it twice — even concurrently — adds nothing the second time.
 func (s *Service) AddRegisteredToLadder(div string) (int, error) {
 	missing, _, err := s.missingLadderPlayers(div)
 	if err != nil {
 		return 0, err
 	}
 	added := 0
-	for pid, name := range missing {
-		p := pid
+	for _, m := range missing {
+		p := m.playerID
 		if _, err := s.AddLadderEntrant(div, model.AddLadderEntrantRequest{
-			DisplayName: name,
+			DisplayName: m.name,
 			PlayerID:    &p,
 		}); err != nil {
 			// Keep going: one bad row shouldn't strand the other nineteen. The
 			// count returned is what actually landed.
-			log.Printf("ladder sync: could not add %s (%s): %v", name, pid, err)
+			log.Printf("ladder sync: could not add %s (%s): %v", m.name, p, err)
 			continue
 		}
 		added++

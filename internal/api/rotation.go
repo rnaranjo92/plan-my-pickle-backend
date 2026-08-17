@@ -478,8 +478,14 @@ func (s *Server) setRotationScore(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.svc.SetRotationScore(
-		r.PathValue("id"), req.Round, req.PlayerID, req.Score); err != nil {
+	// Through the batch, deliberately: SetRotationScores is what re-derives a
+	// past round's winner and retallies wins afterwards. Calling the single
+	// writer directly skipped that — and a one-cell edit in the grid is the most
+	// likely way anyone ever fixes a wrong score, so it was exactly the path
+	// that left the win with the loser.
+	if err := s.svc.SetRotationScores(r.PathValue("id"), req.Round,
+		[]service.RotationScoreEntry{{PlayerID: req.PlayerID, Score: req.Score}},
+	); err != nil {
 		status(w, err)
 		return
 	}
@@ -552,6 +558,39 @@ func (s *Server) endRotation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "done"})
+}
+
+// reopenRotation puts a finished session back on the clock — the answer to a
+// mis-tapped End (or a venue that extended the booking) that isn't "start over
+// with zeroed standings". Owner-gated, like End itself.
+func (s *Server) reopenRotation(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.ReopenRotationSession(r.PathValue("id")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
+}
+
+// setRotationCourtWinner corrects a court's result AFTER its round is over.
+//
+// Owner-only and separate from /report on purpose: reporting is a participant
+// action pinned to the live round, this is the organizer fixing the record of
+// the night. An empty winner clears the result back to undecided.
+func (s *Server) setRotationCourtWinner(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Round  int    `json:"round"`
+		Court  int    `json:"court"`
+		Winner string `json:"winner"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetRotationCourtWinner(
+		r.PathValue("id"), req.Round, req.Court, req.Winner); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "corrected"})
 }
 
 // pauseRotation / resumeRotation stop and restart the round clock without

@@ -650,7 +650,35 @@ func (s *Service) SetRotationScores(sessionID string, round int, entries []Rotat
 			return err
 		}
 	}
-	return nil
+	return s.rederivePastRound(sessionID, round)
+}
+
+// rederivePastRound re-decides a FINISHED round's court winners from its scores
+// and retallies wins.
+//
+// Correcting 11-7 to 7-11 in round 3 recomputed the points — they are summed
+// from the score rows — but the court's winner and the wins were persisted back
+// when the round advanced and were never revisited. So the loser kept the win,
+// while Wins is both the standings column and the documented tiebreak: the
+// board could contradict its own scores.
+//
+// The CURRENT round is skipped: it is still being typed into, its winner is
+// derived when it advances, and re-deriving on every keystroke would credit and
+// uncredit wins as the organizer types the first digit of the second score.
+func (s *Service) rederivePastRound(sessionID string, round int) error {
+	srow, err := s.sb.SelectOne("rotation_sessions",
+		"id=eq."+store.Q(sessionID)+"&select=current_round,status")
+	if err != nil || srow == nil {
+		return nil // best-effort: never fail a score write over the retally
+	}
+	past := round < asInt(srow, "current_round") || asStr(srow, "status") == "done"
+	if !past {
+		return nil
+	}
+	if _, perr := s.persistScorecardWinners(sessionID, round); perr != nil {
+		return perr
+	}
+	return s.retallyRotationWins(sessionID)
 }
 
 func (s *Service) SetRotationScore(sessionID string, round int, playerID string, score *int) error {
@@ -1670,6 +1698,18 @@ func (s *Service) ReportRotationCourt(sessionID, callerUserID string,
 	if srow == nil {
 		return ErrNotFound
 	}
+	// A finished night takes no more results.
+	//
+	// End does not move current_round, so the round guard below still passed
+	// after the session was over: a stale who-won tap from somebody's pocket —
+	// or a rostered player who wanted a different answer — blind-overwrote the
+	// final round's winner. The wins had already been tallied and were never
+	// recomputed, so the board then showed one team winning a court the other
+	// team was credited for. Corrections after the fact go through
+	// SetRotationCourtWinner, which retallies.
+	if st := asStr(srow, "status"); st == "done" {
+		return fmt.Errorf("this session has ended — reopen it to change a result")
+	}
 	if asInt(srow, "current_round") != req.Round {
 		return fmt.Errorf("round %d is no longer live", req.Round)
 	}
@@ -1680,10 +1720,20 @@ func (s *Service) ReportRotationCourt(sessionID, callerUserID string,
 	if !isOwner && !s.sitsOnCourt(sessionID, callerUserID, req.Round, req.Court) {
 		return fmt.Errorf("you can only report the result for your own court")
 	}
-	_, err = s.sb.Update("rotation_round_courts",
+	rows, err := s.sb.Update("rotation_round_courts",
 		"session_id=eq."+store.Q(sessionID)+"&round=eq."+fmt.Sprint(req.Round)+"&court=eq."+fmt.Sprint(req.Court),
 		map[string]any{"winner": req.Winner, "reported_at": nowRFC3339()})
-	return err
+	if err != nil {
+		return err
+	}
+	// A PATCH that matched nothing succeeds. Reporting a court number that
+	// doesn't exist in this round used to answer {"status":"reported"} having
+	// written nothing, so the organizer waiting on that court kept waiting.
+	if len(rows) == 0 {
+		return fmt.Errorf("%w: there is no court %d in round %d",
+			ErrNotFound, req.Court, req.Round)
+	}
+	return nil
 }
 
 // sameLayout reports whether two court layouts are identical seat for seat.

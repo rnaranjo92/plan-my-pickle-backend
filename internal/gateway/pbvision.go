@@ -22,6 +22,7 @@ import (
 // (the SDK's useProdServer:true). Endpoints:
 //   - POST /partner/add_video_by_url  {url, userEmails[], name, court, ...} -> {vid}
 //   - POST /partner/webhook/set       {url}
+//
 // On completion PB Vision POSTs {from_url, webpage, insights, stats, vid, error}
 // to the registered webhook — with NO signature, so our receiver is guarded by a
 // secret token embedded in the registered URL (PBVISION_WEBHOOK_TOKEN).

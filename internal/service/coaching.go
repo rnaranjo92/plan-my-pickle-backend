@@ -8141,8 +8141,8 @@ func (s *Service) SeedDemoCoaches() (int, error) {
 			// happened to one of these, editable as it is from the profile
 			// editor. business_name is not shown on the card, so it costs
 			// nothing to spend it on this.
-			"business_name": demoCoachMarker,
-			"listed":        true,
+			"business_name":     demoCoachMarker,
+			"listed":            true,
 			"bio":               d.Bio,
 			"city":              d.City,
 			"lat":               demoCoachBaseLat + d.DLat,

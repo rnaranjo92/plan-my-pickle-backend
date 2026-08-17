@@ -185,6 +185,22 @@ func main() {
 		}
 	}()
 
+	// Rotation cowbell backstop: advance any live auto-advance round whose
+	// deadline has passed. The primary timer runs on the organizer's device, and
+	// that device goes in a pocket and locks — this is what stops a gym standing
+	// around a board that reads 0:00. 30s so the backstop is felt as a hiccup
+	// rather than a breakdown; the pass is idempotent and no-ops when the
+	// organizer's device got there first.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := svc.SweepOverdueRotationRounds(); err != nil {
+				log.Printf("rotation sweep: pass failed: %v", err)
+			}
+		}
+	}()
+
 	// Recurring socials: spawn the next occurrence of each active series ~a week
 	// ahead and push the club to RSVP. Hourly is plenty (occurrences are days
 	// apart); the pass is idempotent so a missed tick self-heals next hour.

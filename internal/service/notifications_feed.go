@@ -184,17 +184,17 @@ var demoNotifications = []struct {
 	typ, actor, body string
 	minsAgo          int
 }{
-		{"match_start", "", "You're up on Court 3 — round 2", 1},
-		{"ondeck", "", "You're on deck — warm up for Court 3", 6},
-		{"score", "", "Confirm your score: opponents reported 11-7", 12},
-		{"registration", "Taylor Kim", "Taylor Kim registered for Spring Paddle Mixer", 40},
-		{"comment", "Sam Carter", "Sam Carter commented on your post", 95},
-		{"reaction", "Jordan Lee", "Jordan Lee reacted to your post", 140},
-		{"follow", "Alex Rivera", "Alex Rivera started following you", 190},
-		{"schedule", "", "Running about 15 min behind — hang tight, we'll call your court soon.", 260},
-		{"announcement", "", "Organizer: lunch break at noon — courts pause 12:00–12:45.", 400},
-		{"dispute", "", "A reported score was disputed — enter the final score to resolve it", 700},
-		{"session", "", "Tuesday Night Mixer: a new session is up — tap to RSVP", 1500},
+	{"match_start", "", "You're up on Court 3 — round 2", 1},
+	{"ondeck", "", "You're on deck — warm up for Court 3", 6},
+	{"score", "", "Confirm your score: opponents reported 11-7", 12},
+	{"registration", "Taylor Kim", "Taylor Kim registered for Spring Paddle Mixer", 40},
+	{"comment", "Sam Carter", "Sam Carter commented on your post", 95},
+	{"reaction", "Jordan Lee", "Jordan Lee reacted to your post", 140},
+	{"follow", "Alex Rivera", "Alex Rivera started following you", 190},
+	{"schedule", "", "Running about 15 min behind — hang tight, we'll call your court soon.", 260},
+	{"announcement", "", "Organizer: lunch break at noon — courts pause 12:00–12:45.", 400},
+	{"dispute", "", "A reported score was disputed — enter the final score to resolve it", 700},
+	{"session", "", "Tuesday Night Mixer: a new session is up — tap to RSVP", 1500},
 }
 
 // ListNotifications returns one page of a user's activity feed, newest first.

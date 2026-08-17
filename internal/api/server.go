@@ -495,6 +495,12 @@ func NewServer(svc *service.Service) http.Handler {
 		s.rotationSessionOwner("id", s.advanceRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/end",
 		s.rotationSessionOwner("id", s.endRotation))
+	// Corrections. Both owner-only: they rewrite the record of a night that has
+	// already been played, which is never a participant's call.
+	mux.HandleFunc("POST /rotation-sessions/{id}/reopen",
+		s.rotationSessionOwner("id", s.reopenRotation))
+	mux.HandleFunc("POST /rotation-sessions/{id}/court-winner",
+		s.rotationSessionOwner("id", s.setRotationCourtWinner))
 	mux.HandleFunc("POST /rotation-sessions/{id}/pause",
 		s.rotationSessionOwner("id", s.pauseRotation))
 	mux.HandleFunc("POST /rotation-sessions/{id}/resume",

@@ -167,7 +167,59 @@ func (s *Service) ListLeagues(ownerID string) ([]model.League, error) {
 	for _, r := range rows {
 		out = append(out, mapLeague(r))
 	}
+	s.markLiveRotationSessions(out)
 	return out, nil
+}
+
+// markLiveRotationSessions sets SessionLive on any rotation ladder with a
+// session actually running.
+//
+// Best effort in three batched reads, not per-league: a failure anywhere leaves
+// the flag false, which is the old behaviour (the card still sits under "Now",
+// it just doesn't claim to be live). Nobody's league list should fail to load
+// because a badge couldn't be computed.
+func (s *Service) markLiveRotationSessions(leagues []model.League) {
+	byID := map[string]int{}
+	ids := []string{}
+	for i, l := range leagues {
+		if l.LeagueType == "ladder" && l.LadderFormat == "rotation" {
+			byID[l.ID] = i
+			ids = append(ids, l.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	divs, err := s.sb.Select("league_brackets",
+		"league_id="+store.In(ids)+"&select=id,league_id&limit=2000")
+	if err != nil || len(divs) == 0 {
+		return
+	}
+	leagueOfDiv := map[string]string{}
+	divIDs := make([]string, 0, len(divs))
+	for _, d := range divs {
+		id, lg := asStr(d, "id"), asStr(d, "league_id")
+		if id == "" || lg == "" {
+			continue
+		}
+		leagueOfDiv[id] = lg
+		divIDs = append(divIDs, id)
+	}
+	if len(divIDs) == 0 {
+		return
+	}
+	sess, err := s.sb.Select("rotation_sessions",
+		"league_bracket_id="+store.In(divIDs)+
+			"&status=in.(live,paused)&select=league_bracket_id&limit=2000")
+	if err != nil {
+		return
+	}
+	for _, r := range sess {
+		lg := leagueOfDiv[asStr(r, "league_bracket_id")]
+		if i, ok := byID[lg]; ok {
+			leagues[i].SessionLive = true
+		}
+	}
 }
 
 // SetLeagueListed opts a league into (or out of) public discovery. Owner-only.
@@ -610,7 +662,7 @@ func (s *Service) attachLeagueSessionDates(leagues []model.League) error {
 	type span struct {
 		first, last string
 		// next is the perpetual session's upcoming date — see model.League.
-		next string
+		next        string
 		posterURL   string
 		posterFixed bool // true once a perpetual event's poster locked it in
 	}

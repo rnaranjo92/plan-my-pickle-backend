@@ -313,6 +313,12 @@ type League struct {
 	// persistent challenge ladder; 'rotation' is the live "up & down the river"
 	// session league. Empty/other for non-ladder leagues.
 	LadderFormat string `json:"ladderFormat,omitempty"`
+	// SessionLive: a rotation session on this ladder is running or paused right
+	// now. Ladders have no dates, so the app files every one of them under
+	// "Now" for its owner to find — which then badged them LIVE every day of
+	// the week, forever, whether or not anyone was on court. This is what lets
+	// LIVE mean live.
+	SessionLive bool `json:"sessionLive,omitempty"`
 	// Sanctioned flags an officially sanctioned league.
 	Sanctioned bool `json:"sanctioned"`
 	// Listed opts the league into public discovery (the "pickleball leagues in

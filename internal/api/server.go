@@ -408,6 +408,18 @@ func NewServer(svc *service.Service) http.Handler {
 	// already get.
 	mux.HandleFunc("GET /public/rotation-sessions/{id}/board",
 		s.publicRotationBoard)
+	// Which rotation session an event's TV board should show. PUBLIC, because
+	// the thing that needs it is a television following a link that was copied
+	// before rotation boards existed, and a TV cannot sign in.
+	//
+	// This does widen what an event id reveals: anyone holding one can now find
+	// tonight's session id and open its board. That board is deliberately
+	// trimmed (names, courts, clock — no ratings, ids or scorecard), and it is
+	// the same thing displayed on a screen in the room to everyone present. The
+	// alternative is that every TV link copied, bookmarked, QR'd or printed
+	// before today stays permanently broken, which is the worse trade.
+	mux.HandleFunc("GET /public/events/{id}/rotation-session",
+		s.publicEventRotationSession)
 	// Short, stable URL for a TV board — both kinds. Owner-gated: it's the
 	// organizer deciding to put the board on a screen.
 	mux.HandleFunc("GET /rotation-sessions/{id}/tv-link",

@@ -272,6 +272,27 @@ func (s *Server) tvLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// publicEventRotationSession tells a caller holding an EVENT id which rotation
+// session that event's TV board should show, or "" when it has none.
+//
+// It exists so an old ?scoreboard=<eventId> link can correct itself. Those
+// links are permanent by design — the short-link code is stable per target, so
+// every one already written on a whiteboard, printed on a flyer or saved as a
+// TV bookmark points at the tournament board forever. Since the link can't be
+// changed after the fact, the destination has to be able to redirect itself.
+//
+// Never an error for "no session": a normal tournament legitimately has none,
+// and the caller's job is then to render the event board it was already going
+// to render.
+func (s *Server) publicEventRotationSession(w http.ResponseWriter, r *http.Request) {
+	sid, err := s.svc.EventRotationSessionID(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"sessionId": sid})
+}
+
 // publicRotationBoard serves the courtside TV board with NO authentication — a
 // television can't sign in, and the tournament scoreboard has always worked
 // this way. The payload is the trimmed one (see PublicRotationBoard): names,

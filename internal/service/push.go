@@ -164,6 +164,21 @@ func (s *Service) sendTestPushContent(externalID, subID, heading, content string
 			return fmt.Errorf("%w (device found, but not subscribed)",
 				ErrNoPushSubscription)
 		}
+		// invalid_player_ids: the device handed us an id OneSignal never
+		// issued — it generated one locally and never finished registering.
+		// On Android that means no FCM token, which is a NATIVE build problem
+		// (the google-services Gradle plugin), so no amount of app-side retrying
+		// or Dart patching can fix it. Say that, because the raw JSON sent the
+		// last three rounds of this chasing the wrong layer.
+		if strings.Contains(e, "invalid_player_ids") {
+			// Drop the phantom id so it isn't retried on every send from now on.
+			s.forgetPushSubscriptions(parsePushResult(raw).invalid)
+			return fmt.Errorf("%w: this device registered with the app but never "+
+				"with the notification service (no FCM/APNs token). On Android "+
+				"that means the installed build predates the Firebase fix — "+
+				"update the app from the Play Store to 1.0.20 or later",
+				ErrNoPushSubscription)
+		}
 		return fmt.Errorf("no reachable subscription: %s", e)
 	}
 	return nil

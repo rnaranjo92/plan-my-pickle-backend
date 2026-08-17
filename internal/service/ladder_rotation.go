@@ -123,6 +123,24 @@ func (s *Service) CreateRotationSession(divisionID string, req model.CreateRotat
 	// there in setup (the organizer just prunes no-shows + adds walk-ups). Best
 	// effort — a failure here shouldn't fail session creation.
 	_, _ = s.ImportLadderEntrantsToSession(session.ID)
+	// Scorecard ON by default: creating round 1 is what "Enter scores each
+	// round" means, and it's the mode organizers actually want — points rank the
+	// night far more meaningfully than games won, and typing 11–7 is barely more
+	// work than tapping a winner.
+	//
+	// It matters that this happens HERE, at creation. The mode can only be
+	// changed while the session is in setup (the backend refuses once it's live,
+	// because half a night scored one way and half the other makes one
+	// leaderboard out of two incompatible numbers) — so the default has to be
+	// right before the organizer ever sees the switch. They can still turn it
+	// off in setup.
+	//
+	// Best effort, like the roster import: a session that exists without a
+	// scorecard is recoverable with one tap, a failed creation is not.
+	if _, err := s.AddScorecardRound(session.ID); err != nil {
+		log.Printf("rotation: default scorecard for session %s not created: %v",
+			session.ID, err)
+	}
 	return session, nil
 }
 

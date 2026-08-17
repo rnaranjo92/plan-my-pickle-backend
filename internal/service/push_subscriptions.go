@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,8 +60,21 @@ func (s *Service) pushSubscriptionsFor(userIDs []string) (subIDs []string, cover
 	if len(userIDs) == 0 || !s.pushSubsReady() {
 		return nil, covered
 	}
-	rows, err := s.sb.Select("push_subscriptions",
-		"user_id="+store.In(userIDs)+"&select=subscription_id,user_id&limit=2000")
+	// Only rows a device has refreshed RECENTLY count.
+	//
+	// Being covered means "we have a better address than the alias", and it
+	// silences the alias path for that user completely. A device that has gone
+	// dark — permission revoked, browser data cleared, subscription rotated —
+	// leaves a row that OneSignal will accept sends for and deliver nowhere, and
+	// never reports as invalid, so nothing here can learn it died. That user
+	// would be covered forever and reachable by nothing: push that works for a
+	// while and then quietly stops for good.
+	//
+	// Every sign-in and token refresh re-records the id (see ensurePushReady),
+	// so a row older than this means the app hasn't run in a month and a half.
+	// The alias is the better address for someone that far out of contact.
+	cutoff := time.Now().UTC().AddDate(0, 0, -45).Format(time.RFC3339)
+	rows, err := s.selectAllPushRows(userIDs, cutoff)
 	if err != nil {
 		return nil, covered // fall back to aliases for everyone
 	}
@@ -73,6 +87,36 @@ func (s *Service) pushSubscriptionsFor(userIDs []string) (subIDs []string, cover
 		covered[asStr(r, "user_id")] = true
 	}
 	return subIDs, covered
+}
+
+// selectAllPushRows reads every matching row, in pages.
+//
+// PostgREST caps a response at ~1000 rows whatever the limit says, so the old
+// `limit=2000` was a request for two pages that silently returned one. On a
+// broadcast that meant the users past the cap fell through to the alias path —
+// which works, but hid the cap: it never looked like a bug, just like push
+// being unreliable for some people.
+func (s *Service) selectAllPushRows(
+	userIDs []string, cutoff string,
+) ([]map[string]any, error) {
+	const page = 1000
+	var all []map[string]any
+	for offset := 0; ; offset += page {
+		rows, err := s.sb.Select("push_subscriptions",
+			"user_id="+store.In(userIDs)+
+				"&updated_at=gte."+cutoff+
+				"&select=subscription_id,user_id"+
+				"&order=updated_at.desc"+
+				"&limit="+strconv.Itoa(page)+
+				"&offset="+strconv.Itoa(offset))
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+		if len(rows) < page {
+			return all, nil
+		}
+	}
 }
 
 // forgetPushSubscriptions drops ids OneSignal has told us are invalid.

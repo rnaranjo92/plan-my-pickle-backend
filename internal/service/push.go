@@ -217,7 +217,8 @@ func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 		"delayed_option":       "timezone",
 		"delivery_time_of_day": "9:00AM",
 	}
-	_, err := s.postPush(restKey, body)
+	r, err := s.postPush(restKey, body)
+	logPush("segment", 0, r, heading)
 	return err
 }
 
@@ -229,8 +230,16 @@ func (s *Service) sendPush(externalIDs []string, heading, content, url string) e
 // pushSound). sendPush delegates here with an empty sound (default tone).
 func (s *Service) sendPushSound(externalIDs []string, heading, content, url string, sound pushSound) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
-	if restKey == "" || len(externalIDs) == 0 {
-		return nil // not configured, or nobody to notify — no-op
+	if restKey == "" {
+		// Say so. A missing key turns every push in the product into a silent
+		// no-op that is indistinguishable, from the outside, from a delivery
+		// problem — and it's a one-line env fix, if only anyone could tell.
+		log.Printf("push SKIPPED (no ONESIGNAL_REST_API_KEY): %q to %d user(s)",
+			heading, len(externalIDs))
+		return nil
+	}
+	if len(externalIDs) == 0 {
+		return nil // nobody to notify
 	}
 
 	// Build the shared half of the payload once; only the targeting differs.
@@ -278,10 +287,11 @@ func (s *Service) sendPushSound(externalIDs []string, heading, content, url stri
 	if len(subIDs) > 0 {
 		b := base()
 		b["include_subscription_ids"] = subIDs
-		invalid, err := s.postPush(restKey, b)
+		r, err := s.postPush(restKey, b)
+		logPush("devices", len(subIDs), r, heading)
 		// OneSignal names the ids it rejected. Dropping them here is what stops
 		// dead devices being retried on every send from now on.
-		s.forgetPushSubscriptions(invalid)
+		s.forgetPushSubscriptions(r.invalid)
 		firstErr = err
 	}
 
@@ -295,30 +305,41 @@ func (s *Service) sendPushSound(externalIDs []string, heading, content, url stri
 	if len(rest) > 0 {
 		b := base()
 		b["include_aliases"] = map[string]any{"external_id": rest}
-		if _, err := s.postPush(restKey, b); err != nil && firstErr == nil {
+		r, err := s.postPush(restKey, b)
+		logPush("aliases", len(rest), r, heading)
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
+// pushResult is what OneSignal said about one send.
+//
+// Recipients is the number that matters and the one nothing used to look at: a
+// wedged alias, a subscription that exists but is no longer opted in, and a
+// revoked permission ALL return HTTP 200 with a notification id and no error.
+// The only thing separating them from a working send is this count being zero.
+type pushResult struct {
+	invalid    []string // subscription ids OneSignal refused
+	recipients int      // how many devices it says it will deliver to
+	id         string   // OneSignal's notification id, for the dashboard
+}
+
 // postPush sends a prepared OneSignal payload. Never returns a hard error: a
 // missed push must not fail whatever the caller was actually doing.
-//
-// Returns any subscription ids OneSignal rejected as invalid, so the caller can
-// forget them — see forgetPushSubscriptions.
-func (s *Service) postPush(restKey string, body map[string]any) ([]string, error) {
+func (s *Service) postPush(restKey string, body map[string]any) (pushResult, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("onesignal: marshal payload failed: %v", err)
-		return nil, nil
+		return pushResult{}, nil
 	}
 
 	req, err := http.NewRequest(http.MethodPost,
 		"https://api.onesignal.com/notifications?c=push", bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("onesignal: build request failed: %v", err)
-		return nil, nil
+		return pushResult{}, nil
 	}
 	req.Header.Set("Authorization", "Key "+restKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -326,7 +347,7 @@ func (s *Service) postPush(restKey string, body map[string]any) ([]string, error
 	resp, err := pushHTTP.Do(req)
 	if err != nil {
 		log.Printf("onesignal: send failed: %v", err)
-		return nil, nil
+		return pushResult{}, nil
 	}
 	defer resp.Body.Close()
 
@@ -334,18 +355,20 @@ func (s *Service) postPush(restKey string, body map[string]any) ([]string, error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("onesignal: send rejected (http %d): %s", resp.StatusCode, raw)
 	}
-	return invalidSubscriptionIDs(raw), nil
+	return parsePushResult(raw), nil
 }
 
-// invalidSubscriptionIDs pulls the ids OneSignal refused out of a send response.
+// parsePushResult pulls the delivery facts out of a send response.
 //
-// They arrive as {"errors":{"invalid_player_ids":[...]}} — the same shape that
-// named the Android FCM failure, where devices held a locally-generated id the
-// server had never seen. A 200 can carry these, so it's parsed on every reply
-// rather than only on failures.
-func invalidSubscriptionIDs(raw []byte) []string {
+// invalid ids arrive as {"errors":{"invalid_player_ids":[...]}} — the same
+// shape that named the Android FCM failure, where devices held a
+// locally-generated id the server had never seen. A 200 can carry these, so
+// it's parsed on every reply rather than only on failures.
+func parsePushResult(raw []byte) pushResult {
 	var out struct {
-		Errors struct {
+		ID         string `json:"id"`
+		Recipients int    `json:"recipients"`
+		Errors     struct {
 			InvalidPlayerIDs []string `json:"invalid_player_ids"`
 		} `json:"errors"`
 	}
@@ -353,7 +376,24 @@ func invalidSubscriptionIDs(raw []byte) []string {
 	// for others — so a decode failure here is expected and simply means there
 	// were no invalid ids to report.
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
+		return pushResult{}
 	}
-	return out.Errors.InvalidPlayerIDs
+	return pushResult{
+		invalid:    out.Errors.InvalidPlayerIDs,
+		recipients: out.Recipients,
+		id:         out.ID,
+	}
+}
+
+// logPush records what a send aimed at versus what it reached.
+//
+// Without this line, "push is broken again" and "push is fine" produce
+// identical logs — which is why the last three rounds of this bug were
+// diagnosed by guesswork.
+func logPush(via string, targets int, r pushResult, heading string) {
+	if len(heading) > 40 {
+		heading = heading[:40]
+	}
+	log.Printf("push via %s: targets=%d recipients=%d invalid=%d id=%s %q",
+		via, targets, r.recipients, len(r.invalid), r.id, heading)
 }

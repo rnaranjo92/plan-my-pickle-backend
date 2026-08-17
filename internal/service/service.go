@@ -12094,8 +12094,13 @@ func (s *Service) notifyMatchStart(matchID, eventID, court string, roundNumber i
 	// alongside the SMS below. Carries the custom court-call tone (courtCallSound)
 	// so it stands out even with the app closed; plays once the native build
 	// bundles the sound file, default tone until then. sendPushSound swallows errors.
+	// Carries the event link, so tapping it opens the event rather than the
+	// home screen. The BELL row already carried it; the push didn't, which meant
+	// the most time-critical notification in the app — a court call, read while
+	// walking to a court — was the one that told you least about where to go.
 	_ = s.sendPushSound(userIDs, "Match starting",
-		fmt.Sprintf("You're up on %s", court), "", courtCallSound)
+		fmt.Sprintf("You're up on %s", court),
+		notifPushURL("playevent:"+eventID), courtCallSound)
 	// Also file it in each player's bell so the court call is there to review
 	// (push already sent above → record only, no duplicate push).
 	s.recordNotifications(userIDs, "match_start",
@@ -12327,7 +12332,8 @@ func (s *Service) notifyOnDeck(startedMatchID, eventID string) {
 		return // lost the race (unique violation) or a transient error — no push
 	}
 	_ = s.sendPush(userIDs, "You're on deck",
-		fmt.Sprintf("Warm up — you're next on %s", court), "")
+		fmt.Sprintf("Warm up — you're next on %s", court),
+		notifPushURL("playevent:"+eventID))
 	s.recordNotifications(userIDs, "ondeck",
 		fmt.Sprintf("You're on deck — warm up for %s", court),
 		"playevent:"+eventID)

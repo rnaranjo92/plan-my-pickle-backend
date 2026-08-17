@@ -498,3 +498,129 @@ func indexOf(ss []string, v string) int {
 	}
 	return -1
 }
+
+// --- registered-but-not-on-the-ladder -----------------------------------------
+
+// LadderSyncStatus is how many of a league's registered players are missing
+// from this division's ladder.
+type LadderSyncStatus struct {
+	// Missing is registered players with no entrant on this ladder.
+	Missing int `json:"missing"`
+	// OnLadder is the current entrant count, so the caller can phrase the whole
+	// sentence ("26 on the ladder · 4 registered players aren't").
+	OnLadder int `json:"onLadder"`
+}
+
+// missingLadderPlayers returns the league's registered players who have no
+// entrant on this division's ladder, as playerID -> display name.
+//
+// Registering somebody and putting them on the ladder are separate acts:
+// RegisterPlayer never touches ladder_entrants, and the only routes onto a
+// ladder are the organizer typing a name or the player self-joining the ladder
+// link. So an organizer can register twenty people, open the Rotation tab to
+// start a night, and find nobody to pick from.
+//
+// This is deliberately a QUERY, not an automatic sync. Auto-adding on register
+// would force an answer to "does unregistering remove them?" — either wiping
+// somebody's ladder standing from an action that doesn't look destructive, or
+// accumulating ghosts — and would silently map event brackets onto ladder
+// divisions, and silently put +1555 placeholders on the ladder. An organizer
+// pressing a button that says how many is legible; all of that is not.
+func (s *Service) missingLadderPlayers(div string) (map[string]string, int, error) {
+	row, err := s.sb.SelectOne("league_brackets",
+		"id=eq."+store.Q(div)+"&select=league_id")
+	if err != nil {
+		return nil, 0, err
+	}
+	if row == nil {
+		return nil, 0, ErrNotFound
+	}
+	leagueID := asStr(row, "league_id")
+	if leagueID == "" {
+		return nil, 0, nil
+	}
+	evs, err := s.sb.Select("events", "league_id=eq."+store.Q(leagueID)+"&select=id")
+	if err != nil {
+		return nil, 0, err
+	}
+	eventIDs := make([]string, 0, len(evs))
+	for _, e := range evs {
+		if id := asStr(e, "id"); id != "" {
+			eventIDs = append(eventIDs, id)
+		}
+	}
+	entrants, err := s.ListLadder(div)
+	if err != nil {
+		return nil, 0, err
+	}
+	onLadder := map[string]bool{}
+	for _, e := range entrants {
+		if e.PlayerID != nil && *e.PlayerID != "" {
+			onLadder[*e.PlayerID] = true
+		}
+	}
+	if len(eventIDs) == 0 {
+		return map[string]string{}, len(entrants), nil
+	}
+	regs, err := s.sb.Select("registrations",
+		"event_id="+store.In(eventIDs)+
+			"&select=player_id,player:players!player_id(full_name)&limit=2000")
+	if err != nil {
+		return nil, 0, err
+	}
+	missing := map[string]string{}
+	for _, r := range regs {
+		pid := asStr(r, "player_id")
+		if pid == "" || onLadder[pid] {
+			continue
+		}
+		name := ""
+		if p := asMap(r, "player"); p != nil {
+			name = strings.TrimSpace(asStr(p, "full_name"))
+		}
+		if name == "" {
+			// A ladder entrant must have a name — the board, the standings and
+			// the spoken court calls all render it. Skip rather than create a
+			// blank row somebody would have to hunt down later.
+			continue
+		}
+		missing[pid] = name
+	}
+	return missing, len(entrants), nil
+}
+
+// LadderSync reports how many registered players aren't on this ladder.
+func (s *Service) LadderSync(div string) (LadderSyncStatus, error) {
+	missing, onLadder, err := s.missingLadderPlayers(div)
+	if err != nil {
+		return LadderSyncStatus{}, err
+	}
+	return LadderSyncStatus{Missing: len(missing), OnLadder: onLadder}, nil
+}
+
+// AddRegisteredToLadder puts every registered player who isn't on this ladder
+// onto it, and returns how many were added.
+//
+// Idempotent by construction: it only ever adds players missing at the moment
+// it runs, so pressing it twice adds nothing the second time.
+func (s *Service) AddRegisteredToLadder(div string) (int, error) {
+	missing, _, err := s.missingLadderPlayers(div)
+	if err != nil {
+		return 0, err
+	}
+	added := 0
+	for pid, name := range missing {
+		p := pid
+		if _, err := s.AddLadderEntrant(div, model.AddLadderEntrantRequest{
+			DisplayName: name,
+			PlayerID:    &p,
+		}); err != nil {
+			// Keep going: one bad row shouldn't strand the other nineteen. The
+			// count returned is what actually landed.
+			log.Printf("ladder sync: could not add %s (%s): %v", name, pid, err)
+			continue
+		}
+		added++
+	}
+	return added, nil
+}

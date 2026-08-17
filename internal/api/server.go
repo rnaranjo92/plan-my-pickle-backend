@@ -362,6 +362,13 @@ func NewServer(svc *service.Service) http.Handler {
 		s.leagueBracketViewer("id", s.ladderHistory))
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/entrants",
 		s.ladderDivisionOwner("id", s.addLadderEntrant))
+	// Registered but not on the ladder. Registering and joining the ladder are
+	// separate acts, so an organizer can register twenty people and find nobody
+	// to pick from — this reports the gap and closes it on request.
+	mux.HandleFunc("GET /league-brackets/{id}/ladder/sync",
+		s.ladderDivisionOwner("id", s.ladderSyncStatus))
+	mux.HandleFunc("POST /league-brackets/{id}/ladder/sync",
+		s.ladderDivisionOwner("id", s.addRegisteredToLadder))
 	mux.HandleFunc("POST /league-brackets/{id}/ladder/results",
 		s.ladderDivisionOwner("id", s.recordLadderResult))
 	mux.HandleFunc("DELETE /ladder-entrants/{id}",
@@ -1668,6 +1675,27 @@ func (s *Server) listLadder(w http.ResponseWriter, r *http.Request) {
 }
 
 // addLadderEntrant appends an entrant to the BOTTOM of a division's ladder.
+// ladderSyncStatus reports how many registered players aren't on this ladder.
+func (s *Server) ladderSyncStatus(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.LadderSync(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// addRegisteredToLadder puts every registered player who isn't on the ladder
+// onto it. Idempotent: it only adds who's missing when it runs.
+func (s *Server) addRegisteredToLadder(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.AddRegisteredToLadder(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"added": n})
+}
+
 func (s *Server) addLadderEntrant(w http.ResponseWriter, r *http.Request) {
 	var req model.AddLadderEntrantRequest
 	if !decode(w, r, &req) {

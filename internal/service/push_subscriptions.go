@@ -121,45 +121,6 @@ func (s *Service) selectAllPushRows(
 	}
 }
 
-// everyFreshSubscriptionID returns every device id recorded in the last 45
-// days, across ALL users — the broadcast audience we hold ourselves.
-//
-// Exists because the OneSignal "Subscribed Users" segment proved capable of
-// resolving to ZERO devices while individual device-id sends to those same
-// devices delivered fine (2026-08-18: the daily joke had been accepted-and-
-// delivered-to-nobody since it shipped). These rows are refreshed on every
-// sign-in and token refresh, so they are the audience we can actually vouch
-// for; the segment is OneSignal's opinion.
-func (s *Service) everyFreshSubscriptionID() []string {
-	if !s.pushSubsReady() {
-		return nil
-	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -45).Format(time.RFC3339)
-	const page = 1000
-	seen := map[string]bool{}
-	var out []string
-	for offset := 0; ; offset += page {
-		rows, err := s.sb.Select("push_subscriptions",
-			"updated_at=gte."+cutoff+
-				"&select=subscription_id"+
-				"&order=updated_at.desc"+
-				"&limit="+strconv.Itoa(page)+
-				"&offset="+strconv.Itoa(offset))
-		if err != nil {
-			return out
-		}
-		for _, r := range rows {
-			if id := strings.TrimSpace(asStr(r, "subscription_id")); id != "" && !seen[id] {
-				seen[id] = true
-				out = append(out, id)
-			}
-		}
-		if len(rows) < page {
-			return out
-		}
-	}
-}
-
 // forgetPushSubscriptions drops ids OneSignal has told us are invalid.
 //
 // Without this the table only grows: every reinstall, cleared browser and

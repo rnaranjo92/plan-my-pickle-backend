@@ -246,75 +246,14 @@ func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 	if r.status < 200 || r.status >= 300 {
 		return fmt.Errorf("onesignal rejected the broadcast (http %d)", r.status)
 	}
-	if r.recipients == 0 {
-		// Accepted and delivered to nobody — an empty or renamed segment. The
-		// exact shape of "push is broken" that took days to spot: the daily joke
-		// shipped into this state and stayed there. Fall back to the device ids
-		// we recorded ourselves, KEEPING the per-timezone 9am delivery.
-		log.Printf("9am broadcast: segment resolved to 0 recipients — falling "+
-			"back to recorded device ids (%q)", heading)
-		n, ferr := s.broadcastViaDevices(restKey, heading, content, map[string]any{
-			"delayed_option":       "timezone",
-			"delivery_time_of_day": "9:00AM",
-		})
-		if ferr != nil {
-			return fmt.Errorf("segment reached nobody and the device fallback "+
-				"failed: %v", ferr)
-		}
-		log.Printf("9am broadcast: device fallback queued for %d", n)
-		return nil
-	}
+	// recipients is logged (logPush) but deliberately NOT enforced. It is an
+	// estimate the API may compute asynchronously — a live send to real phones
+	// came back recipients=0 (2026-08-18), so treating 0 as failure turned
+	// working broadcasts into reported failures, double-sent via the fallback,
+	// and (on this once-a-day path) would have released the claim and re-sent
+	// hourly. Acceptance — 2xx — is the only signal this endpoint gives us at
+	// creation time; actual delivery counts live in the OneSignal dashboard.
 	return nil
-}
-
-// broadcastViaDevices fans a broadcast out over OUR recorded device ids,
-// batched (OneSignal caps include_subscription_ids at 2000 per call).
-//
-// The fallback for when the "Subscribed Users" segment resolves to nobody.
-// [extra] carries scheduling fields (delayed_option etc.) so the 9am path keeps
-// its per-timezone delivery even on the fallback. Returns the summed recipient
-// count.
-func (s *Service) broadcastViaDevices(
-	restKey, heading, content string, extra map[string]any,
-) (int, error) {
-	ids := s.everyFreshSubscriptionID()
-	if len(ids) == 0 {
-		return 0, errors.New("no recorded devices to fall back to")
-	}
-	total := 0
-	for start := 0; start < len(ids); start += 2000 {
-		end := start + 2000
-		if end > len(ids) {
-			end = len(ids)
-		}
-		body := map[string]any{
-			"app_id":                   onesignalAppID,
-			"target_channel":           "push",
-			"include_subscription_ids": ids[start:end],
-			"headings":                 map[string]string{"en": heading},
-			"contents":                 map[string]string{"en": content},
-		}
-		for k, v := range extra {
-			body[k] = v
-		}
-		r, err := s.postPush(restKey, body)
-		logPush("devices", end-start, r, heading)
-		if err != nil {
-			return total, err
-		}
-		if r.status < 200 || r.status >= 300 {
-			return total, fmt.Errorf("onesignal rejected a device batch (http %d)", r.status)
-		}
-		total += r.recipients
-		// Let the table learn which rows are dead, same as targeted sends.
-		if len(r.invalid) > 0 {
-			s.forgetPushSubscriptions(r.invalid)
-		}
-	}
-	if total == 0 {
-		return 0, errors.New("device fan-out reached 0 recipients")
-	}
-	return total, nil
 }
 
 // BroadcastNow sends to every subscriber IMMEDIATELY, with no 9am scheduling
@@ -342,20 +281,7 @@ func (s *Service) BroadcastNow(heading, content string) error {
 	if r.status < 200 || r.status >= 300 {
 		return fmt.Errorf("onesignal rejected the broadcast (http %d)", r.status)
 	}
-	if r.recipients == 0 {
-		// The segment says nobody exists; our own table says otherwise. Send to
-		// the devices we recorded — the exact addressing that already works for
-		// targeted pushes — rather than reporting a failure we can route around.
-		log.Printf("broadcast: segment resolved to 0 recipients — falling back "+
-			"to recorded device ids (%q)", heading)
-		n, ferr := s.broadcastViaDevices(restKey, heading, content, nil)
-		if ferr != nil {
-			return fmt.Errorf("segment reached nobody and the device fallback "+
-				"failed: %v", ferr)
-		}
-		log.Printf("broadcast: device fallback delivered to %d", n)
-		return nil
-	}
+	// Same rule as the 9am path: acceptance is success, recipients is advisory.
 	return nil
 }
 

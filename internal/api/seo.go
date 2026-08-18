@@ -1104,7 +1104,6 @@ var seoResultsTmpl = template.Must(template.New("res").Parse(seoHead + `
 var seoTownTmpl = template.Must(template.New("town").Parse(seoHead + `
 <h1>{{.H1}}</h1>
 <p class="meta">{{.Intro}}</p>
-{{if .Facts}}<ul class="facts">{{range .Facts}}<li>{{.}}</li>{{end}}</ul>{{end}}
 {{range .Cards}}<a class="card{{if .Poster}} has-img{{end}}" href="{{.URL}}">
 {{if .Poster}}<img class="thumb" src="{{.Poster}}" alt="{{.Name}} event poster" loading="lazy" width="104" height="104">{{end}}
 <div class="cbody">
@@ -1114,14 +1113,6 @@ var seoTownTmpl = template.Must(template.New("town").Parse(seoHead + `
 {{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
 </div>
 </a>{{end}}
-{{if .Cards2}}<h2 class="sec">{{.Section2Title}}</h2>
-{{range .Cards2}}<a class="card" href="{{.URL}}">
-<div class="cbody">
-<h2>{{.Name}}</h2>
-{{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
-{{if .Venue}}<p class="meta">📍 {{.Venue}}</p>{{end}}
-</div>
-</a>{{end}}{{end}}
 <p><a class="cta" href="` + seoAppBase + `">Organizing? Run your tournament free →</a></p>
 
 <h2>Playing a pickleball tournament in {{.City}}</h2>
@@ -1175,6 +1166,7 @@ page automatically once it's published and listed publicly.</p>
 var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `
 <h1>{{.H1}}</h1>
 <p class="meta">{{.Intro}}</p>
+{{if .Facts}}<ul class="facts">{{range .Facts}}<li>{{.}}</li>{{end}}</ul>{{end}}
 {{range .Cards}}<a class="card{{if .Poster}} has-img{{end}}" href="{{.URL}}">
 {{if .Poster}}<img class="thumb" src="{{.Poster}}" alt="{{.Name}} event poster" loading="lazy" width="104" height="104">{{end}}
 <div class="cbody">
@@ -1184,6 +1176,14 @@ var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `
 {{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
 </div>
 </a>{{end}}
+{{if .Cards2}}<h2 class="sec">{{.Section2Title}}</h2>
+{{range .Cards2}}<a class="card" href="{{.URL}}">
+<div class="cbody">
+<h2>{{.Name}}</h2>
+{{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
+{{if .Venue}}<p class="meta">📍 {{.Venue}}</p>{{end}}
+</div>
+</a>{{end}}{{end}}
 <p><a class="cta" href="` + seoAppBase + `">Organizing? Run your tournament free →</a></p>
 {{if .Cities}}<p class="meta">By city:
 {{range $i, $c := .Cities}}{{if $i}} · {{end}}<a href="{{$c.URL}}">{{$c.Name}}</a>{{end}}</p>{{end}}

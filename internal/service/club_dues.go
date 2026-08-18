@@ -72,11 +72,42 @@ func (s *Service) OpenDuesPeriodFor(clubID string) *ClubDuesPeriod {
 	if p == nil {
 		return nil
 	}
-	p.Of = s.countRows("club_members",
-		"club_id=eq."+store.Q(clubID)+"&select=user_id", "user_id")
-	p.Paid = s.countRows("club_dues_payments",
-		"period_id=eq."+store.Q(p.ID)+"&select=user_id", "user_id")
+	// "24 of 31" has to be 24 OF THOSE 31, so both halves are counted over the
+	// same people: current members. Counting every payment row against the
+	// member count could read "32 of 31" once somebody who paid then left —
+	// a number that makes an owner distrust the whole figure, right where they
+	// are deciding who still owes them money.
+	//
+	// Intersected in Go from two whole-set reads rather than filtered in the
+	// query: a club with hundreds of members would otherwise put every id into
+	// a URL.
+	members := s.clubMemberIDs(clubID)
+	paid := s.duesPaidUserIDs(p.ID)
+	p.Of = len(members)
+	for _, uid := range members {
+		if paid[uid] {
+			p.Paid++
+		}
+	}
 	return p
+}
+
+// clubMemberIDs lists the club's current members.
+func (s *Service) clubMemberIDs(clubID string) []string {
+	rows, err := s.sb.SelectAll("club_members",
+		"club_id=eq."+store.Q(clubID)+"&select=user_id")
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if u := strings.TrimSpace(asStr(r, "user_id")); u != "" && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // SetClubDues opens a new dues period, closing any period already open.

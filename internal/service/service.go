@@ -4539,7 +4539,7 @@ func (s *Service) sendWelcomeSmsOnce(playerID, eventID string) {
 // duplicate); otherwise the partner is added to the roster in the same division.
 // Both registrations get each other's player_id in partner_id. Best-effort — a
 // partner failure never fails the registrant's own sign-up.
-func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partnerName, partnerPhone string) {
+func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partnerName, partnerPhone string, pending bool) {
 	partnerName = strings.TrimSpace(partnerName)
 	partnerPhone = strings.TrimSpace(partnerPhone)
 	if partnerName == "" || partnerPhone == "" {
@@ -4562,12 +4562,18 @@ func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partn
 			partnerRegID = asStr(r, "id")
 		} else {
 			token := newID()
-			if reg, e := s.sb.Insert("registrations", map[string]any{
+			row := map[string]any{
 				"event_id":       eventID,
 				"player_id":      partnerPID,
 				"bracket_id":     orNull(bracketID),
 				"check_in_token": token,
-			}); e == nil && len(reg) > 0 {
+			}
+			// The partner INHERITS the registrant's pending state. A held
+			// registration must not smuggle its partner onto the roster.
+			if pending && s.columnReady("registrations", "approved") {
+				row["approved"] = false
+			}
+			if reg, e := s.sb.Insert("registrations", row); e == nil && len(reg) > 0 {
 				partnerRegID = asStr(reg[0], "id")
 			}
 		}
@@ -4589,6 +4595,16 @@ func (s *Service) linkPartner(eventID, bracketID, mainRegID, mainPlayerID, partn
 		}
 		partnerPID = preg.PlayerID
 		partnerRegID = preg.ID
+		// TrustedAdd skipped the CONTACT gates (phone/invite code — those did
+		// run for the registrant) but it also auto-approved, and approval is
+		// the one gate that HELD the registrant rather than passing them. The
+		// partner of a pending registration waits with them: without this, a
+		// club requiring approval had every doubles partner walk straight onto
+		// the roster while the person who typed the form sat in the queue.
+		if pending && s.columnReady("registrations", "approved") {
+			_, _ = s.sb.Update("registrations", "id=eq."+store.Q(partnerRegID),
+				map[string]any{"approved": false})
+		}
 	}
 	if partnerPID == "" {
 		return
@@ -5161,7 +5177,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	regID := asStr(reg[0], "id")
 	// Register-with-a-partner: pair (or add + pair) the named partner. Best-effort,
 	// so it never blocks the registrant's own successful sign-up.
-	s.linkPartner(eventID, bracketID, regID, playerID, req.PartnerName, req.PartnerPhone)
+	s.linkPartner(eventID, bracketID, regID, playerID, req.PartnerName, req.PartnerPhone, needsApproval)
 	// Welcome-on-opt-in: the first time this player opts into texts, send a one-time
 	// confirmation. Deduped by players.sms_welcomed, off the request path.
 	if req.SmsConsent {
@@ -5957,7 +5973,7 @@ func (s *Service) ApproveRegistration(regID string) error {
 	// column), so embed the player via the player_id FK.
 	reg, err := s.sb.SelectOne("registrations",
 		"id=eq."+store.Q(regID)+
-			"&select=id,event_id,bracket_id,approved,player:players!player_id(full_name,email,phone)")
+			"&select=id,event_id,bracket_id,approved,partner_id,player:players!player_id(full_name,email,phone)")
 	if err != nil {
 		return err
 	}
@@ -5972,6 +5988,16 @@ func (s *Service) ApproveRegistration(regID string) error {
 	if _, err = s.sb.Update("registrations", "id=eq."+store.Q(regID),
 		map[string]any{"approved": true}); err != nil {
 		return err
+	}
+	// A doubles pair asked to join TOGETHER — one approval covers both. The
+	// queue lists the pair as one entry ("Isiah · w/ Ernani"), so approving it
+	// must admit the pair; leaving the partner pending would strand half a team
+	// invisibly (the queue never showed them separately).
+	if pid := asStr(reg, "partner_id"); pid != "" {
+		_, _ = s.sb.Update("registrations",
+			"event_id=eq."+store.Q(asStr(reg, "event_id"))+
+				"&player_id=eq."+store.Q(pid)+"&approved=eq.false",
+			map[string]any{"approved": true})
 	}
 	// Now that the entry is real, fire the same "you're in" side effects the
 	// register handler runs for an approved-on-insert sign-up: the public

@@ -301,6 +301,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /clubs/{id}/events", s.clubEvents)
 	// Public all-time club leaderboard aggregated across every club event.
 	mux.HandleFunc("GET /clubs/{id}/leaderboard", s.clubLeaderboard)
+	// The club's home view: what's on next, and the VIEWER's own record —
+	// optionalAuth because a signed-out visitor still gets "what's on".
+	mux.HandleFunc("GET /clubs/{id}/home", optionalAuth(s.clubHome))
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
 	// Running a club is delegable; owning one is not. Role changes are
@@ -3716,6 +3719,17 @@ func (s *Server) inviteToClub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "invited"})
+}
+
+// clubHome returns what a member opens their club to find out: what's on next,
+// and how they're doing. Signed out is fine — they just get no personal line.
+func (s *Server) clubHome(w http.ResponseWriter, r *http.Request) {
+	home, err := s.svc.ClubHomeFor(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, home)
 }
 
 // clubLeaderboard returns the all-time cross-event club standings (public).

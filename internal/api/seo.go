@@ -733,6 +733,11 @@ func (s *Server) seoClubPage(w http.ResponseWriter, r *http.Request) {
 	if club.MemberCount > 0 {
 		facts = append(facts, plural(club.MemberCount, "member", "members"))
 	}
+	if club.RequiresWaiver {
+		// Logistics someone weighing a first visit should know before they
+		// drive there. Stated, not linked — see PublicClub.RequiresWaiver.
+		facts = append(facts, "Waiver required")
+	}
 
 	var recentCards []seoHubCard
 	for _, e := range recent {

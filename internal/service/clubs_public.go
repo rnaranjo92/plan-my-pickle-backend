@@ -32,6 +32,10 @@ type PublicClub struct {
 	LogoURL     string `json:"logoUrl,omitempty"`
 	MemberCount int    `json:"memberCount"`
 	EventCount  int    `json:"eventCount"`
+	// RequiresWaiver is stated as a FACT here, with no link. The waiver URL is
+	// club-supplied and this page is crawlable, so it stays on the member-facing
+	// club page rather than becoming an outbound link on a public one.
+	RequiresWaiver bool `json:"requiresWaiver,omitempty"`
 }
 
 // PublicClubs lists clubs for the sitemap and the city hubs, newest first.
@@ -116,9 +120,15 @@ func (c PublicClub) WorthIndexing() bool { return c.EventCount > 0 }
 func (s *Service) PublicClubByID(
 	clubID string,
 ) (PublicClub, []model.Event, []model.Event, ClubActivity, error) {
+	// Ask for the waiver column only once it exists: naming a column that
+	// hasn't been migrated in fails the whole select, which would take the
+	// club's public page down rather than omit one line from it.
+	cols := "id,name,city,description,logo_url"
+	if s.clubWaiverReady() {
+		cols += ",requires_waiver"
+	}
 	row, err := s.sb.SelectOne("clubs",
-		"id=eq."+store.Q(clubID)+
-			"&select=id,name,city,description,logo_url")
+		"id=eq."+store.Q(clubID)+"&select="+cols)
 	if err != nil {
 		return PublicClub{}, nil, nil, ClubActivity{}, err
 	}
@@ -135,6 +145,8 @@ func (s *Service) PublicClubByID(
 		City:        strings.TrimSpace(asStr(row, "city")),
 		Description: strings.TrimSpace(asStr(row, "description")),
 		LogoURL:     strings.TrimSpace(asStr(row, "logo_url")),
+
+		RequiresWaiver: asBool(row, "requires_waiver"),
 	}
 
 	events, _ := s.ClubEvents(clubID)

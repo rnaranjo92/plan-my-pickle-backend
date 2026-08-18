@@ -2235,6 +2235,12 @@ type Club struct {
 	LogoURL     string `json:"logoUrl,omitempty"`
 	DuprClubID  string `json:"duprClubId,omitempty"`
 	CreatedAt   string `json:"createdAt,omitempty"`
+	// RequiresWaiver / WaiverURL are a NOTICE the club posts, not a document the
+	// app holds. PlanMyPickle deliberately stores no waiver text and no record of
+	// who signed one — the club keeps its own, exactly as it does today. All this
+	// does is stop a player finding out at the net.
+	RequiresWaiver bool   `json:"requiresWaiver,omitempty"`
+	WaiverURL      string `json:"waiverUrl,omitempty"`
 	// Per-view aggregates + caller flags (set when fetched for a specific user).
 	MemberCount int  `json:"memberCount"`
 	EventCount  int  `json:"eventCount"`
@@ -2250,10 +2256,12 @@ type Club struct {
 
 // CreateClubRequest is the create/edit payload for a club.
 type CreateClubRequest struct {
-	Name        string `json:"name"`
-	City        string `json:"city"`
-	Description string `json:"description"`
-	DuprClubID  string `json:"duprClubId"`
+	Name           string `json:"name"`
+	City           string `json:"city"`
+	Description    string `json:"description"`
+	DuprClubID     string `json:"duprClubId"`
+	RequiresWaiver bool   `json:"requiresWaiver"`
+	WaiverURL      string `json:"waiverUrl"`
 }
 
 // ClubStanding is one player's cumulative record ACROSS all of a club's events

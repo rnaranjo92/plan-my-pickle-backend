@@ -50,13 +50,25 @@ func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubReques
 	if name == "" {
 		return errors.New("club name is required")
 	}
-	_, err := s.sb.Update("clubs", "id=eq."+store.Q(clubID), map[string]any{
+	patch := map[string]any{
 		"name":         name,
 		"city":         orNull(strings.TrimSpace(req.City)),
 		"description":  orNull(strings.TrimSpace(req.Description)),
 		"dupr_club_id": orNull(strings.TrimSpace(req.DuprClubID)),
-	})
+	}
+	// Only send the waiver columns once they exist, so an unrun migration leaves
+	// the rest of the edit form working instead of failing the whole save.
+	if s.clubWaiverReady() {
+		patch["requires_waiver"] = req.RequiresWaiver
+		patch["waiver_url"] = orNull(normalizeWaiverURL(req.WaiverURL))
+	}
+	_, err := s.sb.Update("clubs", "id=eq."+store.Q(clubID), patch)
 	return err
+}
+
+// clubWaiverReady reports whether the waiver columns have been migrated in.
+func (s *Service) clubWaiverReady() bool {
+	return s.columnReady("clubs", "requires_waiver")
 }
 
 // DeleteClub removes a club (owner-only). The schema makes this safe:
@@ -438,6 +450,10 @@ func mapClub(m map[string]any) model.Club {
 		LogoURL:     asStr(m, "logo_url"),
 		DuprClubID:  asStr(m, "dupr_club_id"),
 		CreatedAt:   asStr(m, "created_at"),
+		// Re-normalized on the way OUT as well as in, so rows written before
+		// the check existed can't render a hostile href.
+		RequiresWaiver: asBool(m, "requires_waiver"),
+		WaiverURL:      normalizeWaiverURL(asStr(m, "waiver_url")),
 	}
 }
 

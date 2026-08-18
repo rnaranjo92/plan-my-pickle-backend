@@ -1,7 +1,6 @@
 package service
 
 import (
-	"sort"
 	"strings"
 	"time"
 
@@ -43,39 +42,23 @@ type ClubAttendance struct {
 // attendanceFrom computes the window from a club's dated events and the set of
 // event ids a member appears in.
 //
-// Pure, so the counting rule is testable without a club: what counts as a
-// session, which end the streak counts from, and what happens when a club has
-// played fewer than a full window.
+// Pure, so the counting rule is testable without a club: which end the streak
+// counts from, and what happens when a club has played fewer than a full
+// window.
 func attendanceFrom(
 	events []model.Event, attended map[string]bool, now time.Time, window int,
 ) ClubAttendance {
-	type dated struct {
-		id string
-		at time.Time
-	}
-	var past []dated
-	for _, ev := range events {
-		if ev.StartsAt == nil {
-			continue // a ladder has no session date; it isn't a Tuesday
-		}
-		at, err := time.Parse(time.RFC3339, strings.TrimSpace(*ev.StartsAt))
-		if err != nil || at.After(now) {
-			// Only sessions that have HAPPENED. Counting a scheduled one as
-			// missed would tell somebody they'd skipped next Tuesday.
-			continue
-		}
-		past = append(past, dated{id: ev.ID, at: at})
-	}
-	// Most recent first — the streak counts back from the last session played.
-	sort.SliceStable(past, func(i, j int) bool { return past[i].at.After(past[j].at) })
-	if window > 0 && len(past) > window {
-		past = past[:window]
-	}
+	// THE SAME session list the owner's roster uses (pastSessions), so a member
+	// reading "5 of the last 8" and an owner reading their row are describing
+	// the same Tuesdays. Two independent definitions of "recent sessions" would
+	// eventually disagree, and the disagreement would surface as an argument
+	// about whether somebody had been turning up.
+	sessions := pastSessions(events, now, window)
 
-	out := ClubAttendance{Of: len(past)}
+	out := ClubAttendance{Of: len(sessions)}
 	counting := true
-	for _, d := range past {
-		if attended[d.id] {
+	for _, sess := range sessions { // most recent first
+		if attended[sess.id] {
 			out.Played++
 			if counting {
 				out.Streak++

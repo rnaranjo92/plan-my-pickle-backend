@@ -313,6 +313,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// Reaching the club: owner or co-owner, since telling everyone Tuesday is
 	// cancelled is day-to-day running rather than an ownership act.
 	mux.HandleFunc("POST /clubs/{id}/announce", requireAuth(s.announceToClub))
+	// The owner's weekly view: who is drifting away. Admin-gated — who is
+	// slipping is management information, not a fact a club publishes about
+	// its own members.
+	mux.HandleFunc("GET /clubs/{id}/roster", requireAuth(s.clubRoster))
 
 	// Social graph: search players & follow them.
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
@@ -3722,6 +3726,16 @@ func (s *Server) inviteToClub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "invited"})
+}
+
+// clubRoster lists members with their recent turnout, most-in-need first.
+func (s *Server) clubRoster(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.ClubRoster(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // announceToClub sends one message to every member's bell and phone.

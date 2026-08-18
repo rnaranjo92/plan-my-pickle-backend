@@ -334,6 +334,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /clubs/{id}/dues", requireAuth(s.clubDues))
 	mux.HandleFunc("POST /clubs/{id}/dues", requireAuth(s.setClubDues))
 	mux.HandleFunc("DELETE /clubs/{id}/dues", requireAuth(s.closeClubDues))
+	// A member paying their OWN dues online. The money goes to the club's
+	// connected account, like an entry fee.
+	mux.HandleFunc("POST /clubs/{id}/dues/checkout", requireAuth(s.duesCheckout))
 	mux.HandleFunc("POST /clubs/{id}/dues/paid", requireAuth(s.recordDuesPayment))
 	mux.HandleFunc("DELETE /clubs/{id}/dues/paid/{userId}",
 		requireAuth(s.unrecordDuesPayment))
@@ -3773,6 +3776,24 @@ func (s *Server) clubDues(w http.ResponseWriter, r *http.Request) {
 		out["canManage"] = true
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// duesCheckout opens a Stripe Checkout for the caller's own dues.
+func (s *Server) duesCheckout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.StartDuesCheckout(
+		r.PathValue("id"), userID(r), req.SuccessURL, req.CancelURL)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 // setClubDues opens a new dues period, closing any period already open.

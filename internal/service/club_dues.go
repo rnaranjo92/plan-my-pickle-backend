@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
@@ -245,4 +246,123 @@ func mapDuesPeriod(r map[string]any) ClubDuesPeriod {
 		CreatedAt:   asStr(r, "created_at"),
 		ClosedAt:    asStr(r, "closed_at"),
 	}
+}
+
+// --- paying online ---------------------------------------------------------
+
+// duesRef encodes a dues payment for Stripe metadata: "periodId:userId".
+//
+// The same shape class packs already use. Dues have no registration row to hang
+// a payment off, so the reference travels in metadata and comes back on the
+// webhook.
+func duesRef(periodID, userID string) string {
+	return strings.TrimSpace(periodID) + ":" + strings.TrimSpace(userID)
+}
+
+// parseDuesRef splits a reference back into its parts. Returns empty strings
+// when the reference is malformed, which the caller treats as "not a dues
+// payment" rather than guessing.
+func parseDuesRef(ref string) (periodID, userID string) {
+	parts := strings.SplitN(strings.TrimSpace(ref), ":", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	periodID, userID = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if periodID == "" || userID == "" {
+		return "", ""
+	}
+	return periodID, userID
+}
+
+// StartDuesCheckout opens a Stripe Checkout for a member's own dues.
+//
+// The money goes to the CLUB — a destination charge on the owner's connected
+// account, the same path an entry fee takes — because these are the club's
+// dues, not ours. Which also means a club whose owner hasn't finished payout
+// onboarding simply can't collect online, and is told so rather than being sent
+// to a checkout that would fail.
+func (s *Service) StartDuesCheckout(
+	clubID, userID, successURL, cancelURL string,
+) (string, error) {
+	gw, ok := s.stripeGW()
+	if !ok {
+		return "", ErrPaymentsNotConfigured
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", ErrForbidden
+	}
+	period := s.OpenDuesPeriod(clubID)
+	if period == nil {
+		return "", errors.New("this club isn't collecting dues right now")
+	}
+	if period.AmountCents <= 0 {
+		return "", errors.New("these dues are free — nothing to pay")
+	}
+	// Already paid? Say so instead of taking the money twice.
+	if st := s.MyDuesStatus(clubID, userID); st.Paid {
+		return "", errors.New("you've already paid for this period")
+	}
+	owner, err := s.clubOwner(clubID)
+	if err != nil {
+		return "", err
+	}
+	orow, err := s.organizerPaymentRow(owner)
+	if err != nil {
+		return "", err
+	}
+	if orow == nil {
+		return "", ErrOrganizerNotConnected
+	}
+	accountID := asStr(orow, "stripe_account_id")
+	if accountID == "" || !asBool(orow, "charges_enabled") {
+		return "", ErrOrganizerNotConnected
+	}
+	club, _ := s.sb.SelectOne("clubs", "id=eq."+store.Q(clubID)+"&select=name")
+	name := strings.TrimSpace(asStr(club, "name"))
+	if name == "" {
+		name = "Club"
+	}
+	currency := strings.ToLower(strings.TrimSpace(period.Currency))
+	if currency == "" {
+		currency = "usd"
+	}
+	surcharge := processingSurchargeCents(period.AmountCents, currency)
+	return gw.CreateCheckoutSession(gateway.CheckoutParams{
+		DuesRef:             duesRef(period.ID, userID),
+		AmountCents:         period.AmountCents,
+		Currency:            currency,
+		ProductName:         name + " — " + period.Name,
+		DestinationAccount:  accountID,
+		ApplicationFeeCents: platformFeeCents(period.AmountCents, currency) + surcharge,
+		ServiceFeeCents:     surcharge,
+		SuccessURL:          successURL,
+		CancelURL:           cancelURL,
+	})
+}
+
+// markDuesPaidFromWebhook records a paid membership when Stripe confirms it.
+//
+// Idempotent by the table's primary key (period, user), so a redelivered
+// webhook writes the same row rather than a second payment. Records what Stripe
+// actually captured rather than the period's price, because the two can differ
+// if the fee changed between checkout and completion.
+func (s *Service) markDuesPaidFromWebhook(ref string, amountCents int) error {
+	periodID, userID := parseDuesRef(ref)
+	if periodID == "" {
+		return nil // not a dues payment we can attribute; don't guess
+	}
+	if !s.duesReady() {
+		return nil
+	}
+	row := map[string]any{
+		"period_id": periodID,
+		"user_id":   userID,
+		"method":    "stripe",
+	}
+	if amountCents > 0 {
+		row["amount_cents"] = amountCents
+	}
+	_, err := s.sb.Upsert("club_dues_payments", "period_id,user_id", row)
+	return err
 }

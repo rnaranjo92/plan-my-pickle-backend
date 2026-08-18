@@ -563,6 +563,10 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		if evt.VendorID != "" {
 			return s.MarkVendorPaid(evt.VendorID)
 		}
+		// Club dues — record the member as paid for that period.
+		if evt.DuesRef != "" {
+			return s.markDuesPaidFromWebhook(evt.DuesRef, evt.AmountCents)
+		}
 		// A paid Match Video Analysis — mark paid + submit the video to PB Vision.
 		if evt.AnalysisID != "" {
 			return s.markAnalysisPaid(evt.AnalysisID)

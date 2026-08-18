@@ -234,7 +234,11 @@ type CheckoutParams struct {
 	RegistrationID string
 	// VendorID, when set (booth-fee checkout), rides in metadata instead of a
 	// registration id so the webhook marks the vendor paid.
-	VendorID            string
+	VendorID string
+	// DuesRef, when set, is a club-dues payment encoded as "periodId:userId".
+	// Same shape as PackPurchase: dues have no registration to hang off, so the
+	// reference travels in metadata and the webhook records the payment.
+	DuesRef             string
 	AmountCents         int
 	Currency            string
 	ProductName         string
@@ -313,6 +317,10 @@ func (g *StripeGateway) CreateCheckoutSession(p CheckoutParams) (string, error) 
 		params.PaymentIntentData.ApplicationFeeAmount = stripe.Int64(int64(p.ApplicationFeeCents))
 	}
 	params.Context = ctx
+	if p.DuesRef != "" {
+		params.AddMetadata("dues_ref", p.DuesRef)
+		params.PaymentIntentData.AddMetadata("dues_ref", p.DuesRef)
+	}
 	if p.VendorID != "" {
 		params.AddMetadata("vendor_id", p.VendorID)
 		params.PaymentIntentData.AddMetadata("vendor_id", p.VendorID)
@@ -605,6 +613,9 @@ type WebhookEvent struct {
 	EventPassID string
 	// checkout.session.completed (mode=payment) — a vendor booth fee.
 	VendorID string
+	// checkout.session.completed (mode=payment) — club dues, encoded as
+	// "periodId:userId".
+	DuesRef string
 	// checkout.session.completed (mode=payment) — a paid Match Video Analysis.
 	AnalysisID string
 	// checkout.session.completed (mode=payment) — a paid class enrollment.
@@ -691,6 +702,7 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			RegistrationID:  sess.Metadata["registration_id"],
 			EventPassID:     sess.Metadata["event_pass_id"],
 			VendorID:        sess.Metadata["vendor_id"],
+			DuesRef:         sess.Metadata["dues_ref"],
 			AnalysisID:      sess.Metadata["analysis_id"],
 			EnrollmentID:    sess.Metadata["enrollment_id"],
 			PackPurchase:    sess.Metadata["pack_purchase"],

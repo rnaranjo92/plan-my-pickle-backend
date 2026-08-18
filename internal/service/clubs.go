@@ -177,8 +177,12 @@ func (s *Service) LeaveClub(clubID, userID string) error {
 		"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID))
 }
 
-// ClubMembers lists a club's members with display name + photo (batched: two
-// queries total — names from linked player rows, photos from pmp_profiles).
+// ClubMembers lists a club's members with display name + photo, batched.
+//
+// Names come from clubDisplayNames (player row first, then the ACCOUNT profile)
+// rather than player rows alone: someone who signed in with Apple and has never
+// registered for an event has no player row, and showed up here as a nameless
+// entry beside their own photo.
 func (s *Service) ClubMembers(clubID string) ([]model.ClubMember, error) {
 	rows, err := s.sb.Select("club_members",
 		"club_id=eq."+store.Q(clubID)+"&select=user_id,role&order=created_at.asc")
@@ -191,17 +195,7 @@ func (s *Service) ClubMembers(clubID string) ([]model.ClubMember, error) {
 			uids = append(uids, u)
 		}
 	}
-	names := map[string]string{}
-	if len(uids) > 0 {
-		if prows, err := s.sb.Select("players",
-			"user_id="+store.In(uids)+"&select=user_id,full_name"); err == nil {
-			for _, p := range prows {
-				if n := asStr(p, "full_name"); n != "" {
-					names[asStr(p, "user_id")] = n
-				}
-			}
-		}
-	}
+	names := s.clubDisplayNames(uids)
 	photos := s.photosByUser(uids)
 	out := make([]model.ClubMember, 0, len(rows))
 	for _, r := range rows {

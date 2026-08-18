@@ -147,17 +147,9 @@ func (s *Service) ClubJoinRequests(clubID, callerID string) ([]ClubJoinRequest, 
 	if len(uids) == 0 {
 		return out, nil
 	}
-	// Names and photos in two batched lookups, the same way ClubMembers does —
-	// a queue of anonymous user ids is not something anyone can approve.
-	names := map[string]string{}
-	if prows, err := s.sb.Select("players",
-		"user_id="+store.In(uids)+"&select=user_id,full_name"); err == nil {
-		for _, p := range prows {
-			if n := strings.TrimSpace(asStr(p, "full_name")); n != "" {
-				names[asStr(p, "user_id")] = n
-			}
-		}
-	}
+	// Names and photos in batched lookups — a queue of anonymous user ids is not
+	// something anyone can approve.
+	names := s.clubDisplayNames(uids)
 	photos := s.photosByUser(uids)
 	for _, r := range rows {
 		uid := strings.TrimSpace(asStr(r, "user_id"))

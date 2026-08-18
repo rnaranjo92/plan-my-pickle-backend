@@ -161,10 +161,7 @@ func (s *Service) nameOfUser(userID string) string {
 	if strings.TrimSpace(userID) == "" {
 		return ""
 	}
-	row, err := s.sb.SelectOne("players",
-		"user_id=eq."+store.Q(userID)+"&select=full_name&limit=1")
-	if err != nil || row == nil {
-		return ""
-	}
-	return asStr(row, "full_name")
+	// Same resolver the roster uses, so "X asked to join" and the row they
+	// appear in can't disagree about who X is.
+	return s.clubDisplayNames([]string{userID})[userID]
 }

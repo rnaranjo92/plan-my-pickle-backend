@@ -120,6 +120,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/profile", requireAuth(s.saveProfileDetails))
 	mux.HandleFunc("POST /me/basic", requireAuth(s.saveBasicInfo))
 	mux.HandleFunc("POST /me/onboarded", requireAuth(s.markOnboarded))
+	// Seeds a display name from a social sign-in, only when there isn't one.
+	mux.HandleFunc("POST /me/seed-name", requireAuth(s.seedMyName))
 	mux.HandleFunc("GET /partners", requireAuth(s.partnerDirectory))
 	mux.HandleFunc("POST /me/photo", requireAuth(s.uploadPhoto))
 	mux.HandleFunc("DELETE /me/photo", requireAuth(s.clearPhoto))
@@ -1114,6 +1116,26 @@ func (s *Server) saveBasicInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetMyBasicInfo(userID(r), req.FullName, req.Phone); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// seedMyName sets a display name ONLY IF the caller has none.
+//
+// Sign in with Apple hands over the person's name exactly once, at first
+// consent, and never again — so the app posts it here the moment it arrives.
+// "Only if empty" is what makes it safe to call on every social sign-in: a name
+// the person later chose is never reverted to what Apple said years ago.
+func (s *Server) seedMyName(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FullName string `json:"fullName"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SeedMyName(userID(r), req.FullName); err != nil {
 		status(w, err)
 		return
 	}

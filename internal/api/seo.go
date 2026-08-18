@@ -73,6 +73,11 @@ func (s *Server) registerSEO(mux *http.ServeMux) {
 	mux.HandleFunc("GET /pickleball-tournaments/{state}/{county}", s.seoCityHub)
 	mux.HandleFunc("GET /pickleball-leagues/{state}/{county}", s.seoLeagueHub)
 	mux.HandleFunc("GET /l/{id}", s.seoLeaguePage)
+	// Clubs are the most searchable thing here: "pickleball club in Chula
+	// Vista" is a query a person types, and unlike a tournament the page is
+	// still worth visiting next month because there is always something on.
+	mux.HandleFunc("GET /club/{id}", s.seoClubPage)
+	mux.HandleFunc("GET /pickleball-clubs/{city}", s.seoClubCityHub)
 	mux.HandleFunc("GET /class/{id}", s.seoClassPage)
 }
 
@@ -196,6 +201,22 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 			if st != "" && co != "" && !seenLHub[st+"/"+co] {
 				seenLHub[st+"/"+co] = true
 				urls = append(urls, url{loc: seoCanonicalBase + "/pickleball-leagues/" + st + "/" + co})
+			}
+		}
+	}
+
+	// Clubs, and a hub per city they're in. No lastmod: a club page changes
+	// whenever its next session does, which is not a date we hold — and an
+	// omitted lastmod costs only the hint, where a wrong one poisons the signal
+	// for the whole file.
+	if clubs, err := s.svc.PublicClubs(500); err == nil {
+		seenCity := map[string]bool{}
+		for _, c := range clubs {
+			urls = append(urls, url{loc: seoCanonicalBase + "/club/" + c.ID})
+			if city := slugify(c.City); city != "" && !seenCity[city] {
+				seenCity[city] = true
+				urls = append(urls,
+					url{loc: seoCanonicalBase + "/pickleball-clubs/" + city})
 			}
 		}
 	}
@@ -619,6 +640,123 @@ func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
 		H1:          lg.Name,
 		Intro:       intro,
 		Cards:       cards, JSONLD: template.JS(ld),
+	})
+}
+
+// --- club pages ---
+
+// seoClubPage is a club's public front door: who they are and what's on next.
+//
+// The recruiting half only. No roster, no attendance, no contact details — a
+// club publishes an invitation, not its membership list, and the people in it
+// joined a club rather than a website.
+func (s *Server) seoClubPage(w http.ResponseWriter, r *http.Request) {
+	club, upcoming, err := s.svc.PublicClubByID(r.PathValue("id"))
+	if err != nil {
+		s.seoNotFound(w)
+		return
+	}
+	var cards []seoHubCard
+	var items []any
+	for i, e := range upcoming {
+		venue := strings.TrimSpace(strOr(e.VenueName))
+		if venue == "" {
+			venue = strings.TrimSpace(strOr(e.Location))
+		}
+		cards = append(cards, seoHubCard{
+			Name:     e.Name,
+			DateLine: fmtEventDate(strOr(e.StartsAt)),
+			Venue:    venue,
+			URL:      "/e/" + e.ID,
+			Dupr:     e.DuprSanctioned,
+		})
+		items = append(items, map[string]any{"@type": "ListItem", "position": i + 1,
+			"url": seoCanonicalBase + "/e/" + e.ID, "name": e.Name})
+	}
+	// A club is a SportsOrganization to a search engine, which is what earns
+	// the name, place and logo a place in the result rather than a blue link.
+	ld, _ := json.Marshal(map[string]any{
+		"@context": "https://schema.org", "@type": "SportsOrganization",
+		"name": club.Name, "sport": "Pickleball",
+		"url":  seoCanonicalBase + "/club/" + club.ID,
+		"logo": club.LogoURL,
+		"address": map[string]any{
+			"@type": "PostalAddress", "addressLocality": club.City,
+		},
+		"subOrganization": items,
+	})
+
+	place := ""
+	if club.City != "" {
+		place = " in " + club.City
+	}
+	intro := plural(club.MemberCount, "member", "members")
+	if club.EventCount > 0 {
+		intro += " · " + plural(club.EventCount, "event", "events") + " run"
+	}
+	intro += "."
+	if d := strings.TrimSpace(club.Description); d != "" {
+		intro += " " + d
+	}
+	if len(cards) == 0 {
+		// Say it rather than render an empty page: a club between seasons is
+		// still a club worth joining, and "nothing listed" reads as defunct.
+		intro += " No sessions on the calendar right now — new members welcome."
+	}
+	s.seoRender(w, seoHubTmpl, seoHubData{
+		Title:     club.Name + " — Pickleball Club" + place + " | PlanMyPickle",
+		Canonical: seoCanonicalBase + "/club/" + club.ID,
+		Description: "Join " + club.Name + ", a pickleball club" + place +
+			". Upcoming sessions, standings and results on PlanMyPickle.",
+		H1:      club.Name,
+		Intro:   intro,
+		OGImage: club.LogoURL,
+		Cards:   cards, JSONLD: template.JS(ld),
+	})
+}
+
+// seoClubCityHub lists the clubs in one city — the page that answers the query
+// somebody actually types.
+func (s *Server) seoClubCityHub(w http.ResponseWriter, r *http.Request) {
+	want := slugify(r.PathValue("city"))
+	byCity, err := s.svc.ClubsByCity()
+	if err != nil || want == "" {
+		s.seoNotFound(w)
+		return
+	}
+	var cityName string
+	var clubs []service.PublicClub
+	for city, list := range byCity {
+		if slugify(city) == want {
+			cityName, clubs = city, list
+			break
+		}
+	}
+	if len(clubs) == 0 {
+		s.seoNotFound(w)
+		return
+	}
+	var cards []seoHubCard
+	var items []any
+	for i, c := range clubs {
+		cards = append(cards, seoHubCard{
+			Name: c.Name, DateLine: c.Description, Venue: c.City,
+			URL: "/club/" + c.ID,
+		})
+		items = append(items, map[string]any{"@type": "ListItem", "position": i + 1,
+			"url": seoCanonicalBase + "/club/" + c.ID, "name": c.Name})
+	}
+	ld, _ := json.Marshal(map[string]any{"@context": "https://schema.org",
+		"@type": "ItemList", "name": "Pickleball clubs in " + cityName,
+		"itemListElement": items})
+	s.seoRender(w, seoHubTmpl, seoHubData{
+		Title:     "Pickleball Clubs in " + cityName + " | PlanMyPickle",
+		Canonical: seoCanonicalBase + "/pickleball-clubs/" + want,
+		Description: "Pickleball clubs in " + cityName +
+			" — open play, leagues and ladders you can join.",
+		H1:    "Pickleball clubs in " + cityName,
+		Intro: plural(len(clubs), "club", "clubs") + " in " + cityName + ".",
+		Cards: cards, JSONLD: template.JS(ld),
 	})
 }
 

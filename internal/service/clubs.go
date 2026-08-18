@@ -85,8 +85,11 @@ func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {
 	c.EventCount = s.countRows("events", "club_id=eq."+store.Q(clubID), "id")
 	if callerID != "" {
 		m, _ := s.sb.SelectOne("club_members",
-			"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(callerID)+"&select=user_id")
+			"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(callerID)+
+				"&select=user_id,role")
 		c.IsMember = m != nil
+		c.IsCoOwner = m != nil &&
+			strings.EqualFold(strings.TrimSpace(asStr(m, "role")), ClubRoleCoOwner)
 	}
 	return c, nil
 }

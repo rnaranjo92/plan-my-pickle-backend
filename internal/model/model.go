@@ -2240,6 +2240,12 @@ type Club struct {
 	EventCount  int  `json:"eventCount"`
 	IsOwner     bool `json:"isOwner"`
 	IsMember    bool `json:"isMember"`
+	// IsCoOwner: the caller may RUN this club without owning it. Separate from
+	// IsOwner because the two grant different things — a co-owner runs the club
+	// day to day but cannot delete it or appoint other co-owners — and because
+	// the app had no way to tell, so every management control was hidden from
+	// exactly the people co-owners were created for.
+	IsCoOwner bool `json:"isCoOwner"`
 }
 
 // CreateClubRequest is the create/edit payload for a club.

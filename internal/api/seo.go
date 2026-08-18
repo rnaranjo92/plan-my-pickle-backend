@@ -358,6 +358,15 @@ type seoHubData struct {
 	Cities                                   []seoPlaceLink
 	Cards                                    []seoHubCard
 	JSONLD                                   template.JS
+
+	// Optional second section, used by the club page to show what the club has
+	// actually been doing. Every other page leaves these empty and renders
+	// exactly as before.
+	Section2Title string
+	Cards2        []seoHubCard
+	// Facts is a short list of plain statements ("Plays most Tuesdays"), shown
+	// above the sections.
+	Facts []string
 }
 
 // seoCityHub serves BOTH /pickleball-tournaments/{state}/{county} and the same
@@ -651,7 +660,7 @@ func (s *Server) seoLeaguePage(w http.ResponseWriter, r *http.Request) {
 // club publishes an invitation, not its membership list, and the people in it
 // joined a club rather than a website.
 func (s *Server) seoClubPage(w http.ResponseWriter, r *http.Request) {
-	club, upcoming, err := s.svc.PublicClubByID(r.PathValue("id"))
+	club, upcoming, recent, activity, err := s.svc.PublicClubByID(r.PathValue("id"))
 	if err != nil {
 		s.seoNotFound(w)
 		return
@@ -703,15 +712,50 @@ func (s *Server) seoClubPage(w http.ResponseWriter, r *http.Request) {
 		// still a club worth joining, and "nothing listed" reads as defunct.
 		intro += " No sessions on the calendar right now — new members welcome."
 	}
+	// The facts a prospective member is actually weighing: does this club play
+	// often, on a day I can make, and did it happen recently. A page that only
+	// lists one event next month reads as a club that has stopped.
+	var facts []string
+	if activity.UsualDay != "" {
+		facts = append(facts, "Plays most "+activity.UsualDay+"s")
+	}
+	if activity.SessionsRecent > 0 {
+		facts = append(facts, plural(activity.SessionsRecent, "session", "sessions")+
+			" in the last 3 months")
+	}
+	if club.MemberCount > 0 {
+		facts = append(facts, plural(club.MemberCount, "member", "members"))
+	}
+
+	var recentCards []seoHubCard
+	for _, e := range recent {
+		venue := strings.TrimSpace(strOr(e.VenueName))
+		if venue == "" {
+			venue = strings.TrimSpace(strOr(e.Location))
+		}
+		recentCards = append(recentCards, seoHubCard{
+			Name: e.Name, DateLine: fmtEventDate(strOr(e.StartsAt)),
+			Venue: venue, URL: "/e/" + e.ID,
+		})
+	}
+	section2 := ""
+	if len(recentCards) > 0 {
+		section2 = "Recently played"
+	}
+
 	s.seoRender(w, seoHubTmpl, seoHubData{
 		Title:     club.Name + " — Pickleball Club" + place + " | PlanMyPickle",
 		Canonical: seoCanonicalBase + "/club/" + club.ID,
 		Description: "Join " + club.Name + ", a pickleball club" + place +
 			". Upcoming sessions, standings and results on PlanMyPickle.",
-		H1:      club.Name,
-		Intro:   intro,
-		OGImage: club.LogoURL,
-		Cards:   cards, JSONLD: template.JS(ld),
+		H1:            club.Name,
+		Intro:         intro,
+		OGImage:       club.LogoURL,
+		Facts:         facts,
+		Cards:         cards,
+		Section2Title: section2,
+		Cards2:        recentCards,
+		JSONLD:        template.JS(ld),
 	})
 }
 
@@ -999,6 +1043,9 @@ h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
 .meta{color:var(--muted);font-size:15px;margin:2px 0}
 .badge{display:inline-block;background:#e9f2df;color:var(--green);font-weight:800;font-size:12px;padding:3px 9px;border-radius:999px;margin-top:8px}
 .cta{display:inline-block;margin:22px 0 6px;background:#f5c518;color:var(--ink);text-decoration:none;font-weight:800;padding:13px 22px;border-radius:999px}
+.facts{list-style:none;padding:0;margin:14px 0 4px;display:flex;flex-wrap:wrap;gap:8px}
+.facts li{background:#e9f2df;color:var(--green);font-weight:700;font-size:13px;padding:6px 12px;border-radius:999px}
+.sec{margin:26px 0 2px;font-size:16px;color:var(--navy)}
 .card{display:block;background:#fff;border:1px solid #e7eedd;border-radius:14px;padding:16px 18px;margin:12px 0;text-decoration:none;color:var(--ink)}
 .card h2{margin:0 0 4px;color:var(--navy);font-size:18px}
 .card.has-img{display:flex;gap:14px;align-items:flex-start}
@@ -1057,6 +1104,7 @@ var seoResultsTmpl = template.Must(template.New("res").Parse(seoHead + `
 var seoTownTmpl = template.Must(template.New("town").Parse(seoHead + `
 <h1>{{.H1}}</h1>
 <p class="meta">{{.Intro}}</p>
+{{if .Facts}}<ul class="facts">{{range .Facts}}<li>{{.}}</li>{{end}}</ul>{{end}}
 {{range .Cards}}<a class="card{{if .Poster}} has-img{{end}}" href="{{.URL}}">
 {{if .Poster}}<img class="thumb" src="{{.Poster}}" alt="{{.Name}} event poster" loading="lazy" width="104" height="104">{{end}}
 <div class="cbody">
@@ -1066,6 +1114,14 @@ var seoTownTmpl = template.Must(template.New("town").Parse(seoHead + `
 {{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
 </div>
 </a>{{end}}
+{{if .Cards2}}<h2 class="sec">{{.Section2Title}}</h2>
+{{range .Cards2}}<a class="card" href="{{.URL}}">
+<div class="cbody">
+<h2>{{.Name}}</h2>
+{{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
+{{if .Venue}}<p class="meta">📍 {{.Venue}}</p>{{end}}
+</div>
+</a>{{end}}{{end}}
 <p><a class="cta" href="` + seoAppBase + `">Organizing? Run your tournament free →</a></p>
 
 <h2>Playing a pickleball tournament in {{.City}}</h2>

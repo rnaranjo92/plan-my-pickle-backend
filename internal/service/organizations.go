@@ -411,3 +411,83 @@ func (s *Service) OrgSummaryFor(orgID, callerID string) (OrgSummary, error) {
 	})
 	return out, nil
 }
+
+// OrgStaffMember is one person who works for an organization.
+type OrgStaffMember struct {
+	UserID   string `json:"userId"`
+	FullName string `json:"fullName,omitempty"`
+	PhotoURL string `json:"photoUrl,omitempty"`
+	Role     string `json:"role"`
+	// IsOwner marks the account on the contract, who has no member row and
+	// cannot be demoted or removed from their own organization.
+	IsOwner bool `json:"isOwner"`
+}
+
+// OrgStaff lists everyone with access, owner first.
+//
+// Readable by anyone who can read the organization, including a viewer: knowing
+// who else has access is not privileged information to the people who already
+// have it, and a viewer who can't see the staff list can't tell you who to ask
+// for something.
+func (s *Service) OrgStaff(orgID, callerID string) ([]OrgStaffMember, error) {
+	if !orgCanRead(s.OrgRoleFor(orgID, callerID)) {
+		return nil, ErrForbidden
+	}
+	row, err := s.sb.SelectOne("organizations",
+		"id=eq."+store.Q(orgID)+"&select=owner_id")
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, ErrNotFound
+	}
+	ownerID := strings.TrimSpace(asStr(row, "owner_id"))
+
+	rows, err := s.sb.SelectAll("organization_members",
+		"org_id=eq."+store.Q(orgID)+"&select=user_id,role&order=created_at.asc")
+	if err != nil {
+		return nil, err
+	}
+	uids := []string{}
+	if ownerID != "" {
+		uids = append(uids, ownerID)
+	}
+	for _, r := range rows {
+		if u := strings.TrimSpace(asStr(r, "user_id")); u != "" && u != ownerID {
+			uids = append(uids, u)
+		}
+	}
+	names := map[string]string{}
+	if len(uids) > 0 {
+		if prows, perr := s.sb.Select("players",
+			"user_id="+store.In(uids)+"&select=user_id,full_name"); perr == nil {
+			for _, p := range prows {
+				if n := strings.TrimSpace(asStr(p, "full_name")); n != "" {
+					names[asStr(p, "user_id")] = n
+				}
+			}
+		}
+	}
+	photos := s.photosByUser(uids)
+
+	out := make([]OrgStaffMember, 0, len(uids))
+	if ownerID != "" {
+		out = append(out, OrgStaffMember{
+			UserID: ownerID, FullName: names[ownerID], PhotoURL: photos[ownerID],
+			Role: OrgRoleOwner, IsOwner: true,
+		})
+	}
+	for _, r := range rows {
+		uid := strings.TrimSpace(asStr(r, "user_id"))
+		if uid == "" || uid == ownerID {
+			continue
+		}
+		out = append(out, OrgStaffMember{
+			UserID:   uid,
+			FullName: names[uid],
+			PhotoURL: photos[uid],
+			Role:     strings.ToLower(strings.TrimSpace(asStr(r, "role"))),
+		})
+	}
+	return out, nil
+}

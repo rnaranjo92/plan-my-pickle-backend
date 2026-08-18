@@ -301,6 +301,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /orgs", requireAuth(s.myOrgs))
 	mux.HandleFunc("POST /orgs", requireAuth(s.createOrg))
 	mux.HandleFunc("GET /orgs/{id}/summary", requireAuth(s.orgSummary))
+	mux.HandleFunc("GET /orgs/{id}/staff", requireAuth(s.orgStaff))
 	mux.HandleFunc("POST /orgs/{id}/role", requireAuth(s.setOrgRole))
 	mux.HandleFunc("DELETE /orgs/{id}/members/{userId}", requireAuth(s.removeOrgMember))
 	mux.HandleFunc("POST /clubs/{id}/org", requireAuth(s.attachClubToOrg))
@@ -3888,6 +3889,16 @@ func (s *Server) createOrg(w http.ResponseWriter, r *http.Request) {
 // orgSummary is the corporate view: every site on one page, quietest first.
 func (s *Server) orgSummary(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.OrgSummaryFor(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// orgStaff lists everyone with access to an organization, owner first.
+func (s *Server) orgStaff(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.OrgStaff(r.PathValue("id"), userID(r))
 	if err != nil {
 		status(w, err)
 		return

@@ -29,6 +29,9 @@ type ClubHome struct {
 	// in it, and how many have actually played.
 	Members        int `json:"members"`
 	MembersPlaying int `json:"membersPlaying"`
+	// Attendance is the viewer's recent turnout — "6 of the last 8". Nil when
+	// signed out, or when the club has never run a dated session.
+	Attendance *ClubAttendance `json:"attendance,omitempty"`
 }
 
 // ClubMemberRecord is one person's standing in their own club.
@@ -109,6 +112,11 @@ func (s *Service) ClubHomeFor(clubID, viewerID string) (ClubHome, error) {
 			out.Me = rec
 		}
 	}
+	// Turning up is worth recognising on its own. The leaderboard rewards
+	// winning, which not everybody can do — the member who has been there every
+	// Tuesday since March and loses more than they win deserves a line that
+	// isn't evidence they don't belong.
+	out.Attendance = s.clubAttendanceFor(events, viewerID)
 	out.Members = s.countRows("club_members",
 		"club_id=eq."+clubID+"&select=user_id", "user_id")
 	return out, nil

@@ -317,6 +317,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// slipping is management information, not a fact a club publishes about
 	// its own members.
 	mux.HandleFunc("GET /clubs/{id}/roster", requireAuth(s.clubRoster))
+	// The same roster as a spreadsheet. A club's committee lives in email, and
+	// a volunteer who will never install this app still gets to help.
+	mux.HandleFunc("GET /clubs/{id}/roster.csv", requireAuth(s.clubRosterCSV))
 
 	// Social graph: search players & follow them.
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
@@ -3736,6 +3739,19 @@ func (s *Server) clubRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// clubRosterCSV downloads the roster with each member's recent turnout.
+func (s *Server) clubRosterCSV(w http.ResponseWriter, r *http.Request) {
+	data, err := s.svc.ClubRosterCSV(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="club-roster.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // announceToClub sends one message to every member's bell and phone.

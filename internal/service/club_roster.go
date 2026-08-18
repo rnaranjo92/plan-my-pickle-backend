@@ -2,6 +2,7 @@ package service
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -238,4 +239,78 @@ func pastSessions(events []model.Event, now time.Time, window int) []clubSession
 		out = out[:window]
 	}
 	return out
+}
+
+// ClubRosterCSV is the roster as a spreadsheet.
+//
+// The first thing a facility asks for, and the reason is not reporting — it is
+// that a club's committee lives in email and a spreadsheet is how a volunteer
+// who will never install this app still gets to help. Refusing to export is how
+// a product becomes the place the data is TRAPPED rather than the place it
+// lives, which is the opposite of the system-of-record argument the Club tier
+// is sold on.
+//
+// Same admin gate as the roster view: who is drifting away is management
+// information.
+func (s *Service) ClubRosterCSV(clubID, callerID string) ([]byte, error) {
+	rows, err := s.ClubRoster(clubID, callerID)
+	if err != nil {
+		return nil, err
+	}
+	var b strings.Builder
+	b.WriteString("Name,Role,Status,Sessions played,Of last,Missed in a row,Last played\n")
+	for _, r := range rows {
+		role := r.Role
+		if role == "" {
+			role = "member"
+		}
+		b.WriteString(strings.Join([]string{
+			csvCell(r.FullName),
+			csvCell(role),
+			csvCell(readableStatus(r.Status)),
+			strconv.Itoa(r.Played),
+			strconv.Itoa(r.Of),
+			strconv.Itoa(r.MissedRun),
+			csvCell(dateOnly(r.LastPlayed)),
+		}, ","))
+		b.WriteString("\n")
+	}
+	return []byte(b.String()), nil
+}
+
+// readableStatus writes the status the way the screen says it, not the way the
+// database stores it. A spreadsheet column reading "never_played" is a leaked
+// enum; a committee member reading "Never played" just understands.
+func readableStatus(s string) string {
+	switch s {
+	case ClubStatusActive:
+		return "Playing"
+	case ClubStatusSlipping:
+		return "Slipping away"
+	case ClubStatusLapsed:
+		return "Away a while"
+	case ClubStatusNeverAlong:
+		return "Never played"
+	default:
+		return s
+	}
+}
+
+// dateOnly trims an RFC3339 timestamp to the date. A spreadsheet cell holding
+// "2026-08-17T19:00:00Z" sorts fine and reads like machinery.
+func dateOnly(rfc string) string {
+	if len(rfc) >= 10 {
+		return rfc[:10]
+	}
+	return rfc
+}
+
+// csvCell quotes a value so a name containing a comma — which is most people
+// who enter "Surname, First" — cannot shift every column after it.
+func csvCell(v string) string {
+	v = strings.TrimSpace(v)
+	if !strings.ContainsAny(v, ",\"\n\r") {
+		return v
+	}
+	return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
 }

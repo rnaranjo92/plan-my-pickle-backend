@@ -122,6 +122,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /me/onboarded", requireAuth(s.markOnboarded))
 	// Seeds a display name from a social sign-in, only when there isn't one.
 	mux.HandleFunc("POST /me/seed-name", requireAuth(s.seedMyName))
+	// The Club plan: status for the upgrade UI, and the checkout itself.
+	mux.HandleFunc("GET /me/club-plan", requireAuth(s.clubPlanStatus))
+	mux.HandleFunc("POST /me/club-checkout", requireAuth(s.clubCheckout))
 	mux.HandleFunc("GET /partners", requireAuth(s.partnerDirectory))
 	mux.HandleFunc("POST /me/photo", requireAuth(s.uploadPhoto))
 	mux.HandleFunc("DELETE /me/photo", requireAuth(s.clearPhoto))
@@ -220,6 +223,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /events/{id}/busy-courts", s.busyCourts)
 	// Court QR scoring: owner mints the per-court token; the public court page
 	// records a live game's score with that token (no admin passcode).
+	// AI poster: styles are public knowledge; generation is permission-checked
+	// in the service (owner or club admin), and inert without GEMINI_API_KEY.
+	mux.HandleFunc("GET /poster-styles", s.posterStyles)
+	mux.HandleFunc("POST /events/{id}/poster/generate", requireAuth(s.generatePoster))
 	mux.HandleFunc("GET /events/{id}/court-token", s.ownerOnly("event", "id", s.courtToken))
 	mux.HandleFunc("POST /events/{id}/court/{n}/score", s.courtScore)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
@@ -1123,6 +1130,55 @@ func (s *Server) saveBasicInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// clubPlanStatus reports whether the caller holds the Club tier and whether it
+// can currently be bought — the UI shows no upgrade button while it can't.
+func (s *Server) clubPlanStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.ClubPlanStatus(userID(r)))
+}
+
+// clubCheckout opens the Stripe subscription Checkout for the Club plan.
+func (s *Server) clubCheckout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.StartClubCheckout(
+		userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// posterStyles lists the poster style picker's options, and whether generation
+// is enabled at all — so the client can hide the whole feature when it isn't.
+func (s *Server) posterStyles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": s.svc.PostersEnabled(),
+		"styles":  service.PosterStyleKeys(),
+	})
+}
+
+// generatePoster renders an AI poster for the event and sets it as the poster.
+func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Style string `json:"style"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.GeneratePoster(r.PathValue("id"), userID(r), req.Style)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": url})
 }
 
 // seedMyName sets a display name ONLY IF the caller has none.

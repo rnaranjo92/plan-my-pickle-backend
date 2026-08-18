@@ -90,7 +90,7 @@ func (s *Service) ArchiveAllowed(eventID string) bool {
 	// The owner's entitlement covers a real subscription AND the `comped`
 	// column, which is what founding accounts hold and what the Stripe
 	// reconciler is forbidden from touching.
-	if s.IsPremium(asStr(row, "owner_id")) {
+	if owner := asStr(row, "owner_id"); s.IsPremium(owner) || s.ClubPlanActive(owner) {
 		return true
 	}
 	// A last escape hatch that needs no deploy: if something about the gate is

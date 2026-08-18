@@ -43,7 +43,12 @@ func (s *Service) clubSponsoredCoach(userID string) bool {
 	if own, err := s.sb.SelectOne("clubs",
 		"owner_id=eq."+store.Q(userID)+"&select=owner_id&limit=1"); err == nil &&
 		own != nil {
-		if s.IsPremium(userID) {
+		// The CLUB plan, not organizer Premium. Premium is a personal product;
+		// "the club carries its coaches" is what the Club tier sells, so it is
+		// what has to be checked — otherwise every $15 Premium organizer who
+		// owns a club would carry unlimited coach seats the $59 tier is priced
+		// on. (Comped founding clubs pass via ClubPlanActive's comped read.)
+		if s.ClubPlanActive(userID) {
 			return true
 		}
 	}
@@ -72,7 +77,7 @@ func (s *Service) clubSponsoredCoach(userID string) bool {
 	}
 	for _, c := range clubs {
 		if owner := strings.TrimSpace(asStr(c, "owner_id")); owner != "" &&
-			s.IsPremium(owner) {
+			s.ClubPlanActive(owner) {
 			return true
 		}
 	}

@@ -83,7 +83,7 @@ func (s *Service) scoreParticipant(matchID, token, callerUserID string) (int, st
 func (s *Service) scoreReportEvent(eventID string) (map[string]any, error) {
 	return s.sb.SelectOne("events",
 		"id=eq."+store.Q(eventID)+
-			"&select=id,name,owner_id,premium_pass,player_scoring,score_confirm_minutes,best_of,points_to_win,win_by")
+			"&select=id,name,owner_id,premium_pass,club_id,player_scoring,score_confirm_minutes,best_of,points_to_win,win_by")
 }
 
 // playerScoringEnabled reports whether the add-on is on AND the event is

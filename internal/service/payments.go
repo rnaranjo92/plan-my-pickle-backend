@@ -632,6 +632,9 @@ func (s *Service) applySubscriptionEvent(ev gateway.SubscriptionEvent) error {
 	if isCoachPlanEvent(ev.PriceID) {
 		return s.applyCoachPlanEvent(ev)
 	}
+	if isClubPlanEvent(ev.PriceID) {
+		return s.applyClubPlanEvent(ev)
+	}
 	// A price we don't recognise is NOT assumed to be Premium. An unknown price
 	// means a plan added in the Stripe dashboard that this build doesn't know
 	// about, and silently granting Premium for it is how a cheap add-on becomes
@@ -639,6 +642,11 @@ func (s *Service) applySubscriptionEvent(ev gateway.SubscriptionEvent) error {
 	if pp := premiumPriceID(); pp != "" && ev.PriceID != "" && ev.PriceID != pp {
 		log.Printf("subscriptions: ignoring event for unknown price %q", ev.PriceID)
 		return nil
+	}
+	// Belt for the older-install fallthrough above: even with no premium price
+	// configured, a CLUB price must never be written to the premium column.
+	if ev.PriceID != "" && ev.PriceID == clubPriceID() {
+		return s.applyClubPlanEvent(ev)
 	}
 	row := map[string]any{
 		"premium":             ev.Active,
@@ -808,7 +816,19 @@ func (s *Service) SetComped(userID, reason, by string, on bool) error {
 // and premium_pass (GetEvent uses select=*; callers with a narrow select must
 // add premium_pass to it).
 func (s *Service) eventPremiumUnlocked(ev map[string]any) bool {
-	return s.IsPremium(asStr(ev, "owner_id")) || asBool(ev, "premium_pass")
+	if s.IsPremium(asStr(ev, "owner_id")) || asBool(ev, "premium_pass") {
+		return true
+	}
+	// The Club tier's headline promise: everything Premium, on EVERY event the
+	// club runs — including events created by co-owners who hold no plan of
+	// their own. The club's entitlement lives on the club OWNER's account.
+	// Checked last because it costs a query and most events have no club.
+	if clubID := strings.TrimSpace(asStr(ev, "club_id")); clubID != "" {
+		if owner, err := s.clubOwner(clubID); err == nil && owner != "" {
+			return s.ClubPlanActive(owner)
+		}
+	}
+	return false
 }
 
 // EventPremiumUnlocked loads an event and reports whether its Premium features
@@ -817,7 +837,7 @@ func (s *Service) eventPremiumUnlocked(ev map[string]any) bool {
 // theme) so a UI-only lock can't be bypassed via a direct API call.
 func (s *Service) EventPremiumUnlocked(eventID string) bool {
 	row, err := s.sb.SelectOne("events",
-		"id=eq."+store.Q(eventID)+"&select=owner_id,premium_pass")
+		"id=eq."+store.Q(eventID)+"&select=owner_id,premium_pass,club_id")
 	if err != nil || row == nil {
 		return false
 	}

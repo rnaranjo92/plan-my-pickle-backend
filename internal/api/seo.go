@@ -212,6 +212,13 @@ func (s *Server) seoSitemap(w http.ResponseWriter, r *http.Request) {
 	if clubs, err := s.svc.PublicClubs(500); err == nil {
 		seenCity := map[string]bool{}
 		for _, c := range clubs {
+			// A club that has never run an event is a name and nothing else.
+			// Its page still works for anyone with the link; it just isn't
+			// offered to a crawler, because thin pages drag down the pages
+			// around them.
+			if !c.WorthIndexing() {
+				continue
+			}
 			urls = append(urls, url{loc: seoCanonicalBase + "/club/" + c.ID})
 			if city := slugify(c.City); city != "" && !seenCity[city] {
 				seenCity[city] = true

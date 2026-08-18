@@ -63,8 +63,53 @@ func (s *Service) PublicClubs(limit int) ([]PublicClub, error) {
 			LogoURL:     strings.TrimSpace(asStr(r, "logo_url")),
 		})
 	}
+	s.fillClubEventCounts(out)
 	return out, nil
 }
+
+// fillClubEventCounts sets EventCount on each club, in ONE query.
+//
+// Needed because "has this club actually done anything" decides whether it goes
+// in the sitemap, and asking per club would be a query per row on a list that
+// can run to hundreds.
+func (s *Service) fillClubEventCounts(clubs []PublicClub) {
+	if len(clubs) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(clubs))
+	for _, c := range clubs {
+		if c.ID != "" {
+			ids = append(ids, c.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	rows, err := s.sb.SelectAll("events", "club_id="+store.In(ids)+"&select=club_id")
+	if err != nil {
+		return // counts stay 0; the caller decides what that means
+	}
+	n := map[string]int{}
+	for _, r := range rows {
+		n[asStr(r, "club_id")]++
+	}
+	for i := range clubs {
+		clubs[i].EventCount = n[clubs[i].ID]
+	}
+}
+
+// WorthIndexing reports whether this club has enough behind it to be offered to
+// a search engine.
+//
+// A club that has never run an event is a NAME and nothing else. Its page still
+// works — anyone with the link can see it and join, which is what a brand-new
+// club needs — but putting it in the sitemap asks Google to rank a page with
+// nothing on it, and thin pages don't fail quietly: they lower the standing of
+// the pages around them.
+//
+// Deliberately not gated on members. A club recruiting its first members has
+// nothing to show yet either, and "has run something" is the honest signal.
+func (c PublicClub) WorthIndexing() bool { return c.EventCount > 0 }
 
 // PublicClubByID returns one club plus what a visitor came to see: the next few
 // sessions.
@@ -128,6 +173,12 @@ func (s *Service) ClubsByCity() (map[string][]PublicClub, error) {
 		city := strings.TrimSpace(c.City)
 		if city == "" {
 			continue // a club with no city can't be found by place
+		}
+		if !c.WorthIndexing() {
+			// The city page is a recommendation. Listing a club that has never
+			// run anything spends the visitor's attention on a dead end and
+			// makes the page look padded.
+			continue
 		}
 		out[city] = append(out[city], c)
 	}

@@ -35,3 +35,23 @@ func TestIsDemoClubName(t *testing.T) {
 		}
 	}
 }
+
+// The sitemap is a recommendation to a search engine, and thin pages don't fail
+// quietly — they lower the standing of the pages around them. But a brand-new
+// club still needs its page to WORK for anyone holding the link, which is the
+// distinction this draws.
+func TestWorthIndexing(t *testing.T) {
+	if (PublicClub{EventCount: 1}).WorthIndexing() != true {
+		t.Error("a club that has run an event should be indexed")
+	}
+	if (PublicClub{EventCount: 0}).WorthIndexing() != false {
+		t.Error("a club with nothing on was offered to a crawler")
+	}
+	// Deliberately NOT gated on members: a club recruiting its first members
+	// has nothing to show yet either, and "has run something" is the honest
+	// signal. This pins that choice.
+	if (PublicClub{MemberCount: 50, EventCount: 0}).WorthIndexing() {
+		t.Error("members alone made a club indexable — it still has no page " +
+			"content to rank")
+	}
+}

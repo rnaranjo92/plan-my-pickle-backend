@@ -97,11 +97,14 @@ func (s *Service) clubAttendanceFor(
 			playerIDs = append(playerIDs, id)
 		}
 	}
-	eventIDs := make([]string, 0, len(events))
-	for _, ev := range events {
-		if ev.StartsAt != nil {
-			eventIDs = append(eventIDs, ev.ID)
-		}
+	// Only the sessions in the WINDOW. Asking about every dated event the club
+	// has ever run puts hundreds of ids into a query string — a club with two
+	// years of Tuesdays would eventually hit the URL length limit and lose its
+	// attendance card to a 414, for rows that are then thrown away anyway.
+	window := pastSessions(events, time.Now(), clubAttendanceWindow)
+	eventIDs := make([]string, 0, len(window))
+	for _, sess := range window {
+		eventIDs = append(eventIDs, sess.id)
 	}
 	if len(playerIDs) == 0 || len(eventIDs) == 0 {
 		return nil

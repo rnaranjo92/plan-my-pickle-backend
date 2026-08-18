@@ -96,7 +96,7 @@ func (s *Service) PublicClubByID(
 	club.EventCount = len(events)
 	upcoming := upcomingClubEvents(events, time.Now(), 6)
 	club.MemberCount = s.countRows("club_members",
-		"club_id=eq."+clubID+"&select=user_id", "user_id")
+		"club_id=eq."+store.Q(clubID)+"&select=user_id", "user_id")
 
 	// What the club has actually been doing, which is the part that makes
 	// somebody want to come. Six recent sessions is enough to show a rhythm

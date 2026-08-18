@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
 // What a member sees when they open their club.
@@ -95,6 +96,17 @@ func upcomingClubEvents(events []model.Event, now time.Time, limit int) []model.
 func (s *Service) ClubHomeFor(clubID, viewerID string) (ClubHome, error) {
 	out := ClubHome{Upcoming: []model.Event{}}
 
+	// Confirm the club EXISTS first. Without this a deleted or mistyped id
+	// answered 200 with an empty home — a page that renders "nothing on" for a
+	// club that isn't there, which reads as a dead club rather than a wrong
+	// link and is the harder of the two to debug.
+	if row, cerr := s.sb.SelectOne("clubs",
+		"id=eq."+store.Q(clubID)+"&select=id"); cerr != nil {
+		return out, cerr
+	} else if row == nil {
+		return out, ErrNotFound
+	}
+
 	events, err := s.ClubEvents(clubID)
 	if err != nil {
 		return out, err
@@ -118,7 +130,7 @@ func (s *Service) ClubHomeFor(clubID, viewerID string) (ClubHome, error) {
 	// isn't evidence they don't belong.
 	out.Attendance = s.clubAttendanceFor(events, viewerID)
 	out.Members = s.countRows("club_members",
-		"club_id=eq."+clubID+"&select=user_id", "user_id")
+		"club_id=eq."+store.Q(clubID)+"&select=user_id", "user_id")
 	return out, nil
 }
 

@@ -2252,11 +2252,6 @@ type Club struct {
 	// the app had no way to tell, so every management control was hidden from
 	// exactly the people co-owners were created for.
 	IsCoOwner bool `json:"isCoOwner"`
-	// LeaderboardYear is the year the club's standings are scoped to, or 0 for
-	// the all-time record. Free clubs see this year; Club unlocks all-time.
-	// Present so the tab can NAME the window it shows — the server applies it
-	// either way.
-	LeaderboardYear int `json:"leaderboardYear,omitempty"`
 }
 
 // CreateClubRequest is the create/edit payload for a club.

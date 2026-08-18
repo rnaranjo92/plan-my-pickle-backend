@@ -107,9 +107,13 @@ func (s *Service) SetClubDues(
 	if currency == "" {
 		currency = "usd"
 	}
-	if err := s.CloseClubDues(clubID, callerID); err != nil {
-		return ClubDuesPeriod{}, err
-	}
+	// INSERT FIRST, then close the old one.
+	//
+	// Closing first meant a failed insert left the club with NO open period —
+	// it silently stopped collecting, and the owner's only clue was the dues
+	// card vanishing. This order can briefly leave two periods open instead,
+	// which is harmless: OpenDuesPeriod takes the newest, and the close below
+	// tidies it on the next attempt even if this one dies here.
 	rows, err := s.sb.Insert("club_dues_periods", map[string]any{
 		"club_id":      clubID,
 		"name":         name,
@@ -122,7 +126,16 @@ func (s *Service) SetClubDues(
 	if len(rows) == 0 {
 		return ClubDuesPeriod{}, errors.New("dues period insert returned no row")
 	}
-	return mapDuesPeriod(rows[0]), nil
+	created := mapDuesPeriod(rows[0])
+	// Close everything that was open BEFORE this one. Scoped by id so the
+	// period we just created can't close itself.
+	if s.duesReady() {
+		_, _ = s.sb.Update("club_dues_periods",
+			"club_id=eq."+store.Q(clubID)+"&closed_at=is.null"+
+				"&id=neq."+store.Q(created.ID),
+			map[string]any{"closed_at": time.Now().UTC().Format(time.RFC3339)})
+	}
+	return created, nil
 }
 
 // CloseClubDues stops collecting, keeping every payment recorded against the
@@ -194,10 +207,35 @@ func (s *Service) UnrecordDuesPayment(clubID, callerID, targetUserID string) err
 			"&user_id=eq."+store.Q(strings.TrimSpace(targetUserID)))
 }
 
+// isClubMember reports whether this user is on the club's member list. The
+// owner is inserted as a member at creation, so this covers them too.
+//
+// Fails CLOSED, unlike most best-effort lookups here: it gates who gets asked
+// for money, and a database blip must not turn into a stranger being invited to
+// pay a club's dues.
+func (s *Service) isClubMember(clubID, userID string) bool {
+	if strings.TrimSpace(userID) == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("club_members",
+		"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID)+
+			"&select=user_id")
+	return err == nil && row != nil
+}
+
 // MyDuesStatus is what a member sees about their own standing.
+//
+// MEMBERS ONLY. A club page is open to anyone with the link, so without this
+// check a passer-by was shown "2026 Season dues · $60" with a Pay button for a
+// club they had never joined — and paying it would have taken their money and
+// given them nothing, since dues are recorded against a membership they don't
+// have. Joining is free and one tap; that's the step that comes first.
 func (s *Service) MyDuesStatus(clubID, userID string) ClubDuesStatus {
 	out := ClubDuesStatus{}
 	if strings.TrimSpace(userID) == "" {
+		return out
+	}
+	if !s.isClubMember(clubID, userID) {
 		return out
 	}
 	period := s.OpenDuesPeriod(clubID)
@@ -291,6 +329,12 @@ func (s *Service) StartDuesCheckout(
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return "", ErrForbidden
+	}
+	// Checked again here, not just in MyDuesStatus: this is the endpoint that
+	// moves money, and it must not depend on the card that offers it having
+	// been rendered honestly.
+	if !s.isClubMember(clubID, userID) {
+		return "", errors.New("join the club first — then you can pay its dues")
 	}
 	period := s.OpenDuesPeriod(clubID)
 	if period == nil {

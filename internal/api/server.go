@@ -328,6 +328,14 @@ func NewServer(svc *service.Service) http.Handler {
 	// The owner's weekly view: who is drifting away. Admin-gated — who is
 	// slipping is management information, not a fact a club publishes about
 	// its own members.
+	// Dues: a season fee and who has paid it. Status only — nothing here ever
+	// blocks a member from registering for anything.
+	mux.HandleFunc("GET /clubs/{id}/dues", requireAuth(s.clubDues))
+	mux.HandleFunc("POST /clubs/{id}/dues", requireAuth(s.setClubDues))
+	mux.HandleFunc("DELETE /clubs/{id}/dues", requireAuth(s.closeClubDues))
+	mux.HandleFunc("POST /clubs/{id}/dues/paid", requireAuth(s.recordDuesPayment))
+	mux.HandleFunc("DELETE /clubs/{id}/dues/paid/{userId}",
+		requireAuth(s.unrecordDuesPayment))
 	mux.HandleFunc("GET /clubs/{id}/roster", requireAuth(s.clubRoster))
 	// The same roster as a spreadsheet. A club's committee lives in email, and
 	// a volunteer who will never install this app still gets to help.
@@ -3751,6 +3759,74 @@ func (s *Server) clubRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// clubDues returns the caller's own standing, plus the collection counts when
+// they run the club. One endpoint for both because a club owner is also a
+// member, and asking twice would make the page decide who it is talking to.
+func (s *Server) clubDues(w http.ResponseWriter, r *http.Request) {
+	clubID := r.PathValue("id")
+	out := map[string]any{"me": s.svc.MyDuesStatus(clubID, userID(r))}
+	if s.svc.IsClubAdmin(clubID, userID(r)) {
+		out["period"] = s.svc.OpenDuesPeriodFor(clubID)
+		out["canManage"] = true
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// setClubDues opens a new dues period, closing any period already open.
+func (s *Server) setClubDues(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		AmountCents int    `json:"amountCents"`
+		Currency    string `json:"currency"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := s.svc.SetClubDues(
+		r.PathValue("id"), userID(r), req.Name, req.AmountCents, req.Currency)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) closeClubDues(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.CloseClubDues(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
+}
+
+// recordDuesPayment marks a member paid — cash, transfer, or however the club
+// actually collects.
+func (s *Server) recordDuesPayment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"userId"`
+		Method string `json:"method"`
+		Note   string `json:"note"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.RecordDuesPayment(
+		r.PathValue("id"), userID(r), req.UserID, req.Method, req.Note); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
+}
+
+func (s *Server) unrecordDuesPayment(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.UnrecordDuesPayment(
+		r.PathValue("id"), userID(r), r.PathValue("userId")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 // clubRosterCSV downloads the roster with each member's recent turnout.

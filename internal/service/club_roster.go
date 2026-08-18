@@ -40,6 +40,11 @@ type ClubRosterEntry struct {
 	LastPlayed string `json:"lastPlayed,omitempty"`
 	// Status is the one word an owner scans for — see clubMemberStatus.
 	Status string `json:"status"`
+	// DuesPaid is meaningful only while a club is collecting; DuesTracked says
+	// whether it is, so the UI can stay silent about money for the clubs that
+	// don't charge — which is most of them.
+	DuesTracked bool `json:"duesTracked"`
+	DuesPaid    bool `json:"duesPaid"`
 }
 
 // Status values. Words an owner would use, not states a database would.
@@ -167,6 +172,13 @@ func (s *Service) ClubRoster(clubID, callerID string) ([]ClubRosterEntry, error)
 		}
 	}
 
+	// Dues, if this club collects them. One query for the whole roster.
+	period := s.OpenDuesPeriod(clubID)
+	paid := map[string]bool{}
+	if period != nil {
+		paid = s.duesPaidUserIDs(period.ID)
+	}
+
 	out := make([]ClubRosterEntry, 0, len(members))
 	for _, m := range members {
 		e := ClubRosterEntry{
@@ -192,6 +204,8 @@ func (s *Service) ClubRoster(clubID, callerID string) ([]ClubRosterEntry, error)
 			}
 		}
 		e.Status = clubMemberStatus(e.Played > 0, e.MissedRun)
+		e.DuesTracked = period != nil
+		e.DuesPaid = paid[m.UserID]
 		out = append(out, e)
 	}
 
@@ -258,7 +272,8 @@ func (s *Service) ClubRosterCSV(clubID, callerID string) ([]byte, error) {
 		return nil, err
 	}
 	var b strings.Builder
-	b.WriteString("Name,Role,Status,Sessions played,Of last,Missed in a row,Last played\n")
+	b.WriteString("Name,Role,Status,Sessions played,Of last,Missed in a row," +
+		"Last played,Dues\n")
 	for _, r := range rows {
 		role := r.Role
 		if role == "" {
@@ -272,10 +287,24 @@ func (s *Service) ClubRosterCSV(clubID, callerID string) ([]byte, error) {
 			strconv.Itoa(r.Of),
 			strconv.Itoa(r.MissedRun),
 			csvCell(dateOnly(r.LastPlayed)),
+			csvCell(duesCell(r)),
 		}, ","))
 		b.WriteString("\n")
 	}
 	return []byte(b.String()), nil
+}
+
+// duesCell writes the dues column the way a treasurer reads it. Blank when the
+// club isn't collecting: an empty column says "not applicable" without anyone
+// having to be told.
+func duesCell(r ClubRosterEntry) string {
+	if !r.DuesTracked {
+		return ""
+	}
+	if r.DuesPaid {
+		return "Paid"
+	}
+	return "Unpaid"
 }
 
 // readableStatus writes the status the way the screen says it, not the way the

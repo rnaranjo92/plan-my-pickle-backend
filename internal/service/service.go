@@ -77,6 +77,13 @@ type Service struct {
 	// instead of on EVERY call — otherwise a hot path floods Postgres logs with
 	// 42703 "column does not exist" until the migration runs. Still self-heals
 	// (auto-detects a newly-applied migration within the cooldown, no restart).
+	// lastClubAnnounce is when each club last messaged its members, for the
+	// cooldown in AnnounceToClub. In memory on purpose: it guards against a
+	// double-tap and a fat thumb, not against a determined actor, and losing it
+	// on a deploy costs one club the right to send again immediately.
+	announceMu       sync.Mutex
+	lastClubAnnounce map[string]time.Time
+
 	colProbeMu  sync.Mutex
 	colProbe    map[string]bool
 	colProbeNeg map[string]time.Time

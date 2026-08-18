@@ -310,6 +310,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// owner-only (see SetClubRole); inviting is open to co-owners too.
 	mux.HandleFunc("POST /clubs/{id}/role", requireAuth(s.setClubRole))
 	mux.HandleFunc("POST /clubs/{id}/invite", requireAuth(s.inviteToClub))
+	// Reaching the club: owner or co-owner, since telling everyone Tuesday is
+	// cancelled is day-to-day running rather than an ownership act.
+	mux.HandleFunc("POST /clubs/{id}/announce", requireAuth(s.announceToClub))
 
 	// Social graph: search players & follow them.
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
@@ -3719,6 +3722,22 @@ func (s *Server) inviteToClub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "invited"})
+}
+
+// announceToClub sends one message to every member's bell and phone.
+func (s *Server) announceToClub(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	sent, err := s.svc.AnnounceToClub(r.PathValue("id"), userID(r), req.Message)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"sent": sent})
 }
 
 // clubHome returns what a member opens their club to find out: what's on next,

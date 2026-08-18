@@ -204,9 +204,23 @@ func (s *Service) ClubEvents(clubID string) ([]model.Event, error) {
 
 // ClubLeaderboard aggregates every player's record across ALL of the club's
 // (non-team) events into one all-time, by-wins leaderboard — the durable
-// "system of record" a rating service can't reconstruct. Players are merged by
-// normalized display name (a club is a small community; name collisions are
-// rare and good-enough for v1). Public.
+// "system of record" a rating service can't reconstruct. Public.
+//
+// IDENTITY: merged by ACCOUNT where a player has one, and by normalized display
+// name otherwise.
+//
+// It used to merge on name alone, described as good-enough for v1 because name
+// collisions are rare in a small club. Both halves of that are wrong in the way
+// that matters for a record people are asked to trust: two different members
+// called Chris B were silently added together into one line, and one member who
+// signed up as "Jen W" in March and "Jen Whitfield" in June was split into two.
+// Neither is visible as an error — the leaderboard just quietly says something
+// untrue about who is winning, which is the one thing this table exists to say.
+//
+// An account is the only identity the app actually knows, so it wins wherever it
+// exists. Name-merging stays for walk-ups and typed-in names, who have no
+// account to key on and whose duplicates are a roster problem (fixed with the
+// ladder Merge action), not a leaderboard one.
 func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 	events, err := s.ClubEvents(clubID)
 	if err != nil {
@@ -219,7 +233,18 @@ func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 		pf, pa int
 		events map[string]bool
 	}
-	byName := map[string]*agg{}
+	byIdentity := map[string]*agg{}
+	// Collect first, aggregate second.
+	//
+	// The account lookup has to cover every player who appears, and this is a
+	// PUBLIC endpoint — so it must be neither one query per row nor a scan of
+	// the whole players table. Buffering the standings (a few hundred small
+	// structs at most) buys exactly one batched lookup.
+	type sourced struct {
+		row     model.Standing
+		eventID string
+	}
+	var rows []sourced
 	for _, ev := range events {
 		if ev.TeamSize > 0 {
 			continue // team events rank teams, not players — skip here
@@ -234,26 +259,44 @@ func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 				continue
 			}
 			for _, row := range st {
-				key := strings.ToLower(strings.TrimSpace(row.FullName))
-				if key == "" {
-					continue
-				}
-				a := byName[key]
-				if a == nil {
-					a = &agg{name: row.FullName, events: map[string]bool{}}
-					byName[key] = a
-				}
-				a.wins += row.Wins
-				a.losses += row.Losses
-				a.pf += row.PointsFor
-				a.pa += row.PointsAgainst
-				a.events[ev.ID] = true
+				rows = append(rows, sourced{row: row, eventID: ev.ID})
 			}
 		}
 	}
 
-	out := make([]model.ClubStanding, 0, len(byName))
-	for _, a := range byName {
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if id := strings.TrimSpace(r.row.PlayerID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	accounts := s.accountsForPlayers(ids)
+
+	for _, r := range rows {
+		key := clubStandingKey(r.row, accounts)
+		if key == "" {
+			continue
+		}
+		a := byIdentity[key]
+		if a == nil {
+			a = &agg{name: r.row.FullName, events: map[string]bool{}}
+			byIdentity[key] = a
+		}
+		// Prefer the fullest name seen for this person. When an account merges
+		// "Jen W" with "Jen Whitfield", the leaderboard should show the one
+		// their club would recognise.
+		if len(strings.TrimSpace(r.row.FullName)) > len(strings.TrimSpace(a.name)) {
+			a.name = r.row.FullName
+		}
+		a.wins += r.row.Wins
+		a.losses += r.row.Losses
+		a.pf += r.row.PointsFor
+		a.pa += r.row.PointsAgainst
+		a.events[r.eventID] = true
+	}
+
+	out := make([]model.ClubStanding, 0, len(byIdentity))
+	for _, a := range byIdentity {
 		out = append(out, model.ClubStanding{
 			Name:          a.name,
 			Wins:          a.wins,
@@ -378,4 +421,52 @@ func mapClub(m map[string]any) model.Club {
 		DuprClubID:  asStr(m, "dupr_club_id"),
 		CreatedAt:   asStr(m, "created_at"),
 	}
+}
+
+// clubStandingKey is the identity a standings row aggregates under: the
+// player's ACCOUNT when they have one, otherwise their normalized name.
+//
+// Pure and separate so the rule can be tested without a club, a database or a
+// season of events behind it.
+func clubStandingKey(row model.Standing, accounts map[string]string) string {
+	if uid := strings.TrimSpace(accounts[strings.TrimSpace(row.PlayerID)]); uid != "" {
+		return "account:" + uid
+	}
+	name := strings.ToLower(strings.TrimSpace(row.FullName))
+	if name == "" {
+		return "" // nothing to attribute a record to
+	}
+	return "name:" + name
+}
+
+// accountsForPlayers maps player id → account id, for the given players only.
+//
+// Best-effort: on failure the map is empty and everything falls back to
+// name-merging, which is the previous behaviour rather than an error — a club
+// should not lose its leaderboard because one lookup timed out.
+func (s *Service) accountsForPlayers(playerIDs []string) map[string]string {
+	out := map[string]string{}
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(playerIDs))
+	for _, id := range playerIDs {
+		if id = strings.TrimSpace(id); id != "" && !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if len(uniq) == 0 {
+		return out
+	}
+	rows, err := s.sb.SelectAll("players",
+		"id="+store.In(uniq)+"&user_id=not.is.null&select=id,user_id")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		id, uid := strings.TrimSpace(asStr(r, "id")), strings.TrimSpace(asStr(r, "user_id"))
+		if id != "" && uid != "" {
+			out[id] = uid
+		}
+	}
+	return out
 }

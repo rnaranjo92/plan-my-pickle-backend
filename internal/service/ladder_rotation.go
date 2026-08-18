@@ -2141,6 +2141,9 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 	results := make([]engine.RotResult, 0, len(rows))
 	// Courts whose two teams entered EQUAL totals — enforced after the loop.
 	var tied []int
+	// Courts that never reported and were moved on the default. Collected so the
+	// guess leaves a trace somewhere — see the log below.
+	var guessed []int
 	for _, r := range rows {
 		court := asInt(r, "court")
 		teamA := [2]string{asStr(r, "team_a_p1"), asStr(r, "team_a_p2")}
@@ -2192,9 +2195,20 @@ func (s *Service) AdvanceRotationSession(sessionID string, expectedRound int) er
 			// Nothing recorded → default team A UP for MOVEMENT only. (The RPC
 			// tally credits games to all four but a win only to a reported team,
 			// so an unreported court awards no phantom win.)
+			//
+			// It is still a coin flip that moved four people, so SAY SO. The
+			// guess is deliberately not persisted as a winner — that would
+			// invent a result — which means the only trace it ever leaves is
+			// this line and the empty winner still sitting on the row. By the
+			// next round the board has no memory that it was ever a guess.
 			w = "a"
+			guessed = append(guessed, court)
 		}
 		results = append(results, engine.RotResult{Court: court, Winner: w})
+	}
+	if len(guessed) > 0 {
+		log.Printf("rotation %s round %d: courts %v never reported — top team "+
+			"assumed for movement (no win credited)", sessionID, round, guessed)
 	}
 
 	if len(tied) > 0 {

@@ -180,6 +180,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// for organizer Premium (or the reverse) is the thing this separation exists
 	// to prevent.
 	mux.HandleFunc("POST /me/subscribe-coach", requireAuth(s.subscribeCoachPlan))
+	// Why a coach can or can't add another student — including which club is
+	// carrying them, which is otherwise invisible to everyone but the database.
+	mux.HandleFunc("GET /me/coach-plan", requireAuth(s.coachPlanStatus))
 	// Comped accounts: the review list for manually-granted access. Owner-only —
 	// this both reveals who is on a free ride and can put someone there.
 	mux.HandleFunc("GET /comped", s.ownerEmailOnly(s.listComped))
@@ -5245,6 +5248,11 @@ func (s *Server) myActionItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// coachPlanStatus reports the caller's coach-plan entitlement and its source.
+func (s *Server) coachPlanStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.CoachPlanStatusFor(userID(r)))
 }
 
 // subscribeCoachPlan opens a Stripe subscription Checkout for the COACH plan —

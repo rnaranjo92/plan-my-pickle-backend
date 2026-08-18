@@ -910,7 +910,13 @@ func (s *Service) CoachPlanActive(userID string) bool {
 		// already teach; the worst case is a free month, not a broken roster.
 		return true
 	}
-	return asBool(row, "coach_plan")
+	if asBool(row, "coach_plan") {
+		return true
+	}
+	// LAST, and only for a coach who isn't paying for themselves: is a club
+	// carrying them? Checked here rather than earlier because it costs a couple
+	// of queries and almost every caller is answered before reaching it.
+	return s.clubSponsoredCoach(userID)
 }
 
 // foundingCoachEmails are comped in CODE, not config.

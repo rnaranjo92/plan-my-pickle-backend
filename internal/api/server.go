@@ -296,6 +296,15 @@ func NewServer(svc *service.Service) http.Handler {
 	// Clubs.
 	mux.HandleFunc("POST /clubs", requireAuth(s.createClub))
 	mux.HandleFunc("GET /me/clubs", requireAuth(s.myClubs))
+	// Organizations: one layer above clubs, for operators running several sites.
+	// Every route is inert until add_organizations.sql runs.
+	mux.HandleFunc("GET /orgs", requireAuth(s.myOrgs))
+	mux.HandleFunc("POST /orgs", requireAuth(s.createOrg))
+	mux.HandleFunc("GET /orgs/{id}/summary", requireAuth(s.orgSummary))
+	mux.HandleFunc("POST /orgs/{id}/role", requireAuth(s.setOrgRole))
+	mux.HandleFunc("DELETE /orgs/{id}/members/{userId}", requireAuth(s.removeOrgMember))
+	mux.HandleFunc("POST /clubs/{id}/org", requireAuth(s.attachClubToOrg))
+
 	mux.HandleFunc("GET /clubs/{id}", optionalAuth(s.getClub))
 	mux.HandleFunc("POST /clubs/{id}", requireAuth(s.updateClub))
 	mux.HandleFunc("DELETE /clubs/{id}", requireAuth(s.deleteClub))
@@ -3771,6 +3780,85 @@ func (s *Server) announceToClub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"sent": sent})
+}
+
+// --- organizations ---
+
+func (s *Server) myOrgs(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.MyOrganizations(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) createOrg(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name         string `json:"name"`
+		ContactEmail string `json:"contactEmail"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	org, err := s.svc.CreateOrganization(userID(r), req.Name, req.ContactEmail)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, org)
+}
+
+// orgSummary is the corporate view: every site on one page, quietest first.
+func (s *Server) orgSummary(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.OrgSummaryFor(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) setOrgRole(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"userId"`
+		Role   string `json:"role"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetOrgRole(
+		r.PathValue("id"), userID(r), req.UserID, req.Role); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// removeOrgMember is the offboarding path: access ends with employment, not
+// when somebody remembers.
+func (s *Server) removeOrgMember(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.RemoveOrgMember(
+		r.PathValue("id"), userID(r), r.PathValue("userId")); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// attachClubToOrg puts a club under an organization (empty orgId detaches).
+func (s *Server) attachClubToOrg(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrgID string `json:"orgId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.AttachClub(r.PathValue("id"), req.OrgID, userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
 // clubHome returns what a member opens their club to find out: what's on next,

@@ -46,10 +46,17 @@ func (s *Service) IsClubAdmin(clubID, userID string) bool {
 	}
 	row, err := s.sb.SelectOne("club_members",
 		"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID)+"&select=role")
-	if err != nil || row == nil {
-		return false
+	if err == nil && row != nil &&
+		strings.EqualFold(strings.TrimSpace(asStr(row, "role")), ClubRoleCoOwner) {
+		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(asStr(row, "role")), ClubRoleCoOwner)
+	// LAST: does an ORGANIZATION above this club put them in charge of it?
+	//
+	// This is the inheritance that makes an organization worth having — staff
+	// access that follows the job rather than whoever created the club. Checked
+	// last, and skipped entirely before the migration, so a single club never
+	// pays a query for a layer it doesn't have.
+	return s.clubOrgAdmin(clubID, userID)
 }
 
 // requireClubAdmin gates the day-to-day management actions.

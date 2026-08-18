@@ -2252,6 +2252,11 @@ type Club struct {
 	// the app had no way to tell, so every management control was hidden from
 	// exactly the people co-owners were created for.
 	IsCoOwner bool `json:"isCoOwner"`
+	// JoinPending: the caller has asked to join and is waiting. Distinct from
+	// IsMember=false, which is someone who simply hasn't asked.
+	JoinPending bool `json:"joinPending,omitempty"`
+	// PendingJoins is how many people are waiting, for admins only.
+	PendingJoins int `json:"pendingJoins,omitempty"`
 }
 
 // CreateClubRequest is the create/edit payload for a club.

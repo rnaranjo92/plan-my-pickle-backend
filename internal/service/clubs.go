@@ -103,6 +103,7 @@ func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {
 		c.IsCoOwner = m != nil &&
 			strings.EqualFold(strings.TrimSpace(asStr(m, "role")), ClubRoleCoOwner)
 	}
+	s.clubJoinState(&c, callerID)
 	return c, nil
 }
 

@@ -148,6 +148,9 @@ func (s *Service) InviteToClub(clubID, callerID, targetUserID string) error {
 	if inviter != "" {
 		body = inviter + " invited you to join " + name
 	}
+	// Record the invitation so accepting admits them straight away rather than
+	// putting them in the approval queue — the club already said yes by asking.
+	s.markClubInvited(clubID, targetUserID)
 	s.notifyUser(targetUserID, "club_invite", callerID, inviter, body, "club:"+clubID)
 	return nil
 }

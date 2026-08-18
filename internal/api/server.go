@@ -319,6 +319,12 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /clubs/{id}/home", optionalAuth(s.clubHome))
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
+	// The club's front door: who's asking to come in, and letting them in.
+	mux.HandleFunc("GET /clubs/{id}/requests", requireAuth(s.clubJoinRequests))
+	mux.HandleFunc("POST /clubs/{id}/requests/approve",
+		requireAuth(s.approveJoinRequests))
+	mux.HandleFunc("POST /clubs/{id}/requests/decline",
+		requireAuth(s.declineJoinRequests))
 	// Running a club is delegable; owning one is not. Role changes are
 	// owner-only (see SetClubRole); inviting is open to co-owners too.
 	mux.HandleFunc("POST /clubs/{id}/role", requireAuth(s.setClubRole))
@@ -3992,11 +3998,60 @@ func (s *Server) clubLeaderboard(w http.ResponseWriter, r *http.Request) {
 
 // joinClub adds the caller as a member.
 func (s *Server) joinClub(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.JoinClub(r.PathValue("id"), userID(r)); err != nil {
+	in, err := s.svc.RequestJoinClub(r.PathValue("id"), userID(r))
+	if err != nil {
 		status(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "joined"})
+	// "joined" vs "pending" so the app can say which actually happened. A
+	// request that reports itself as a join is how someone turns up on a
+	// Tuesday believing they're a member.
+	if in {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "joined"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "pending"})
+}
+
+// clubJoinRequests lists who is waiting to join (admins only).
+func (s *Server) clubJoinRequests(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.ClubJoinRequests(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// approveJoinRequests admits people in bulk; declineJoinRequests clears them.
+func (s *Server) approveJoinRequests(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserIDs []string `json:"userIds"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.ApproveJoinRequests(r.PathValue("id"), userID(r), req.UserIDs)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"approved": n})
+}
+
+func (s *Server) declineJoinRequests(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserIDs []string `json:"userIds"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.svc.DeclineJoinRequests(r.PathValue("id"), userID(r), req.UserIDs)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"declined": n})
 }
 
 // leaveClub removes the caller's membership.

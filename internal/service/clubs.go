@@ -254,7 +254,20 @@ func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 			continue
 		}
 		for _, b := range brackets {
-			st, err := s.Standings(ev.ID, b.ID, true)
+			// ALL-TIME, deliberately — standingRowsSince with an empty window
+			// rather than Standings().
+			//
+			// Standings() scopes itself to the CURRENT season for a perpetual
+			// league (seasonStartFor), which is right for the league's own
+			// leaderboard and wrong for this one: a club that rolled a season
+			// would watch its all-time record reset to zero, having done the
+			// one thing the archive feature encourages. Match history survives
+			// a roll — only the live board's window moves — so recomputing
+			// from an empty window is the genuine lifetime record.
+			//
+			// The ranking Standings() adds is discarded here anyway; this
+			// aggregates box scores and sorts them itself.
+			st, err := s.standingRowsSince(ev.ID, b.ID, "")
 			if err != nil {
 				continue
 			}

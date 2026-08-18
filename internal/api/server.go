@@ -3598,8 +3598,14 @@ func (s *Server) importDupr(w http.ResponseWriter, r *http.Request) {
 // ---- Clubs ----
 
 // createClub creates a club (Premium-gated, like createEvent).
+//
+// mayUsePremium, NOT IsPremium: entitlement includes the email allowlists and
+// the founding comps, and this route consulted neither. Every other premium
+// gate in the file goes through mayUsePremium, so an early-access organizer or
+// a founding coach would have been refused a club while being allowed a ladder
+// — the same feature they were comped for, denied by a different door.
 func (s *Server) createClub(w http.ResponseWriter, r *http.Request) {
-	if !s.svc.IsPremium(userID(r)) {
+	if !s.mayUsePremium(r) {
 		writeErr(w, http.StatusPaymentRequired, service.ErrPremiumRequired)
 		return
 	}

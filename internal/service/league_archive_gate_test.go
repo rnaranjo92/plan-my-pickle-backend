@@ -33,8 +33,8 @@ func TestLeaguePredatesPaywall(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := leaguePredatesPaywall(c.createdAt); got != c.want {
-				t.Errorf("leaguePredatesPaywall(%q) = %v, want %v",
+			if got := predatesPaywall(c.createdAt); got != c.want {
+				t.Errorf("predatesPaywall(%q) = %v, want %v",
 					c.createdAt, got, c.want)
 			}
 		})

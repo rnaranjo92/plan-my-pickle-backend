@@ -103,6 +103,9 @@ func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {
 		c.IsCoOwner = m != nil &&
 			strings.EqualFold(strings.TrimSpace(asStr(m, "role")), ClubRoleCoOwner)
 	}
+	// So the Standings tab can name the window it is actually showing. The
+	// server still applies it — this only decides what the heading says.
+	c.LeaderboardYear = s.clubLeaderboardWindow(clubID)
 	return c, nil
 }
 
@@ -261,10 +264,17 @@ func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 		row     model.Standing
 		eventID string
 	}
+	// A free club sees this year; Club unlocks the all-time record. Resolved
+	// ONCE per request rather than per event, and applied here on the server —
+	// a window the client could widen isn't a window.
+	window := s.clubLeaderboardWindow(clubID)
 	var rows []sourced
 	for _, ev := range events {
 		if ev.TeamSize > 0 {
 			continue // team events rank teams, not players — skip here
+		}
+		if !eventInLeaderboardYear(strOr(ev.StartsAt), window) {
+			continue
 		}
 		brackets, err := s.GetBrackets(ev.ID)
 		if err != nil {

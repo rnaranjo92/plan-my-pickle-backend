@@ -48,11 +48,12 @@ func paywallActive(now time.Time) bool {
 	return now.After(epoch)
 }
 
-// leaguePredatesPaywall reports whether [createdAt] is early enough to be
-// permanently exempt. An unreadable or missing timestamp counts as exempt: when
+// predatesPaywall reports whether [createdAt] is early enough to be
+// permanently exempt. Shared by the league archive and the club history gate —
+// the exemption means the same thing for both. An unreadable or missing timestamp counts as exempt: when
 // we cannot tell how old a league is, the answer that cannot hurt anyone is to
 // leave it alone.
-func leaguePredatesPaywall(createdAt string) bool {
+func predatesPaywall(createdAt string) bool {
 	created, err := time.Parse(time.RFC3339, strings.TrimSpace(createdAt))
 	if err != nil {
 		return true
@@ -84,7 +85,7 @@ func (s *Service) ArchiveAllowed(eventID string) bool {
 	if err != nil || row == nil {
 		return true
 	}
-	if leaguePredatesPaywall(asStr(row, "created_at")) {
+	if predatesPaywall(asStr(row, "created_at")) {
 		return true
 	}
 	// The owner's entitlement covers a real subscription AND the `comped`

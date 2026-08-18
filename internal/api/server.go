@@ -303,6 +303,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("GET /clubs/{id}/leaderboard", s.clubLeaderboard)
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
+	// Running a club is delegable; owning one is not. Role changes are
+	// owner-only (see SetClubRole); inviting is open to co-owners too.
+	mux.HandleFunc("POST /clubs/{id}/role", requireAuth(s.setClubRole))
+	mux.HandleFunc("POST /clubs/{id}/invite", requireAuth(s.inviteToClub))
 
 	// Social graph: search players & follow them.
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
@@ -3671,6 +3675,41 @@ func (s *Server) clubEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, e)
+}
+
+// setClubRole promotes a member to co-owner or demotes them back (owner only).
+func (s *Server) setClubRole(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"userId"`
+		Role   string `json:"role"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetClubRole(
+		r.PathValue("id"), userID(r), req.UserID, req.Role); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// inviteToClub notifies an existing app user that they've been invited. Someone
+// who has not signed up yet can't be reached this way — they register first,
+// then the club's join link works for them like anyone else.
+func (s *Server) inviteToClub(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"userId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.InviteToClub(
+		r.PathValue("id"), userID(r), req.UserID); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "invited"})
 }
 
 // clubLeaderboard returns the all-time cross-event club standings (public).

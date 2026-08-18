@@ -41,7 +41,9 @@ func (s *Service) CreateClub(ownerID string, req model.CreateClubRequest) (model
 
 // UpdateClub edits a club's details. Owner-only.
 func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubRequest) error {
-	if err := s.requireClubOwner(clubID, callerID); err != nil {
+	// Co-owners may edit: keeping the club's details current is the day-to-day
+	// work they were appointed to do.
+	if err := s.requireClubAdmin(clubID, callerID); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(req.Name)
@@ -352,7 +354,7 @@ func winPct(wins, games int) float64 {
 // SetClubLogo uploads a club logo to the public avatars bucket and stamps
 // clubs.logo_url. Owner-only. JPEG/PNG up to 5 MB; cache-busted URL.
 func (s *Service) SetClubLogo(clubID, callerID, contentType string, data []byte) (string, error) {
-	if err := s.requireClubOwner(clubID, callerID); err != nil {
+	if err := s.requireClubAdmin(clubID, callerID); err != nil {
 		return "", err
 	}
 	var ext string

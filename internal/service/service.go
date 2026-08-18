@@ -614,7 +614,10 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	}
 
 	// An event can be created under a club only by that club's owner.
-	if req.ClubID != "" && !s.OwnsClub(req.ClubID, ownerID) {
+	// Co-owners can run events under the club — that is most of what running a
+	// club IS, and an owner who has to create every Tuesday night themselves
+	// hasn't actually delegated anything.
+	if req.ClubID != "" && !s.IsClubAdmin(req.ClubID, ownerID) {
 		return "", ErrForbidden
 	}
 	payload := map[string]any{

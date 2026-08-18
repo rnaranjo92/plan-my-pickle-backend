@@ -234,7 +234,57 @@ func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 	}
 	r, err := s.postPush(restKey, body)
 	logPush("segment", 0, r, heading)
-	return err
+	if err != nil {
+		return err
+	}
+	// postPush is deliberately forgiving — a missed push must not fail whatever
+	// the caller was doing. That is wrong for THIS caller: the broadcast is
+	// claimed once per day, so a swallowed failure meant the day was burned, no
+	// retry happened, and the log still said "queued". A job that reports
+	// success for a send OneSignal rejected is worse than one that fails, because
+	// nobody goes looking.
+	if r.status < 200 || r.status >= 300 {
+		return fmt.Errorf("onesignal rejected the broadcast (http %d)", r.status)
+	}
+	if r.recipients == 0 {
+		// Accepted and delivered to nobody — an empty or renamed segment. The
+		// exact shape of "push is broken" that took days to spot last time.
+		return errors.New(
+			"onesignal accepted the broadcast but reported 0 recipients — " +
+				"check the 'Subscribed Users' segment")
+	}
+	return nil
+}
+
+// BroadcastNow sends to every subscriber IMMEDIATELY, with no 9am scheduling
+// and no once-a-day claim.
+//
+// Separate from the scheduled path on purpose: this is the manual override for
+// when the scheduled one didn't go out, and its whole value is that it does not
+// consult the thing that might be stuck.
+func (s *Service) BroadcastNow(heading, content string) error {
+	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
+	if restKey == "" {
+		return errors.New("ONESIGNAL_REST_API_KEY is not set")
+	}
+	r, err := s.postPush(restKey, map[string]any{
+		"app_id":            onesignalAppID,
+		"target_channel":    "push",
+		"included_segments": []string{"Subscribed Users"},
+		"headings":          map[string]string{"en": heading},
+		"contents":          map[string]string{"en": content},
+	})
+	logPush("segment-now", 0, r, heading)
+	if err != nil {
+		return err
+	}
+	if r.status < 200 || r.status >= 300 {
+		return fmt.Errorf("onesignal rejected the broadcast (http %d)", r.status)
+	}
+	if r.recipients == 0 {
+		return errors.New("onesignal accepted it but reported 0 recipients")
+	}
+	return nil
 }
 
 func (s *Service) sendPush(externalIDs []string, heading, content, url string) error {
@@ -339,6 +389,11 @@ type pushResult struct {
 	invalid    []string // subscription ids OneSignal refused
 	recipients int      // how many devices it says it will deliver to
 	id         string   // OneSignal's notification id, for the dashboard
+	// status is the HTTP status OneSignal answered with, or 0 if the request
+	// never got there. Callers that need to KNOW a send worked (the once-a-day
+	// broadcast, which has no second chance) check this; the per-user paths
+	// deliberately ignore it and stay best-effort.
+	status int
 }
 
 // postPush sends a prepared OneSignal payload. Never returns a hard error: a
@@ -370,7 +425,9 @@ func (s *Service) postPush(restKey string, body map[string]any) (pushResult, err
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("onesignal: send rejected (http %d): %s", resp.StatusCode, raw)
 	}
-	return parsePushResult(raw), nil
+	out := parsePushResult(raw)
+	out.status = resp.StatusCode
+	return out, nil
 }
 
 // parsePushResult pulls the delivery facts out of a send response.

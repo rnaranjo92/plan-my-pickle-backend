@@ -861,6 +861,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /dev/backfill-county", requireAuth(s.backfillCounty))
 	// QA: fire a diagnostic push to the caller's own device(s).
 	mux.HandleFunc("POST /dev/test-push", requireAuth(s.testPush))
+	// Owner-only manual broadcast — the override for when the scheduled 9am one
+	// didn't go out. {"joke":true} sends today's joke; otherwise heading+content.
+	mux.HandleFunc("POST /admin/broadcast", s.ownerEmailOnly(s.adminBroadcast))
 	// Platform denylist (owner-only): block/unblock phones & emails everywhere.
 	mux.HandleFunc("GET /admin/blocked-contacts", s.ownerEmailOnly(s.listBlockedContacts))
 	mux.HandleFunc("POST /admin/blocked-contacts", s.ownerEmailOnly(s.addBlockedContact))
@@ -2854,6 +2857,46 @@ func (s *Server) seedNearbyDemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]int{"seeded": n})
+}
+
+// adminBroadcast is the owner's manual push-to-everyone.
+//
+// Exists because the scheduled 9am broadcast has a once-a-day claim, and when it
+// misfires the owner's only recourse was SQL surgery on daily_jobs. This path
+// deliberately does NOT consult the claim — its whole value is that it works
+// when the scheduled one is stuck. Sends IMMEDIATELY, no 9am scheduling.
+func (s *Server) adminBroadcast(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Joke    bool   `json:"joke"`
+		Heading string `json:"heading"`
+		Content string `json:"content"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	heading, content := strings.TrimSpace(req.Heading), strings.TrimSpace(req.Content)
+	if req.Joke {
+		heading, content = "Joke of the day 🥒", s.svc.TodaysJoke()
+		if content == "" {
+			writeErr(w, http.StatusNotFound, errors.New("no joke for today"))
+			return
+		}
+	}
+	if heading == "" || content == "" {
+		writeErr(w, http.StatusBadRequest,
+			errors.New("heading and content are required (or joke:true)"))
+		return
+	}
+	if err := s.svc.BroadcastNow(heading, content); err != nil {
+		status(w, err)
+		return
+	}
+	// A force-sent joke claims the day, so the scheduled path can't send the
+	// same joke a second time tonight.
+	if req.Joke {
+		s.svc.ClaimJokeDay()
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 // backfillCounty repairs event geo: geocodes listed events missing coords, then

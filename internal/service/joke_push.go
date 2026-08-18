@@ -29,10 +29,19 @@ func (s *Service) SendJokeOfTheDay() {
 	if joke == "" {
 		log.Printf("joke push: no joke for %s — nothing sent",
 			jokeDay().Format("2006-01-02"))
+		s.releaseDailyJob(jokeJobName)
 		return
 	}
 	if err := s.sendPushToEveryoneAt9am("Joke of the day 🥒", joke); err != nil {
-		log.Printf("joke push: FAILED to hand to OneSignal: %v", err)
+		// Give the day BACK so the next hourly tick retries.
+		//
+		// The claim is taken before the send (it has to be — it's what stops two
+		// instances sending twice). But every failure exit used to keep it, so a
+		// single bad minute burned the whole day: no retry until 00:00 UTC, and
+		// the only symptom was nobody getting a joke.
+		log.Printf("joke push: FAILED to hand to OneSignal (%v) — releasing the "+
+			"day so the next tick retries", err)
+		s.releaseDailyJob(jokeJobName)
 		return
 	}
 	// A success line, not just a failure one. This job runs unattended once a
@@ -59,6 +68,17 @@ func jokeDay() time.Time {
 	return time.Now().In(loc)
 }
 
+// TodaysJoke is today's joke text, for the owner's manual broadcast.
+func (s *Service) TodaysJoke() string {
+	return JokeOfTheDay(jokeDay())
+}
+
+// ClaimJokeDay marks today's joke as sent, so the scheduled path stands down.
+// Used after a manual force-send; best-effort.
+func (s *Service) ClaimJokeDay() {
+	_ = s.claimDailyJob(jokeJobName)
+}
+
 // SendJokePreview sends today's joke to ONE device, immediately.
 //
 // The real broadcast is scheduled for 9am local and claimed once a day, so
@@ -70,6 +90,22 @@ func (s *Service) SendJokePreview(externalID, subID string) error {
 		return errors.New("no jokes are loaded")
 	}
 	return s.sendTestPushRetrying(externalID, subID, "Joke of the day 🥒", joke)
+}
+
+// releaseDailyJob hands a claimed day back, so a later tick can try again.
+//
+// Rolls ran_on to the epoch rather than to yesterday: the claim test is
+// `ran_on < today`, and any date before today satisfies it, so the oldest
+// possible value is also the most obviously "not run" to a human reading the
+// table.
+func (s *Service) releaseDailyJob(name string) {
+	if !s.columnReady("daily_jobs", "name") {
+		return
+	}
+	if _, err := s.sb.Update("daily_jobs", "name=eq."+store.Q(name),
+		map[string]any{"ran_on": "1970-01-01"}); err != nil {
+		log.Printf("daily job %q: could not release the claim: %v", name, err)
+	}
 }
 
 // claimDailyJob atomically takes today's run of [name], returning false if

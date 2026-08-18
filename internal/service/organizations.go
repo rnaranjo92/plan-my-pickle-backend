@@ -52,7 +52,9 @@ func (s *Service) orgsReady() bool {
 // The OWNER is not required to have a member row — they are the owner on the
 // organizations table, the same shape clubs use — so both are checked.
 func (s *Service) OrgRoleFor(orgID, userID string) string {
-	if !s.orgsReady() || strings.TrimSpace(userID) == "" {
+	// Cheap check first: an empty user can't hold a role, and asking the
+	// database whether a table exists to answer that is a query for nothing.
+	if strings.TrimSpace(userID) == "" || !s.orgsReady() {
 		return ""
 	}
 	row, err := s.sb.SelectOne("organizations",
@@ -97,7 +99,7 @@ func orgCanRead(role string) bool {
 // Consulted only after the club's own checks fail, and skipped entirely before
 // the migration, so the ordinary single-club path costs nothing.
 func (s *Service) clubOrgAdmin(clubID, userID string) bool {
-	if !s.orgsReady() || strings.TrimSpace(userID) == "" {
+	if strings.TrimSpace(userID) == "" || !s.orgsReady() {
 		return false
 	}
 	row, err := s.sb.SelectOne("clubs",
@@ -140,7 +142,7 @@ func (s *Service) CreateOrganization(
 
 // MyOrganizations lists the organizations a user owns or works for.
 func (s *Service) MyOrganizations(userID string) ([]Organization, error) {
-	if !s.orgsReady() || strings.TrimSpace(userID) == "" {
+	if strings.TrimSpace(userID) == "" || !s.orgsReady() {
 		return []Organization{}, nil
 	}
 	seen := map[string]bool{}

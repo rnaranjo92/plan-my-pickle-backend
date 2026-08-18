@@ -163,6 +163,16 @@ func (s *Service) LeaveClub(clubID, userID string) error {
 	if owner == userID {
 		return ErrForbidden // owner can't leave; they'd delete the club instead
 	}
+	// Also withdraw any pending request. Leaving and cancelling a request are
+	// the same intent — "I don't want to be in this club" — and this is the one
+	// call the app makes for both. Without it, cancelling deleted a membership
+	// the person didn't have and left their request in the queue: their button
+	// stayed on "Waiting for approval" forever, and the club was still asked to
+	// admit somebody who had changed their mind.
+	if s.joinQueueReady() {
+		_ = s.sb.Delete("club_join_requests",
+			"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID))
+	}
 	return s.sb.Delete("club_members",
 		"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID))
 }

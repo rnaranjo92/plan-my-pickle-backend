@@ -9105,15 +9105,25 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 		return errors.New("result type must be forfeit, retire, or walkover")
 	}
 	ptw := 11
-	if row, err := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=event:events!event_id(points_to_win)"); err != nil {
+	mrow, err := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event_id,event:events!event_id(points_to_win)")
+	if err != nil {
 		return err
-	} else if row == nil {
+	}
+	if mrow == nil {
 		return ErrNotFound
-	} else if ev, ok := row["event"].(map[string]any); ok {
+	}
+	if ev, ok := mrow["event"].(map[string]any); ok {
 		if g := asInt(ev, "points_to_win"); g > 0 {
 			ptw = g
 		}
+	}
+	// Serialize with applySeries: ForfeitMatch is the OTHER path that runs
+	// advanceAfterScore (advanceTeam delete/insert + reset cascade + playoff
+	// reseed). Without this lock a forfeit completing at the same instant as a
+	// scored sibling match reopens the advance race.
+	if eid := asStr(mrow, "event_id"); eid != "" {
+		defer s.lockScoreEvent(eid)()
 	}
 	// A retirement keeps the actual partial score AS PLAYED (Rule 12.F — the
 	// score stands) and counts toward point differential. We deliberately do NOT
@@ -9129,17 +9139,6 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	countsForDiff := false
 	if kind == "retire" && t1Score != nil && t2Score != nil {
 		t1, t2, countsForDiff = *t1Score, *t2Score, true
-	}
-	// Serialize with applySeries: ForfeitMatch is the OTHER path that runs
-	// advanceAfterScore (advanceTeam delete/insert + reset cascade + playoff
-	// reseed). Without this lock a forfeit completing at the same instant as a
-	// scored sibling match reopens the wave-2 advance race. eventID from the
-	// match row we already fetched implicitly below — fetch it up front.
-	if erow, _ := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=event_id"); erow != nil {
-		if eid := asStr(erow, "event_id"); eid != "" {
-			defer s.lockScoreEvent(eid)()
-		}
 	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
@@ -9162,7 +9161,16 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	s.reverseDuprForMatches(asStr(out[0], "event_id"), []string{matchID})
 	// Forfeit/retire/walkover is an organizer action, not a played+acknowledged
 	// score — don't auto-start the next game off it.
-	return s.advanceAfterScore(out[0], false)
+	if err := s.advanceAfterScore(out[0], false); err != nil {
+		return err
+	}
+	// Team events: a forfeited TIE LINE must roll up its tie (recompute
+	// winner_team_id, spawn a 2-2 decider, advance the playoff round) — the
+	// same call applySeries makes and advanceAfterScore does not.
+	if tieID := asStr(out[0], "tie_id"); tieID != "" {
+		return s.rollupTie(tieID)
+	}
+	return nil
 }
 
 // DuprImportSummary is the result of flushing queued results to DUPR.

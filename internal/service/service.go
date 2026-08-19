@@ -8498,12 +8498,33 @@ func (s *Service) buildPlayoffLocked(bracketID, eventID string, topN int, seedin
 	// Top-4 uses the medal bracket (adds a 3rd-place / bronze game). Larger draws
 	// use a standard single-elimination bracket, seeded 1-vs-N with byes padding
 	// to the next power of two (the engine handles both).
+	var n int
 	if topN == 4 {
-		return s.persistMedalBracket(ev, bracketID, sides[:4])
+		n, err = s.persistMedalBracket(ev, bracketID, sides[:4])
+	} else {
+		// No consolation here: pool players already played >=2 games, so the
+		// playoff bracket doesn't need a back-draw to satisfy the 2-match guarantee.
+		n, err = s.persistBracket(ev, bracketID, sides[:topN], false)
 	}
-	// No consolation here: pool players already played >=2 games, so the playoff
-	// bracket doesn't need a back-draw to satisfy the 2-match guarantee.
-	return s.persistBracket(ev, bracketID, sides[:topN], false)
+	if err != nil {
+		return 0, err
+	}
+	// Put the playoff ON COURTS. Without this a freshly built bracket arrives with
+	// no court and no time slot: it renders in the Standings bracket but is absent
+	// from the Game-tab grid, so the organizer has to place every game by hand at
+	// exactly the moment the event is busiest. The elimination formats already get
+	// this at schedule time (GenerateSchedule → spreadBracketCourts); a playoff
+	// built later never did — for the manual "Build playoff" either, so this fixes
+	// both paths at once.
+	//
+	// Best-effort: the bracket is real and correct whether or not courts could be
+	// assigned (an event with no courts defined is a no-op), so a failure here
+	// must not fail the build or the score that triggered it.
+	if cerr := s.spreadBracketCourts(eventID); cerr != nil {
+		log.Printf("playoff: bracket built but court assignment failed for event %s: %v",
+			eventID, cerr)
+	}
+	return n, nil
 }
 
 // maybeAutoBuildPlayoff builds the configured-size playoff the moment pool play

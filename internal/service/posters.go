@@ -309,12 +309,7 @@ func (s *Service) GenerateLeaguePoster(
 		facts = append(facts, fmt.Sprintf("The location, rendered EXACTLY: %q.", loc))
 	}
 	prompt := fmt.Sprintf(
-		"A portrait 3:4 pickleball event poster. Style: %s. "+
-			"It must read instantly as PICKLEBALL — paddles and a pickleball, "+
-			"never tennis rackets or tennis balls. %s "+
-			"All text must be crisp, correctly spelled, and limited to the facts "+
-			"given — no invented dates, prices or slogans. Leave breathing room; "+
-			"a poster, not a collage.",
+		posterPromptTemplate,
 		direction, strings.Join(facts, " "))
 	img, mime, err := gateway.GenerateImage(prompt, nil)
 	if err != nil {
@@ -338,6 +333,31 @@ func (s *Service) GenerateLeaguePoster(
 	log.Printf("poster: generated for league %s (%d bytes)", leagueID, len(img))
 	return url, nil
 }
+
+// posterPromptTemplate is the frame every poster prompt shares: %s is the
+// creative direction, %s the list of facts.
+//
+// The rules below are the ones EARNED by looking at output, not guesses:
+//   • ONCE — a venue holding its own city ("Chula Vista Elite…") plus a separate
+//     city fact produced posters printing the city twice. The facts are already
+//     de-duplicated upstream; this stops the model re-stating them anyway.
+//   • NOTHING EXTRA — models love to invent a plausible time, price or slogan to
+//     fill space, and an invented fact on a printed flyer is the one failure this
+//     feature must never produce.
+//   • HIERARCHY — without an explicit order everything competes at the same size
+//     and the result reads as a menu.
+//   • ROOM — "a poster, not a collage" was already here and does real work.
+const posterPromptTemplate = "A portrait 3:4 pickleball event poster. Style: %s. " +
+	"It must read instantly as PICKLEBALL — paddles and a pickleball, never " +
+	"tennis rackets or tennis balls. %s " +
+	"TEXT RULES, follow exactly: render ONLY the facts given, each ONE TIME — " +
+	"never repeat the title, date, venue or city anywhere else on the poster. " +
+	"Invent NOTHING: no extra dates, times, prices, phone numbers, URLs, hashtags " +
+	"or slogans, and no lorem/placeholder text. Every word must be correctly " +
+	"spelled and fully legible at thumbnail size. " +
+	"HIERARCHY: the title is the largest element, then the date, then everything " +
+	"else small and grouped together. Leave generous breathing room — a poster, " +
+	"not a collage."
 
 // posterBrief turns an event row into the model's brief, and fetches the
 // club's logo bytes when there is one.
@@ -380,13 +400,26 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 	}
 	venue := strings.TrimSpace(asStr(ev, "venue_name"))
 	if venue == "" {
-		venue = strings.TrimSpace(asStr(ev, "location"))
+		// Falling back to `location` means a FULL POSTAL ADDRESS — "2800 Olympic
+		// Parkway, Chula Vista, CA 91915, United States of America" is not poster
+		// copy, and asking for it rendered EXACTLY forces the model to letter the
+		// whole thing. Take the place name (everything before the first comma),
+		// which is what a poster actually names.
+		loc := strings.TrimSpace(asStr(ev, "location"))
+		if i := strings.Index(loc, ","); i > 0 {
+			loc = strings.TrimSpace(loc[:i])
+		}
+		venue = loc
 	}
 	if venue != "" {
 		facts = append(facts, fmt.Sprintf("The venue, rendered EXACTLY: %q.", venue))
 	}
+	// City only when the venue doesn't ALREADY say it. The old test was
+	// equality, so a venue of "Chula Vista Elite Athlete Training Center" (or a
+	// full address containing the city) still added "Chula Vista" as a separate
+	// fact — and the model dutifully printed the city twice.
 	if city := strings.TrimSpace(asStr(ev, "city")); city != "" &&
-		!strings.EqualFold(city, venue) {
+		!strings.Contains(strings.ToLower(venue), strings.ToLower(city)) {
 		facts = append(facts, fmt.Sprintf("City: %q.", city))
 	}
 
@@ -476,12 +509,7 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 	}
 
 	return fmt.Sprintf(
-		"A portrait 3:4 pickleball event poster. Style: %s. "+
-			"It must read instantly as PICKLEBALL — paddles and a pickleball, "+
-			"never tennis rackets or tennis balls. %s "+
-			"All text must be crisp, correctly spelled, and limited to the facts "+
-			"given — no invented dates, prices or slogans. Leave breathing room; "+
-			"a poster, not a collage.",
+		posterPromptTemplate,
 		stylePrompt, strings.Join(facts, " ")), logo
 }
 
@@ -578,13 +606,7 @@ func studioBrief(title, dateText, venueText, direction string) string {
 			"with room for a title, and add no invented specifics."
 	}
 	return fmt.Sprintf(
-		"A portrait 3:4 pickleball poster. Style: %s. "+
-			"It must read instantly as PICKLEBALL — paddles and a pickleball, "+
-			"never tennis rackets or tennis balls. %s "+
-			"All text must be crisp, correctly spelled, and limited to the facts "+
-			"given — no invented dates, prices or slogans. Leave breathing room; "+
-			"a poster, not a collage.",
-		direction, joined)
+		posterPromptTemplate, direction, joined)
 }
 
 // oneLine collapses whitespace and caps length — the studio fields are single

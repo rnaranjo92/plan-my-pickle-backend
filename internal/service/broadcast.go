@@ -35,6 +35,8 @@ func (s *Service) broadcastSmsRecipients(ev model.Event, segment string) ([]broa
 		// fall through to the whole roster — fail CLOSED with zero recipients.
 		return nil, nil
 	}
+	// Never blast an UNAPPROVED registrant — they're not confirmed entrants.
+	filter += s.approvedRegFilter()
 	rows, err := s.sb.SelectAll("registrations",
 		filter+"&select=player_id,player:players!player_id(full_name,phone,sms_consent)")
 	if err != nil {

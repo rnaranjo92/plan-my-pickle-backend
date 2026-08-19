@@ -4951,6 +4951,18 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			}
 		}
 	}
+	// A SELF-registrant's DUPR id may ONLY be their own verified connection —
+	// never client input. Otherwise an anonymous (or unconnected) sign-up could
+	// paste a VICTIM's dupr_id and have this event's results post to that
+	// person's official rating; the old "flush requires a non-empty dupr_id"
+	// backstop checks presence, not ownership, so it does not catch this. An
+	// organizer ADD (req.Self == false) is trusted and may attach a known
+	// player's id for roster import.
+	if req.Self && !conn.Connected {
+		req.DuprID = ""
+		req.DuprRating = nil
+		req.DuprReliability = nil
+	}
 	// A DUPR-sanctioned event REQUIRES a self-registering player to have DUPR
 	// connected — their results must be submittable to DUPR. An organizer adding
 	// players (req.Self == false) is trusted and not blocked. Anonymous self-
@@ -5201,6 +5213,10 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 		ID: regID, EventID: eventID, PlayerID: playerID, FullName: req.FullName,
 		BracketID: strp(bracketID), PaymentStatus: "unpaid", CheckedIn: false, CheckInToken: &token,
 		OutsideRating: outside, OutsideRatingReason: outsideReason,
+		// Approved was unset (always false), so the handler's confirmation
+		// email, "X registered" feed post, and roster-add auto-invite never
+		// fired for a normal self-registration.
+		Approved: !needsApproval,
 	}, nil
 }
 
@@ -5918,12 +5934,25 @@ func (s *Service) DeleteRegistration(regID string) error {
 	// otherwise linger on the coach's student list forever).
 	reg, err := s.sb.SelectOne("registrations",
 		"id=eq."+store.Q(regID)+
-			"&select=id,event_id,player:players!player_id(email,phone)")
+			"&select=id,event_id,player_id,bracket_id,player:players!player_id(email,phone)")
 	if err != nil {
 		return err
 	}
 	if reg == nil {
 		return ErrNotFound
+	}
+	// Refuse once this player's division has a generated draw — a mid-draw
+	// delete strands match_participants rows and the partner back-pointer.
+	// Move/Merge already guard this with ErrDrawExists; a straight delete didn't.
+	if pid := asStr(reg, "player_id"); pid != "" {
+		if bid := asStr(reg, "bracket_id"); bid != "" {
+			if n := s.countRows("matches",
+				"bracket_id=eq."+store.Q(bid)+"&stage=eq.pool&select=id", "id") +
+				s.countRows("matches",
+					"bracket_id=eq."+store.Q(bid)+"&stage=eq.bracket&select=id", "id"); n > 0 {
+				return ErrDrawExists
+			}
+		}
 	}
 	if err := s.sb.Delete("registrations", "id=eq."+store.Q(regID)); err != nil {
 		return err
@@ -6593,14 +6622,33 @@ func (s *Service) liveMatchOnCourt(eventID string, court int) (string, error) {
 	if cid == "" {
 		return "", nil
 	}
-	row, err := s.sb.SelectOne("matches",
+	// DETERMINISTIC + ambiguity-aware. StartRound can mark several games on one
+	// court in_progress (more games than courts in a wave); with limit=1 and no
+	// order this scored an ARBITRARY one — a final that could land on the wrong
+	// match and, on a sanctioned event, flow to the wrong player's DUPR. Take
+	// the two earliest by play order: if two are genuinely live on one court,
+	// the court QR can't know which, so it refuses and sends the scorer to the
+	// console rather than guessing.
+	rows, err := s.sb.Select("matches",
 		"event_id=eq."+store.Q(eventID)+"&court_id=eq."+store.Q(cid)+
-			"&status=eq.in_progress&select=id&limit=1")
-	if err != nil || row == nil {
+			"&status=eq.in_progress&select=id&order=play_order.asc.nullslast,created_at.asc&limit=2")
+	if err != nil {
 		return "", err
 	}
-	return asStr(row, "id"), nil
+	if len(rows) == 0 {
+		return "", nil
+	}
+	if len(rows) > 1 {
+		return "", errAmbiguousCourt
+	}
+	return asStr(rows[0], "id"), nil
 }
+
+// errAmbiguousCourt: more than one game is live on a court, so a court-QR score
+// can't be attributed unambiguously. Callers surface it as "score from the
+// console" rather than risk the wrong match.
+var errAmbiguousCourt = errors.New(
+	"more than one game is live on this court — score it from the organizer console")
 
 // RecordCourtScore records the final score for the live game on a court, authed
 // by the per-court QR token (not the admin passcode). Single game (best-of-1);
@@ -8559,6 +8607,15 @@ func (s *Service) maybeSeedPlayoff(bracketID string) error {
 	if err != nil {
 		return err
 	}
+	// ONLY the auto-built 4-team medal skeleton has exactly TWO round-1
+	// matches. A manually generated 8/16-team playoff also has stage=bracket
+	// round-1 slots 0 and 1, and re-seeding those as 1v4 / 2v3 would put teams
+	// #2/#3 into two first-round matches and drop #5..#8 from the draw. If this
+	// bracket has more than two round-1 matches, it is a larger manual playoff
+	// the organizer seeded themselves — never touch it.
+	if len(semis) != 2 {
+		return nil
+	}
 	semiBySlot := map[int]string{}
 	for _, m := range semis {
 		semiBySlot[asInt(m, "bracket_slot")] = asStr(m, "id")
@@ -9061,6 +9118,17 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	countsForDiff := false
 	if kind == "retire" && t1Score != nil && t2Score != nil {
 		t1, t2, countsForDiff = *t1Score, *t2Score, true
+	}
+	// If this match was ALREADY pushed to DUPR (a real played score, later
+	// forfeited/retired), reverse the official result — otherwise the true
+	// score stays live on the players' ratings while the local match reads
+	// forfeit. Best-effort, before the overwrite. eventID for the reversal
+	// comes from the match row.
+	if erow, _ := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event_id"); erow != nil {
+		if eid := asStr(erow, "event_id"); eid != "" {
+			s.reverseDuprForMatches(eid, []string{matchID})
+		}
 	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
@@ -12051,8 +12119,11 @@ func (s *Service) CancelMatch(matchID string) error {
 		map[string]any{
 			"status":      "canceled",
 			"team1_score": nil, "team2_score": nil, "winning_team": nil,
-			"live_team1": nil, "live_team2": nil,
-			"result_type": nil, "completed_at": nil,
+			"live_team1": nil, "live_team2": nil, "games": nil,
+			// result_type is NOT NULL — writing nil sends an explicit null and
+			// 23502-aborts the entire update, so the game could never be marked
+			// not-played. "canceled" status is what excludes it.
+			"result_type": "normal", "completed_at": nil,
 		})
 	return err
 }
@@ -13062,9 +13133,11 @@ func (s *Service) resetCompletedDownstream(matchID string) error {
 	}
 	if _, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": nil, "team2_score": nil, "winning_team": nil,
-		"status": "scheduled", "completed_at": nil,
+		"status": "scheduled", "completed_at": nil, "games": nil,
 		// result_type is NOT NULL — reset to its default rather than NULL (NULL
 		// fails the constraint and aborts the whole re-score cascade mid-write).
+		// games cleared too, or a best-of-3 reset shows the OLD series score
+		// under the NEW participants (client isSeries reads the games array).
 		"result_type": "normal", "counts_for_diff": true,
 	}); err != nil {
 		return err
@@ -13923,6 +13996,14 @@ func (s *Service) SwapMatchPlayer(matchID, outPlayerID, inPlayerID string) error
 	if reg == nil {
 		return errors.New("replacement player is not registered in this event")
 	}
+	// Refuse on a COMPLETED match — swapping a player after a result rewrites
+	// standings attribution and desyncs any submitted DUPR result. Its sibling
+	// SwapPlayersAcrossMatches already guards this; this path didn't.
+	if st, _ := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=status"); st != nil &&
+		asStr(st, "status") == "completed" {
+		return errors.New("this match already has a result — reset its score before swapping players")
+	}
 	// The player being swapped out must currently be in the match.
 	cur, err := s.sb.SelectOne("match_participants",
 		"match_id=eq."+store.Q(matchID)+"&player_id=eq."+store.Q(outPlayerID)+"&select=team")
@@ -14481,6 +14562,22 @@ func (s *Service) DrainDuprPendingDeletes() error {
 }
 
 func (s *Service) wipeBracketStage(bracketID string) error {
+	// Reverse any DUPR results for the stage's matches before deleting them —
+	// otherwise rebuilding a playoff after results were imported deletes the
+	// local rows (FK-cascading dupr_submissions) but leaves them live on DUPR.
+	if rows, err := s.sb.Select("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket"+
+			"&select=id,event_id"); err == nil && len(rows) > 0 {
+		ids := make([]string, 0, len(rows))
+		eventID := ""
+		for _, m := range rows {
+			ids = append(ids, asStr(m, "id"))
+			if eventID == "" {
+				eventID = asStr(m, "event_id")
+			}
+		}
+		s.reverseDuprForMatches(eventID, ids)
+	}
 	return s.sb.Delete("matches", "bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket")
 }
 

@@ -480,7 +480,7 @@ func (s *Service) customEmailRecipients(ev model.Event, segment string) ([]custo
 		}
 	case "checkedIn":
 		rows, err := s.sb.SelectAll("registrations",
-			"event_id=eq."+store.Q(ev.ID)+"&checked_in=eq.true"+
+			"event_id=eq."+store.Q(ev.ID)+"&checked_in=eq.true"+s.approvedRegFilter()+
 				"&select=player_id,player:players!player_id(full_name,email)")
 		if err != nil {
 			return nil, err
@@ -674,7 +674,7 @@ func (s *Service) scheduleIdentities(ev model.Event) ([]scheduleIdent, error) {
 	}
 
 	rows, err := s.sb.SelectAll("registrations",
-		"event_id=eq."+store.Q(ev.ID)+
+		"event_id=eq."+store.Q(ev.ID)+s.approvedRegFilter()+
 			"&select=player_id,player:players!player_id(full_name,email)")
 	if err != nil {
 		return nil, err

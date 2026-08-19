@@ -2260,18 +2260,51 @@ func (s *Service) SeedAutoPlayoffDemo(ownerID string) (string, error) {
 	if _, err := s.GenerateSchedule(eid, true, true); err != nil {
 		return "", err
 	}
-	// Score every pool game EXCEPT the last, so the tester's own tap is what
-	// triggers the auto-build. Spread the wins so standings have a real order.
-	poolIDs, _ := s.listPoolMatchIDs(eid)
-	if len(poolIDs) < 2 {
+	// Score every pool game EXCEPT one, so the tester's own tap is what triggers
+	// the auto-build. Spread the wins so standings have a real order to seed from
+	// rather than a pile of ties.
+	//
+	// The one left unscored is in the LAST ROUND, by round number. listPoolMatchIDs
+	// orders by (created_at, id), but the schedule is inserted in a batch — every
+	// row shares a timestamp, so that ordering degrades to random UUID order and
+	// the unscored game lands in an arbitrary round. A tester then has to hunt
+	// through every round for the one game without a score, which is exactly what
+	// happened the first time this ran.
+	rows, err := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eid)+
+			"&stage=eq.pool&select=id,round:rounds!round_id(round_number)")
+	if err != nil {
+		return "", err
+	}
+	type poolMatch struct {
+		id    string
+		round int
+	}
+	pool := make([]poolMatch, 0, len(rows))
+	for _, r := range rows {
+		pm := poolMatch{id: asStr(r, "id")}
+		if rd := asMap(r, "round"); rd != nil {
+			pm.round = asInt(rd, "round_number")
+		}
+		if pm.id != "" {
+			pool = append(pool, pm)
+		}
+	}
+	if len(pool) < 2 {
 		return "", errors.New("seed: no pool schedule was generated")
 	}
-	for i, mid := range poolIDs[:len(poolIDs)-1] {
+	sort.SliceStable(pool, func(i, j int) bool {
+		if pool[i].round != pool[j].round {
+			return pool[i].round < pool[j].round
+		}
+		return pool[i].id < pool[j].id
+	})
+	for i, pm := range pool[:len(pool)-1] {
 		lo := 5 + (i*3)%7
 		if i%3 == 0 {
-			_ = s.applyScore(mid, lo, 15)
+			_ = s.applyScore(pm.id, lo, 15)
 		} else {
-			_ = s.applyScore(mid, 15, lo)
+			_ = s.applyScore(pm.id, 15, lo)
 		}
 	}
 	_ = s.reconcileRoundStatuses(eid)

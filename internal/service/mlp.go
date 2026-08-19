@@ -793,6 +793,20 @@ func (s *Service) maybeAdvancePlayoffRound(eventID string) error {
 			}
 		}
 		if len(staleTieIDs) > 0 {
+			// Reverse any DUPR results for these lines BEFORE deleting them — a
+			// sanctioned MLP whose downstream round was already flushed would
+			// otherwise orphan those results live on players' ratings (the same
+			// rule wipeBracketStage/ForfeitMatch follow).
+			if lines, e := s.sb.Select("matches",
+				"tie_id="+store.In(staleTieIDs)+"&select=id"); e == nil && len(lines) > 0 {
+				ids := make([]string, 0, len(lines))
+				for _, m := range lines {
+					if id := asStr(m, "id"); id != "" {
+						ids = append(ids, id)
+					}
+				}
+				s.reverseDuprForMatches(eventID, ids)
+			}
 			// Lines are matches rows carrying tie_id; deleting them cascades
 			// match_participants. Then drop the tie rows.
 			_ = s.sb.Delete("matches", "tie_id="+store.In(staleTieIDs))

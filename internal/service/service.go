@@ -9032,6 +9032,28 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 // side scored (so standings differential stays correct), and the series winner —
 // marks the match completed and runs advancement. It does NOT validate; callers
 // that already trust the result (demo seeding via applyScore) use it directly.
+// bothSidesPresent reports whether a match has at least one player on EACH side
+// — i.e. it is a real, playable game rather than a bracket slot still waiting on
+// its feeders ("TBD"). Errors are reported to the caller, which treats an
+// unknown answer as "allow": a lookup blip must not block scoring a real game.
+func (s *Service) bothSidesPresent(matchID string) (bool, error) {
+	rows, err := s.sb.Select("match_participants",
+		"match_id=eq."+store.Q(matchID)+"&select=team")
+	if err != nil {
+		return false, err
+	}
+	var t1, t2 bool
+	for _, r := range rows {
+		switch asInt(r, "team") {
+		case 1:
+			t1 = true
+		case 2:
+			t2 = true
+		}
+	}
+	return t1 && t2, nil
+}
+
 func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t1total, t2total int) error {
 	// SERIALIZE per event. Advancement is delete-then-insert on
 	// match_participants (advanceTeam) plus a read-then-write reset cascade
@@ -9039,6 +9061,18 @@ func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t
 	// once (two organizers, or auto-start timers), could interleave and leave
 	// the final's slot empty or stack both teams into it. One lock per event
 	// makes the whole write+advance atomic; different events never contend.
+	// Both teams must actually EXIST before a result can be recorded.
+	//
+	// A bracket match whose feeders haven't resolved shows "TBD" and has no
+	// participants on one or both sides, but the score button was still offered:
+	// saving there marked a game complete for nobody, and then advanceAfterScore
+	// pushed a winner that doesn't exist into the next round — a phantom team in
+	// the draw, or a final that can never be filled. Refuse it at the source, so
+	// no client (or a stale build) can create that state.
+	if ready, rerr := s.bothSidesPresent(matchID); rerr == nil && !ready {
+		return errors.New(
+			"both teams have to be decided before this game can be scored")
+	}
 	freshCompletion := true
 	if cur, e := s.sb.SelectOne("matches",
 		"id=eq."+store.Q(matchID)+"&select=status,event_id"); e == nil && cur != nil {

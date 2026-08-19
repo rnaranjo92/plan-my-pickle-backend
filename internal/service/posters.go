@@ -123,7 +123,8 @@ func (s *Service) GeneratePoster(
 			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
 	}
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+
-		"&select=id,name,owner_id,club_id,starts_at,venue_name,location,city,league_id,perpetual")
+		"&select=id,name,owner_id,club_id,starts_at,venue_name,location,city,league_id,perpetual,"+
+		"format,registration_fee_cents,currency,dupr_sanctioned")
 	if err != nil {
 		return "", err
 	}
@@ -389,11 +390,14 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 		facts = append(facts, fmt.Sprintf("City: %q.", city))
 	}
 
-	// Divisions, when the event genuinely has more than one: "who can play" is
-	// the first question a poster answers after "when". Capped so a mega-draw
-	// doesn't crowd the design into a spreadsheet.
+	// Divisions: "who can play" is the first question a poster answers after
+	// "when". Included even when there's only ONE — a single "3.5 & under" or
+	// "Open" division is exactly the fact a player needs, and gating this on
+	// len > 1 meant most events printed no division at all. Capped at 6 so a
+	// mega-draw doesn't turn the design into a spreadsheet. Skipped only when
+	// the sole division just repeats the event's own name.
 	if id := strings.TrimSpace(asStr(ev, "id")); id != "" {
-		if bks, err := s.GetBrackets(id); err == nil && len(bks) > 1 {
+		if bks, err := s.GetBrackets(id); err == nil && len(bks) > 0 {
 			names := make([]string, 0, 6)
 			for _, b := range bks {
 				if n := strings.TrimSpace(b.Name); n != "" {
@@ -403,12 +407,52 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 					}
 				}
 			}
-			if len(names) > 1 {
+			if len(names) == 1 && strings.EqualFold(names[0], name) {
+				names = nil // "Summer Slam / Summer Slam" says nothing twice
+			}
+			if len(names) == 1 {
+				facts = append(facts, fmt.Sprintf(
+					"The division, rendered EXACTLY: %q.", names[0]))
+			} else if len(names) > 1 {
 				facts = append(facts, fmt.Sprintf(
 					"The divisions, rendered EXACTLY as a compact list: %q.",
 					strings.Join(names, " · ")))
 			}
 		}
+	}
+
+	// Singles vs doubles — one word, and the first thing a player checks after
+	// the date.
+	switch strings.ToLower(strings.TrimSpace(asStr(ev, "format"))) {
+	case "singles":
+		facts = append(facts, `Play format, rendered EXACTLY: "Singles".`)
+	case "doubles":
+		facts = append(facts, `Play format, rendered EXACTLY: "Doubles".`)
+	}
+
+	// Entry fee. A poster that doesn't say the price makes everyone ask, and
+	// "Free" is worth shouting when it's true.
+	if cents := asInt(ev, "registration_fee_cents"); cents > 0 {
+		cur := strings.ToUpper(strings.TrimSpace(asStr(ev, "currency")))
+		sym := map[string]string{"USD": "$", "CAD": "$", "AUD": "$",
+			"GBP": "£", "EUR": "€", "PHP": "₱"}[cur]
+		amount := ""
+		if cents%100 == 0 {
+			amount = fmt.Sprintf("%s%d", sym, cents/100)
+		} else {
+			amount = fmt.Sprintf("%s%.2f", sym, float64(cents)/100)
+		}
+		if sym == "" {
+			amount = fmt.Sprintf("%.2f %s", float64(cents)/100, cur)
+		}
+		facts = append(facts, fmt.Sprintf(
+			"The entry fee, rendered EXACTLY: %q.", amount+" entry"))
+	}
+
+	// DUPR-sanctioned is a credential players actively look for.
+	if asBool(ev, "dupr_sanctioned") {
+		facts = append(facts,
+			`Include a small badge or line reading EXACTLY "DUPR RATED".`)
 	}
 
 	var logo []byte

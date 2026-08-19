@@ -1998,6 +1998,27 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 		return err
 	}
 
+	// A playoff size set NOW, when pool play has ALREADY finished, must still
+	// produce the bracket. The auto-build's only trigger is a pool game being
+	// scored — and with every game Final there is no next score coming, so an
+	// organizer who finishes their round-robin and THEN goes to Edit to pick
+	// Quarterfinals got nothing (Marvin, live, mid-league-night). Run the same
+	// build here; it no-ops unless pools are complete, replaces only an
+	// unseeded skeleton, and never touches a live bracket. Best-effort: the
+	// edit itself succeeded, so a build hiccup logs rather than failing it.
+	if req.PlayoffSize != nil && normalizePlayoffSize(*req.PlayoffSize) >= 4 {
+		if bks, berr := s.GetBrackets(id); berr == nil {
+			unlock := s.lockScoreEvent(id)
+			for _, b := range bks {
+				if aerr := s.maybeAutoBuildPlayoff(id, b.ID); aerr != nil {
+					log.Printf("auto-playoff: edit-time build failed for "+
+						"bracket %s: %v", b.ID, aerr)
+				}
+			}
+			unlock()
+		}
+	}
+
 	// Reconcile the courts table so every lane the board renders (1..num_courts)
 	// maps to a real court row. Court rows are otherwise created only at event
 	// creation, so RAISING the count here would leave "phantom" lanes that reject

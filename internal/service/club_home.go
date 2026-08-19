@@ -107,7 +107,7 @@ func (s *Service) ClubHomeFor(clubID, viewerID string) (ClubHome, error) {
 		return out, ErrNotFound
 	}
 
-	events, err := s.ClubEvents(clubID)
+	events, err := s.ClubEventsFor(clubID, viewerID)
 	if err != nil {
 		return out, err
 	}
@@ -147,12 +147,29 @@ func (s *Service) myClubRecord(
 	if strings.TrimSpace(viewerID) == "" || len(board) == 0 {
 		return nil
 	}
+	// Prefer the ACCOUNT key: two members with the same display name must not
+	// read each other's stats. The leaderboard keys rows by "account:<uid>"
+	// when the player has an account, so build the viewer's key the same way
+	// and match on it; fall back to name only when neither side has an account.
+	wantKey := ""
+	if pids, _ := s.playerIDsForUser(viewerID, ""); len(pids) > 0 {
+		for _, uid := range s.accountsForPlayers(pids) {
+			if uid != "" {
+				wantKey = "account:" + uid
+				break
+			}
+		}
+	}
 	name := strings.ToLower(strings.TrimSpace(s.nameOfUser(viewerID)))
-	if name == "" {
+	if wantKey == "" && name == "" {
 		return nil
 	}
 	for i, row := range board {
-		if strings.ToLower(strings.TrimSpace(row.Name)) != name {
+		if wantKey != "" {
+			if row.IdentityKey != wantKey {
+				continue
+			}
+		} else if strings.ToLower(strings.TrimSpace(row.Name)) != name {
 			continue
 		}
 		return &ClubMemberRecord{

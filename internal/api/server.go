@@ -51,6 +51,9 @@ type Server struct {
 	// Gemini money, so like the OTP limiter this caps what one account can
 	// burn. Generous enough for taste-and-retry sessions.
 	posterLimiter *rateLimiter
+	// clubInviteLimiter caps club invites per user — each sends a push, so an
+	// admin of a throwaway club can't loop it to buzz a victim's phone.
+	clubInviteLimiter *rateLimiter
 	// liveLimiter throttles running-scorebug pushes. These arrive at rally pace —
 	// roughly one per point per court — so they need a far higher ceiling than the
 	// signup-shaped regLimiter, and a PER-COURT key: four courts sharing one
@@ -77,7 +80,8 @@ func NewServer(svc *service.Service) http.Handler {
 		createLimiter:     newRateLimiter(20, 60),   // 20 event/league creates/min per user
 		sessionLimiter:    newRateLimiter(600, 60),  // 600 checkout-session Stripe lookups/min (global, cache-miss only)
 		otpLimiter:        newRateLimiter(5, 600),   // 5 OTP sends / 10 min per user
-		posterLimiter:     newRateLimiter(15, 3600), // 15 poster renders / hour per user
+		posterLimiter:     newRateLimiter(15, 3600),  // 15 poster renders / hour per user
+		clubInviteLimiter: newRateLimiter(30, 3600), // 30 club invites / hour per user
 		liveLimiter:       newRateLimiter(240, 60),  // 240 scorebug pushes/min per court (~4/sec)
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
@@ -324,8 +328,8 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /clubs/{id}", requireAuth(s.updateClub))
 	mux.HandleFunc("DELETE /clubs/{id}", requireAuth(s.deleteClub))
 	mux.HandleFunc("POST /clubs/{id}/logo", requireAuth(s.uploadClubLogo))
-	mux.HandleFunc("GET /clubs/{id}/members", s.clubMembers)
-	mux.HandleFunc("GET /clubs/{id}/events", s.clubEvents)
+	mux.HandleFunc("GET /clubs/{id}/members", optionalAuth(s.clubMembers))
+	mux.HandleFunc("GET /clubs/{id}/events", optionalAuth(s.clubEvents))
 	// Public all-time club leaderboard aggregated across every club event.
 	mux.HandleFunc("GET /clubs/{id}/leaderboard", s.clubLeaderboard)
 	// The club's home view: what's on next, and the VIEWER's own record —
@@ -3878,17 +3882,26 @@ func (s *Server) deleteClub(w http.ResponseWriter, r *http.Request) {
 
 // clubMembers lists a club's members (public).
 func (s *Server) clubMembers(w http.ResponseWriter, r *http.Request) {
-	m, err := s.svc.ClubMembers(r.PathValue("id"))
+	clubID := r.PathValue("id")
+	m, err := s.svc.ClubMembers(clubID)
 	if err != nil {
 		status(w, err)
 		return
+	}
+	// Raw Supabase user_ids go ONLY to a club admin, who needs them to change
+	// roles. Everyone else (incl. anonymous) gets name/photo/role with the id
+	// blanked — harvested ids were a targeting vector for the invite-push path.
+	if !s.svc.IsClubAdmin(clubID, userID(r)) {
+		for i := range m {
+			m[i].UserID = ""
+		}
 	}
 	writeJSON(w, http.StatusOK, m)
 }
 
 // clubEvents lists a club's events (public).
 func (s *Server) clubEvents(w http.ResponseWriter, r *http.Request) {
-	e, err := s.svc.ClubEvents(r.PathValue("id"))
+	e, err := s.svc.ClubEventsFor(r.PathValue("id"), userID(r))
 	if err != nil {
 		status(w, err)
 		return
@@ -3917,6 +3930,11 @@ func (s *Server) setClubRole(w http.ResponseWriter, r *http.Request) {
 // who has not signed up yet can't be reached this way — they register first,
 // then the club's join link works for them like anyone else.
 func (s *Server) inviteToClub(w http.ResponseWriter, r *http.Request) {
+	if !s.clubInviteLimiter.allow("club-invite:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New(
+			"you've sent a lot of invites — give it a little while"))
+		return
+	}
 	var req struct {
 		UserID string `json:"userId"`
 	}

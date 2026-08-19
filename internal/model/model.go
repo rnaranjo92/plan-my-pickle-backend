@@ -2280,6 +2280,10 @@ type ClubStanding struct {
 	PointsAgainst int    `json:"pointsAgainst"`
 	PointDiff     int    `json:"pointDiff"`
 	EventsPlayed  int    `json:"eventsPlayed"`
+	// IdentityKey is the account/name key this row aggregates under. Not
+	// serialized — used server-side to match "your record" to the right row
+	// (two members named the same must not read each other's stats).
+	IdentityKey string `json:"-"`
 }
 
 // ClubMember is one member of a club, with their display name + photo.

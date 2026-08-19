@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"sync"
 	"strings"
 	"time"
 
@@ -41,6 +42,16 @@ type ClubDuesStatus struct {
 	Paid   bool            `json:"paid"`
 	PaidAt string          `json:"paidAt,omitempty"`
 	Method string          `json:"method,omitempty"`
+}
+
+// clubDuesLocks serializes SetClubDues per club (see C3).
+var clubDuesLocks sync.Map // clubID -> *sync.Mutex
+
+func (s *Service) lockClubDues(clubID string) func() {
+	muAny, _ := clubDuesLocks.LoadOrStore(clubID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (s *Service) duesReady() bool {
@@ -138,6 +149,12 @@ func (s *Service) SetClubDues(
 	if currency == "" {
 		currency = "usd"
 	}
+	// Serialize concurrent SetClubDues on one club. Two admins interleaving
+	// insert-then-close(neq self) could each close the OTHER's new period and
+	// leave the club with zero open periods. The lock makes the pair atomic.
+	unlock := s.lockClubDues(clubID)
+	defer unlock()
+
 	// INSERT FIRST, then close the old one.
 	//
 	// Closing first meant a failed insert left the club with NO open period —
@@ -203,6 +220,12 @@ func (s *Service) RecordDuesPayment(
 	targetUserID = strings.TrimSpace(targetUserID)
 	if targetUserID == "" {
 		return errors.New("which member?")
+	}
+	// Only a MEMBER can be marked paid. A typo'd/pasted id would otherwise
+	// record money against a stranger — invisible in "24 of 31" (which counts
+	// members) and unfindable in the UI.
+	if !s.isClubMember(clubID, targetUserID) {
+		return errors.New("that person isn't a member of this club")
 	}
 	method = strings.ToLower(strings.TrimSpace(method))
 	if method == "" {

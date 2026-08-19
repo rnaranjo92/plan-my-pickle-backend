@@ -210,10 +210,50 @@ func (s *Service) ClubMembers(clubID string) ([]model.ClubMember, error) {
 	return out, nil
 }
 
-// ClubEvents lists the events that belong to a club, newest first.
+// ClubEventsFor lists a club's events with visibility scoped to the VIEWER.
+//
+// A member (or admin) sees everything, including unlisted/private events — the
+// club's schedule is theirs. Everyone else, and every anonymous/crawler hit,
+// sees only LISTED, non-demo events. Without this, attaching a private league
+// to a club (the normal workflow) exposed its name, venue and payment handles
+// on the anonymous events API and the crawlable club page.
+func (s *Service) ClubEventsFor(clubID, viewerID string) ([]model.Event, error) {
+	if viewerID != "" && s.isClubMember(clubID, viewerID) {
+		return s.ClubEvents(clubID)
+	}
+	return s.publicClubEvents(clubID)
+}
+
+// publicClubEvents is the crawlable/anonymous view: listed, non-demo only.
+func (s *Service) publicClubEvents(clubID string) ([]model.Event, error) {
+	filter := "club_id=eq." + store.Q(clubID)
+	if s.columnReady("events", "listed") {
+		filter += "&listed=is.true"
+	}
+	all, err := s.ClubEventsRaw(filter)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, e := range all {
+		if publicFeedTestName.MatchString(e.Name) {
+			continue // demo/test events never surface publicly
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// ClubEvents lists ALL events that belong to a club, newest first — the
+// member/admin view. Public surfaces must use ClubEventsFor / publicClubEvents.
 func (s *Service) ClubEvents(clubID string) ([]model.Event, error) {
+	return s.ClubEventsRaw("club_id=eq." + store.Q(clubID))
+}
+
+// ClubEventsRaw runs the event query with a caller-supplied filter.
+func (s *Service) ClubEventsRaw(filter string) ([]model.Event, error) {
 	rows, err := s.sb.Select("events",
-		"club_id=eq."+store.Q(clubID)+"&select=*&order=created_at.desc")
+		filter+"&select=*&order=created_at.desc")
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +284,14 @@ func (s *Service) ClubEvents(clubID string) ([]model.Event, error) {
 // account to key on and whose duplicates are a roster problem (fixed with the
 // ladder Merge action), not a leaderboard one.
 func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
+	// Short-TTL memo. This aggregates every bracket of every club event
+	// (hundreds of queries for a mature club) and is recomputed on the
+	// anonymous leaderboard endpoint AND every club-home hit — a cheap
+	// DB-exhaustion target. The board is all-time and moves slowly, so a
+	// 60-second cache is invisible to users and defangs a curl loop.
+	if v, ok := clubBoardCache.get(clubID); ok {
+		return v, nil
+	}
 	events, err := s.ClubEvents(clubID)
 	if err != nil {
 		return nil, err
@@ -331,8 +379,9 @@ func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 	}
 
 	out := make([]model.ClubStanding, 0, len(byIdentity))
-	for _, a := range byIdentity {
+	for key, a := range byIdentity {
 		out = append(out, model.ClubStanding{
+			IdentityKey:   key,
 			Name:          a.name,
 			Wins:          a.wins,
 			Losses:        a.losses,
@@ -344,6 +393,7 @@ func (s *Service) ClubLeaderboard(clubID string) ([]model.ClubStanding, error) {
 		})
 	}
 	// All-time by wins → win% → games played → point diff → name (stable).
+	defer clubBoardCache.put(clubID, out)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Wins != out[j].Wins {
 			return out[i].Wins > out[j].Wins

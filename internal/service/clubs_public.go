@@ -149,7 +149,7 @@ func (s *Service) PublicClubByID(
 		RequiresWaiver: asBool(row, "requires_waiver"),
 	}
 
-	events, _ := s.ClubEvents(clubID)
+	events, _ := s.publicClubEvents(clubID)
 	club.EventCount = len(events)
 	upcoming := upcomingClubEvents(events, time.Now(), 6)
 	club.MemberCount = s.countRows("club_members",

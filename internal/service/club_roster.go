@@ -338,6 +338,12 @@ func dateOnly(rfc string) string {
 // who enter "Surname, First" — cannot shift every column after it.
 func csvCell(v string) string {
 	v = strings.TrimSpace(v)
+	// Formula injection: a self-chosen name beginning =,+,-,@ (or tab/CR) is a
+	// live formula when the treasurer opens the export in Excel/Sheets. Prefix
+	// a single quote to neutralize it — the classic OWASP mitigation.
+	if v != "" && strings.ContainsAny(v[:1], "=+-@\t\r") {
+		v = "'" + v
+	}
 	if !strings.ContainsAny(v, ",\"\n\r") {
 		return v
 	}

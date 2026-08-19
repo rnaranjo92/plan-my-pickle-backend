@@ -77,9 +77,16 @@ func (s *Service) RequestJoinClub(clubID, userID string) (bool, error) {
 			"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID))
 		return true, nil
 	}
+	// Was there already a pending request? If so this is a repeat tap — upsert
+	// it (idempotent) but do NOT re-notify the admins, or a script looping the
+	// join endpoint floods every admin's bell.
+	already := s.hasJoinRequest(clubID, userID) != nil
 	if _, err := s.sb.Upsert("club_join_requests", "club_id,user_id",
 		map[string]any{"club_id": clubID, "user_id": userID}); err != nil {
 		return false, err
+	}
+	if already {
+		return false, nil
 	}
 	// Tell the people who can act on it, or the queue rots — a request nobody
 	// is told about is a person who concludes the club ignored them.
@@ -133,7 +140,7 @@ func (s *Service) ClubJoinRequests(clubID, callerID string) ([]ClubJoinRequest, 
 		return out, nil
 	}
 	rows, err := s.sb.SelectAll("club_join_requests",
-		"club_id=eq."+store.Q(clubID)+
+		"club_id=eq."+store.Q(clubID)+"&invited=eq.false"+
 			"&select=user_id,requested_at&order=requested_at.asc")
 	if err != nil {
 		return nil, err
@@ -202,9 +209,12 @@ func (s *Service) ApproveJoinRequests(
 		if uid == "" {
 			continue
 		}
-		// Only people who actually asked. Without this, "approve" doubles as
-		// "add anyone by id", which is the thing the queue exists to prevent.
-		if s.hasJoinRequest(clubID, uid) == nil {
+		// Only people who actually ASKED (invited=false). An invited-but-not-
+		// accepted row must never be admitted by an admin tapping Approve —
+		// that would enroll someone who never consented, exactly what the
+		// invitation-not-enrolment split exists to prevent.
+		req := s.hasJoinRequest(clubID, uid)
+		if req == nil || asBool(req, "invited") {
 			continue
 		}
 		if err := s.JoinClub(clubID, uid); err != nil {
@@ -256,7 +266,7 @@ func (s *Service) pendingJoinCount(clubID string) int {
 		return 0
 	}
 	return s.countRows("club_join_requests",
-		"club_id=eq."+store.Q(clubID)+"&select=user_id", "user_id")
+		"club_id=eq."+store.Q(clubID)+"&invited=eq.false&select=user_id", "user_id")
 }
 
 // markClubInvited records that the club asked for this person, so accepting

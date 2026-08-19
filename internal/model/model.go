@@ -2257,6 +2257,9 @@ type Club struct {
 	// the app had no way to tell, so every management control was hidden from
 	// exactly the people co-owners were created for.
 	IsCoOwner bool `json:"isCoOwner"`
+	// IsOrgAdmin: the caller runs the ORGANIZATION above this club, so they may
+	// manage it (edit, dues, announce, roster) without owning or co-owning it.
+	IsOrgAdmin bool `json:"isOrgAdmin,omitempty"`
 	// JoinPending: the caller has asked to join and is waiting. Distinct from
 	// IsMember=false, which is someone who simply hasn't asked.
 	JoinPending bool `json:"joinPending,omitempty"`

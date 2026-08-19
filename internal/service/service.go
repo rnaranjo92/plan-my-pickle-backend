@@ -9130,6 +9130,17 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	if kind == "retire" && t1Score != nil && t2Score != nil {
 		t1, t2, countsForDiff = *t1Score, *t2Score, true
 	}
+	// Serialize with applySeries: ForfeitMatch is the OTHER path that runs
+	// advanceAfterScore (advanceTeam delete/insert + reset cascade + playoff
+	// reseed). Without this lock a forfeit completing at the same instant as a
+	// scored sibling match reopens the wave-2 advance race. eventID from the
+	// match row we already fetched implicitly below — fetch it up front.
+	if erow, _ := s.sb.SelectOne("matches",
+		"id=eq."+store.Q(matchID)+"&select=event_id"); erow != nil {
+		if eid := asStr(erow, "event_id"); eid != "" {
+			defer s.lockScoreEvent(eid)()
+		}
+	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
 		// Clear any per-game scores from a prior played result — a forfeit/retire/

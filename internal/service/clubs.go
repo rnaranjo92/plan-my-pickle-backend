@@ -103,6 +103,13 @@ func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {
 		c.IsCoOwner = m != nil &&
 			strings.EqualFold(strings.TrimSpace(asStr(m, "role")), ClubRoleCoOwner)
 	}
+	// Organization inheritance: an org admin can RUN this club (IsClubAdmin
+	// consults clubOrgAdmin), but IsCoOwner above only reflects a member row.
+	// Surface it so the client shows management controls instead of a join
+	// button for a club they administer.
+	if !c.IsOwner && !c.IsCoOwner && callerID != "" {
+		c.IsOrgAdmin = s.clubOrgAdmin(clubID, callerID)
+	}
 	s.clubJoinState(&c, callerID)
 	return c, nil
 }

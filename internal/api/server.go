@@ -870,6 +870,7 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/remove-test-player", s.ownerOnly("event", "id", s.removeTestPlayer))
 	mux.HandleFunc("POST /dev/seed-playoff", requireAuth(s.seedPlayoffDemo))
 	mux.HandleFunc("POST /dev/seed-rr-playoff", requireAuth(s.seedRoundRobinPlayoffDemo))
+	mux.HandleFunc("POST /dev/seed-auto-playoff", requireAuth(s.seedAutoPlayoffDemo))
 	// QA-only: seed a 30/150/80-player TEST tournament (Profile-tab buttons).
 	mux.HandleFunc("POST /dev/seed-test", requireAuth(s.seedTestTournament))
 	mux.HandleFunc("POST /dev/seed-mlp", requireAuth(s.seedMlpDemo))
@@ -3181,6 +3182,22 @@ func (s *Server) seedRoundRobinPlayoffDemo(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	id, err := s.svc.SeedRoundRobinPlayoffDemo(userID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"eventId": id})
+}
+
+// seedAutoPlayoffDemo (QA-only) stands up the AUTO-BUILT quarterfinal playoff
+// one score away from firing — see Service.SeedAutoPlayoffDemo.
+func (s *Server) seedAutoPlayoffDemo(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	id, err := s.svc.SeedAutoPlayoffDemo(userID(r))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

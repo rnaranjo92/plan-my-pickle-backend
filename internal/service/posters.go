@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -621,44 +622,67 @@ func (s *Service) SweepOldPosters() error {
 		return nil
 	}
 	cutoff := time.Now().Add(-posterRetention).UTC().Format(time.RFC3339)
-	rows, err := s.sb.Select("poster_generations",
-		"created_at=lt."+store.Q(cutoff)+
-			"&select=id,url&order=created_at.asc&limit=200")
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	inUse, err := s.postersStillInUse(rows)
-	if err != nil {
-		return err
-	}
 	var swept, kept int
-	for _, r := range rows {
-		id := asStr(r, "id")
-		url := asStr(r, "url")
-		if inUse[url] {
-			kept++
-			continue // still an active poster — leave both the object and the row
+	// PAGE past the rows we keep. Rows that stay (still someone's active poster)
+	// are never deleted, so they'd otherwise sit at the front of an
+	// order-by-oldest window forever and hide every newer expired row behind
+	// them — the sweep would go quiet while storage kept growing. Skipping the
+	// running count of kept rows walks the cursor past them; deleted rows are
+	// gone, so nothing is skipped twice.
+	for page := 0; page < posterSweepMaxPages; page++ {
+		rows, err := s.sb.Select("poster_generations",
+			"created_at=lt."+store.Q(cutoff)+
+				"&select=id,url&order=created_at.asc"+
+				"&limit="+strconv.Itoa(posterSweepPage)+
+				"&offset="+strconv.Itoa(kept))
+		if err != nil {
+			return err
 		}
-		if bucket, path, ok := storagePathFromPublicURL(url); ok {
-			if derr := s.sb.StorageDelete(bucket, path); derr != nil {
-				log.Printf("poster sweep: storage delete failed for %s: %v", url, derr)
-				continue // keep the row so a later pass retries the object delete
+		if len(rows) == 0 {
+			break
+		}
+		inUse, err := s.postersStillInUse(rows)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			id := asStr(r, "id")
+			url := asStr(r, "url")
+			if inUse[url] {
+				kept++
+				continue // still an active poster — leave both the object and the row
 			}
+			if bucket, path, ok := storagePathFromPublicURL(url); ok {
+				if derr := s.sb.StorageDelete(bucket, path); derr != nil {
+					log.Printf("poster sweep: storage delete failed for %s: %v", url, derr)
+					kept++ // keep the row (and its place) so a later pass retries
+					continue
+				}
+			}
+			if derr := s.sb.Delete("poster_generations", "id=eq."+store.Q(id)); derr != nil {
+				log.Printf("poster sweep: row delete failed for %s: %v", id, derr)
+				kept++
+				continue
+			}
+			swept++
 		}
-		if derr := s.sb.Delete("poster_generations", "id=eq."+store.Q(id)); derr != nil {
-			log.Printf("poster sweep: row delete failed for %s: %v", id, derr)
-			continue
+		if len(rows) < posterSweepPage {
+			break // last page
 		}
-		swept++
 	}
 	if swept > 0 || kept > 0 {
 		log.Printf("poster sweep: removed %d, kept %d still-in-use", swept, kept)
 	}
 	return nil
 }
+
+// posterSweepPage is how many expired rows one page examines, and
+// posterSweepMaxPages bounds a single hourly pass so a huge backlog is drained
+// over several passes instead of one very long one.
+const (
+	posterSweepPage     = 100
+	posterSweepMaxPages = 5
+)
 
 // posterRetention is how long a generated poster survives in the gallery before
 // the sweep may remove it — unless it's in use somewhere, in which case it stays
@@ -681,24 +705,34 @@ func (s *Service) postersStillInUse(rows []map[string]any) (map[string]bool, err
 	if len(urls) == 0 {
 		return inUse, nil
 	}
-	evs, err := s.sb.SelectAll("events",
-		"poster_url="+store.In(urls)+"&select=poster_url")
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range evs {
-		inUse[asStr(e, "poster_url")] = true
-	}
-	lgs, err := s.sb.SelectAll("leagues",
-		"poster_url="+store.In(urls)+"&select=poster_url")
-	if err != nil {
-		return nil, err
-	}
-	for _, l := range lgs {
-		inUse[asStr(l, "poster_url")] = true
+	// CHUNKED, because these filter values are whole URLs, not ids. Each one is
+	// ~150-170 bytes once quoted and percent-encoded, so a few dozen in a single
+	// `in.(...)` blows past the gateway's request-line limit — the query 414s,
+	// the sweep returns early having deleted nothing, and since the backlog only
+	// grows the failure repeats forever. Small batches keep every request short.
+	for start := 0; start < len(urls); start += posterInUseChunk {
+		end := start + posterInUseChunk
+		if end > len(urls) {
+			end = len(urls)
+		}
+		batch := urls[start:end]
+		for _, table := range []string{"events", "leagues"} {
+			rows, err := s.sb.SelectAll(table,
+				"poster_url="+store.In(batch)+"&select=poster_url")
+			if err != nil {
+				return nil, err
+			}
+			for _, r := range rows {
+				inUse[asStr(r, "poster_url")] = true
+			}
+		}
 	}
 	return inUse, nil
 }
+
+// posterInUseChunk is how many poster URLs ride in one `in.(...)` filter. Sized
+// so the encoded request line stays well under an 8 KB gateway limit.
+const posterInUseChunk = 20
 
 // storagePathFromPublicURL splits a Supabase public object URL back into
 // (bucket, path). Returns ok=false for anything that isn't one, so a manually

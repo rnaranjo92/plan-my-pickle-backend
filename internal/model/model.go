@@ -1343,7 +1343,12 @@ type CreateEventRequest struct {
 	RoundsPerSession     int    `json:"roundsPerSession"`
 	RsvpEnabled          bool   `json:"rsvpEnabled"`
 	// PlayoffSize: auto-built playoff draw size (0=off, 4/8/16) — see Event.
-	PlayoffSize          int    `json:"playoffSize"`
+	//
+	// A POINTER because absent must not mean zero: the live mobile builds predate
+	// this field, so an unrelated edit from one of them omits it entirely, and
+	// writing 0 there would silently wipe an organizer's configured playoff
+	// finish. nil = "don't touch"; &0 = the organizer explicitly chose none.
+	PlayoffSize          *int   `json:"playoffSize"`
 	RegistrationFeeCents int    `json:"registrationFeeCents"`
 	// Currency the fees are collected in (ISO-4217, e.g. USD/CAD/PHP/GBP/AUD).
 	// Empty on update = leave unchanged; empty on create defaults to USD.

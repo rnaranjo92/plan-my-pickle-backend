@@ -2008,14 +2008,18 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// edit itself succeeded, so a build hiccup logs rather than failing it.
 	if req.PlayoffSize != nil && normalizePlayoffSize(*req.PlayoffSize) >= 4 {
 		if bks, berr := s.GetBrackets(id); berr == nil {
-			unlock := s.lockScoreEvent(id)
-			for _, b := range bks {
-				if aerr := s.maybeAutoBuildPlayoff(id, b.ID); aerr != nil {
-					log.Printf("auto-playoff: edit-time build failed for "+
-						"bracket %s: %v", b.ID, aerr)
+			// In a closure so the unlock is DEFERRED like every other holder of
+			// this mutex: a panic mid-build would otherwise leave the event's
+			// lock held forever — every future score and forfeit hangs.
+			func() {
+				defer s.lockScoreEvent(id)()
+				for _, b := range bks {
+					if aerr := s.maybeAutoBuildPlayoff(id, b.ID); aerr != nil {
+						log.Printf("auto-playoff: edit-time build failed for "+
+							"bracket %s: %v", b.ID, aerr)
+					}
 				}
-			}
-			unlock()
+			}()
 		}
 	}
 

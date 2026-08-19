@@ -180,8 +180,12 @@ func (s *Service) GeneratePoster(
 			return "", err
 		}
 	}
-	s.spendPosterCredit(callerID)
-	s.RecordPosterGeneration(callerID, eventID, url, style)
+	// Record BEFORE charging, and charge only if it stuck: a poster that isn't
+	// in the gallery is one the organizer can't retrieve after a dropped
+	// connection, and charging for that is the one outcome this must not produce.
+	if s.RecordPosterGeneration(callerID, eventID, url, style) {
+		s.spendPosterCredit(callerID)
+	}
 	log.Printf("poster: generated for %s (style=%s, %d bytes)",
 		eventID, style, len(img))
 	return url, nil
@@ -347,8 +351,9 @@ func (s *Service) GenerateLeaguePoster(
 	// league (which is free), and its renders never appeared in the gallery the
 	// UI promises — so a replaced league poster also leaked its storage object
 	// forever, since the sweep only walks recorded rows.
-	s.spendPosterCredit(callerID)
-	s.RecordPosterGeneration(callerID, "", url, style)
+	if s.RecordPosterGeneration(callerID, "", url, style) {
+		s.spendPosterCredit(callerID)
+	}
 	log.Printf("poster: generated for league %s (%d bytes)", leagueID, len(img))
 	return url, nil
 }
@@ -605,8 +610,9 @@ func (s *Service) GenerateStudioPoster(
 	if err != nil {
 		return "", fmt.Errorf("the poster generated but couldn't be saved: %w", err)
 	}
-	s.spendPosterCredit(callerID)
-	s.RecordPosterGeneration(callerID, "", url, style)
+	if s.RecordPosterGeneration(callerID, "", url, style) {
+		s.spendPosterCredit(callerID)
+	}
 	log.Printf("poster: studio render for %s (style=%s, %d bytes)",
 		callerID, style, len(img))
 	return url, nil
@@ -652,9 +658,17 @@ func oneLine(s string, max int) string {
 // RecordPosterGeneration logs a render into the caller's gallery. Best-effort:
 // a failed insert must never fail the generation — the poster already exists.
 // eventID is "" for studio renders. Inert until the table is migrated in.
-func (s *Service) RecordPosterGeneration(userID, eventID, url, style string) {
-	if !s.posterGenReady() || strings.TrimSpace(url) == "" {
-		return
+// Returns true when the render is now DISCOVERABLE — either recorded in the
+// gallery, or the gallery isn't in use at all. The caller charges only on true,
+// so a credit is never taken for a poster the organizer can't find afterwards.
+func (s *Service) RecordPosterGeneration(userID, eventID, url, style string) bool {
+	if strings.TrimSpace(url) == "" {
+		return false
+	}
+	if !s.posterGenReady() {
+		// No gallery to record into; the URL still came back in the response, so
+		// this isn't a lost poster — just an unrecorded one.
+		return true
 	}
 	row := map[string]any{
 		"user_id": userID,
@@ -665,8 +679,11 @@ func (s *Service) RecordPosterGeneration(userID, eventID, url, style string) {
 		row["event_id"] = eventID
 	}
 	if _, err := s.sb.Insert("poster_generations", row); err != nil {
-		log.Printf("poster: gallery record failed (non-fatal): %v", err)
+		log.Printf("poster: gallery record FAILED for %s — not charging, the "+
+			"organizer would have no way to find this poster: %v", userID, err)
+		return false
 	}
+	return true
 }
 
 // MyPosters returns the caller's recent poster renders, newest first. Capped —

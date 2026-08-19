@@ -699,7 +699,7 @@ func (s *Service) createPlayoffTie(eventID, bracketID string, a, b model.EventTe
 // create the next round. A single-tie round is the final — nothing to do.
 func (s *Service) maybeAdvancePlayoffRound(eventID string) error {
 	rows, err := s.sb.Select("team_ties",
-		"event_id=eq."+store.Q(eventID)+"&stage=eq.playoff&select=id,winner_team_id,play_order,bracket_id&order=play_order")
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.playoff&select=id,team_a_id,team_b_id,winner_team_id,play_order,bracket_id&order=play_order")
 	if err != nil || len(rows) == 0 {
 		return err
 	}
@@ -712,21 +712,7 @@ func (s *Service) maybeAdvancePlayoffRound(eventID string) error {
 			maxRound = rd
 		}
 	}
-	cur := byRound[maxRound]
-	if len(cur) <= 1 {
-		// The final — crown the podium (gold/silver/bronze) on the feed.
-		s.maybePostPlayoffPodium(eventID, byRound, maxRound)
-		return nil // the final — champion decided
-	}
-	winners := make([]string, 0, len(cur))
-	for _, t := range cur {
-		w := asStr(t, "winner_team_id")
-		if w == "" {
-			return nil // round not complete yet
-		}
-		winners = append(winners, w)
-	}
-	bracketID := asStr(cur[0], "bracket_id")
+
 	teams, err := s.ListTeams(eventID)
 	if err != nil {
 		return err
@@ -740,12 +726,89 @@ func (s *Service) maybeAdvancePlayoffRound(eventID string) error {
 		return err
 	}
 	courtNums := sortedCourtNums(courtByNum)
-	for i := 0; i+1 < len(winners); i += 2 {
-		slot := i / 2
-		playOrder := 1000 + (maxRound+1)*100 + slot
-		if err := s.createPlayoffTie(eventID, bracketID, byID[winners[i]], byID[winners[i+1]], playOrder, slot, courtNums, courtByNum); err != nil {
-			return err
+
+	// Walk rounds LOW to high. For each fully-decided round, the next round must
+	// be seeded from its CURRENT winners. If the next round already exists but
+	// was built from a DIFFERENT pairing — because an upstream tie was
+	// re-scored/forfeited and its winner flipped — tear down every round above
+	// this one and rebuild. This is the team-tie analog of
+	// resetCompletedDownstream: without it, re-scoring a round-1 tie left the
+	// final holding the old winner and the wrong team contested the title.
+	rounds := make([]int, 0, len(byRound))
+	for rd := range byRound {
+		rounds = append(rounds, rd)
+	}
+	sort.Ints(rounds)
+	for _, rd := range rounds {
+		cur := byRound[rd]
+		if len(cur) <= 1 {
+			// The highest round is the final; crown the podium.
+			if rd == maxRound {
+				s.maybePostPlayoffPodium(eventID, byRound, maxRound)
+			}
+			continue
 		}
+		// Every tie in this round must be decided before it can feed the next.
+		winners := make([]string, 0, len(cur))
+		complete := true
+		for _, t := range cur {
+			w := asStr(t, "winner_team_id")
+			if w == "" {
+				complete = false
+				break
+			}
+			winners = append(winners, w)
+		}
+		if !complete {
+			return nil // this round isn't finished; nothing downstream to do yet
+		}
+		// Expected next-round pairings from the current winners.
+		type pair struct{ a, b string }
+		expected := make([]pair, 0, len(winners)/2)
+		for i := 0; i+1 < len(winners); i += 2 {
+			expected = append(expected, pair{winners[i], winners[i+1]})
+		}
+		next := byRound[rd+1]
+		matches := len(next) == len(expected)
+		if matches {
+			for i, t := range next { // next is play_order-sorted
+				a, b := asStr(t, "team_a_id"), asStr(t, "team_b_id")
+				e := expected[i]
+				// order-insensitive: a tie {X,Y} == {Y,X}
+				if !((a == e.a && b == e.b) || (a == e.b && b == e.a)) {
+					matches = false
+					break
+				}
+			}
+		}
+		if matches {
+			continue // next round is already correct — move on
+		}
+		// Stale (or missing) downstream. Delete every round ABOVE rd, then
+		// rebuild exactly this round's successor from the current winners.
+		var staleTieIDs []string
+		for r2 := rd + 1; r2 <= maxRound; r2++ {
+			for _, t := range byRound[r2] {
+				staleTieIDs = append(staleTieIDs, asStr(t, "id"))
+			}
+		}
+		if len(staleTieIDs) > 0 {
+			// Lines are matches rows carrying tie_id; deleting them cascades
+			// match_participants. Then drop the tie rows.
+			_ = s.sb.Delete("matches", "tie_id="+store.In(staleTieIDs))
+			if err := s.sb.Delete("team_ties", "id="+store.In(staleTieIDs)); err != nil {
+				return err
+			}
+		}
+		bracketID := asStr(cur[0], "bracket_id")
+		for i, e := range expected {
+			playOrder := 1000 + (rd+1)*100 + i
+			if err := s.createPlayoffTie(eventID, bracketID,
+				byID[e.a], byID[e.b], playOrder, i, courtNums, courtByNum); err != nil {
+				return err
+			}
+		}
+		return nil // rebuilt one round; a later finish converges the rest
 	}
 	return nil
 }

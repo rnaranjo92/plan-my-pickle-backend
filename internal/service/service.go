@@ -4956,14 +4956,16 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 			}
 		}
 	}
-	// A SELF-registrant's DUPR id may ONLY be their own verified connection —
-	// never client input. Otherwise an anonymous (or unconnected) sign-up could
-	// paste a VICTIM's dupr_id and have this event's results post to that
-	// person's official rating; the old "flush requires a non-empty dupr_id"
-	// backstop checks presence, not ownership, so it does not catch this. An
-	// organizer ADD (req.Self == false) is trusted and may attach a known
+	// A DUPR id may ONLY come from the caller's OWN verified connection — never
+	// client input — UNLESS the caller is a trusted organizer add. The trust
+	// boundary is req.TrustedAdd (server-set = UserOwnsEvent, json:"-" so a
+	// client can't forge it), NOT req.Self (client-controlled). A crafted
+	// {self:false, duprId:<victim>} from an anonymous or non-owner caller lands
+	// as an untrusted guest; without this it would persist the victim's id and
+	// post this event's results to their official rating (the flush backstop
+	// checks presence, not ownership). An organizer ADD may attach a known
 	// player's id for roster import.
-	if req.Self && !conn.Connected {
+	if !req.TrustedAdd && !conn.Connected {
 		req.DuprID = ""
 		req.DuprRating = nil
 		req.DuprReliability = nil
@@ -4978,7 +4980,7 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	// unlinked player — but then no dupr_id is ever attached, and the real backstop
 	// (SubmitPendingToDupr fails a match with any participant missing a dupr_id)
 	// still keeps un-DUPR'd results out of DUPR.
-	if req.Self {
+	if !req.TrustedAdd {
 		sanctioned, minEnt := s.eventDuprGate(eventID)
 		if sanctioned && !conn.Connected {
 			return model.Registration{}, ErrDuprNotConnected
@@ -6330,6 +6332,14 @@ func (s *Service) RemapCourt(eventID string, from, to int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Court CEILING: lowering num_courts leaves ghost rows (ensureCourts only
+	// adds). Spreading a court's games across ALL rows would re-host them on a
+	// retired lane; clamp the spread targets to lanes within the count.
+	ceiling := 0
+	if ev, _ := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=num_courts"); ev != nil {
+		ceiling = asInt(ev, "num_courts")
+	}
 	fromID := ""
 	type target struct {
 		id  string
@@ -6345,6 +6355,9 @@ func (s *Service) RemapCourt(eventID string, from, to int) (int, error) {
 		}
 		if to > 0 && n != to {
 			continue
+		}
+		if ceiling > 0 && n > ceiling {
+			continue // retired lane — never a spread target
 		}
 		targets = append(targets, target{id: id, num: n})
 	}
@@ -8281,6 +8294,12 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int, seeding str
 		return 0, ErrNotFound
 	}
 	eventID := asStr(b, "event_id")
+	// Serialize per event, like the MLP GeneratePlayoff: two concurrent "Build
+	// playoff" taps both wipe+persist and produce a duplicated bracket (two
+	// finals) — there is no unique constraint to catch it.
+	if eventID != "" {
+		defer s.lockScoreEvent(eventID)()
+	}
 
 	// A single-elimination playoff is seeded from pool standings, so the pools
 	// must be fully played first. Otherwise "Build playoff" would seed a
@@ -14226,6 +14245,17 @@ func (s *Service) SetMatchCourt(matchID string, courtNumber int, playOrder *floa
 	}
 
 	eventID := asStr(m, "event_id")
+	// Reject a lane above the event's court count — a drag onto a retired lane
+	// would strand the game (hidden on the board, but autoStartNextOnCourt
+	// could still flip it live by court_id).
+	if courtNumber > 0 {
+		if ev, _ := s.sb.SelectOne("events",
+			"id=eq."+store.Q(eventID)+"&select=num_courts"); ev != nil {
+			if n := asInt(ev, "num_courts"); n > 0 && courtNumber > n {
+				return fmt.Errorf("court %d is beyond this event's %d courts", courtNumber, n)
+			}
+		}
+	}
 	var courtID any // nil => unassigned
 	courtIDStr := ""
 	if courtNumber > 0 {

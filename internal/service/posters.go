@@ -34,11 +34,20 @@ var posterStyles = map[string]string{
 	"paper":  "hand-made community flyer, risograph print texture, two-ink palette, friendly and local",
 	"epic":   "cinematic tournament poster, dramatic low-angle court photography style, gold and navy, championship gravitas",
 	"tropic": "sunny outdoor tournament poster, palm shadows, warm gradients, beach-town summer energy",
+	"comic":  "pop-art comic book poster, bold halftone dots, dynamic action panels, punchy primary colors, exclamation energy",
+	"street": "urban streetball poster, spray-paint stencil texture, asphalt and chain-link motifs, bold graffiti-influenced type",
+	"fiesta": "festive fiesta poster, papel picado banners, vibrant pink orange and teal, celebratory hand-crafted feel",
+	"deco":   "art-deco gala poster, black and gold geometry, elegant fan patterns, 1920s luxury typography",
+	"chalk":  "gym chalkboard poster, white and pastel chalk hand-lettering on deep green board, coach's play-diagram doodles",
+	"americana": "summer Americana poster, stars-and-stripes bunting, backyard-BBQ warmth, vintage state-fair typography",
 }
 
 // PosterStyleKeys lists the picker's options in a stable order.
 func PosterStyleKeys() []string {
-	return []string{"clean", "retro", "neon", "paper", "epic", "tropic"}
+	return []string{
+		"clean", "retro", "neon", "paper", "epic", "tropic",
+		"comic", "street", "fiesta", "deco", "chalk", "americana",
+	}
 }
 
 // posterLayouts is the COMPOSITION axis — where things sit on the page.

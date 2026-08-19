@@ -145,8 +145,8 @@ func (s *Service) GeneratePoster(
 	if len(logo) > 0 {
 		refs = append(refs, logo)
 	}
-	if lrefs, counts := fetchPosterLogos(logos); len(lrefs) > 0 {
-		prompt += " " + logoFacts(counts, len(refs))
+	if lrefs, counts, labels := fetchPosterLogos(logos); len(lrefs) > 0 {
+		prompt += " " + logoFacts(counts, labels, len(refs))
 		refs = append(refs, lrefs...)
 	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
@@ -569,8 +569,8 @@ func (s *Service) GenerateStudioPoster(
 	}
 	prompt := studioBrief(title, dateText, venueText, direction)
 	var refs [][]byte
-	if lrefs, counts := fetchPosterLogos(logos); len(lrefs) > 0 {
-		prompt += " " + logoFacts(counts, 0)
+	if lrefs, counts, labels := fetchPosterLogos(logos); len(lrefs) > 0 {
+		prompt += " " + logoFacts(counts, labels, 0)
 		refs = lrefs
 	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
@@ -844,19 +844,33 @@ func storagePathFromPublicURL(url string) (bucket, path string, ok bool) {
 // part of the identity, team logos are the cast, sponsors are the credits.
 type PosterLogo struct {
 	URL  string `json:"url"`
-	Role string `json:"role"` // main | team | sponsor (anything else = sponsor)
+	Role string `json:"role"` // main | team | sponsor | other
+	// Label is the organizer's own words for what this is ("Host club",
+	// "Charity partner"). For the three canonical roles it's optional; for
+	// role=other it's the whole meaning, quoted to the model verbatim.
+	Label string `json:"label"`
 }
 
 // fetchPosterLogos downloads the attached logos (max 5 total), grouped by role
 // and in a STABLE order (main, then team, then sponsor) so the prompt can name
 // attachment positions. Best-effort per logo — a bad URL skips that one, never
 // fails the poster. Same 5MB/PNG-JPEG discipline as the club logo.
-func fetchPosterLogos(logos []PosterLogo) (refs [][]byte, counts [3]int) {
-	order := []string{"main", "team", "sponsor"}
-	for gi, role := range order {
+func fetchPosterLogos(logos []PosterLogo) (refs [][]byte, counts [4]int, labels []string) {
+	bucket := func(l PosterLogo) int {
+		switch strings.ToLower(strings.TrimSpace(l.Role)) {
+		case "main":
+			return 0
+		case "team":
+			return 1
+		case "sponsor":
+			return 2
+		default:
+			return 3 // organizer's own kind — carried by its label
+		}
+	}
+	for gi := 0; gi < 4; gi++ {
 		for _, l := range logos {
-			r := strings.ToLower(strings.TrimSpace(l.Role))
-			if r != role && !(role == "sponsor" && r != "main" && r != "team") {
+			if bucket(l) != gi {
 				continue
 			}
 			if len(refs) == 5 {
@@ -865,6 +879,9 @@ func fetchPosterLogos(logos []PosterLogo) (refs [][]byte, counts [3]int) {
 			if img := fetchSmallImage(strings.TrimSpace(l.URL)); len(img) > 0 {
 				refs = append(refs, img)
 				counts[gi]++
+				if gi == 3 {
+					labels = append(labels, oneLine(l.Label, 40))
+				}
 			}
 		}
 	}
@@ -878,7 +895,7 @@ func fetchPosterLogos(logos []PosterLogo) (refs [][]byte, counts [3]int) {
 // small bottom row. All of them INSIDE the artwork — the first version said
 // "along the bottom edge" and the model dutifully appended a separate white
 // strip below the poster, logos floating outside the design.
-func logoFacts(counts [3]int, offset int) string {
+func logoFacts(counts [4]int, labels []string, offset int) string {
 	span := func(n int) string {
 		start := offset + 1
 		if n == 1 {
@@ -903,6 +920,24 @@ func logoFacts(counts [3]int, offset int) string {
 		parts = append(parts, fmt.Sprintf(
 			"SPONSORS: %s are sponsor logos — one small, evenly spaced row of "+
 				"credits INSIDE the poster's bottom margin.", span(n)))
+		offset += n
+	}
+	// Organizer-named kinds: each gets its own line with the organizer's words,
+	// and the model places it where the design suits — the label carries the
+	// meaning ("Host club" reads differently from "Charity partner").
+	for i := 0; i < counts[3]; i++ {
+		label := ""
+		if i < len(labels) {
+			label = labels[i]
+		}
+		if label == "" {
+			label = "partner"
+		}
+		parts = append(parts, fmt.Sprintf(
+			"attached image %d is the %q logo — integrate it tastefully into the "+
+				"artwork at a modest size where the design suits.",
+			offset+1, label))
+		offset++
 	}
 	if len(parts) == 0 {
 		return ""

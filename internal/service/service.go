@@ -776,6 +776,11 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if s.columnReady("events", "rounds_per_session") {
 		payload["rounds_per_session"] = req.RoundsPerSession
 	}
+	// playoff_size ships in add_playoff_size.sql — gate on the column so a create
+	// still works pre-migration (the auto-playoff finish just can't be set yet).
+	if s.columnReady("events", "playoff_size") {
+		payload["playoff_size"] = normalizePlayoffSize(req.PlayoffSize)
+	}
 	// rsvp_enabled ships in add_session_rsvps.sql — gate so it works pre-migration.
 	if s.columnReady("events", "rsvp_enabled") {
 		payload["rsvp_enabled"] = req.RsvpEnabled
@@ -1965,6 +1970,12 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// rounds_per_session: gate on the column so it can be set OR cleared (0=auto).
 	if s.columnReady("events", "rounds_per_session") {
 		upd["rounds_per_session"] = req.RoundsPerSession
+	}
+	// playoff_size: organizer's chosen auto-playoff draw size (set or clear).
+	// Takes effect when the pool play completes (the bracket auto-builds then),
+	// so editing it before pools finish is honored; after, use Rebuild playoff.
+	if s.columnReady("events", "playoff_size") {
+		upd["playoff_size"] = normalizePlayoffSize(req.PlayoffSize)
 	}
 	// rsvp_enabled: organizer toggle for the league RSVP strip (set or clear).
 	if s.columnReady("events", "rsvp_enabled") {
@@ -6191,9 +6202,15 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 				return model.ScheduleResult{}, err
 			}
 			total += n
-			// pools_playoff: lay down the (empty) medal bracket now so it shows
-			// in the Standings tab immediately; it auto-seeds when pools finish.
-			if ev.TournamentFormat == "pools_playoff" {
+			// pools_playoff with NO explicit draw size keeps its legacy finish: lay
+			// the empty 4-team medal bracket now so it shows in Standings, and let
+			// maybeSeedPlayoff seed the top 4 when pools finish.
+			//
+			// When a PlayoffSize is chosen (on pools_playoff OR any round-robin), we
+			// DON'T lay a skeleton here — maybeAutoBuildPlayoff builds the full draw
+			// at the chosen size the moment the last pool game is scored. One path,
+			// any size, and it clamps to the teams actually present.
+			if ev.TournamentFormat == "pools_playoff" && ev.PlayoffSize == 0 {
 				seeds, err := s.seedTopTeams(ev, eventID, b.ID, "wins")
 				if err != nil {
 					return model.ScheduleResult{}, err
@@ -8300,7 +8317,16 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int, seeding str
 	if eventID != "" {
 		defer s.lockScoreEvent(eventID)()
 	}
+	return s.buildPlayoffLocked(bracketID, eventID, topN, seeding, manualSides)
+}
 
+// buildPlayoffLocked is the body of GeneratePlayoffBracket WITHOUT the per-event
+// lock. The caller MUST already hold lockScoreEvent(eventID) — the manual entry
+// point takes it above, and the auto-build (maybeAutoBuildPlayoff) runs inside
+// the score path, which already holds it. Splitting this out is what lets the
+// auto-build reuse the exact same, tested draw logic without re-locking (which
+// would deadlock, since the mutex is not reentrant).
+func (s *Service) buildPlayoffLocked(bracketID, eventID string, topN int, seeding string, manualSides [][]string) (int, error) {
 	// A single-elimination playoff is seeded from pool standings, so the pools
 	// must be fully played first. Otherwise "Build playoff" would seed a
 	// meaningless bracket off all-zero standings.
@@ -8364,6 +8390,67 @@ func (s *Service) GeneratePlayoffBracket(bracketID string, topN int, seeding str
 	// No consolation here: pool players already played >=2 games, so the playoff
 	// bracket doesn't need a back-draw to satisfy the 2-match guarantee.
 	return s.persistBracket(ev, bracketID, sides[:topN], false)
+}
+
+// maybeAutoBuildPlayoff builds the configured-size playoff the moment pool play
+// completes — the automatic counterpart to the manual "Build playoff" button.
+//
+// Gated on the event's PlayoffSize (0 = off). No-op unless pools exist and are
+// fully scored AND no bracket has been built yet for this division. Clamps to
+// the teams present (fewer than 4 = no playoff, silently). MUST be called from a
+// context already holding lockScoreEvent(eventID) — it calls buildPlayoffLocked
+// directly (re-locking would deadlock; the mutex isn't reentrant).
+func (s *Service) maybeAutoBuildPlayoff(eventID, bracketID string) error {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return err
+	}
+	size := normalizePlayoffSize(ev.PlayoffSize)
+	if size < 4 {
+		return nil // auto-playoff off for this event
+	}
+	total, open, err := s.poolProgress(bracketID)
+	if err != nil {
+		return err
+	}
+	if total == 0 || open > 0 {
+		return nil // pools not finished (or this bracket has no pool games)
+	}
+	// Already built? Never rebuild automatically — a re-score of a pool game must
+	// not blow away a playoff that may already be underway. Rebuild is a
+	// deliberate manual action.
+	existing, err := s.sb.Select("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket&select=id&limit=1")
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	if _, berr := s.buildPlayoffLocked(bracketID, eventID, size, "wins", nil); berr != nil {
+		// Non-fatal: too few teams, or a transient failure. The manual button is
+		// still there; never fail the score that triggered this.
+		log.Printf("auto-playoff: build skipped for bracket %s (size %d): %v",
+			bracketID, size, berr)
+	}
+	return nil
+}
+
+// normalizePlayoffSize clamps a requested draw size to the supported set: 0
+// (off) or 4 / 8 / 16. Anything else rounds DOWN to the nearest supported size
+// (6 -> 4, 12 -> 8) and caps at 16, so a stray client value can't produce a
+// nonsense bracket request.
+func normalizePlayoffSize(n int) int {
+	switch {
+	case n <= 0:
+		return 0
+	case n < 8:
+		return 4
+	case n < 16:
+		return 8
+	default:
+		return 16
+	}
 }
 
 // validateManualSides ensures every team in [manual] is a real team in [valid]
@@ -8849,6 +8936,16 @@ func (s *Service) advanceAfterScore(m map[string]any, freshCompletion bool) erro
 		if bc := asStrPtr(m, "bracket_id"); bc != nil && asStr(m, "tie_id") == "" {
 			if err := s.maybeSeedPlayoff(*bc); err != nil {
 				return err
+			}
+			// Auto-build the chosen-size playoff once the last pool game lands.
+			// No-op unless the event has a PlayoffSize set; mutually exclusive with
+			// the seed above (a sized event never gets the legacy 4-team skeleton
+			// laid down, so maybeSeedPlayoff finds nothing to seed). Already under
+			// lockScoreEvent here, so it calls buildPlayoffLocked directly.
+			if eid := asStr(m, "event_id"); eid != "" {
+				if err := s.maybeAutoBuildPlayoff(eid, *bc); err != nil {
+					return err
+				}
 			}
 		}
 	}

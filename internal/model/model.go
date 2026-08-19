@@ -23,6 +23,14 @@ type Event struct {
 	// bounds above when > 0. Mainly for recurring leagues that want a fixed
 	// "N rounds a week".
 	RoundsPerSession int `json:"roundsPerSession"`
+	// PlayoffSize: finish a pool/round-robin division with an auto-built playoff
+	// of this DRAW SIZE. 0 = off (manual "Build playoff" only). 4 = semifinals
+	// (medal bracket, gold+bronze), 8 = quarterfinals, 16 = round of 16. When set,
+	// the bracket auto-builds from the standings the moment the last pool game is
+	// scored — clamped to the teams actually present (pick 8 with 6 teams → a
+	// 6-in-8 draw with byes). Only round-robin / pools_playoff produce standings,
+	// so it's inert on elimination draws.
+	PlayoffSize int `json:"playoffSize"`
 	// RsvpEnabled turns on the "Playing Thursday?" RSVP strip on a recurring
 	// league's feed (organizer opt-in).
 	RsvpEnabled          bool `json:"rsvpEnabled"`
@@ -1334,6 +1342,8 @@ type CreateEventRequest struct {
 	MaxPoolRounds        int    `json:"maxPoolRounds"`
 	RoundsPerSession     int    `json:"roundsPerSession"`
 	RsvpEnabled          bool   `json:"rsvpEnabled"`
+	// PlayoffSize: auto-built playoff draw size (0=off, 4/8/16) — see Event.
+	PlayoffSize          int    `json:"playoffSize"`
 	RegistrationFeeCents int    `json:"registrationFeeCents"`
 	// Currency the fees are collected in (ISO-4217, e.g. USD/CAD/PHP/GBP/AUD).
 	// Empty on update = leave unchanged; empty on create defaults to USD.

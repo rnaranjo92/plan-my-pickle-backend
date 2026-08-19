@@ -194,6 +194,7 @@ func mapEvent(m map[string]any) model.Event {
 		MinPoolRounds:              asInt(m, "min_pool_rounds"),
 		MaxPoolRounds:              asInt(m, "max_pool_rounds"),
 		RoundsPerSession:           asInt(m, "rounds_per_session"),
+		PlayoffSize:                asInt(m, "playoff_size"),
 		RsvpEnabled:                asBool(m, "rsvp_enabled"),
 		SeasonNumber:               asInt(m, "season_number"),
 		SeasonStartedAt:            asStr(m, "season_started_at"),

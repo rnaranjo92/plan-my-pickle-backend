@@ -40,6 +40,10 @@ var posterStyles = map[string]string{
 	"deco":   "art-deco gala poster, black and gold geometry, elegant fan patterns, 1920s luxury typography",
 	"chalk":  "gym chalkboard poster, white and pastel chalk hand-lettering on deep green board, coach's play-diagram doodles",
 	"americana": "summer Americana poster, stars-and-stripes bunting, backyard-BBQ warmth, vintage state-fair typography",
+	// The 2026-trend trio: abstract gradients, maximalism, dimensional type.
+	"gradient": "modern abstract poster, vibrant flowing color gradients, soft glowing shapes, dreamy Y2K energy, high contrast type",
+	"maximal":  "maximalist poster, richly layered collage of shapes stickers and patterns, exuberant color, dense joyful composition that still keeps the text readable",
+	"depth":    "3D-inspired poster, extruded dimensional typography with dramatic perspective and soft shadows, floating elements, tactile depth",
 }
 
 // PosterStyleKeys lists the picker's options in a stable order.
@@ -47,6 +51,7 @@ func PosterStyleKeys() []string {
 	return []string{
 		"clean", "retro", "neon", "paper", "epic", "tropic",
 		"comic", "street", "fiesta", "deco", "chalk", "americana",
+		"gradient", "maximal", "depth",
 	}
 }
 

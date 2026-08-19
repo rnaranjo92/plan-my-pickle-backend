@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/gateway"
+)
 
 // The webhook routes subscriptions to plan columns BY PRICE ID. Getting this
 // wrong is how buying one product grants another — a coach subscription once
@@ -66,5 +70,56 @@ func TestClubPlanFreeWhileSubscriptionsAreOff(t *testing.T) {
 	svc := &Service{}
 	if !svc.ClubPlanActive("anyone") {
 		t.Fatal("with subscriptions globally off, everything is free — parity with IsPremium")
+	}
+}
+
+
+// The finding that prompted these: checkout.session.completed carries NO line
+// items, so the router used to see PriceID=="" and fall into the premium
+// column — a Club (or coach) purchase granted $15 Premium instead of the
+// product paid for. The fix stamps price_id into session metadata and reads it
+// back; these pin the routing on both sides of that seam.
+func TestClubCheckoutEventRoutesToClubColumns(t *testing.T) {
+	t.Setenv("STRIPE_CLUB_PRICE_ID", "price_club_123")
+	t.Setenv("STRIPE_PREMIUM_PRICE_ID", "price_premium_999")
+	f := newFake()
+	svc := newFakeSvc(t, f)
+	if err := svc.applySubscriptionEvent(gateway.SubscriptionEvent{
+		UserID: "buyer-1", PriceID: "price_club_123",
+		SubscriptionID: "sub_club", Status: "active", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows := f.written("pmp_profiles")
+	if len(rows) == 0 {
+		t.Fatal("nothing written")
+	}
+	row := rows[len(rows)-1]
+	if v, ok := row["club_plan"].(bool); !ok || !v {
+		t.Fatalf("club purchase must set club_plan, wrote: %v", row)
+	}
+	if _, hasPremium := row["premium"]; hasPremium {
+		t.Fatalf("a club purchase must NEVER touch the premium column, wrote: %v", row)
+	}
+}
+
+func TestPremiumCheckoutStillRoutesToPremium(t *testing.T) {
+	t.Setenv("STRIPE_CLUB_PRICE_ID", "price_club_123")
+	t.Setenv("STRIPE_PREMIUM_PRICE_ID", "price_premium_999")
+	f := newFake()
+	svc := newFakeSvc(t, f)
+	if err := svc.applySubscriptionEvent(gateway.SubscriptionEvent{
+		UserID: "buyer-2", PriceID: "price_premium_999",
+		Status: "active", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows := f.written("pmp_profiles")
+	row := rows[len(rows)-1]
+	if v, ok := row["premium"].(bool); !ok || !v {
+		t.Fatalf("premium purchase must set premium, wrote: %v", row)
+	}
+	if _, hasClub := row["club_plan"]; hasClub {
+		t.Fatalf("a premium purchase must not touch club_plan, wrote: %v", row)
 	}
 }

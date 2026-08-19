@@ -133,7 +133,7 @@ func (s *Service) sponsoringClubName(userID string) string {
 	if own, oerr := s.sb.Select("clubs",
 		"owner_id=eq."+store.Q(userID)+"&select=id,name,owner_id&limit=5"); oerr == nil {
 		for _, c := range own {
-			if s.IsPremium(asStr(c, "owner_id")) {
+			if s.ClubPlanActive(asStr(c, "owner_id")) {
 				return strings.TrimSpace(asStr(c, "name"))
 			}
 		}
@@ -147,7 +147,7 @@ func (s *Service) sponsoringClubName(userID string) string {
 		return ""
 	}
 	for _, c := range clubs {
-		if s.IsPremium(strings.TrimSpace(asStr(c, "owner_id"))) {
+		if s.ClubPlanActive(strings.TrimSpace(asStr(c, "owner_id"))) {
 			return strings.TrimSpace(asStr(c, "name"))
 		}
 	}

@@ -47,6 +47,10 @@ type Server struct {
 	// otpLimiter throttles phone-OTP SMS sends per user so nobody can burn the
 	// Twilio budget by spamming "resend" (the service adds a 30s resend gap too).
 	otpLimiter *rateLimiter
+	// posterLimiter bounds AI poster generation — every call spends real
+	// Gemini money, so like the OTP limiter this caps what one account can
+	// burn. Generous enough for taste-and-retry sessions.
+	posterLimiter *rateLimiter
 	// liveLimiter throttles running-scorebug pushes. These arrive at rally pace —
 	// roughly one per point per court — so they need a far higher ceiling than the
 	// signup-shaped regLimiter, and a PER-COURT key: four courts sharing one
@@ -66,14 +70,15 @@ func NewServer(svc *service.Service) http.Handler {
 	s := &Server{
 		svc:               svc,
 		phoneCheckin:      newRateLimiter(60, 60),
-		regLimiter:        newRateLimiter(40, 60),  // 40 self-registrations/min per event
-		regContactLimiter: newRateLimiter(5, 600),  // 5 self-registrations / 10 min per phone|email
-		passcodeLimiter:   newRateLimiter(10, 60),  // 10 passcode attempts/min per event
-		socialLimiter:     newRateLimiter(30, 60),  // 30 social writes/min per user
-		createLimiter:     newRateLimiter(20, 60),  // 20 event/league creates/min per user
-		sessionLimiter:    newRateLimiter(600, 60), // 600 checkout-session Stripe lookups/min (global, cache-miss only)
-		otpLimiter:        newRateLimiter(5, 600),  // 5 OTP sends / 10 min per user
-		liveLimiter:       newRateLimiter(240, 60), // 240 scorebug pushes/min per court (~4/sec)
+		regLimiter:        newRateLimiter(40, 60),   // 40 self-registrations/min per event
+		regContactLimiter: newRateLimiter(5, 600),   // 5 self-registrations / 10 min per phone|email
+		passcodeLimiter:   newRateLimiter(10, 60),   // 10 passcode attempts/min per event
+		socialLimiter:     newRateLimiter(30, 60),   // 30 social writes/min per user
+		createLimiter:     newRateLimiter(20, 60),   // 20 event/league creates/min per user
+		sessionLimiter:    newRateLimiter(600, 60),  // 600 checkout-session Stripe lookups/min (global, cache-miss only)
+		otpLimiter:        newRateLimiter(5, 600),   // 5 OTP sends / 10 min per user
+		posterLimiter:     newRateLimiter(15, 3600), // 15 poster renders / hour per user
+		liveLimiter:       newRateLimiter(240, 60),  // 240 scorebug pushes/min per court (~4/sec)
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
 	}
 	mux := http.NewServeMux()
@@ -402,6 +407,8 @@ func NewServer(svc *service.Service) http.Handler {
 	// Set/clear the league banner (the client uploaded the image to Storage; this
 	// just persists the public URL on the league row). Owner-only.
 	mux.HandleFunc("POST /leagues/{id}/poster", s.ownerOnly("league", "id", s.setLeaguePoster))
+	mux.HandleFunc("POST /leagues/{id}/poster/generate",
+		s.ownerOnly("league", "id", s.generateLeaguePoster))
 	mux.HandleFunc("POST /leagues/{id}/listing", s.ownerOnly("league", "id", s.setLeagueListing))
 	mux.HandleFunc("POST /leagues/{id}/win-by", s.ownerOnly("league", "id", s.setLeagueWinBy))
 
@@ -1156,6 +1163,33 @@ func (s *Server) clubCheckout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
+// generateLeaguePoster renders an AI poster for a LEAGUE and sets it as the
+// league's poster. Owner-gated by the route.
+func (s *Server) generateLeaguePoster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Style  string `json:"style"`
+		Layout string `json:"layout"`
+		Vibe   string `json:"vibe"`
+		Extra  string `json:"extra"`
+		Custom string `json:"custom"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.posterLimiter.allow("poster:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New(
+			"that's a lot of posters in one hour — take a break and come back"))
+		return
+	}
+	url, err := s.svc.GenerateLeaguePoster(r.PathValue("id"),
+		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": url})
+}
+
 // posterStyles lists the poster style picker's options, and whether generation
 // is enabled at all — so the client can hide the whole feature when it isn't.
 func (s *Server) posterStyles(w http.ResponseWriter, r *http.Request) {
@@ -1177,12 +1211,18 @@ func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 		Layout string `json:"layout"`
 		Vibe   string `json:"vibe"`
 		Extra  string `json:"extra"`
+		Custom string `json:"custom"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	url, err := s.svc.GeneratePoster(
-		r.PathValue("id"), userID(r), req.Style, req.Layout, req.Vibe, req.Extra)
+	if !s.posterLimiter.allow("poster:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New(
+			"that's a lot of posters in one hour — take a break and come back"))
+		return
+	}
+	url, err := s.svc.GeneratePoster(r.PathValue("id"), userID(r),
+		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom)
 	if err != nil {
 		status(w, err)
 		return

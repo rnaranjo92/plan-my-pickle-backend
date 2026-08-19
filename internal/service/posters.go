@@ -28,17 +28,17 @@ import (
 // posterStyles is the organizer's whole vocabulary — a picker, not a textarea.
 // Keys are what the client sends; values steer the model.
 var posterStyles = map[string]string{
-	"clean":  "clean modern sports poster, bold flat colors, strong grid layout, generous whitespace",
-	"retro":  "retro athletic poster, distressed textures, vintage varsity typography, 1970s sports-program palette",
-	"neon":   "night-league poster, neon glow on deep navy, dramatic court floodlights, electric energy",
-	"paper":  "hand-made community flyer, risograph print texture, two-ink palette, friendly and local",
-	"epic":   "cinematic tournament poster, dramatic low-angle court photography style, gold and navy, championship gravitas",
-	"tropic": "sunny outdoor tournament poster, palm shadows, warm gradients, beach-town summer energy",
-	"comic":  "pop-art comic book poster, bold halftone dots, dynamic action panels, punchy primary colors, exclamation energy",
-	"street": "urban streetball poster, spray-paint stencil texture, asphalt and chain-link motifs, bold graffiti-influenced type",
-	"fiesta": "festive fiesta poster, papel picado banners, vibrant pink orange and teal, celebratory hand-crafted feel",
-	"deco":   "art-deco gala poster, black and gold geometry, elegant fan patterns, 1920s luxury typography",
-	"chalk":  "gym chalkboard poster, white and pastel chalk hand-lettering on deep green board, coach's play-diagram doodles",
+	"clean":     "clean modern sports poster, bold flat colors, strong grid layout, generous whitespace",
+	"retro":     "retro athletic poster, distressed textures, vintage varsity typography, 1970s sports-program palette",
+	"neon":      "night-league poster, neon glow on deep navy, dramatic court floodlights, electric energy",
+	"paper":     "hand-made community flyer, risograph print texture, two-ink palette, friendly and local",
+	"epic":      "cinematic tournament poster, dramatic low-angle court photography style, gold and navy, championship gravitas",
+	"tropic":    "sunny outdoor tournament poster, palm shadows, warm gradients, beach-town summer energy",
+	"comic":     "pop-art comic book poster, bold halftone dots, dynamic action panels, punchy primary colors, exclamation energy",
+	"street":    "urban streetball poster, spray-paint stencil texture, asphalt and chain-link motifs, bold graffiti-influenced type",
+	"fiesta":    "festive fiesta poster, papel picado banners, vibrant pink orange and teal, celebratory hand-crafted feel",
+	"deco":      "art-deco gala poster, black and gold geometry, elegant fan patterns, 1920s luxury typography",
+	"chalk":     "gym chalkboard poster, white and pastel chalk hand-lettering on deep green board, coach's play-diagram doodles",
 	"americana": "summer Americana poster, stars-and-stripes bunting, backyard-BBQ warmth, vintage state-fair typography",
 	// The 2026-trend trio: abstract gradients, maximalism, dimensional type.
 	"gradient": "modern abstract poster, vibrant flowing color gradients, soft glowing shapes, dreamy Y2K energy, high contrast type",
@@ -107,7 +107,7 @@ func (s *Service) posterAllowed(ev map[string]any, callerID string) bool {
 // Synchronous by design: the model answers in 2-5s, which is a button with a
 // spinner, not a job queue. The HTTP client allows 60s for the slow tail.
 func (s *Service) GeneratePoster(
-	eventID, callerID, style, layout, vibe, extra string,
+	eventID, callerID, style, layout, vibe, extra, custom string,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -124,29 +124,9 @@ func (s *Service) GeneratePoster(
 	if !s.posterAllowed(ev, callerID) {
 		return "", ErrForbidden
 	}
-	stylePrompt, ok := posterStyles[strings.ToLower(strings.TrimSpace(style))]
-	if !ok {
-		return "", fmt.Errorf("unknown style — pick one of: %s",
-			strings.Join(PosterStyleKeys(), ", "))
-	}
-	// Layout and vibe DEFAULT rather than error when absent: clients that only
-	// know about styles (the already-patched apps) keep working unchanged.
-	layoutPrompt, ok := posterLayouts[strings.ToLower(strings.TrimSpace(layout))]
-	if !ok {
-		layoutPrompt = posterLayouts["classic"]
-	}
-	vibePrompt, ok := posterVibes[strings.ToLower(strings.TrimSpace(vibe))]
-	if !ok {
-		vibePrompt = posterVibes["illustrated"]
-	}
-	stylePrompt = stylePrompt + " " + layoutPrompt + " " + vibePrompt
-	if extra = sanitizePosterExtra(extra); extra != "" {
-		// The organizer's own art direction, fenced: it steers decoration, and
-		// is explicitly barred from changing the facts — the one thing the
-		// derived brief guarantees.
-		stylePrompt += fmt.Sprintf(
-			" Organizer's art direction (decorative preference ONLY — it must "+
-				"never change, add or remove any text or facts): %q.", extra)
+	stylePrompt, err := composePosterDirection(style, layout, vibe, extra, custom)
+	if err != nil {
+		return "", err
 	}
 
 	prompt, logo := s.posterBrief(ev, stylePrompt)
@@ -168,7 +148,7 @@ func (s *Service) GeneratePoster(
 	// poster a TV or a share link is already showing until the new one is
 	// actually chosen (poster_url flips atomically below), and CDN caches never
 	// need invalidating for a URL that never changes content.
-	path := fmt.Sprintf("%s/ai-%d.%s", eventID, time.Now().UTC().Unix(), ext)
+	path := fmt.Sprintf("%s/ai-%d.%s", eventID, time.Now().UTC().UnixNano(), ext)
 	// The SAME bucket the manual poster upload uses (client kPosterBucket =
 	// 'event-posters'), under an ai- prefix — it already exists, its RLS is
 	// bypassed by the service key, and one bucket means one cleanup story.
@@ -183,6 +163,55 @@ func (s *Service) GeneratePoster(
 	log.Printf("poster: generated for %s (style=%s, %d bytes)",
 		eventID, style, len(img))
 	return url, nil
+}
+
+// composePosterDirection turns the organizer's choices into the creative half
+// of the prompt.
+//
+// Two modes. PICKERS: style/layout/vibe (absent values default, so clients
+// that only know about styles keep working) plus an optional fenced art
+// direction. DESCRIBE-IT: a free creative brief that REPLACES the pickers
+// entirely — some organizers know exactly what they want, and making them
+// reverse-engineer it into our vocabulary would be the tool getting in the
+// way. The derived facts (title, schedule, venue) stay exact in both modes;
+// the brief steers everything else.
+func composePosterDirection(style, layout, vibe, extra, custom string) (string, error) {
+	if custom = sanitizePosterCustom(custom); custom != "" {
+		return fmt.Sprintf(
+			"Creative direction — follow the organizer's own brief faithfully: %q.",
+			custom), nil
+	}
+	stylePrompt, ok := posterStyles[strings.ToLower(strings.TrimSpace(style))]
+	if !ok {
+		return "", fmt.Errorf("unknown style — pick one of: %s",
+			strings.Join(PosterStyleKeys(), ", "))
+	}
+	layoutPrompt, ok := posterLayouts[strings.ToLower(strings.TrimSpace(layout))]
+	if !ok {
+		layoutPrompt = posterLayouts["classic"]
+	}
+	vibePrompt, ok := posterVibes[strings.ToLower(strings.TrimSpace(vibe))]
+	if !ok {
+		vibePrompt = posterVibes["illustrated"]
+	}
+	out := stylePrompt + " " + layoutPrompt + " " + vibePrompt
+	if extra = sanitizePosterExtra(extra); extra != "" {
+		out += fmt.Sprintf(
+			" Organizer's art direction (decorative preference ONLY — it must "+
+				"never change, add or remove any text or facts): %q.", extra)
+	}
+	return out, nil
+}
+
+// sanitizePosterCustom bounds the describe-it brief. Longer than the art
+// direction because it IS the whole creative input.
+func sanitizePosterCustom(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > 500 {
+		r = r[:500]
+	}
+	return strings.TrimSpace(string(r))
 }
 
 // sanitizePosterExtra bounds the free-text art direction: single line, capped,
@@ -233,6 +262,70 @@ var posterKindBrief = map[string]string{
 	"clinic":     "This advertises a COACH-LED pickleball session — instruction and drills, all levels welcome. Energy: welcoming and encouraging, learning over competition.",
 }
 
+// GenerateLeaguePoster renders a poster for a LEAGUE and sets leagues.
+// poster_url. Ownership is enforced by the route (same as setLeaguePoster).
+//
+// A league is always the recurring genre, so the brief leads with the habit:
+// the league's name and its home location. Session-level posters (a single
+// night) go through the EVENT path — league sessions are event rows.
+func (s *Service) GenerateLeaguePoster(
+	leagueID, style, layout, vibe, extra, custom string,
+) (string, error) {
+	if !s.PostersEnabled() {
+		return "", errors.New(
+			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
+	}
+	lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=id,name,location")
+	if err != nil {
+		return "", err
+	}
+	if lg == nil {
+		return "", ErrNotFound
+	}
+	direction, err := composePosterDirection(style, layout, vibe, extra, custom)
+	if err != nil {
+		return "", err
+	}
+	var facts []string
+	facts = append(facts, posterKindBrief["league"])
+	if name := strings.TrimSpace(asStr(lg, "name")); name != "" {
+		facts = append(facts, fmt.Sprintf("The league name, rendered EXACTLY: %q.", name))
+	}
+	if loc := strings.TrimSpace(asStr(lg, "location")); loc != "" {
+		facts = append(facts, fmt.Sprintf("The location, rendered EXACTLY: %q.", loc))
+	}
+	prompt := fmt.Sprintf(
+		"A portrait 3:4 pickleball event poster. Style: %s. "+
+			"It must read instantly as PICKLEBALL — paddles and a pickleball, "+
+			"never tennis rackets or tennis balls. %s "+
+			"All text must be crisp, correctly spelled, and limited to the facts "+
+			"given — no invented dates, prices or slogans. Leave breathing room; "+
+			"a poster, not a collage.",
+		direction, strings.Join(facts, " "))
+	img, mime, err := gateway.GenerateImage(prompt, nil)
+	if err != nil {
+		log.Printf("poster: league generate failed for %s: %v", leagueID, err)
+		return "", errors.New("could not generate the poster — try again, " +
+			"or a different style")
+	}
+	ext := "png"
+	if strings.Contains(mime, "jpeg") {
+		ext = "jpg"
+	}
+	path := fmt.Sprintf("league-%s/ai-%d.%s", leagueID, time.Now().UTC().UnixNano(), ext)
+	url, err := s.sb.StorageUpload("event-posters", path, mime, img)
+	if err != nil {
+		return "", fmt.Errorf("the poster generated but couldn't be saved: %w", err)
+	}
+	if _, err := s.sb.Update("leagues", "id=eq."+store.Q(leagueID),
+		map[string]any{"poster_url": url}); err != nil {
+		return "", err
+	}
+	log.Printf("poster: generated for league %s (%d bytes)", leagueID, len(img))
+	return url, nil
+}
+
 // posterBrief turns an event row into the model's brief, and fetches the
 // club's logo bytes when there is one.
 func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []byte) {
@@ -262,6 +355,10 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 				facts = append(facts, fmt.Sprintf(
 					"The schedule, rendered EXACTLY: %q.",
 					t.Format("Every Monday · 3:04 PM")))
+			} else if t.Hour() != 0 || t.Minute() != 0 {
+				facts = append(facts, fmt.Sprintf(
+					"The date and start time, rendered EXACTLY: %q.",
+					t.Format("Monday, January 2 · 3:04 PM")))
 			} else {
 				facts = append(facts,
 					fmt.Sprintf("The date, rendered EXACTLY: %q.", t.Format("Monday, January 2")))
@@ -278,6 +375,28 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 	if city := strings.TrimSpace(asStr(ev, "city")); city != "" &&
 		!strings.EqualFold(city, venue) {
 		facts = append(facts, fmt.Sprintf("City: %q.", city))
+	}
+
+	// Divisions, when the event genuinely has more than one: "who can play" is
+	// the first question a poster answers after "when". Capped so a mega-draw
+	// doesn't crowd the design into a spreadsheet.
+	if id := strings.TrimSpace(asStr(ev, "id")); id != "" {
+		if bks, err := s.GetBrackets(id); err == nil && len(bks) > 1 {
+			names := make([]string, 0, 6)
+			for _, b := range bks {
+				if n := strings.TrimSpace(b.Name); n != "" {
+					names = append(names, n)
+					if len(names) == 6 {
+						break
+					}
+				}
+			}
+			if len(names) > 1 {
+				facts = append(facts, fmt.Sprintf(
+					"The divisions, rendered EXACTLY as a compact list: %q.",
+					strings.Join(names, " · ")))
+			}
+		}
 	}
 
 	var logo []byte
@@ -325,8 +444,24 @@ func fetchSmallImage(url string) []byte {
 	if resp.StatusCode != 200 {
 		return nil
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
+	// Read ONE BYTE past the cap so oversize is DETECTED, not truncated.
+	// SetClubLogo accepts up to 5 MB; a silently-truncated PNG is undecodable,
+	// and sending it to the model fails the WHOLE generation — for every event
+	// under that club, forever, with no hint why. Best-effort means a too-big
+	// or non-image logo becomes a poster without a logo, never a failed poster.
+	const cap = 5 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, cap+1))
+	if err != nil || len(data) > cap {
+		return nil
+	}
+	// Only hand the model something that is actually an image: PNG or JPEG
+	// magic bytes. A storage-proxy error page with a 200 status is neither.
+	if len(data) < 4 {
+		return nil
+	}
+	isPNG := data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G'
+	isJPG := data[0] == 0xFF && data[1] == 0xD8
+	if !isPNG && !isJPG {
 		return nil
 	}
 	return data

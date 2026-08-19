@@ -643,11 +643,6 @@ func (s *Service) applySubscriptionEvent(ev gateway.SubscriptionEvent) error {
 		log.Printf("subscriptions: ignoring event for unknown price %q", ev.PriceID)
 		return nil
 	}
-	// Belt for the older-install fallthrough above: even with no premium price
-	// configured, a CLUB price must never be written to the premium column.
-	if ev.PriceID != "" && ev.PriceID == clubPriceID() {
-		return s.applyClubPlanEvent(ev)
-	}
 	row := map[string]any{
 		"premium":             ev.Active,
 		"subscription_status": orNull(ev.Status),

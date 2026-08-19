@@ -370,6 +370,12 @@ func (g *StripeGateway) CreateSubscriptionCheckout(email, userID, priceID, succe
 	}
 	params.Context = ctx
 	params.AddMetadata("user_id", userID)
+	// Stamp the PRICE too. checkout.session.completed does not carry line
+	// items, so without this the webhook has no idea WHICH plan was bought —
+	// and the router's only fallback was the premium column. That is how a
+	// coach-plan (and, at launch, a Club) purchase would grant $15 organizer
+	// Premium instead of the product actually paid for.
+	params.AddMetadata("price_id", priceID)
 	// Stamp the user onto the SUBSCRIPTION as well, not just the session.
 	//
 	// Stripe does not copy session metadata onto the subscription it creates, and
@@ -685,6 +691,10 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			if sub.UserID == "" {
 				sub.UserID = sess.Metadata["user_id"]
 			}
+			// The plan bought, from our own stamp (sessions created before the
+			// stamp existed have no price_id — those keep legacy premium
+			// routing rather than being dropped).
+			sub.PriceID = sess.Metadata["price_id"]
 			if sess.Customer != nil {
 				sub.CustomerID = sess.Customer.ID
 			}
@@ -730,6 +740,11 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 		if sub.Customer != nil {
 			ev.CustomerID = sub.Customer.ID
 		}
+		// The buyer, from the metadata CreateSubscriptionCheckout stamps onto
+		// the subscription. Matching by customer id alone only works when a
+		// profile already stored that customer — which is precisely what a
+		// missed earlier webhook prevents.
+		ev.UserID = sub.Metadata["user_id"]
 		// First line item's price. Our plans are single-item, and a plan change
 		// arrives as an update on the same subscription with a new price — which
 		// is exactly the signal needed to move someone between plans.

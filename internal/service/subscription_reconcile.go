@@ -93,6 +93,14 @@ func coachColumns() planColumns {
 	}
 }
 
+func clubColumns() planColumns {
+	return planColumns{
+		name: "club", priceID: clubPriceID(),
+		flag: "club_plan", status: "club_subscription_status",
+		subID: "club_subscription_id", customer: "stripe_customer_id",
+	}
+}
+
 // ReconcileSubscriptions repairs both plans. Errors are logged per plan rather
 // than aborting, so a coach-plan problem can't stop premium from reconciling.
 func (s *Service) ReconcileSubscriptions() []ReconcileReport {
@@ -100,7 +108,7 @@ func (s *Service) ReconcileSubscriptions() []ReconcileReport {
 		return nil
 	}
 	out := []ReconcileReport{}
-	for _, cols := range []planColumns{premiumColumns(), coachColumns()} {
+	for _, cols := range []planColumns{premiumColumns(), coachColumns(), clubColumns()} {
 		if cols.priceID == "" {
 			continue // plan not sold on this install
 		}

@@ -1213,8 +1213,9 @@ func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
 		Layout          string   `json:"layout"`
 		Vibe            string   `json:"vibe"`
 		Extra           string   `json:"extra"`
-		Custom          string   `json:"custom"`
-		SponsorLogoUrls []string `json:"sponsorLogoUrls"`
+		Custom          string               `json:"custom"`
+		Logos           []service.PosterLogo `json:"logos"`
+		SponsorLogoUrls []string             `json:"sponsorLogoUrls"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -1224,10 +1225,14 @@ func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
 			"that's a lot of posters in one hour — take a break and come back"))
 		return
 	}
+	logos := req.Logos
+	for _, u := range req.SponsorLogoUrls {
+		logos = append(logos, service.PosterLogo{URL: u, Role: "sponsor"})
+	}
 	url, err := s.svc.GenerateStudioPoster(userID(r),
 		req.Title, req.Date, req.Venue,
 		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom,
-		req.SponsorLogoUrls)
+		logos)
 	if err != nil {
 		status(w, err)
 		return
@@ -1267,10 +1272,12 @@ func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 		Vibe   string `json:"vibe"`
 		Extra  string `json:"extra"`
 		Custom string `json:"custom"`
-		// SponsorLogoUrls: up to four public image URLs to place along the
-		// bottom as sponsor credits. Fetched server-side with the same size and
-		// type discipline as the club logo.
-		SponsorLogoUrls []string `json:"sponsorLogoUrls"`
+		// Logos: attached images each tagged with what it IS (main | team |
+		// sponsor) — the role decides where the model places it. SponsorLogoUrls
+		// is the older, untagged form (clients patched earlier today still send
+		// it); those are treated as sponsors.
+		Logos           []service.PosterLogo `json:"logos"`
+		SponsorLogoUrls []string             `json:"sponsorLogoUrls"`
 		// Attach: set the render as the event's poster. A POINTER so absent means
 		// YES — this endpoint has always attached, and the shipped mobile builds
 		// don't send the field. Only the Poster Studio, which borrows an event for
@@ -1286,9 +1293,13 @@ func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 			"that's a lot of posters in one hour — take a break and come back"))
 		return
 	}
+	logos := req.Logos
+	for _, u := range req.SponsorLogoUrls {
+		logos = append(logos, service.PosterLogo{URL: u, Role: "sponsor"})
+	}
 	url, err := s.svc.GeneratePoster(r.PathValue("id"), userID(r),
 		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom,
-		req.SponsorLogoUrls, attach)
+		logos, attach)
 	if err != nil {
 		status(w, err)
 		return

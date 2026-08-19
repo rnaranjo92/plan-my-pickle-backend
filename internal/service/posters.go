@@ -117,7 +117,7 @@ func (s *Service) posterAllowed(ev map[string]any, callerID string) bool {
 // "Use on an event".
 func (s *Service) GeneratePoster(
 	eventID, callerID, style, layout, vibe, extra, custom string,
-	sponsorURLs []string, attach bool,
+	logos []PosterLogo, attach bool,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -145,9 +145,9 @@ func (s *Service) GeneratePoster(
 	if len(logo) > 0 {
 		refs = append(refs, logo)
 	}
-	if sponsors := fetchSponsorLogos(sponsorURLs); len(sponsors) > 0 {
-		prompt += " " + sponsorFact(len(sponsors), len(refs))
-		refs = append(refs, sponsors...)
+	if lrefs, counts := fetchPosterLogos(logos); len(lrefs) > 0 {
+		prompt += " " + logoFacts(counts, len(refs))
+		refs = append(refs, lrefs...)
 	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
@@ -557,7 +557,7 @@ func studioPosterPath(userID, ext string) string {
 // behind it. Returns the public URL; the caller decides what to do with it.
 func (s *Service) GenerateStudioPoster(
 	callerID, title, dateText, venueText, style, layout, vibe, extra, custom string,
-	sponsorURLs []string,
+	logos []PosterLogo,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -569,9 +569,9 @@ func (s *Service) GenerateStudioPoster(
 	}
 	prompt := studioBrief(title, dateText, venueText, direction)
 	var refs [][]byte
-	if sponsors := fetchSponsorLogos(sponsorURLs); len(sponsors) > 0 {
-		prompt += " " + sponsorFact(len(sponsors), 0)
-		refs = sponsors
+	if lrefs, counts := fetchPosterLogos(logos); len(lrefs) > 0 {
+		prompt += " " + logoFacts(counts, 0)
+		refs = lrefs
 	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
@@ -839,42 +839,78 @@ func storagePathFromPublicURL(url string) (bucket, path string, ok bool) {
 	return rest[:slash], rest[slash+1:], true
 }
 
-// fetchSponsorLogos downloads up to four sponsor logos to ride along as
-// reference images. Best-effort per logo (a bad URL means that one logo is
-// skipped, never a failed poster), same 5MB/PNG/JPEG discipline as the club
-// logo. Capped because every reference image costs tokens and a poster with
-// ten sponsor marks isn't a poster.
-func fetchSponsorLogos(urls []string) [][]byte {
-	out := make([][]byte, 0, 4)
-	for _, u := range urls {
-		if len(out) == 4 {
-			break
-		}
-		if img := fetchSmallImage(strings.TrimSpace(u)); len(img) > 0 {
-			out = append(out, img)
-		}
-	}
-	return out
+// PosterLogo is one organizer-attached image and what it IS — because "where a
+// logo belongs" depends entirely on which kind it is: the event's main mark is
+// part of the identity, team logos are the cast, sponsors are the credits.
+type PosterLogo struct {
+	URL  string `json:"url"`
+	Role string `json:"role"` // main | team | sponsor (anything else = sponsor)
 }
 
-// sponsorFact is the prompt line for attached sponsor logos. [offset] is how
-// many reference images precede them (the club logo, when present), so the
-// model can tell which attachments are which.
-func sponsorFact(n, offset int) string {
-	if n == 0 {
+// fetchPosterLogos downloads the attached logos (max 5 total), grouped by role
+// and in a STABLE order (main, then team, then sponsor) so the prompt can name
+// attachment positions. Best-effort per logo — a bad URL skips that one, never
+// fails the poster. Same 5MB/PNG-JPEG discipline as the club logo.
+func fetchPosterLogos(logos []PosterLogo) (refs [][]byte, counts [3]int) {
+	order := []string{"main", "team", "sponsor"}
+	for gi, role := range order {
+		for _, l := range logos {
+			r := strings.ToLower(strings.TrimSpace(l.Role))
+			if r != role && !(role == "sponsor" && r != "main" && r != "team") {
+				continue
+			}
+			if len(refs) == 5 {
+				return
+			}
+			if img := fetchSmallImage(strings.TrimSpace(l.URL)); len(img) > 0 {
+				refs = append(refs, img)
+				counts[gi]++
+			}
+		}
+	}
+	return
+}
+
+// logoFacts writes the prompt lines for the attached logos. [offset] is how
+// many reference images precede them (the club logo, when present). Each group
+// gets its OWN placement: the main logo is identity and sits with the title;
+// team logos are the cast and get a mid-poster band; sponsors are credits in a
+// small bottom row. All of them INSIDE the artwork — the first version said
+// "along the bottom edge" and the model dutifully appended a separate white
+// strip below the poster, logos floating outside the design.
+func logoFacts(counts [3]int, offset int) string {
+	span := func(n int) string {
+		start := offset + 1
+		if n == 1 {
+			return fmt.Sprintf("attached image %d", start)
+		}
+		return fmt.Sprintf("attached images %d–%d", start, start+n-1)
+	}
+	var parts []string
+	if n := counts[0]; n > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"MAIN LOGO: %s is the event's own logo — feature it prominently near "+
+				"the title as part of the poster's identity.", span(n)))
+		offset += n
+	}
+	if n := counts[1]; n > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"TEAMS: %s are participating team logos — place them together in a "+
+				"medium-sized featured band within the artwork.", span(n)))
+		offset += n
+	}
+	if n := counts[2]; n > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"SPONSORS: %s are sponsor logos — one small, evenly spaced row of "+
+				"credits INSIDE the poster's bottom margin.", span(n)))
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	which := "the attached image(s)"
-	if offset > 0 {
-		which = fmt.Sprintf("attached images %d through %d", offset+1, offset+n)
-	} else if n == 1 {
-		which = "the attached image"
-	}
-	return fmt.Sprintf(
-		"SPONSORS: %s are sponsor logos (%d of them). Arrange them in one small, "+
-			"evenly spaced row along the bottom edge as sponsor credits — reproduce "+
-			"each faithfully; never redraw, recolor, crop or distort a logo.",
-		which, n)
+	return strings.Join(parts, " ") + " Every attached logo must be composited " +
+		"INTO the poster's own artwork and background — never on a separate " +
+		"plain strip outside or below the design — and reproduced faithfully: " +
+		"never redrawn, recolored, cropped or distorted."
 }
 
 // fetchSmallImage downloads a small public asset (the club logo), bounded so a

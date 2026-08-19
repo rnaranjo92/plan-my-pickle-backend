@@ -1159,21 +1159,30 @@ func (s *Server) clubCheckout(w http.ResponseWriter, r *http.Request) {
 // posterStyles lists the poster style picker's options, and whether generation
 // is enabled at all — so the client can hide the whole feature when it isn't.
 func (s *Server) posterStyles(w http.ResponseWriter, r *http.Request) {
+	// `styles` stays a plain string list: already-patched clients cast it as
+	// List<String> and would break on richer shapes. New axes ride as NEW keys,
+	// which old clients simply never read.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": s.svc.PostersEnabled(),
 		"styles":  service.PosterStyleKeys(),
+		"layouts": service.PosterLayoutKeys(),
+		"vibes":   service.PosterVibeKeys(),
 	})
 }
 
 // generatePoster renders an AI poster for the event and sets it as the poster.
 func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Style string `json:"style"`
+		Style  string `json:"style"`
+		Layout string `json:"layout"`
+		Vibe   string `json:"vibe"`
+		Extra  string `json:"extra"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	url, err := s.svc.GeneratePoster(r.PathValue("id"), userID(r), req.Style)
+	url, err := s.svc.GeneratePoster(
+		r.PathValue("id"), userID(r), req.Style, req.Layout, req.Vibe, req.Extra)
 	if err != nil {
 		status(w, err)
 		return

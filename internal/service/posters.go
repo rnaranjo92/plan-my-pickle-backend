@@ -41,6 +41,34 @@ func PosterStyleKeys() []string {
 	return []string{"clean", "retro", "neon", "paper", "epic", "tropic"}
 }
 
+// posterLayouts is the COMPOSITION axis — where things sit on the page.
+// Orthogonal to style on purpose: "retro" answers how it's drawn, "emblem"
+// answers where the title goes, and conflating them forced organizers to trade
+// one for the other.
+var posterLayouts = map[string]string{
+	"classic": "Composition: big headline across the top, event details grouped at the bottom, imagery filling the middle.",
+	"emblem":  "Composition: a central circular emblem/badge holding the event title, details arranged in an arc beneath it, generous margins.",
+	"split":   "Composition: bold diagonal split — imagery on one side, a clean solid-color panel carrying all text on the other.",
+	"ticket":  "Composition: styled like an oversized admission ticket, title in the main field, details along a perforated stub edge.",
+}
+
+// PosterLayoutKeys in display order.
+func PosterLayoutKeys() []string {
+	return []string{"classic", "emblem", "split", "ticket"}
+}
+
+// posterVibes is the IMAGERY axis — what kind of picture it is at all.
+var posterVibes = map[string]string{
+	"illustrated": "Rendering: flat modern vector illustration, clean shapes, no photography.",
+	"photo":       "Rendering: cinematic photographic imagery, shallow depth of field, real-world light.",
+	"typographic": "Rendering: typography-driven design — the TEXT is the artwork; at most abstract shapes and one small paddle motif, no scenes.",
+}
+
+// PosterVibeKeys in display order.
+func PosterVibeKeys() []string {
+	return []string{"illustrated", "photo", "typographic"}
+}
+
 // PostersEnabled reports whether generation is configured at all.
 func (s *Service) PostersEnabled() bool { return gateway.GeminiConfigured() }
 
@@ -64,13 +92,15 @@ func (s *Service) posterAllowed(ev map[string]any, callerID string) bool {
 //
 // Synchronous by design: the model answers in 2-5s, which is a button with a
 // spinner, not a job queue. The HTTP client allows 60s for the slow tail.
-func (s *Service) GeneratePoster(eventID, callerID, style string) (string, error) {
+func (s *Service) GeneratePoster(
+	eventID, callerID, style, layout, vibe, extra string,
+) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
 			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
 	}
 	ev, err := s.sb.SelectOne("events", "id=eq."+store.Q(eventID)+
-		"&select=id,name,owner_id,club_id,starts_at,venue_name,location,city")
+		"&select=id,name,owner_id,club_id,starts_at,venue_name,location,city,league_id,perpetual")
 	if err != nil {
 		return "", err
 	}
@@ -84,6 +114,25 @@ func (s *Service) GeneratePoster(eventID, callerID, style string) (string, error
 	if !ok {
 		return "", fmt.Errorf("unknown style — pick one of: %s",
 			strings.Join(PosterStyleKeys(), ", "))
+	}
+	// Layout and vibe DEFAULT rather than error when absent: clients that only
+	// know about styles (the already-patched apps) keep working unchanged.
+	layoutPrompt, ok := posterLayouts[strings.ToLower(strings.TrimSpace(layout))]
+	if !ok {
+		layoutPrompt = posterLayouts["classic"]
+	}
+	vibePrompt, ok := posterVibes[strings.ToLower(strings.TrimSpace(vibe))]
+	if !ok {
+		vibePrompt = posterVibes["illustrated"]
+	}
+	stylePrompt = stylePrompt + " " + layoutPrompt + " " + vibePrompt
+	if extra = sanitizePosterExtra(extra); extra != "" {
+		// The organizer's own art direction, fenced: it steers decoration, and
+		// is explicitly barred from changing the facts — the one thing the
+		// derived brief guarantees.
+		stylePrompt += fmt.Sprintf(
+			" Organizer's art direction (decorative preference ONLY — it must "+
+				"never change, add or remove any text or facts): %q.", extra)
 	}
 
 	prompt, logo := s.posterBrief(ev, stylePrompt)
@@ -122,18 +171,87 @@ func (s *Service) GeneratePoster(eventID, callerID, style string) (string, error
 	return url, nil
 }
 
+// sanitizePosterExtra bounds the free-text art direction: single line, capped,
+// control characters out. It rides inside a quoted prompt segment, so the cap
+// is about cost and prompt hygiene, not security — the worst a prompt can do
+// here is waste its author's own generation.
+func sanitizePosterExtra(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > 140 {
+		r = r[:140]
+	}
+	return strings.TrimSpace(string(r))
+}
+
+// posterKind classifies what is being advertised, because the poster for a
+// one-Saturday tournament and the poster for "every Tuesday, forever" are
+// different genres: one sells a DATE, the other sells a HABIT.
+//
+// Reads the linked league row when there is one (league_type/ladder_format/
+// coach_led); best-effort — an unreadable league simply reads as a league.
+func (s *Service) posterKind(ev map[string]any) string {
+	leagueID := strings.TrimSpace(asStr(ev, "league_id"))
+	if leagueID == "" {
+		return "tournament"
+	}
+	if lg, err := s.sb.SelectOne("leagues",
+		"id=eq."+store.Q(leagueID)+"&select=league_type,ladder_format,coach_led"); err == nil && lg != nil {
+		if asStr(lg, "league_type") == "ladder" {
+			if asStr(lg, "ladder_format") == "rotation" {
+				return "rotation"
+			}
+			return "ladder"
+		}
+		if asBool(lg, "coach_led") {
+			return "clinic"
+		}
+	}
+	return "league"
+}
+
+// posterKindBrief is the genre sentence + how the DATE should be treated.
+var posterKindBrief = map[string]string{
+	"tournament": "This advertises a pickleball TOURNAMENT — a competitive one-day event. Energy: big-match excitement; the date is the hero fact.",
+	"league":     "This advertises a recurring pickleball LEAGUE — a weekly series people join, not a single date. Energy: community and friendly rivalry; the schedule line matters more than any one day.",
+	"ladder":     "This advertises an ongoing pickleball CHALLENGE LADDER — climb by challenging players above you, join any time. Energy: friendly one-on-one rivalry, upward movement (ladder/rank motifs welcome).",
+	"rotation":   "This advertises a live pickleball ROTATION NIGHT (king of the court) — show up, get seeded, winners move up courts all evening. Energy: fast, social, drop-in friendly.",
+	"clinic":     "This advertises a COACH-LED pickleball session — instruction and drills, all levels welcome. Energy: welcoming and encouraging, learning over competition.",
+}
+
 // posterBrief turns an event row into the model's brief, and fetches the
 // club's logo bytes when there is one.
 func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []byte) {
 	name := strings.TrimSpace(asStr(ev, "name"))
+	kind := s.posterKind(ev)
 	var facts []string
+	if kb, ok := posterKindBrief[kind]; ok {
+		facts = append(facts, kb)
+	}
 	if name != "" {
 		facts = append(facts, fmt.Sprintf("The event title, rendered EXACTLY: %q.", name))
 	}
 	if raw := strings.TrimSpace(asStr(ev, "starts_at")); raw != "" {
 		if t, err := time.Parse(time.RFC3339, raw); err == nil {
-			facts = append(facts,
-				fmt.Sprintf("The date, rendered EXACTLY: %q.", t.Format("Monday, January 2")))
+			// starts_at is UTC; rendered as-is, a 6 PM Pacific Tuesday becomes
+			// "Wednesday 1:00 AM" ON THE POSTER — a wrong fact in print, which
+			// is the one thing this feature must never produce. Anchored to
+			// Pacific (same call as jokeDay) until events carry a timezone.
+			if loc, lerr := time.LoadLocation("America/Los_Angeles"); lerr == nil {
+				t = t.In(loc)
+			}
+			if asBool(ev, "perpetual") || kind == "ladder" || kind == "rotation" {
+				// A recurring thing sells its CADENCE. For a perpetual league,
+				// StartsAt's weekday+time IS the weekly slot (reschedule moves
+				// it), so "Every Tuesday · 6:00 PM" is the true fact — a single
+				// calendar date on this poster would be wrong within a week.
+				facts = append(facts, fmt.Sprintf(
+					"The schedule, rendered EXACTLY: %q.",
+					t.Format("Every Monday · 3:04 PM")))
+			} else {
+				facts = append(facts,
+					fmt.Sprintf("The date, rendered EXACTLY: %q.", t.Format("Monday, January 2")))
+			}
 		}
 	}
 	venue := strings.TrimSpace(asStr(ev, "venue_name"))

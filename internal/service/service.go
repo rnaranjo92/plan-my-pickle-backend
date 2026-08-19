@@ -12184,11 +12184,16 @@ func (s *Service) ChampionFeedText(matchID string) (eventID, text string) {
 		return "", ""
 	}
 	m := mapMatch(row)
-	// Gold lives in the main/medal tier, slot 0, decided — and NOT a Compass draw
-	// (bracket_group set), whose final the app's podium/banner doesn't crown, so
-	// the feed must not disagree with the bracket UI.
+	// Gold lives in the main/medal tier, slot 0, decided.
+	//
+	// Compass draws are included via their EAST bracket only. East is the
+	// championship draw — every other direction is a consolation fed by teams
+	// East eliminated — so its final crowns the champion, and the app's podium
+	// now says the same. A win in West/North/South wins that consolation, not the
+	// division, and must never post a "won the division" line.
 	if m.Stage != "bracket" || m.BracketID == nil || m.WinningTeam == nil ||
-		m.Status != "completed" || m.BracketGroup != "" {
+		m.Status != "completed" ||
+		(m.BracketGroup != "" && m.BracketGroup != engine.EastGroup) {
 		return "", ""
 	}
 	isGrandFinal := m.BracketTier == "grand_final"
@@ -12209,9 +12214,22 @@ func (s *Service) ChampionFeedText(matchID string) (eventID, text string) {
 		// Confirm it's the FINAL round of this bracket's main tier (not an early slot-0).
 		rows, err := s.sb.SelectAll("matches",
 			"bracket_id=eq."+store.Q(*m.BracketID)+
-				"&stage=eq.bracket&select=bracket_round,bracket_tier")
+				"&stage=eq.bracket&select=bracket_round,bracket_tier,bracket_group")
 		if err != nil {
 			return "", ""
+		}
+		// On a compass, compare within EAST only. Every direction is tier "main",
+		// and a consolation tree can run more rounds than East — measuring across
+		// all of them would put East's own final below the max and silently never
+		// crown anyone.
+		if m.BracketGroup == engine.EastGroup {
+			east := rows[:0]
+			for _, r := range rows {
+				if asStr(r, "bracket_group") == engine.EastGroup {
+					east = append(east, r)
+				}
+			}
+			rows = east
 		}
 		maxRound := 0
 		for _, r := range rows {

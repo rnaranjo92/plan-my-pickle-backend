@@ -6296,6 +6296,21 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 				return model.ScheduleResult{}, err
 			}
 			total += n
+			// Third-place game, unless a consolation back-draw is already awarding
+			// bronze. Without it a plain knockout ended at gold/silver and the two
+			// semifinal losers tied for nothing — while the podium has a bronze slot
+			// waiting to be filled. (The back-draw's "bronze" is a different thing:
+			// it's won among FIRST-ROUND losers, so it can go to a team the
+			// semifinalists already beat. Where the organizer chose that, leave it
+			// alone rather than award two bronzes.)
+			if !ev.Consolation {
+				if bn, berr := s.addThirdPlaceGame(ev, b.ID); berr != nil {
+					log.Printf("single-elim: third-place game not added for "+
+						"bracket %s: %v", b.ID, berr)
+				} else {
+					total += bn
+				}
+			}
 		} else if ev.TournamentFormat == "double_elim" {
 			sides := seedSides(sidesForBracket(ev, regs), skill)
 			n, err := s.persistDoubleElim(ev, b.ID, sides)
@@ -8502,9 +8517,25 @@ func (s *Service) buildPlayoffLocked(bracketID, eventID string, topN int, seedin
 	if topN == 4 {
 		n, err = s.persistMedalBracket(ev, bracketID, sides[:4])
 	} else {
-		// No consolation here: pool players already played >=2 games, so the
-		// playoff bracket doesn't need a back-draw to satisfy the 2-match guarantee.
+		// No consolation back-draw here: pool players already played >=2 games, so
+		// the playoff doesn't need one to satisfy the 2-match guarantee.
 		n, err = s.persistBracket(ev, bracketID, sides[:topN], false)
+		if err != nil {
+			return 0, err
+		}
+		// ...but it DOES need a bronze. The 4-team medal draw has always had a
+		// third-place game; a quarterfinal or round-of-16 draw is a plain
+		// single-elimination tree, so it ended at gold/silver and the two
+		// semifinal losers tied for nothing. Pickleball tournaments award three
+		// medals, and the app's own podium (ChampionsBanner) has a bronze slot to
+		// fill, so every playoff size now produces one.
+		if bn, berr := s.addThirdPlaceGame(ev, bracketID); berr != nil {
+			// Non-fatal: a correct gold/silver draw beats no draw at all.
+			log.Printf("playoff: third-place game not added for bracket %s: %v",
+				bracketID, berr)
+		} else {
+			n += bn
+		}
 	}
 	if err != nil {
 		return 0, err
@@ -8525,6 +8556,87 @@ func (s *Service) buildPlayoffLocked(bracketID, eventID string, topN int, seedin
 			eventID, cerr)
 	}
 	return n, nil
+}
+
+// addThirdPlaceGame appends a bronze game to a just-built single-elimination
+// playoff, fed by the two SEMIFINAL LOSERS — the same wiring persistMedalBracket
+// uses for its top-4 draw, generalised to any draw size.
+//
+// The final sits at (maxRound, slot 0); the bronze goes beside it at
+// (maxRound, slot 1), which is exactly the shape the medal bracket produces, so
+// every reader downstream (the bracket view's gold/silver/bronze podium, the
+// standings, advanceAfterScore's loser routing) already understands it.
+//
+// Returns the number of matches added (1, or 0 when the draw has no identifiable
+// pair of semifinals — e.g. a 2-team draw, or a bracket that already has a game
+// in that slot).
+func (s *Service) addThirdPlaceGame(ev model.Event, bracketID string) (int, error) {
+	rows, err := s.sb.SelectAll("matches",
+		"bracket_id=eq."+store.Q(bracketID)+"&stage=eq.bracket"+
+			"&select=id,bracket_round,bracket_slot,bracket_tier")
+	if err != nil {
+		return 0, err
+	}
+	maxRound := 0
+	for _, r := range rows {
+		// Only the MAIN tier: a consolation/back-draw tier has its own rounds and
+		// must not be mistaken for the championship ladder.
+		if t := asStr(r, "bracket_tier"); t != "" && t != "main" {
+			continue
+		}
+		if rd := asInt(r, "bracket_round"); rd > maxRound {
+			maxRound = rd
+		}
+	}
+	if maxRound < 2 {
+		return 0, nil // a single final, no semifinals to lose
+	}
+	var semis []map[string]any
+	for _, r := range rows {
+		if t := asStr(r, "bracket_tier"); t != "" && t != "main" {
+			continue
+		}
+		switch asInt(r, "bracket_round") {
+		case maxRound - 1:
+			semis = append(semis, r)
+		case maxRound:
+			// Something already occupies the bronze slot beside the final — most
+			// likely this ran before. Never add a second one.
+			if asInt(r, "bracket_slot") == 1 {
+				return 0, nil
+			}
+		}
+	}
+	if len(semis) != 2 {
+		return 0, nil // not a standard two-semifinal shape; leave it alone
+	}
+	out, err := s.sb.Insert("matches", map[string]any{
+		"event_id": ev.ID, "bracket_id": bracketID, "stage": "bracket",
+		"bracket_round": maxRound, "bracket_slot": 1, "status": "scheduled",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(out) == 0 {
+		return 0, errors.New("third-place insert returned no row")
+	}
+	bronzeID := asStr(out[0], "id")
+	// Each semifinal's LOSER drops into the bronze game, into the team slot that
+	// matches its own position (slot 0 -> team 1, slot 1 -> team 2) so the two
+	// losers can never land in the same side.
+	sort.SliceStable(semis, func(i, j int) bool {
+		return asInt(semis[i], "bracket_slot") < asInt(semis[j], "bracket_slot")
+	})
+	for i, sf := range semis {
+		if _, uerr := s.sb.Update("matches",
+			"id=eq."+store.Q(asStr(sf, "id")), map[string]any{
+				"loser_feeds_match_id": bronzeID,
+				"loser_feeds_slot":     i + 1,
+			}); uerr != nil {
+			return 0, uerr
+		}
+	}
+	return 1, nil
 }
 
 // maybeAutoBuildPlayoff builds the configured-size playoff the moment pool play
@@ -8965,7 +9077,20 @@ func (s *Service) maybeSeedPlayoff(bracketID string) error {
 	if err := s.insertSide(sf2, 1, sides[1]); err != nil {
 		return err
 	}
-	return s.insertSide(sf2, 2, sides[2])
+	if err := s.insertSide(sf2, 2, sides[2]); err != nil {
+		return err
+	}
+	// Put the medal games on courts. The skeleton is laid at schedule time, but
+	// pools_playoff is deliberately skipped by the schedule-time arranger (the
+	// bracket is empty then), and this seeding path never assigned courts — so a
+	// pools_playoff event's semifinals and medal games sat with no court and no
+	// time slot, and the organizer had to place all four by hand. Best-effort:
+	// the seeding is correct either way.
+	if cerr := s.spreadBracketCourts(eventID); cerr != nil {
+		log.Printf("playoff: medal bracket seeded but court assignment failed "+
+			"for event %s: %v", eventID, cerr)
+	}
+	return nil
 }
 
 // bracketStarted reports whether any of a division's playoff matches are already
@@ -9348,6 +9473,16 @@ func (s *Service) resolveGrandFinal(gf1 map[string]any) error {
 			return errors.New("reset game insert returned no row")
 		}
 		gf2ID = asStr(out[0], "id")
+		// The "if necessary" decider is created at score time, long after the
+		// schedule-time arranger ran, so it arrived with no court and no slot —
+		// the single most important game of the event, unplaced, at the most
+		// chaotic moment. Best-effort: the game itself is correct regardless.
+		if eventID != "" {
+			if cerr := s.spreadBracketCourts(eventID); cerr != nil {
+				log.Printf("double-elim: reset game created but court assignment "+
+					"failed for event %s: %v", eventID, cerr)
+			}
+		}
 	}
 	return s.copyGrandFinalTeams(asStr(gf1, "id"), gf2ID)
 }
@@ -9439,6 +9574,16 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	}
 	if kind != "forfeit" && kind != "retire" && kind != "walkover" {
 		return errors.New("result type must be forfeit, retire, or walkover")
+	}
+	// Both teams must EXIST — the same rule applySeries enforces, and for the same
+	// reason. A bracket slot still waiting on its feeders has no participants on
+	// one or both sides; forfeiting it marked the game complete with a fabricated
+	// score "won" by nobody, and advanceAfterScore then wiped the downstream slot
+	// and inserted an empty side into it. Scoring was already refused here;
+	// forfeiting was the remaining way in.
+	if ready, rerr := s.bothSidesPresent(matchID); rerr == nil && !ready {
+		return errors.New(
+			"both teams have to be decided before this game can be forfeited")
 	}
 	ptw := 11
 	mrow, err := s.sb.SelectOne("matches",

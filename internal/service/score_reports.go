@@ -186,6 +186,17 @@ func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (
 	if asStr(m, "status") == "completed" {
 		return ScoreReportState{}, errors.New("this match already has a final score")
 	}
+	// Both sides must exist. A bracket slot waiting on its feeders can already
+	// have one real team in it, so a player on THAT side could report a win over
+	// nobody. It could never be confirmed (there's no opponent to confirm it), and
+	// at auto-confirm RecordScore now refuses it — which reopens the report to
+	// pending, so the ticker would retry the same doomed report forever. Same
+	// reasoning as the illegal-score check just below: refuse it at report time
+	// rather than store something that can never resolve.
+	if ready, rerr := s.bothSidesPresent(matchID); rerr == nil && !ready {
+		return ScoreReportState{}, errors.New(
+			"this game is still waiting on both teams")
+	}
 	if t1 < 0 || t2 < 0 || t1 == t2 {
 		return ScoreReportState{}, errors.New("enter the final score (no ties)")
 	}

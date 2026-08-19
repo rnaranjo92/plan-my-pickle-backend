@@ -218,7 +218,14 @@ func (s *Service) requirePosterCredit(userID string) error {
 	if !PosterCreditsEnabled() || s.posterCompedUnlimited(userID) {
 		return nil
 	}
-	if st := s.PosterCreditState(userID); st.Total <= 0 {
+	// Honor the STATE's own verdict, not just its balance. PosterCreditState
+	// reports Metered:false whenever generation is actually free — flag off,
+	// comped, or the flag flipped before the migration ran. Checking only the
+	// balance meant that last case blocked EVERY organizer (balance 0) while the
+	// studio showed no meter at all: an outage the UI described as "free", with
+	// no way out because buying is refused in the same state.
+	st := s.PosterCreditState(userID)
+	if st.Metered && st.Total <= 0 {
 		return ErrNoPosterCredits
 	}
 	return nil
@@ -266,7 +273,16 @@ func (s *Service) StartPosterPackCheckout(
 // then fails we'd rather under-grant (visible, fixable by hand) than double-grant
 // on every retry.
 func (s *Service) GrantPosterCredits(meta, dedupKey string) error {
-	if !s.posterCreditsReady() {
+	// A PROBE FAILURE IS NOT "no table". columnReady returns false on a
+	// transient error, and returning nil here 200s the webhook — Stripe never
+	// retries and the pack is gone. Ask for the error and let Stripe redeliver.
+	ready, perr := s.columnReadyErr("pmp_profiles", "poster_credits")
+	if perr != nil {
+		log.Printf("poster credits: grant DEFERRED (column probe failed) "+
+			"for %s — Stripe will retry: %v", meta, perr)
+		return perr
+	}
+	if !ready {
 		log.Printf("poster credits: grant ignored — run add_poster_credits.sql")
 		return nil
 	}

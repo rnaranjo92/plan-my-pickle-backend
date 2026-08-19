@@ -291,11 +291,14 @@ var posterKindBrief = map[string]string{
 // the league's name and its home location. Session-level posters (a single
 // night) go through the EVENT path — league sessions are event rows.
 func (s *Service) GenerateLeaguePoster(
-	leagueID, style, layout, vibe, extra, custom string,
+	leagueID, callerID, style, layout, vibe, extra, custom string,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
 			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
+	}
+	if err := s.requirePosterCredit(callerID); err != nil {
+		return "", err
 	}
 	lg, err := s.sb.SelectOne("leagues",
 		"id=eq."+store.Q(leagueID)+"&select=id,name,location")
@@ -339,6 +342,13 @@ func (s *Service) GenerateLeaguePoster(
 		map[string]any{"poster_url": url}); err != nil {
 		return "", err
 	}
+	// Metered and recorded like every other render. The league path was neither:
+	// with the meter on it was unlimited free Gemini spend for anyone who made a
+	// league (which is free), and its renders never appeared in the gallery the
+	// UI promises — so a replaced league poster also leaked its storage object
+	// forever, since the sweep only walks recorded rows.
+	s.spendPosterCredit(callerID)
+	s.RecordPosterGeneration(callerID, "", url, style)
 	log.Printf("poster: generated for league %s (%d bytes)", leagueID, len(img))
 	return url, nil
 }

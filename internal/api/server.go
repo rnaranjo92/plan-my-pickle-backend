@@ -1192,15 +1192,12 @@ func (s *Server) generateLeaguePoster(w http.ResponseWriter, r *http.Request) {
 			"that's a lot of posters in one hour — take a break and come back"))
 		return
 	}
-	url, err := s.svc.GenerateLeaguePoster(r.PathValue("id"),
+	url, err := s.svc.GenerateLeaguePoster(r.PathValue("id"), userID(r),
 		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom)
 	if err != nil {
 		status(w, err)
 		return
 	}
-	// League posters show up in the same gallery. eventID is "" — the gallery
-	// distinguishes them by having no linked event name.
-	s.svc.RecordPosterGeneration(userID(r), "", url, req.Style)
 	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": url})
 }
 

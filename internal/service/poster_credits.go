@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
@@ -36,6 +37,19 @@ const (
 	// posterClubMonthly is the Club tier's included allowance per calendar month.
 	posterClubMonthly = 5
 )
+
+// posterCreditLocks serializes a user's credit read-then-write. Without it the
+// pre-check and the spend are separate reads, so N concurrent generations all
+// see the same balance and all decrement to the same value — 15 renders for one
+// credit, repeatable hourly. Per USER, so nobody contends with anybody else.
+var posterCreditLocks sync.Map // userID -> *sync.Mutex
+
+func lockPosterCredits(userID string) func() {
+	muAny, _ := posterCreditLocks.LoadOrStore(userID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 // PosterCreditsEnabled reports whether generation is metered at all. Default
 // OFF: while founding access lasts, posters are free and this whole file is a
@@ -84,7 +98,14 @@ func (s *Service) PosterCreditState(userID string) PosterCredits {
 		PackCredits:    posterPackCredits,
 		PackPriceCents: posterPackCents,
 	}
-	if !out.Metered || userID == "" || !s.posterCreditsReady() {
+	if !out.Metered || userID == "" {
+		return out
+	}
+	// Flag on but the migration not run: report UNMETERED rather than a zero
+	// balance. Zero would block every organizer — including one who just paid —
+	// the moment the flag flips, turning a sequencing mistake into an outage.
+	if !s.posterCreditsReady() {
+		out.Metered = false
 		return out
 	}
 	if s.posterCompedUnlimited(userID) {
@@ -99,7 +120,7 @@ func (s *Service) PosterCreditState(userID string) PosterCredits {
 			"&select=poster_credits,poster_club_used,poster_club_period")
 	if err == nil && row != nil {
 		out.Purchased = asInt(row, "poster_credits")
-		if s.ClubPlanActive(userID) {
+		if s.clubPosterAllowance(userID) {
 			used := 0
 			// A stale period means the allowance has rolled over — treat last
 			// month's usage as zero rather than carrying it forward.
@@ -110,12 +131,24 @@ func (s *Service) PosterCreditState(userID string) PosterCredits {
 				out.ClubRemaining = left
 			}
 		}
-	} else if err == nil && row == nil && s.ClubPlanActive(userID) {
+	} else if err == nil && row == nil && s.clubPosterAllowance(userID) {
 		// No profile row yet, but a Club subscriber still has this month's five.
 		out.ClubRemaining = posterClubMonthly
 	}
 	out.Total = out.Purchased + out.ClubRemaining
 	return out
+}
+
+// clubPosterAllowance reports whether this account gets the Club tier's monthly
+// posters.
+//
+// Gated on subscriptions being LIVE, because ClubPlanActive deliberately returns
+// true for EVERYONE while they're off (parity with IsPremium — everything free
+// until billing exists). Without this, flipping the poster meter alone would
+// hand every user 5 free renders a month, consumed BEFORE anything they paid
+// for, so the meter could barely earn.
+func (s *Service) clubPosterAllowance(userID string) bool {
+	return SubscriptionsEnabled() && s.ClubPlanActive(userID)
 }
 
 // ErrNoPosterCredits is returned when the meter is on and the balance is empty.
@@ -134,6 +167,7 @@ func (s *Service) spendPosterCredit(userID string) {
 		s.posterCompedUnlimited(userID) {
 		return
 	}
+	defer lockPosterCredits(userID)()
 	row, err := s.sb.SelectOne("pmp_profiles",
 		"user_id=eq."+store.Q(userID)+
 			"&select=poster_credits,poster_club_used,poster_club_period")
@@ -150,7 +184,7 @@ func (s *Service) spendPosterCredit(userID string) {
 		}
 	}
 	upd := map[string]any{"user_id": userID}
-	if s.ClubPlanActive(userID) && used < posterClubMonthly {
+	if s.clubPosterAllowance(userID) && used < posterClubMonthly {
 		upd["poster_club_used"] = used + 1
 		upd["poster_club_period"] = month
 	} else if purchased > 0 {
@@ -204,6 +238,17 @@ func (s *Service) StartPosterPackCheckout(
 	if userID == "" {
 		return "", ErrForbidden
 	}
+	// Never take money for credits that can't be recorded. Without the columns
+	// the grant has nowhere to land and the webhook would 200 on a captured
+	// payment — $2.99 gone, no credits, no retry. And while the meter is off
+	// there is nothing to buy: generation is free for everyone.
+	if !s.posterCreditsReady() {
+		return "", errors.New(
+			"poster credits aren't set up yet — run add_poster_credits.sql")
+	}
+	if !PosterCreditsEnabled() {
+		return "", errors.New("posters are free right now — no credits needed")
+	}
 	return gw.CreatePlatformCheckout(
 		fmt.Sprintf("%s:%d", userID, posterPackCredits),
 		"poster_pack",
@@ -240,17 +285,29 @@ func (s *Service) GrantPosterCredits(meta, dedupKey string) error {
 			"user_id":     userID,
 			"credits":     credits,
 		})
-		// A duplicate payment_ref violates the unique index → this delivery is a
-		// replay of one already applied. Nothing to do.
 		if err != nil {
-			log.Printf("poster credits: duplicate/failed grant for %s (%s): %v",
-				userID, dedupKey, err)
-			return nil
+			// A failed insert is EITHER a replay (unique violation) OR a
+			// transient DB error. Treating both as "already done" loses a paid
+			// pack for good — Stripe sees 200 and never retries. So ask which it
+			// was: if the row is really there this is a replay and we're done;
+			// if not, return the error so Stripe redelivers.
+			existing, qerr := s.sb.Select("poster_credit_grants",
+				"payment_ref=eq."+store.Q(dedupKey)+"&select=id&limit=1")
+			if qerr == nil && len(existing) > 0 {
+				return nil // genuine replay
+			}
+			log.Printf("poster credits: grant insert FAILED for %s (%s) — "+
+				"returning error so Stripe retries: %v", userID, dedupKey, err)
+			return err
 		}
 		if len(rows) == 0 {
 			return nil
 		}
 	}
+	// The same lock the spend takes: both do read-then-write on poster_credits,
+	// so without it a purchase landing during a generation is overwritten by the
+	// spend's stale read and the paid pack vanishes.
+	defer lockPosterCredits(userID)()
 	cur := 0
 	if row, err := s.sb.SelectOne("pmp_profiles",
 		"user_id=eq."+store.Q(userID)+"&select=poster_credits"); err == nil &&

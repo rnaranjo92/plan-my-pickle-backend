@@ -2667,6 +2667,9 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
 	// feed composer on owner-or-registered. Anonymous callers get false.
 	if uid := userID(r); uid != "" {
 		e.ViewerRegistered = s.svc.IsRegisteredInEvent(r.PathValue("id"), uid, userEmail(r))
+		if !e.ViewerRegistered {
+			e.ViewerPending = s.svc.HasPendingRegistration(r.PathValue("id"), uid, userEmail(r))
+		}
 	}
 	writeJSON(w, http.StatusOK, e)
 }

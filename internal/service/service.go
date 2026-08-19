@@ -4833,6 +4833,11 @@ func (s *Service) RegisterPlayer(eventID string, req model.RegisterRequest, link
 	if strings.TrimSpace(req.FullName) == "" {
 		return model.Registration{}, errors.New("fullName is required")
 	}
+	// Serialize registrations per event so the capacity check and the
+	// duplicate-contact check (both read-then-insert) are atomic — two
+	// simultaneous sign-ups could otherwise both clear a cap of N at N-1, or
+	// both create a player row for the same phone.
+	defer s.lockRegisterEvent(eventID)()
 	// Platform denylist: a phone/email the platform owner has blocked cannot
 	// register through ANY path — self OR organizer-add. Checked before the
 	// dummy-registration gates so a blocked contact never creates a player row or
@@ -5944,14 +5949,10 @@ func (s *Service) DeleteRegistration(regID string) error {
 	// Refuse once this player's division has a generated draw — a mid-draw
 	// delete strands match_participants rows and the partner back-pointer.
 	// Move/Merge already guard this with ErrDrawExists; a straight delete didn't.
-	if pid := asStr(reg, "player_id"); pid != "" {
-		if bid := asStr(reg, "bracket_id"); bid != "" {
-			if n := s.countRows("matches",
-				"bracket_id=eq."+store.Q(bid)+"&stage=eq.pool&select=id", "id") +
-				s.countRows("matches",
-					"bracket_id=eq."+store.Q(bid)+"&stage=eq.bracket&select=id", "id"); n > 0 {
-				return ErrDrawExists
-			}
+	if bid := asStr(reg, "bracket_id"); bid != "" {
+		// Stage-agnostic (pool/bracket/playoff/MLP) — same helper Move/Merge use.
+		if exists, _ := s.bracketDrawExists(bid); exists {
+			return ErrDrawExists
 		}
 	}
 	if err := s.sb.Delete("registrations", "id=eq."+store.Q(regID)); err != nil {
@@ -6959,7 +6960,7 @@ func (s *Service) spreadCourts(eventID string) error {
 	// SelectAll: a big field can have hundreds of pool matches — an unbounded
 	// Select would truncate at PostgREST's row cap and leave matches unspread.
 	rows, err := s.sb.SelectAll("matches",
-		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&status=eq.scheduled&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
 	if err != nil {
 		return err
 	}
@@ -7379,7 +7380,7 @@ func (s *Service) AutoScheduleByRating(eventID string, interleave bool, minRestS
 	// aren't truncated at PostgREST's row cap (which would silently skip placing
 	// the dropped matches onto courts/slots).
 	rows, err := s.sb.SelectAll("matches",
-		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
+		"event_id=eq."+store.Q(eventID)+"&stage=eq.pool&status=eq.scheduled&select=id,bracket_id,created_at,round:rounds!round_id(round_number)")
 	if err != nil {
 		return 0, err
 	}
@@ -8740,13 +8741,19 @@ func (s *Service) RecordScore(matchID string, t1, t2 int) error {
 // marks the match completed and runs advancement. It does NOT validate; callers
 // that already trust the result (demo seeding via applyScore) use it directly.
 func (s *Service) applySeries(matchID string, games []model.GameScore, winner, t1total, t2total int) error {
-	// A match already "completed" before this write means this is a re-score /
-	// correction, not a game finishing — so it must NOT re-trigger auto-start of
-	// the next game (which would start + text a later game at the wrong time).
+	// SERIALIZE per event. Advancement is delete-then-insert on
+	// match_participants (advanceTeam) plus a read-then-write reset cascade
+	// (resetCompletedDownstream); two semifinals feeding one final, scored at
+	// once (two organizers, or auto-start timers), could interleave and leave
+	// the final's slot empty or stack both teams into it. One lock per event
+	// makes the whole write+advance atomic; different events never contend.
 	freshCompletion := true
 	if cur, e := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=status"); e == nil && cur != nil {
+		"id=eq."+store.Q(matchID)+"&select=status,event_id"); e == nil && cur != nil {
 		freshCompletion = asStr(cur, "status") != "completed"
+		if eid := asStr(cur, "event_id"); eid != "" {
+			defer s.lockScoreEvent(eid)()
+		}
 	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1total, "team2_score": t2total, "winning_team": winner,
@@ -8973,6 +8980,10 @@ func (s *Service) resolveGrandFinal(gf1 map[string]any) error {
 		// even if it was already played (a corrected game-1 result makes it moot).
 		if len(existing) > 0 {
 			id := asStr(existing[0], "id")
+			// If that reset game was imported to DUPR, reverse it — else its
+			// result is orphaned live on players' ratings (same class the
+			// wipe/forfeit reversals close).
+			s.reverseDuprForMatches(eventID, []string{id})
 			if err := s.sb.Delete("match_participants", "match_id=eq."+store.Q(id)); err != nil {
 				return err
 			}
@@ -9119,17 +9130,6 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	if kind == "retire" && t1Score != nil && t2Score != nil {
 		t1, t2, countsForDiff = *t1Score, *t2Score, true
 	}
-	// If this match was ALREADY pushed to DUPR (a real played score, later
-	// forfeited/retired), reverse the official result — otherwise the true
-	// score stays live on the players' ratings while the local match reads
-	// forfeit. Best-effort, before the overwrite. eventID for the reversal
-	// comes from the match row.
-	if erow, _ := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=event_id"); erow != nil {
-		if eid := asStr(erow, "event_id"); eid != "" {
-			s.reverseDuprForMatches(eid, []string{matchID})
-		}
-	}
 	out, err := s.sb.Update("matches", "id=eq."+store.Q(matchID), map[string]any{
 		"team1_score": t1, "team2_score": t2, "winning_team": winningTeam,
 		// Clear any per-game scores from a prior played result — a forfeit/retire/
@@ -9144,6 +9144,11 @@ func (s *Service) ForfeitMatch(matchID string, winningTeam int, kind string, t1S
 	if len(out) == 0 {
 		return ErrNotFound
 	}
+	// If this match was ALREADY pushed to DUPR (a real played score, later
+	// forfeited/retired), reverse the official result — otherwise the true
+	// score stays live on the players' ratings. AFTER a successful Update, so a
+	// failed write doesn't reverse DUPR for a match that still reads its score.
+	s.reverseDuprForMatches(asStr(out[0], "event_id"), []string{matchID})
 	// Forfeit/retire/walkover is an organizer action, not a played+acknowledged
 	// score — don't auto-start the next game off it.
 	return s.advanceAfterScore(out[0], false)
@@ -11375,6 +11380,27 @@ func (s *Service) approvedPlayerName(eventID, userID, email string) (string, boo
 // event (used to decide whether to show the feed composer to a non-owner
 // viewer). Pass the caller's verified account email so an email/phone-based
 // registration counts, not just one linked to the auth user id.
+// HasPendingRegistration reports whether the caller has a NOT-YET-APPROVED
+// registration for this event — so the client can show "waiting for approval"
+// rather than re-offering "register" (which then dead-ends on the duplicate
+// guard telling them they're "already registered").
+func (s *Service) HasPendingRegistration(eventID, userID, email string) bool {
+	if !s.columnReady("registrations", "approved") {
+		return false
+	}
+	if userID == "" && email == "" {
+		return false
+	}
+	pids, err := s.playerIDsForUser(userID, email)
+	if err != nil || len(pids) == 0 {
+		return false
+	}
+	reg, rerr := s.sb.Select("registrations",
+		"event_id=eq."+store.Q(eventID)+"&player_id="+store.In(pids)+
+			"&approved=is.false&select=id&limit=1")
+	return rerr == nil && len(reg) > 0
+}
+
 func (s *Service) IsRegisteredInEvent(eventID, userID, email string) bool {
 	_, ok := s.approvedPlayerName(eventID, userID, email)
 	return ok
@@ -11838,13 +11864,24 @@ func (s *Service) checkInWindowOpen(eventID string) error {
 // work whenever the desk is open, including setup the evening before. Only the
 // player-initiated path (CheckInByPhone) waits for the day.
 func (s *Service) CheckInByToken(eventID, token string) (string, error) {
+	sel := "id"
+	approvedReady := s.columnReady("registrations", "approved")
+	if approvedReady {
+		sel += ",approved"
+	}
 	row, err := s.sb.SelectOne("registrations",
-		"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+"&select=id")
+		"event_id=eq."+store.Q(eventID)+"&check_in_token=eq."+store.Q(token)+"&select="+sel)
 	if err != nil {
 		return "", err
 	}
 	if row == nil {
 		return "", ErrNotFound
+	}
+	// A pending (unapproved) registrant holds their token from sign-up — but
+	// they aren't in the draw, so self-checking-in past the approval queue would
+	// put a not-yet-accepted player on the floor. Refuse until approved.
+	if approvedReady && !asBool(row, "approved") {
+		return "", errors.New("your spot is still awaiting the organizer's approval")
 	}
 	regID := asStr(row, "id")
 	changed, err := s.CheckIn(regID, "qr")
@@ -13372,7 +13409,7 @@ func rankStandingsWith(out []model.Standing, h2h map[string]map[string]int, byWi
 func (s *Service) headToHead(eventID, bracketID, since string) (map[string]map[string]int, error) {
 	q := "event_id=eq." + store.Q(eventID) +
 		"&stage=eq.pool&status=eq.completed" +
-		"&select=winning_team,round:rounds!round_id(created_at),participants:match_participants(player_id,team)"
+		"&select=winning_team,counts_for_diff,round:rounds!round_id(created_at),participants:match_participants(player_id,team)"
 	if bracketID != "" {
 		q += "&bracket_id=eq." + store.Q(bracketID)
 	}
@@ -13390,6 +13427,12 @@ func (s *Service) headToHead(eventID, bracketID, since string) (map[string]map[s
 		}
 		wt := asInt(r, "winning_team")
 		if wt != 1 && wt != 2 {
+			continue
+		}
+		// A forfeit/walkover decides the match but is excluded from the visible
+		// win/diff columns — so it must NOT silently break a tie either, or a
+		// player outranks another on a meeting the box score says never happened.
+		if cd := r["counts_for_diff"]; cd != nil && cd == false {
 			continue
 		}
 		parts, _ := r["participants"].([]any)
@@ -14355,9 +14398,23 @@ func (s *Service) courtIDsByNumber(eventID string) (map[int]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Honor the event's court CEILING. Lowering num_courts leaves the extra
+	// court rows in place (ensureCourts only adds), and the board hides lanes
+	// above the count — but the arrangers used every row, so re-arranging after
+	// reducing courts re-hosted games on the retired lanes. num_courts is the
+	// source of truth for how many lanes exist; respect it here too.
+	ceiling := 0
+	if ev, _ := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=num_courts"); ev != nil {
+		ceiling = asInt(ev, "num_courts")
+	}
 	m := map[int]string{}
 	for _, r := range rows {
-		m[asInt(r, "court_number")] = asStr(r, "id")
+		n := asInt(r, "court_number")
+		if ceiling > 0 && n > ceiling {
+			continue // retired lane — don't schedule or score on it
+		}
+		m[n] = asStr(r, "id")
 	}
 	return m, nil
 }
@@ -14821,4 +14878,25 @@ func (s *Service) seedScoreConfirm(ownerID string) (string, error) {
 		return eventID, err
 	}
 	return eventID, nil
+}
+
+// scoreLocks serializes scoring+advancement per event so two matches feeding the
+// same downstream slot can't interleave advanceTeam's delete/insert.
+var scoreLocks sync.Map // eventID -> *sync.Mutex
+
+func (s *Service) lockScoreEvent(eventID string) func() {
+	muAny, _ := scoreLocks.LoadOrStore(eventID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// registerLocks serializes RegisterPlayer per event (capacity + dedup TOCTOU).
+var registerLocks sync.Map // eventID -> *sync.Mutex
+
+func (s *Service) lockRegisterEvent(eventID string) func() {
+	muAny, _ := registerLocks.LoadOrStore(eventID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }

@@ -584,6 +584,9 @@ var ErrPoolIncomplete = errors.New("finish every pool match before generating th
 // created automatically as winners advance (maybeAdvancePlayoffRound). No new
 // columns — playoff ties are stage="playoff" with play_order = 1000 + round*100 + slot.
 func (s *Service) GeneratePlayoff(eventID string) (int, error) {
+	// Serialize so two pre-result taps can't both seed a full playoff bracket
+	// (duplicate round-1 ties — there's no unique constraint to catch it).
+	defer s.lockScoreEvent(eventID)()
 	ties, err := s.ListTies(eventID)
 	if err != nil {
 		return 0, err

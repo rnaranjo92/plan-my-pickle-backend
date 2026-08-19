@@ -242,6 +242,11 @@ type Event struct {
 	// event. Set on single reads (GetEvent, optionalAuth) so the client can show
 	// the feed composer to registered players (not to random spectators).
 	ViewerRegistered bool `json:"viewerRegistered,omitempty"`
+	// ViewerPending = the caller has a registration for this event that is
+	// still awaiting approval. Distinct from ViewerRegistered so the CTA can
+	// say "waiting for approval" instead of the wrong "register" or the wrong
+	// "you're already registered".
+	ViewerPending bool `json:"viewerPending,omitempty"`
 	// OrganizerName is the event owner's display name (from pmp_profiles), set on
 	// single reads (GetEvent) for the tournament-info tab. Empty when unknown.
 	OrganizerName string `json:"organizerName,omitempty"`

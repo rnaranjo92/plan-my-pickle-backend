@@ -123,7 +123,7 @@ func (s *Service) standingRowsBetween(eventID, bracketID, since, until string) (
 func (s *Service) headToHeadBetween(eventID, bracketID, since, until string) (map[string]map[string]int, error) {
 	q := "event_id=eq." + store.Q(eventID) +
 		"&stage=eq.pool&status=eq.completed" +
-		"&select=winning_team,participants:match_participants(player_id,team)"
+		"&select=winning_team,counts_for_diff,participants:match_participants(player_id,team)"
 	if bracketID != "" {
 		q += "&bracket_id=eq." + store.Q(bracketID)
 	}
@@ -141,6 +141,10 @@ func (s *Service) headToHeadBetween(eventID, bracketID, since, until string) (ma
 	for _, r := range rows {
 		wt := asInt(r, "winning_team")
 		if wt != 1 && wt != 2 {
+			continue
+		}
+		// Forfeit/walkover excluded from tiebreaks (see headToHead).
+		if cd := r["counts_for_diff"]; cd != nil && cd == false {
 			continue
 		}
 		parts, _ := r["participants"].([]any)

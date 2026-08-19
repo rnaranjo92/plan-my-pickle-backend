@@ -236,6 +236,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// in the service (owner or club admin), and inert without GEMINI_API_KEY.
 	mux.HandleFunc("GET /poster-styles", s.posterStyles)
 	mux.HandleFunc("POST /events/{id}/poster/generate", requireAuth(s.generatePoster))
+	// Poster STUDIO: generate with no event, and the caller's gallery of renders.
+	mux.HandleFunc("POST /me/posters/generate", requireAuth(s.studioGeneratePoster))
+	mux.HandleFunc("GET /me/posters", requireAuth(s.myPosters))
 	mux.HandleFunc("GET /events/{id}/court-token", s.ownerOnly("event", "id", s.courtToken))
 	mux.HandleFunc("POST /events/{id}/court/{n}/score", s.courtScore)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
@@ -1191,7 +1194,52 @@ func (s *Server) generateLeaguePoster(w http.ResponseWriter, r *http.Request) {
 		status(w, err)
 		return
 	}
+	// League posters show up in the same gallery. eventID is "" — the gallery
+	// distinguishes them by having no linked event name.
+	s.svc.RecordPosterGeneration(userID(r), "", url, req.Style)
 	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": url})
+}
+
+// studioGeneratePoster renders a poster from typed-in details, tied to NO event.
+// This is the Tools "poster studio" entry — make a poster first, decide what
+// it's for later.
+func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title  string `json:"title"`
+		Date   string `json:"date"`
+		Venue  string `json:"venue"`
+		Style  string `json:"style"`
+		Layout string `json:"layout"`
+		Vibe   string `json:"vibe"`
+		Extra  string `json:"extra"`
+		Custom string `json:"custom"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if !s.posterLimiter.allow("poster:" + userID(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New(
+			"that's a lot of posters in one hour — take a break and come back"))
+		return
+	}
+	url, err := s.svc.GenerateStudioPoster(userID(r),
+		req.Title, req.Date, req.Venue,
+		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": url})
+}
+
+// myPosters returns the caller's recent poster renders for the Tools gallery.
+func (s *Server) myPosters(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.MyPosters(userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"posters": items})
 }
 
 // posterStyles lists the poster style picker's options, and whether generation

@@ -160,6 +160,7 @@ func (s *Service) GeneratePoster(
 		map[string]any{"poster_url": url}); err != nil {
 		return "", err
 	}
+	s.RecordPosterGeneration(callerID, eventID, url, style)
 	log.Printf("poster: generated for %s (style=%s, %d bytes)",
 		eventID, style, len(img))
 	return url, nil
@@ -427,6 +428,294 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 			"given — no invented dates, prices or slogans. Leave breathing room; "+
 			"a poster, not a collage.",
 		stylePrompt, strings.Join(facts, " ")), logo
+}
+
+// --- Poster STUDIO: generate without an event ---
+//
+// The event path derives the whole brief from a real event row. The studio path
+// is the opposite: nothing is derived, everything is typed. It exists because
+// the first question the Tools entry used to ask — "which event is this for?" —
+// is the wrong question. An organizer wants to make a poster, play with styles,
+// and only then decide what it's for (or make one for something that isn't in
+// the app at all, like a flyer for open play). So the studio takes an optional
+// title/date/venue as FREE TEXT, never touches any event's poster_url, and drops
+// the result in the caller's gallery. Attaching to an event is a separate,
+// explicit step (SetEventPoster with the returned url).
+
+// PosterItem is one row in a user's poster gallery.
+type PosterItem struct {
+	ID        string `json:"id"`
+	URL       string `json:"url"`
+	Style     string `json:"style,omitempty"`
+	EventID   string `json:"eventId,omitempty"`
+	EventName string `json:"eventName,omitempty"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
+// posterGenReady reports whether the gallery table has been migrated in. Until
+// it is, generation still works — it just doesn't record a gallery row.
+func (s *Service) posterGenReady() bool {
+	return s.columnReady("poster_generations", "id")
+}
+
+// studioPosterPath returns the storage path a studio render is saved under.
+// Namespaced by user so the gallery sweep and any future per-user quota have a
+// clean prefix to work with; timestamped so a regenerate never clobbers.
+func studioPosterPath(userID, ext string) string {
+	return fmt.Sprintf("studio/%s/ai-%d.%s", userID, time.Now().UTC().UnixNano(), ext)
+}
+
+// GenerateStudioPoster renders a poster from typed-in details, with NO event
+// behind it. Returns the public URL; the caller decides what to do with it.
+func (s *Service) GenerateStudioPoster(
+	callerID, title, dateText, venueText, style, layout, vibe, extra, custom string,
+) (string, error) {
+	if !s.PostersEnabled() {
+		return "", errors.New(
+			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
+	}
+	direction, err := composePosterDirection(style, layout, vibe, extra, custom)
+	if err != nil {
+		return "", err
+	}
+	prompt := studioBrief(title, dateText, venueText, direction)
+	img, mime, err := gateway.GenerateImage(prompt, nil)
+	if err != nil {
+		log.Printf("poster: studio generate failed for %s: %v", callerID, err)
+		return "", errors.New("could not generate the poster — try again, " +
+			"or a different style")
+	}
+	ext := "png"
+	if strings.Contains(mime, "jpeg") {
+		ext = "jpg"
+	}
+	url, err := s.sb.StorageUpload("event-posters",
+		studioPosterPath(callerID, ext), mime, img)
+	if err != nil {
+		return "", fmt.Errorf("the poster generated but couldn't be saved: %w", err)
+	}
+	s.RecordPosterGeneration(callerID, "", url, style)
+	log.Printf("poster: studio render for %s (style=%s, %d bytes)",
+		callerID, style, len(img))
+	return url, nil
+}
+
+// studioBrief builds the model brief from free-typed fields. Every field is
+// optional: a poster with only a title is fine, and the creative direction
+// carries the rest. The RENDERED EXACTLY framing is the same discipline the
+// event path uses — the model must not invent or alter the words it's given.
+func studioBrief(title, dateText, venueText, direction string) string {
+	var facts []string
+	if t := strings.TrimSpace(oneLine(title, 90)); t != "" {
+		facts = append(facts, fmt.Sprintf("The title, rendered EXACTLY: %q.", t))
+	}
+	if d := strings.TrimSpace(oneLine(dateText, 90)); d != "" {
+		facts = append(facts, fmt.Sprintf("The date/time line, rendered EXACTLY: %q.", d))
+	}
+	if v := strings.TrimSpace(oneLine(venueText, 90)); v != "" {
+		facts = append(facts, fmt.Sprintf("The venue/location, rendered EXACTLY: %q.", v))
+	}
+	joined := strings.Join(facts, " ")
+	if joined == "" {
+		// Nothing typed at all — still render something usable rather than erroring,
+		// so playing with styles before writing any copy works.
+		joined = "No fixed text was given; use tasteful placeholder-free composition " +
+			"with room for a title, and add no invented specifics."
+	}
+	return fmt.Sprintf(
+		"A portrait 3:4 pickleball poster. Style: %s. "+
+			"It must read instantly as PICKLEBALL — paddles and a pickleball, "+
+			"never tennis rackets or tennis balls. %s "+
+			"All text must be crisp, correctly spelled, and limited to the facts "+
+			"given — no invented dates, prices or slogans. Leave breathing room; "+
+			"a poster, not a collage.",
+		direction, joined)
+}
+
+// oneLine collapses whitespace and caps length — the studio fields are single
+// lines that ride inside a quoted prompt segment.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > max {
+		r = r[:max]
+	}
+	return string(r)
+}
+
+// RecordPosterGeneration logs a render into the caller's gallery. Best-effort:
+// a failed insert must never fail the generation — the poster already exists.
+// eventID is "" for studio renders. Inert until the table is migrated in.
+func (s *Service) RecordPosterGeneration(userID, eventID, url, style string) {
+	if !s.posterGenReady() || strings.TrimSpace(url) == "" {
+		return
+	}
+	row := map[string]any{
+		"user_id": userID,
+		"url":     url,
+		"style":   strings.TrimSpace(style),
+	}
+	if strings.TrimSpace(eventID) != "" {
+		row["event_id"] = eventID
+	}
+	if _, err := s.sb.Insert("poster_generations", row); err != nil {
+		log.Printf("poster: gallery record failed (non-fatal): %v", err)
+	}
+}
+
+// MyPosters returns the caller's recent poster renders, newest first. Capped —
+// a gallery is a recent-work strip, not an archive (and 30-day retention keeps
+// it naturally short).
+func (s *Service) MyPosters(callerID string) ([]PosterItem, error) {
+	if !s.posterGenReady() {
+		return []PosterItem{}, nil
+	}
+	rows, err := s.sb.Select("poster_generations",
+		"user_id=eq."+store.Q(callerID)+
+			"&select=id,url,style,event_id,created_at"+
+			"&order=created_at.desc&limit=60")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PosterItem, 0, len(rows))
+	eventIDs := make([]string, 0, len(rows))
+	for _, r := range rows {
+		it := PosterItem{
+			ID:        asStr(r, "id"),
+			URL:       asStr(r, "url"),
+			Style:     asStr(r, "style"),
+			EventID:   asStr(r, "event_id"),
+			CreatedAt: asStr(r, "created_at"),
+		}
+		if it.URL == "" {
+			continue
+		}
+		if it.EventID != "" {
+			eventIDs = append(eventIDs, it.EventID)
+		}
+		out = append(out, it)
+	}
+	// Name the events in ONE query so the gallery can say "for Summer Slam".
+	if len(eventIDs) > 0 {
+		if evs, err := s.sb.SelectAll("events",
+			"id="+store.In(eventIDs)+"&select=id,name"); err == nil {
+			names := map[string]string{}
+			for _, e := range evs {
+				names[asStr(e, "id")] = strings.TrimSpace(asStr(e, "name"))
+			}
+			for i := range out {
+				out[i].EventName = names[out[i].EventID]
+			}
+		}
+	}
+	return out, nil
+}
+
+// SweepOldPosters deletes gallery renders older than posterRetention, along with
+// their storage objects — EXCEPT any whose URL is still an event's or league's
+// active poster. A poster you actually used is showing on a real page (TV, share
+// link, public event page); sweeping it would 404 that page. The throwaway tries
+// you never used get cleaned up. Idempotent and bounded per pass.
+func (s *Service) SweepOldPosters() error {
+	if !s.posterGenReady() {
+		return nil
+	}
+	cutoff := time.Now().Add(-posterRetention).UTC().Format(time.RFC3339)
+	rows, err := s.sb.Select("poster_generations",
+		"created_at=lt."+store.Q(cutoff)+
+			"&select=id,url&order=created_at.asc&limit=200")
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	inUse, err := s.postersStillInUse(rows)
+	if err != nil {
+		return err
+	}
+	var swept, kept int
+	for _, r := range rows {
+		id := asStr(r, "id")
+		url := asStr(r, "url")
+		if inUse[url] {
+			kept++
+			continue // still an active poster — leave both the object and the row
+		}
+		if bucket, path, ok := storagePathFromPublicURL(url); ok {
+			if derr := s.sb.StorageDelete(bucket, path); derr != nil {
+				log.Printf("poster sweep: storage delete failed for %s: %v", url, derr)
+				continue // keep the row so a later pass retries the object delete
+			}
+		}
+		if derr := s.sb.Delete("poster_generations", "id=eq."+store.Q(id)); derr != nil {
+			log.Printf("poster sweep: row delete failed for %s: %v", id, derr)
+			continue
+		}
+		swept++
+	}
+	if swept > 0 || kept > 0 {
+		log.Printf("poster sweep: removed %d, kept %d still-in-use", swept, kept)
+	}
+	return nil
+}
+
+// posterRetention is how long a generated poster survives in the gallery before
+// the sweep may remove it — unless it's in use somewhere, in which case it stays
+// for as long as it's referenced.
+const posterRetention = 30 * 24 * time.Hour
+
+// postersStillInUse reports which of these poster URLs are an active event or
+// league poster right now, in two batched queries.
+func (s *Service) postersStillInUse(rows []map[string]any) (map[string]bool, error) {
+	urls := make([]string, 0, len(rows))
+	seen := map[string]bool{}
+	for _, r := range rows {
+		u := asStr(r, "url")
+		if u != "" && !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	inUse := map[string]bool{}
+	if len(urls) == 0 {
+		return inUse, nil
+	}
+	evs, err := s.sb.SelectAll("events",
+		"poster_url="+store.In(urls)+"&select=poster_url")
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range evs {
+		inUse[asStr(e, "poster_url")] = true
+	}
+	lgs, err := s.sb.SelectAll("leagues",
+		"poster_url="+store.In(urls)+"&select=poster_url")
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range lgs {
+		inUse[asStr(l, "poster_url")] = true
+	}
+	return inUse, nil
+}
+
+// storagePathFromPublicURL splits a Supabase public object URL back into
+// (bucket, path). Returns ok=false for anything that isn't one, so a manually
+// entered or externally hosted poster_url is never mistaken for a deletable
+// object.
+func storagePathFromPublicURL(url string) (bucket, path string, ok bool) {
+	const marker = "/storage/v1/object/public/"
+	i := strings.Index(url, marker)
+	if i < 0 {
+		return "", "", false
+	}
+	rest := url[i+len(marker):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 || slash == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:slash], rest[slash+1:], true
 }
 
 // fetchSmallImage downloads a small public asset (the club logo), bounded so a

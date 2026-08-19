@@ -183,6 +183,37 @@ func (c *Client) StorageUpload(bucket, path, contentType string, data []byte) (s
 		c.baseURL, bucket, path), nil
 }
 
+// StorageDelete removes one object from a bucket via the service key (bypasses
+// bucket RLS). A 404 is treated as success — the goal is "the object is gone",
+// and a cleanup job that already ran, or a path that was never written, both
+// satisfy that. Only a real server error is reported back.
+func (c *Client) StorageDelete(bucket, path string) error {
+	req, err := http.NewRequest(http.MethodDelete,
+		fmt.Sprintf("%s/storage/v1/object/%s/%s", c.baseURL, bucket, path), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("apikey", c.serviceKey)
+	req.Header.Set("Authorization", "Bearer "+c.serviceKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return fmt.Errorf("storage delete failed (%d): %s", resp.StatusCode, msg)
+	}
+	return nil
+}
+
 // SignedURLs creates time-limited signed download URLs for objects in a PRIVATE
 // bucket, in one batch request, using the service key (bypasses bucket RLS).
 // Returns a map of object path -> full signed URL; paths that fail to sign are

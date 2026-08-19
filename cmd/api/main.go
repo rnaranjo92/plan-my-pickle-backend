@@ -253,6 +253,20 @@ func main() {
 		}
 	}()
 
+	// Poster gallery retention: sweep generated posters older than 30 days and
+	// their storage objects, EXCEPT any still shown as an event/league poster.
+	// Bounded to 200 rows per pass and a no-op once caught up, so hourly is cheap;
+	// inert until the poster_generations table exists.
+	go func() {
+		time.Sleep(4 * time.Minute) // stagger away from the other boot jobs
+		for {
+			if err := svc.SweepOldPosters(); err != nil {
+				log.Printf("poster sweep: pass failed (retrying next hour): %v", err)
+			}
+			time.Sleep(time.Hour)
+		}
+	}()
+
 	// Event geo self-repair: geocode listed events missing coords, then stamp
 	// county+state. An event whose create-time geocode missed is invisible on
 	// every city page and in Nearby, silently and forever — and the only repair

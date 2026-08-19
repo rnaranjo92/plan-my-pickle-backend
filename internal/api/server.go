@@ -239,6 +239,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Poster STUDIO: generate with no event, and the caller's gallery of renders.
 	mux.HandleFunc("POST /me/posters/generate", requireAuth(s.studioGeneratePoster))
 	mux.HandleFunc("GET /me/posters", requireAuth(s.myPosters))
+	mux.HandleFunc("GET /me/poster-credits", requireAuth(s.posterCredits))
+	mux.HandleFunc("POST /me/poster-credits/checkout",
+		requireAuth(s.posterPackCheckout))
 	mux.HandleFunc("GET /events/{id}/court-token", s.ownerOnly("event", "id", s.courtToken))
 	mux.HandleFunc("POST /events/{id}/court/{n}/score", s.courtScore)
 	mux.HandleFunc("GET /events/{id}/feed", optionalAuth(s.feedList))
@@ -1238,6 +1241,30 @@ func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": url})
+}
+
+// posterCredits reports the caller's spendable poster balance (and whether the
+// meter is even on).
+func (s *Server) posterCredits(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.PosterCreditState(userID(r)))
+}
+
+// posterPackCheckout opens a Stripe Checkout for a poster credit pack.
+func (s *Server) posterPackCheckout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SuccessURL string `json:"successUrl"`
+		CancelURL  string `json:"cancelUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	url, err := s.svc.StartPosterPackCheckout(
+		userID(r), userEmail(r), req.SuccessURL, req.CancelURL)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 // myPosters returns the caller's recent poster renders for the Tools gallery.

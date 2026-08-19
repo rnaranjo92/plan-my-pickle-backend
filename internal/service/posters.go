@@ -135,6 +135,9 @@ func (s *Service) GeneratePoster(
 	if !s.posterAllowed(ev, callerID) {
 		return "", ErrForbidden
 	}
+	if err := s.requirePosterCredit(callerID); err != nil {
+		return "", err
+	}
 	stylePrompt, err := composePosterDirection(style, layout, vibe, extra, custom)
 	if err != nil {
 		return "", err
@@ -177,6 +180,7 @@ func (s *Service) GeneratePoster(
 			return "", err
 		}
 	}
+	s.spendPosterCredit(callerID)
 	s.RecordPosterGeneration(callerID, eventID, url, style)
 	log.Printf("poster: generated for %s (style=%s, %d bytes)",
 		eventID, style, len(img))
@@ -563,6 +567,9 @@ func (s *Service) GenerateStudioPoster(
 		return "", errors.New(
 			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
 	}
+	if err := s.requirePosterCredit(callerID); err != nil {
+		return "", err
+	}
 	direction, err := composePosterDirection(style, layout, vibe, extra, custom)
 	if err != nil {
 		return "", err
@@ -588,6 +595,7 @@ func (s *Service) GenerateStudioPoster(
 	if err != nil {
 		return "", fmt.Errorf("the poster generated but couldn't be saved: %w", err)
 	}
+	s.spendPosterCredit(callerID)
 	s.RecordPosterGeneration(callerID, "", url, style)
 	log.Printf("poster: studio render for %s (style=%s, %d bytes)",
 		callerID, style, len(img))

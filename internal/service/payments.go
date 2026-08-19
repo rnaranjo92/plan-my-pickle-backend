@@ -578,6 +578,9 @@ func (s *Service) HandleStripeWebhook(payload []byte, sigHeader string) error {
 		}
 		// A class-pack purchase — grant the credits (idempotent on the PaymentIntent
 		// so a redelivered webhook can't double-grant).
+		if evt.PosterPack != "" {
+			return s.GrantPosterCredits(evt.PosterPack, evt.PaymentIntentID)
+		}
 		if evt.PackPurchase != "" {
 			return s.grantPackCredits(evt.PackPurchase, evt.PaymentIntentID)
 		}

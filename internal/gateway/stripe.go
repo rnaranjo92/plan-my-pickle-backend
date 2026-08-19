@@ -629,6 +629,8 @@ type WebhookEvent struct {
 	// checkout.session.completed (mode=payment) — a class-pack purchase, encoded
 	// as "coachId:userId:credits".
 	PackPurchase string
+	// PosterPack is "<userID>:<credits>" from an AI-poster credit-pack purchase.
+	PosterPack string
 	// The PaymentIntent behind a completed checkout — stored so a paid class seat
 	// can later be refunded (Refund(paymentIntentID)).
 	PaymentIntentID string
@@ -716,6 +718,7 @@ func (g *StripeGateway) VerifyWebhook(payload []byte, sigHeader string) (Webhook
 			AnalysisID:      sess.Metadata["analysis_id"],
 			EnrollmentID:    sess.Metadata["enrollment_id"],
 			PackPurchase:    sess.Metadata["pack_purchase"],
+			PosterPack:      sess.Metadata["poster_pack"],
 			PaymentIntentID: piID,
 			AmountCents:     int(sess.AmountTotal),
 			AddonTee:        sess.Metadata["addon_tee"] == "1",

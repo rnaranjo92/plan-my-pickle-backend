@@ -7013,7 +7013,28 @@ func (s *Service) spreadBracketCourts(eventID string) error {
 	occupiedP := map[int]map[string]bool{} // slot -> player id -> busy
 	byCourt := map[string][]string{}
 	bySlot := map[int][]string{}
-	prevRound, baseSlot, maxSlot := -1, 0, -1
+
+	// START AFTER THE POOL. Slots are shared with pool play, and this function
+	// only ever sees BRACKET matches — so beginning at slot 0 drops the playoff
+	// directly on top of the pool schedule: the same courts and the same times,
+	// every player double-booked. That was invisible while this only ran at
+	// schedule time for pure elimination draws (no pool games exist there), and
+	// became real the moment playoffs started calling it, which is exactly when
+	// a full pool schedule is already sitting in those slots.
+	//
+	// Pool play is COMPLETE before any playoff is built, so simply starting past
+	// the last pool slot is both correct and the earliest honest option.
+	firstSlot := 0
+	if pool, perr := s.sb.SelectAll("matches",
+		"event_id=eq."+store.Q(eventID)+
+			"&stage=eq.pool&select=play_order"); perr == nil {
+		for _, p := range pool {
+			if po := asInt(p, "play_order"); po >= firstSlot {
+				firstSlot = po + 1
+			}
+		}
+	}
+	prevRound, baseSlot, maxSlot := -1, firstSlot, firstSlot-1
 	for _, m := range list {
 		if m.round != prevRound {
 			if prevRound != -1 {

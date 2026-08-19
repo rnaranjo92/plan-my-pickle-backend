@@ -116,7 +116,8 @@ func (s *Service) posterAllowed(ev map[string]any, callerID string) bool {
 // advertising with. The studio shows the result and lets the organizer choose
 // "Use on an event".
 func (s *Service) GeneratePoster(
-	eventID, callerID, style, layout, vibe, extra, custom string, attach bool,
+	eventID, callerID, style, layout, vibe, extra, custom string,
+	sponsorURLs []string, attach bool,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -143,6 +144,10 @@ func (s *Service) GeneratePoster(
 	var refs [][]byte
 	if len(logo) > 0 {
 		refs = append(refs, logo)
+	}
+	if sponsors := fetchSponsorLogos(sponsorURLs); len(sponsors) > 0 {
+		prompt += " " + sponsorFact(len(sponsors), len(refs))
+		refs = append(refs, sponsors...)
 	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
@@ -552,6 +557,7 @@ func studioPosterPath(userID, ext string) string {
 // behind it. Returns the public URL; the caller decides what to do with it.
 func (s *Service) GenerateStudioPoster(
 	callerID, title, dateText, venueText, style, layout, vibe, extra, custom string,
+	sponsorURLs []string,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -562,7 +568,12 @@ func (s *Service) GenerateStudioPoster(
 		return "", err
 	}
 	prompt := studioBrief(title, dateText, venueText, direction)
-	img, mime, err := gateway.GenerateImage(prompt, nil)
+	var refs [][]byte
+	if sponsors := fetchSponsorLogos(sponsorURLs); len(sponsors) > 0 {
+		prompt += " " + sponsorFact(len(sponsors), 0)
+		refs = sponsors
+	}
+	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
 		log.Printf("poster: studio generate failed for %s: %v", callerID, err)
 		return "", errors.New("could not generate the poster — try again, " +
@@ -826,6 +837,44 @@ func storagePathFromPublicURL(url string) (bucket, path string, ok bool) {
 		return "", "", false
 	}
 	return rest[:slash], rest[slash+1:], true
+}
+
+// fetchSponsorLogos downloads up to four sponsor logos to ride along as
+// reference images. Best-effort per logo (a bad URL means that one logo is
+// skipped, never a failed poster), same 5MB/PNG/JPEG discipline as the club
+// logo. Capped because every reference image costs tokens and a poster with
+// ten sponsor marks isn't a poster.
+func fetchSponsorLogos(urls []string) [][]byte {
+	out := make([][]byte, 0, 4)
+	for _, u := range urls {
+		if len(out) == 4 {
+			break
+		}
+		if img := fetchSmallImage(strings.TrimSpace(u)); len(img) > 0 {
+			out = append(out, img)
+		}
+	}
+	return out
+}
+
+// sponsorFact is the prompt line for attached sponsor logos. [offset] is how
+// many reference images precede them (the club logo, when present), so the
+// model can tell which attachments are which.
+func sponsorFact(n, offset int) string {
+	if n == 0 {
+		return ""
+	}
+	which := "the attached image(s)"
+	if offset > 0 {
+		which = fmt.Sprintf("attached images %d through %d", offset+1, offset+n)
+	} else if n == 1 {
+		which = "the attached image"
+	}
+	return fmt.Sprintf(
+		"SPONSORS: %s are sponsor logos (%d of them). Arrange them in one small, "+
+			"evenly spaced row along the bottom edge as sponsor credits — reproduce "+
+			"each faithfully; never redraw, recolor, crop or distort a logo.",
+		which, n)
 }
 
 // fetchSmallImage downloads a small public asset (the club logo), bounded so a

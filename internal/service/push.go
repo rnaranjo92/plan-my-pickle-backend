@@ -218,8 +218,14 @@ func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 	if restKey == "" {
 		// Loud, because this path runs unattended: a missing key silently
 		// cancelled the whole broadcast with nothing in the logs to find.
+		//
+		// Returns an ERROR, not nil. The once-a-day caller claims the day BEFORE
+		// sending and only hands it back on an error, so reporting success here
+		// burned the claim AND logged "queued for 9am local" for a broadcast
+		// nobody was ever handed — exactly the shape of a joke that silently
+		// never arrives. An error releases the day so the next tick retries.
 		log.Printf("9am broadcast skipped: ONESIGNAL_REST_API_KEY is not set")
-		return nil
+		return errors.New("ONESIGNAL_REST_API_KEY is not set")
 	}
 	body := map[string]any{
 		"app_id":            onesignalAppID,

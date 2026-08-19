@@ -107,8 +107,16 @@ func (s *Service) posterAllowed(ev map[string]any, callerID string) bool {
 //
 // Synchronous by design: the model answers in 2-5s, which is a button with a
 // spinner, not a job queue. The HTTP client allows 60s for the slow tail.
+// [attach] decides whether the render becomes the event's poster.
+//
+// TRUE from the event's own Admin tab, where "make this event's poster" is
+// literally the button's job. FALSE from the Poster Studio, which borrows an
+// event only for its DETAILS (name, date, venue, divisions, club logo) — going
+// there to try a style must not silently replace the poster an event is already
+// advertising with. The studio shows the result and lets the organizer choose
+// "Use on an event".
 func (s *Service) GeneratePoster(
-	eventID, callerID, style, layout, vibe, extra, custom string,
+	eventID, callerID, style, layout, vibe, extra, custom string, attach bool,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -157,9 +165,11 @@ func (s *Service) GeneratePoster(
 	if err != nil {
 		return "", fmt.Errorf("the poster generated but couldn't be saved: %w", err)
 	}
-	if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
-		map[string]any{"poster_url": url}); err != nil {
-		return "", err
+	if attach {
+		if _, err := s.sb.Update("events", "id=eq."+store.Q(eventID),
+			map[string]any{"poster_url": url}); err != nil {
+			return "", err
+		}
 	}
 	s.RecordPosterGeneration(callerID, eventID, url, style)
 	log.Printf("poster: generated for %s (style=%s, %d bytes)",

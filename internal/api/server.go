@@ -1265,17 +1265,23 @@ func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 		Vibe   string `json:"vibe"`
 		Extra  string `json:"extra"`
 		Custom string `json:"custom"`
+		// Attach: set the render as the event's poster. A POINTER so absent means
+		// YES — this endpoint has always attached, and the shipped mobile builds
+		// don't send the field. Only the Poster Studio, which borrows an event for
+		// its details, sends false.
+		Attach *bool `json:"attach"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
+	attach := req.Attach == nil || *req.Attach
 	if !s.posterLimiter.allow("poster:" + userID(r)) {
 		writeErr(w, http.StatusTooManyRequests, errors.New(
 			"that's a lot of posters in one hour — take a break and come back"))
 		return
 	}
 	url, err := s.svc.GeneratePoster(r.PathValue("id"), userID(r),
-		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom)
+		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom, attach)
 	if err != nil {
 		status(w, err)
 		return

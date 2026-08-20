@@ -40,7 +40,16 @@ func isClubPlanEvent(priceID string) bool {
 
 // applyClubPlanEvent writes the Club subscription onto its own columns.
 func (s *Service) applyClubPlanEvent(ev gateway.SubscriptionEvent) error {
-	if !s.columnReady("pmp_profiles", "club_plan") {
+	// Money path: a transient probe failure must NOT read as "column missing".
+	// columnReady swallows the error and returns false, which would drop a paid
+	// subscription on the floor — Stripe sees our 200, never redelivers, and the
+	// organizer is charged $59 for a plan we never recorded. columnReadyErr lets
+	// the error out so the webhook 500s and Stripe retries.
+	ready, err := s.columnReadyErr("pmp_profiles", "club_plan")
+	if err != nil {
+		return err
+	}
+	if !ready {
 		log.Printf("subscriptions: club plan event ignored — run add_club_plan.sql")
 		return nil
 	}

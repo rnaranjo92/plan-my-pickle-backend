@@ -725,12 +725,23 @@ func (s *Service) IsPremium(userID string) bool {
 	if comped {
 		sel = "premium,comped"
 	}
+	// Club ($59/mo) is a SUPERSET of Premium ($15/mo), so it has to satisfy every
+	// IsPremium check — otherwise the expensive tier silently loses branding
+	// removal, the sponsor watermark and SMS, costing four times as much for
+	// less. Read it in this same query rather than calling ClubPlanActive: this
+	// is a hot path and that would double the round trips.
+	club := s.columnReady("pmp_profiles", "club_plan")
+	if club {
+		sel += ",club_plan"
+	}
 	row, err := s.sb.SelectOne("pmp_profiles",
 		"user_id=eq."+store.Q(userID)+"&select="+sel)
 	if err != nil || row == nil {
 		return false
 	}
-	return asBool(row, "premium") || (comped && asBool(row, "comped"))
+	return asBool(row, "premium") ||
+		(comped && asBool(row, "comped")) ||
+		(club && asBool(row, "club_plan"))
 }
 
 // CompedAccount is one manually-granted account, for the owner's review list.

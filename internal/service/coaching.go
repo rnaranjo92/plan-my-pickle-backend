@@ -7623,11 +7623,18 @@ func (s *Service) RemindUpcomingClasses() error {
 			"class_id=eq."+store.Q(cid)+"&status=eq.enrolled&"+col+
 				"=is.false&select=id,user_id&limit=300")
 		for _, e := range ens {
+			// Claim this enrollment's reminder before sending it — the column is
+			// false only until someone takes it, so a racing worker gets nothing
+			// back and stays quiet.
+			claimed, cerr := s.sb.Update("coaching_enrollments",
+				"id=eq."+store.Q(asStr(e, "id"))+"&"+col+"=is.false",
+				map[string]any{col: true})
+			if cerr != nil || len(claimed) == 0 {
+				continue
+			}
 			if uid := asStr(e, "user_id"); uid != "" {
 				s.notifyUser(uid, "coaching", "", "PlanMyPickle", body, "myclasses")
 			}
-			_, _ = s.sb.Update("coaching_enrollments",
-				"id=eq."+store.Q(asStr(e, "id")), map[string]any{col: true})
 		}
 	}
 	return nil
@@ -7653,6 +7660,14 @@ func (s *Service) RemindUpcomingSessions() error {
 		// a null status and are treated as confirmed. (Filtered in code because a
 		// PostgREST status=neq.pending would also drop those null rows.)
 		if st := asStr(r, "status"); st == "pending" || st == "declined" {
+			continue
+		}
+		// Claim first (see claimNudge): send-then-stamp duplicated every
+		// reminder whenever two workers overlapped.
+		claimed, cerr := s.sb.Update("coaching_schedule",
+			"id=eq."+store.Q(asStr(r, "id"))+"&reminded_at=is.null",
+			map[string]any{"reminded_at": nowT.Format(time.RFC3339)})
+		if cerr != nil || len(claimed) == 0 {
 			continue
 		}
 		threadID := asStr(r, "coach_student_id")
@@ -7685,8 +7700,6 @@ func (s *Service) RemindUpcomingSessions() error {
 				"Reminder: your 1:1 session with "+studentName+" is coming up soon",
 				"coaching:"+threadID)
 		}
-		_, _ = s.sb.Update("coaching_schedule", "id=eq."+store.Q(asStr(r, "id")),
-			map[string]any{"reminded_at": nowT.Format(time.RFC3339)})
 	}
 	return nil
 }
@@ -7999,6 +8012,18 @@ func (s *Service) SweepInactiveStudents() error {
 		threadID := asStr(r, "id")
 		coachID := asStr(r, "coach_id")
 		sid := asStr(r, "student_id")
+		// CLAIM the nudge BEFORE sending it, not after.
+		//
+		// Stamping nudged_at at the end of this loop left a window where another
+		// worker running the same sweep still saw the row as un-nudged and sent
+		// everything a second time — and Railway overlaps the old and new
+		// containers on every deploy, so that window gets hit in practice. A
+		// coach received "X has been quiet for 2 weeks" twice. The conditional
+		// update IS the lock: it can only match a row nobody has claimed, and
+		// return=representation tells us whether we were the one who got it.
+		if !s.claimNudge(threadID, cutoff, nowT) {
+			continue
+		}
 		if sid != "" {
 			name := s.coachingName(coachID)
 			s.notifyUser(sid, "coaching", coachID, name,
@@ -8011,10 +8036,27 @@ func (s *Service) SweepInactiveStudents() error {
 		}
 		s.notifyUser(coachID, "coaching", sid, who,
 			who+" has been quiet for 2 weeks — check in?", "coaching:"+threadID)
-		_, _ = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
-			map[string]any{"nudged_at": nowT.Format(time.RFC3339)})
 	}
 	return nil
+}
+
+// claimNudge atomically takes the 14-day nudge for one thread. Returns false
+// when another worker already claimed it (or the write failed) — in which case
+// this worker must stay silent rather than duplicate the notification.
+//
+// The filter repeats the SELECT's own condition so a claim can only land on a
+// row that is still genuinely due; when two workers race the same row, exactly
+// one gets a non-empty result back.
+func (s *Service) claimNudge(threadID, cutoff string, nowT time.Time) bool {
+	claimed, err := s.sb.Update("coach_students",
+		"id=eq."+store.Q(threadID)+
+			"&or=(nudged_at.is.null,nudged_at.lt."+store.Q(cutoff)+")",
+		map[string]any{"nudged_at": nowT.Format(time.RFC3339)})
+	if err != nil {
+		log.Printf("nudge: claim failed for %s: %v", threadID, err)
+		return false
+	}
+	return len(claimed) > 0
 }
 
 // RemindNeverUploaded nudges a linked student who joined but hasn't uploaded a
@@ -8037,13 +8079,26 @@ func (s *Service) RemindNeverUploaded() error {
 	}
 	for _, r := range rows {
 		threadID := asStr(r, "id")
-		markNudged := func() {
-			_, _ = s.sb.Update("coach_students", "id=eq."+store.Q(threadID),
+		// Claim the one-shot before acting on it (see claimNudge): this used to
+		// stamp AFTER notifying, so two overlapping workers each sent the
+		// onboarding nudge. Returns false when someone else already took it.
+		markNudged := func() bool {
+			claimed, cerr := s.sb.Update("coach_students",
+				"id=eq."+store.Q(threadID)+"&first_nudge_at=is.null",
 				map[string]any{"first_nudge_at": nowT.Format(time.RFC3339)})
+			if cerr != nil {
+				log.Printf("onboarding nudge: claim failed for %s: %v", threadID, cerr)
+				return false
+			}
+			return len(claimed) > 0
 		}
 		// Already uploaded → nothing to onboard; mark so we never re-scan it.
 		if s.threadVideoCount(threadID) > 0 {
-			markNudged()
+			_ = markNudged() // just retire the row; nothing is sent either way
+			continue
+		}
+		// Claim BEFORE notifying — otherwise a racing worker sends it too.
+		if !markNudged() {
 			continue
 		}
 		coachID := asStr(r, "coach_id")
@@ -8053,7 +8108,6 @@ func (s *Service) RemindNeverUploaded() error {
 				coachLabelFrom(name)+" is ready for your first clip — record a rally and upload it for feedback",
 				"coaching:"+threadID)
 		}
-		markNudged()
 	}
 	return nil
 }

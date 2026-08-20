@@ -1038,8 +1038,9 @@ const seoHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{{.Title}}</title>
 <meta name="description" content="{{.Description}}">
 <link rel="canonical" href="{{.Canonical}}">
-<link rel="icon" href="` + seoCanonicalBase + `/assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="` + seoCanonicalBase + `/assets/favicon-32.png" sizes="32x32">
 <link rel="icon" href="` + seoCanonicalBase + `/assets/favicon-48.png" sizes="48x48">
+<link rel="icon" href="` + seoCanonicalBase + `/assets/icon-192.png" sizes="192x192">
 <link rel="apple-touch-icon" href="` + seoCanonicalBase + `/assets/apple-touch-icon.png">
 <meta name="theme-color" content="#16245c">
 <meta property="og:title" content="{{.Title}}">
@@ -1104,7 +1105,7 @@ h1{color:var(--navy);font-size:clamp(26px,5.2vw,36px);line-height:1.15;margin:20
 .foot{margin-top:36px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 .foot a{color:var(--green)}
 </style></head><body><div class="wrap">
-<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28"><span class="wordmark">PlanMyPickle<sup aria-hidden="true">&trade;</sup></span></a></header>`
+<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/icon-192.png" alt="" width="28" height="28"><span class="wordmark">PlanMyPickle<sup aria-hidden="true">&trade;</sup></span></a></header>`
 
 const seoFoot = `<p class="foot"><a href="/coaches">Find a pickleball coach</a> · <a href="/coaches/apply">Coach with us</a></p>
 <p class="foot">Powered by <a href="` + seoCanonicalBase + `">PlanMyPickle</a> — run pickleball tournaments, minus the chaos.</p>

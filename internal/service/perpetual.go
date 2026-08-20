@@ -1373,7 +1373,7 @@ type RedrawPlan struct {
 // PlanRoundRedraw reports what RedrawUpcomingRounds would replace, without
 // touching anything.
 func (s *Service) PlanRoundRedraw(eventID string) (RedrawPlan, error) {
-	_, plan, err := s.redrawTargets(eventID)
+	_, _, plan, err := s.redrawTargets(eventID)
 	return plan, err
 }
 
@@ -1412,7 +1412,7 @@ func (s *Service) RedrawUpcomingRounds(eventID string) (model.ScheduleResult, Re
 	// old round from the redraw and kept stealing the court scorer / overlay.
 	s.cancelStalePerpetualGames(ev)
 
-	ids, plan, err := s.redrawTargets(eventID)
+	ids, touched, plan, err := s.redrawTargets(eventID)
 	if err != nil {
 		return model.ScheduleResult{}, plan, err
 	}
@@ -1439,7 +1439,7 @@ func (s *Service) RedrawUpcomingRounds(eventID string) (model.ScheduleResult, Re
 	}
 	plan.Rounds = len(empty)
 	s.cleanupStaleSubstitutes(eventID, ev.PartnerMode)
-	res, err := s.buildPerpetualRoundsLocked(ev)
+	res, err := s.buildPerpetualRoundsForLocked(ev, touched)
 	return res, plan, err
 }
 
@@ -1462,61 +1462,70 @@ func (s *Service) roundsWithoutMatches(ids []string) ([]string, error) {
 	return out, nil
 }
 
-// eventLocalZone is the event's local timezone, derived from its configured
-// start time-of-day — the same approach clearCurrentUnscoredSessionLocked and
-// resetStaleCheckins use. A pure UTC bucket would mis-classify an evening
-// league's session in any non-UTC zone and could treat a genuinely-prior LOCAL
-// session as "tonight".
-func (s *Service) eventLocalZone(eventID string) *time.Location {
-	if ev, _ := s.sb.SelectOne("events",
-		"id=eq."+store.Q(eventID)+"&select=starts_at"); ev != nil {
-		if st := strings.TrimSpace(asStr(ev, "starts_at")); st != "" {
-			if t, e := time.Parse(time.RFC3339, st); e == nil {
-				return t.Location()
-			}
-		}
-	}
-	return time.UTC
-}
+// sessionWindow is how far back from the NEWEST round another round can have
+// been built and still belong to the same session.
+//
+// A night's rounds arrive either in one Build or in a few appends across the
+// evening, so a few hours covers a long session. Two sessions on the same day
+// (a morning and an evening league) sit further apart than this, so they stay
+// separate.
+const sessionWindow = 6 * time.Hour
 
 // redrawTargets returns the round ids a redraw may replace, plus the plan the
 // organizer is asked to approve.
-func (s *Service) redrawTargets(eventID string) ([]string, RedrawPlan, error) {
+func (s *Service) redrawTargets(eventID string) ([]string, map[string]bool, RedrawPlan, error) {
 	var plan RedrawPlan
 	ev, err := s.GetEvent(eventID)
 	if err != nil {
-		return nil, plan, err
+		return nil, nil, plan, err
 	}
-	loc := s.eventLocalZone(eventID)
 	rounds, err := s.sb.SelectAll("rounds", "event_id=eq."+store.Q(eventID)+
 		"&select=id,bracket_id,round_number,created_at")
 	if err != nil {
-		return nil, plan, err
+		return nil, nil, plan, err
 	}
 	if len(rounds) == 0 {
-		return nil, plan, nil
+		return nil, nil, plan, nil
 	}
-	nowLocal := time.Now().In(loc)
-	today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, loc)
+	// THIS SESSION means "built close to the newest round", not "same calendar
+	// day". starts_at is stored in UTC, so a local timezone can't be recovered
+	// from it — and a UTC day boundary falls at 8pm ET / 5pm PT, i.e. in the
+	// middle of league night. Bucketing by UTC day would refuse to redraw for
+	// the rest of the evening, and could pull a previous evening's rounds into
+	// the same bucket. Anchoring on the newest round avoids timezones entirely.
 	type rd struct {
 		id, bracket string
 		number      int
+		at          time.Time
 	}
-	var todays []rd
+	var all []rd
 	for _, r := range rounds {
 		t, e := time.Parse(time.RFC3339, asStr(r, "created_at"))
 		if e != nil {
-			continue
+			continue // unreadable timestamp → never a redraw target
 		}
-		l := t.In(loc)
-		if !time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc).Equal(today) {
-			continue // a prior session is history — never redraw it
+		all = append(all, rd{asStr(r, "id"), asStr(r, "bracket_id"),
+			asInt(r, "round_number"), t})
+	}
+	if len(all) == 0 {
+		return nil, nil, plan, nil
+	}
+	newest := all[0].at
+	for _, r := range all {
+		if r.at.After(newest) {
+			newest = r.at
 		}
-		todays = append(todays, rd{asStr(r, "id"), asStr(r, "bracket_id"),
-			asInt(r, "round_number")})
+	}
+	cutoff := newest.Add(-sessionWindow)
+	var todays []rd
+	for _, r := range all {
+		if r.at.Before(cutoff) {
+			continue // an earlier session is history — never redraw it
+		}
+		todays = append(todays, r)
 	}
 	if len(todays) == 0 {
-		return nil, plan, nil
+		return nil, nil, plan, nil
 	}
 	ids := make([]string, 0, len(todays))
 	for _, r := range todays {
@@ -1525,7 +1534,7 @@ func (s *Service) redrawTargets(eventID string) ([]string, RedrawPlan, error) {
 	matches, err := s.sb.SelectAll("matches",
 		"round_id="+store.In(ids)+"&select=round_id,status,team1_score")
 	if err != nil {
-		return nil, plan, err
+		return nil, nil, plan, err
 	}
 	active := map[string]bool{}
 	for _, m := range matches {
@@ -1547,7 +1556,7 @@ func (s *Service) redrawTargets(eventID string) ([]string, RedrawPlan, error) {
 	blocked := map[string]bool{}
 	bks, err := s.GetBrackets(eventID)
 	if err != nil {
-		return nil, plan, err
+		return nil, nil, plan, err
 	}
 	minPlayers := 2
 	if ev.Format == "doubles" {
@@ -1556,7 +1565,7 @@ func (s *Service) redrawTargets(eventID string) ([]string, RedrawPlan, error) {
 	for _, b := range bks {
 		regs, rerr := s.bracketRegs(eventID, b.ID, true)
 		if rerr != nil {
-			return nil, plan, rerr
+			return nil, nil, plan, rerr
 		}
 		if len(regs) < minPlayers {
 			blocked[b.ID] = true
@@ -1565,26 +1574,49 @@ func (s *Service) redrawTargets(eventID string) ([]string, RedrawPlan, error) {
 		}
 	}
 	var out []string
+	touched := map[string]bool{}
 	for _, r := range todays {
 		if active[r.id] || blocked[r.bracket] || r.number <= highWater[r.bracket] {
 			continue
 		}
 		out = append(out, r.id)
+		touched[r.bracket] = true
 	}
 	plan.Rounds = len(out)
-	return out, plan, nil
+	return out, touched, plan, nil
 }
 
 // buildPerpetualRoundsLocked appends one block of rounds for whoever is CHECKED
 // IN right now, after the highest existing round number. The caller must already
 // hold the per-event build lock (the round offset is a read-modify-write).
 //
-// Shared by the ordinary Build and by RebuildUpcomingRounds, so the two can
+// Shared by the ordinary Build and by RedrawUpcomingRounds, so the two can
 // never drift apart on who is eligible or how the draw is formed.
 func (s *Service) buildPerpetualRoundsLocked(ev model.Event) (model.ScheduleResult, error) {
+	return s.buildPerpetualRoundsForLocked(ev, nil)
+}
+
+// buildPerpetualRoundsForLocked is the same, restricted to `only` when non-nil.
+//
+// A redraw must build ONLY the divisions whose rounds it removed. Building them
+// all would append a whole extra session to a division that was already
+// finished for the night — the organizer approved replacing N rounds, not
+// doubling someone else's games.
+func (s *Service) buildPerpetualRoundsForLocked(
+	ev model.Event, only map[string]bool,
+) (model.ScheduleResult, error) {
 	bks, err := s.GetBrackets(ev.ID)
 	if err != nil {
 		return model.ScheduleResult{}, err
+	}
+	if only != nil {
+		kept := bks[:0]
+		for _, b := range bks {
+			if only[b.ID] {
+				kept = append(kept, b)
+			}
+		}
+		bks = kept
 	}
 	courtByNum, err := s.courtIDsByNumber(ev.ID)
 	if err != nil {

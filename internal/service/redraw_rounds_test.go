@@ -38,7 +38,7 @@ func TestRedrawTakesOnlyRoundsAfterTheLastPlayed(t *testing.T) {
 		  {"round_id":"rB","status":"scheduled","team1_score":null},
 		  {"round_id":"rC","status":"scheduled","team1_score":null}]`,
 		rdFullRoster)
-	ids, plan, err := s.redrawTargets("e1")
+	ids, _, plan, err := s.redrawTargets("e1")
 	if err != nil {
 		t.Fatalf("redrawTargets: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestRedrawIgnoresGapsBeforeThePlayedHighWater(t *testing.T) {
 		  {"round_id":"rB","status":"completed","team1_score":11},
 		  {"round_id":"rC","status":"scheduled","team1_score":null}]`,
 		rdFullRoster)
-	ids, _, err := s.redrawTargets("e1")
+	ids, _, _, err := s.redrawTargets("e1")
 	if err != nil {
 		t.Fatalf("redrawTargets: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestRedrawNeverTouchesAPriorSession(t *testing.T) {
 		`[{"round_id":"old","status":"scheduled","team1_score":null},
 		  {"round_id":"new","status":"scheduled","team1_score":null}]`,
 		rdFullRoster)
-	ids, _, err := s.redrawTargets("e1")
+	ids, _, _, err := s.redrawTargets("e1")
 	if err != nil {
 		t.Fatalf("redrawTargets: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestRedrawFlagsWhenNothingIsMarkedPlayed(t *testing.T) {
 		"["+rdRound("rA", 1, now)+"]",
 		`[{"round_id":"rA","status":"scheduled","team1_score":null}]`,
 		rdFullRoster)
-	_, plan, err := s.redrawTargets("e1")
+	_, _, plan, err := s.redrawTargets("e1")
 	if err != nil {
 		t.Fatalf("redrawTargets: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRedrawLeavesAShortDivisionAlone(t *testing.T) {
 		"["+rdRound("rA", 1, now)+"]",
 		`[{"round_id":"rA","status":"scheduled","team1_score":null}]`,
 		`[{"id":"r1","player_id":"p1"}]`) // 1 checked in, doubles needs 4
-	ids, plan, err := s.redrawTargets("e1")
+	ids, _, plan, err := s.redrawTargets("e1")
 	if err != nil {
 		t.Fatalf("redrawTargets: %v", err)
 	}
@@ -133,5 +133,48 @@ func TestRedrawLeavesAShortDivisionAlone(t *testing.T) {
 	}
 	if len(plan.Blocked) != 1 {
 		t.Errorf("the blocked division should be reported; got %v", plan.Blocked)
+	}
+}
+
+// The session bucket must NOT be a UTC calendar day. starts_at is stored in UTC,
+// so no local zone can be recovered from it, and the UTC day rolls over at 8pm
+// ET / 5pm PT — the middle of league night. A day bucket refused to redraw for
+// the rest of the evening; this anchors on the newest round instead.
+func TestRedrawSpansTheUtcMidnightRollover(t *testing.T) {
+	// 23:30 UTC and 00:30 UTC: 30 minutes apart, but different calendar days.
+	built := time.Date(2026, 3, 4, 23, 30, 0, 0, time.UTC)
+	later := built.Add(time.Hour)
+	s := rdSvc(t,
+		"["+rdRound("rA", 1, built)+","+rdRound("rB", 2, later)+"]",
+		`[{"round_id":"rA","status":"completed","team1_score":11},
+		  {"round_id":"rB","status":"scheduled","team1_score":null}]`,
+		rdFullRoster)
+	ids, _, _, err := s.redrawTargets("e1")
+	if err != nil {
+		t.Fatalf("redrawTargets: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "rB" {
+		t.Fatalf("a round built 30 min earlier across UTC midnight is the SAME "+
+			"session and must stay redrawable; got %v", ids)
+	}
+}
+
+// A session far enough back is a previous night, whatever the clock says.
+func TestRedrawExcludesAnEarlierSessionByGap(t *testing.T) {
+	old := time.Now().Add(-30 * time.Hour)
+	now := time.Now()
+	s := rdSvc(t,
+		"["+rdRound("old", 1, old)+","+rdRound("new", 2, now)+"]",
+		`[{"round_id":"old","status":"scheduled","team1_score":null},
+		  {"round_id":"new","status":"scheduled","team1_score":null}]`,
+		rdFullRoster)
+	ids, _, _, err := s.redrawTargets("e1")
+	if err != nil {
+		t.Fatalf("redrawTargets: %v", err)
+	}
+	for _, id := range ids {
+		if id == "old" {
+			t.Fatal("a session 30h back is history and must never be redrawn")
+		}
 	}
 }

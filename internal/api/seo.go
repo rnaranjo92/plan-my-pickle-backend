@@ -1061,6 +1061,11 @@ body::before{content:"";display:block;height:4px;background:linear-gradient(90de
    share publicly, and an emoji renders differently on every platform. */
 header a{color:var(--green);font-weight:800;text-decoration:none;font-size:18px;display:inline-flex;align-items:center;gap:8px}
 .brand{width:28px;height:28px;border-radius:7px;display:block;flex:none}
+/* One flex item, so the TM sits tight against the name. A bare <sup> here was a
+   flex item of its own: it picked up the header's 8px gap and drifted, and
+   vertical-align does not apply to flex items at all. */
+.wordmark{display:inline-block}
+.wordmark sup{font-size:.5em;line-height:1;margin-left:.08em;font-weight:700;vertical-align:super}
 h1{color:var(--navy);font-size:clamp(26px,5.2vw,36px);line-height:1.15;margin:20px 0 8px;letter-spacing:-0.015em;text-wrap:balance}
 .meta{color:var(--muted);font-size:15px;margin:2px 0}
 /* The DUPR badge is a CREDENTIAL — it is the reason a rated player trusts the
@@ -1099,7 +1104,7 @@ h1{color:var(--navy);font-size:clamp(26px,5.2vw,36px);line-height:1.15;margin:20
 .foot{margin-top:36px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 .foot a{color:var(--green)}
 </style></head><body><div class="wrap">
-<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28">PlanMyPickle<sup style="font-size:.55em;vertical-align:super;margin-left:.1em">&trade;</sup></a></header>`
+<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28"><span class="wordmark">PlanMyPickle<sup aria-hidden="true">&trade;</sup></span></a></header>`
 
 const seoFoot = `<p class="foot"><a href="/coaches">Find a pickleball coach</a> · <a href="/coaches/apply">Coach with us</a></p>
 <p class="foot">Powered by <a href="` + seoCanonicalBase + `">PlanMyPickle</a> — run pickleball tournaments, minus the chaos.</p>

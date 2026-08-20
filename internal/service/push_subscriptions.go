@@ -98,6 +98,45 @@ func (s *Service) pushSubscriptionsFor(userIDs []string) (subIDs []string, cover
 // broadcast that meant the users past the cap fell through to the alias path —
 // which works, but hid the cap: it never looked like a bug, just like push
 // being unreliable for some people.
+// allPushSubscriptionIDs returns every device we can currently reach — the
+// audience for a broadcast.
+//
+// Same 45-day freshness rule as pushSubscriptionsFor: a row older than that
+// means the app hasn't run in a month and a half, and sending to it delivers
+// nowhere while inflating the count.
+//
+// Deduped, because one person with a phone AND the web app has two rows and
+// must not get the same joke twice.
+func (s *Service) allPushSubscriptionIDs() ([]string, error) {
+	if !s.pushSubsReady() {
+		return nil, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -45).Format(time.RFC3339)
+	const page = 1000
+	seen := map[string]bool{}
+	var out []string
+	for offset := 0; ; offset += page {
+		rows, err := s.sb.Select("push_subscriptions",
+			"updated_at=gte."+cutoff+
+				"&select=subscription_id"+
+				"&order=updated_at.desc"+
+				"&limit="+strconv.Itoa(page)+
+				"&offset="+strconv.Itoa(offset))
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if id := asStr(r, "subscription_id"); id != "" && !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+		if len(rows) < page {
+			return out, nil
+		}
+	}
+}
+
 func (s *Service) selectAllPushRows(
 	userIDs []string, cutoff string,
 ) ([]map[string]any, error) {

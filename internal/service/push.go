@@ -206,13 +206,19 @@ var courtCallSound = pushSound{iOS: "court_call.caf", android: "court_call"}
 // REST key isn't configured or there are no recipients.
 //
 // url is optional — when non-empty it becomes the notification's launch URL.
-// sendPushToEveryoneAt9am broadcasts to all subscribers, delivered at 9am in
-// EACH subscriber's own timezone.
+// sendPushToEveryoneAt9am broadcasts to every subscriber, delivered at 9am in
+// EACH subscriber's own timezone (OneSignal resolves the zone per device via
+// delayed_option=timezone, so nothing here stores where anybody is).
 //
-// OneSignal resolves the timezone per device (delayed_option=timezone), so
-// nothing here has to know or store where anybody is. Segment-targeted rather
-// than a list of external ids: this goes to everyone, and naming every user to
-// say one sentence is a lot of payload for nothing.
+// TARGETED BY DEVICE ID, not by segment. The segment version was accepted with
+// a 2xx every morning and delivered to nobody — the joke simply never arrived,
+// while the job claimed the day and logged success. Every push in this product
+// that DOES reach phones targets device ids, so the broadcast now uses the same
+// list the rest of the app trusts.
+//
+// The segment remains as a fallback for the one case where the device list is
+// legitimately empty (the table missing pre-migration): better a send that
+// might work than a guaranteed no-op.
 func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 	restKey := os.Getenv("ONESIGNAL_REST_API_KEY")
 	if restKey == "" {
@@ -222,43 +228,91 @@ func (s *Service) sendPushToEveryoneAt9am(heading, content string) error {
 		// Returns an ERROR, not nil. The once-a-day caller claims the day BEFORE
 		// sending and only hands it back on an error, so reporting success here
 		// burned the claim AND logged "queued for 9am local" for a broadcast
-		// nobody was ever handed — exactly the shape of a joke that silently
-		// never arrives. An error releases the day so the next tick retries.
+		// nobody was ever handed. An error releases the day so the next tick
+		// retries.
 		log.Printf("9am broadcast skipped: ONESIGNAL_REST_API_KEY is not set")
 		return errors.New("ONESIGNAL_REST_API_KEY is not set")
 	}
-	body := map[string]any{
-		"app_id":            onesignalAppID,
-		"target_channel":    "push",
-		"included_segments": []string{"Subscribed Users"},
-		"headings":          map[string]string{"en": heading},
-		"contents":          map[string]string{"en": content},
+	schedule := func(b map[string]any) map[string]any {
+		b["app_id"] = onesignalAppID
+		b["target_channel"] = "push"
+		b["headings"] = map[string]string{"en": heading}
+		b["contents"] = map[string]string{"en": content}
 		// Per-subscriber local time. Without these two it sends immediately,
 		// which for a good-morning message means 2am for a third of them.
-		"delayed_option":       "timezone",
-		"delivery_time_of_day": "9:00AM",
+		b["delayed_option"] = "timezone"
+		b["delivery_time_of_day"] = "9:00AM"
+		return b
 	}
-	r, err := s.postPush(restKey, body)
-	logPush("segment", 0, r, heading)
+
+	subIDs, err := s.allPushSubscriptionIDs()
 	if err != nil {
-		return err
+		log.Printf("9am broadcast: could not list devices (%v) — using the segment", err)
 	}
-	// postPush is deliberately forgiving — a missed push must not fail whatever
-	// the caller was doing. That is wrong for THIS caller: the broadcast is
-	// claimed once per day, so a swallowed failure meant the day was burned, no
-	// retry happened, and the log still said "queued". A job that reports
-	// success for a send OneSignal rejected is worse than one that fails, because
-	// nobody goes looking.
-	if r.status < 200 || r.status >= 300 {
-		return fmt.Errorf("onesignal rejected the broadcast (http %d)", r.status)
+	if len(subIDs) == 0 {
+		log.Printf("9am broadcast: no recorded devices — falling back to the segment")
+		r, perr := s.postPush(restKey, schedule(map[string]any{
+			"included_segments": []string{"Subscribed Users"},
+		}))
+		logPush("segment", 0, r, heading)
+		if perr != nil {
+			return perr
+		}
+		if r.status < 200 || r.status >= 300 {
+			return fmt.Errorf("onesignal rejected the broadcast (http %d)", r.status)
+		}
+		return nil
 	}
-	// recipients is logged (logPush) but deliberately NOT enforced. It is an
-	// estimate the API may compute asynchronously — a live send to real phones
-	// came back recipients=0 (2026-08-18), so treating 0 as failure turned
-	// working broadcasts into reported failures, double-sent via the fallback,
-	// and (on this once-a-day path) would have released the claim and re-sent
-	// hourly. Acceptance — 2xx — is the only signal this endpoint gives us at
-	// creation time; actual delivery counts live in the OneSignal dashboard.
+
+	// OneSignal caps the ids per notification, so a growing audience has to go
+	// out in batches. One rejected batch must not lose the rest: keep going and
+	// report a failure only if NOTHING was accepted, because the caller releases
+	// the day on an error and would otherwise re-send to everyone who did get it.
+	const batch = 1000
+	var firstErr error
+	accepted := 0
+	for start := 0; start < len(subIDs); start += batch {
+		end := start + batch
+		if end > len(subIDs) {
+			end = len(subIDs)
+		}
+		chunk := subIDs[start:end]
+		r, perr := s.postPush(restKey, schedule(map[string]any{
+			"include_subscription_ids": chunk,
+		}))
+		logPush("devices@9am", len(chunk), r, heading)
+		// OneSignal names the ids it rejected; dropping them stops dead devices
+		// being retried on every broadcast from now on.
+		s.forgetPushSubscriptions(r.invalid)
+		if perr != nil {
+			if firstErr == nil {
+				firstErr = perr
+			}
+			continue
+		}
+		if r.status < 200 || r.status >= 300 {
+			if firstErr == nil {
+				firstErr = fmt.Errorf(
+					"onesignal rejected a broadcast batch (http %d)", r.status)
+			}
+			continue
+		}
+		accepted++
+	}
+	if accepted == 0 {
+		if firstErr != nil {
+			return firstErr
+		}
+		return errors.New("no broadcast batch was accepted")
+	}
+	if firstErr != nil {
+		// Partial success: some devices got it. Say so, but do NOT fail — the
+		// caller would release the day and re-send to everyone tomorrow's tick
+		// already covered.
+		log.Printf("9am broadcast: %d/%d batches accepted (%v)",
+			accepted, (len(subIDs)+batch-1)/batch, firstErr)
+	}
+	log.Printf("9am broadcast: queued to %d device(s)", len(subIDs))
 	return nil
 }
 

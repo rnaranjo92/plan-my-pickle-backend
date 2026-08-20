@@ -129,16 +129,78 @@ func (s *Service) StartClubCheckout(
 	if s.ClubPlanActive(userID) {
 		return "", errors.New("you already have the Club plan")
 	}
+	// Stripe Checkout creates a NEW subscription; it never replaces an existing
+	// one. Club is a superset of Premium, so the natural buyer is someone already
+	// paying for Premium — and letting them through here bills them $15 AND $59,
+	// every month, until they notice. Refuse and say what to do instead: they
+	// keep Premium until the period they already paid for ends.
+	if s.hasPremiumSubscription(userID) {
+		return "", errors.New(
+			"cancel your Premium subscription first, then upgrade to Club — " +
+				"otherwise Stripe would bill you for both plans")
+	}
 	return gw.CreateSubscriptionCheckout(email, userID, priceID, successURL, cancelURL)
+}
+
+// hasPremiumSubscription reports whether a PAID Premium subscription is live on
+// this account. Deliberately not IsPremium: that is true for comped accounts and
+// (now) for club_plan holders, neither of which is a second thing Stripe bills.
+// Only a real subscription id can double-charge.
+func (s *Service) hasPremiumSubscription(userID string) bool {
+	if !s.columnReady("pmp_profiles", "stripe_subscription_id") {
+		return false
+	}
+	row, err := s.sb.SelectOne("pmp_profiles", "user_id=eq."+store.Q(userID)+
+		"&select=premium,stripe_subscription_id")
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "premium") &&
+		strings.TrimSpace(asStr(row, "stripe_subscription_id")) != ""
 }
 
 // ClubPlanStatus is what the app renders: whether the caller holds the tier,
 // and whether it can be bought at all (the UI shows no upgrade button while
 // the tier isn't purchasable — founding access with a dead Buy button would
 // contradict the page that says it's free).
+//
+// `active` reads the RAW columns rather than ClubPlanActive, which reports true
+// for everybody while subscriptions are globally off. That is right for gating
+// features (everything is free then) but wrong for a billing tile: it would tell
+// the entire user base they hold a $59/mo plan, and promise monthly AI posters
+// that the poster allowance refuses in that same state.
 func (s *Service) ClubPlanStatus(userID string) map[string]any {
+	held := s.clubPlanHeld(userID)
 	return map[string]any{
-		"active":      s.ClubPlanActive(userID),
-		"purchasable": clubPriceID() != "" && !s.ClubPlanActive(userID),
+		"active":      held,
+		"purchasable": clubPriceID() != "" && !held && !s.ClubPlanActive(userID),
 	}
+}
+
+// clubPlanHeld is "does this account actually hold Club" — a paid club_plan or a
+// comp — ignoring the subscriptions-off global.
+func (s *Service) clubPlanHeld(userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	sel := ""
+	if s.columnReady("pmp_profiles", "club_plan") {
+		sel = "club_plan"
+	}
+	if s.columnReady("pmp_profiles", "comped") {
+		if sel != "" {
+			sel += ","
+		}
+		sel += "comped"
+	}
+	if sel == "" {
+		return false
+	}
+	row, err := s.sb.SelectOne("pmp_profiles",
+		"user_id=eq."+store.Q(userID)+"&select="+sel)
+	if err != nil || row == nil {
+		return false
+	}
+	return asBool(row, "club_plan") || asBool(row, "comped")
 }

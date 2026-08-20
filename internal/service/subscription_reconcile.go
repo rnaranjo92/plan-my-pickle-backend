@@ -165,11 +165,21 @@ func revokeStep(comped bool, subID string, inActiveList bool) revokeAction {
 // revokeConfirmed applies guards 3 and 4 to the confirming read: revoke ONLY on
 // a successful read that says inactive. An error means we know nothing, and
 // knowing nothing must never read as "not subscribed".
-func revokeConfirmed(live gateway.SubscriptionEvent, err error) bool {
+// wantPrice is the price this plan is keyed to. A subscription SWITCHED to
+// another plan's price in the Stripe billing portal stays Active, so an
+// active-only test would leave the old plan's flag set forever — a Club
+// subscriber who downgrades to Premium would keep Club benefits for $15. A live
+// price that isn't ours means this plan no longer applies, whatever its status.
+func revokeConfirmed(live gateway.SubscriptionEvent, err error, wantPrice string) bool {
 	if err != nil {
 		return false
 	}
-	return !live.Active
+	if !live.Active {
+		return true
+	}
+	// Only when BOTH ids are known — an empty price on either side is missing
+	// information, and missing information must never read as "not subscribed".
+	return wantPrice != "" && live.PriceID != "" && live.PriceID != wantPrice
 }
 
 func (s *Service) reconcilePlan(cols planColumns) (ReconcileReport, error) {
@@ -277,7 +287,7 @@ func (s *Service) reconcilePlan(cols planColumns) (ReconcileReport, error) {
 		// Guards 3 and 4: confirm against the subscription itself before taking
 		// anything, and treat an unreachable Stripe as "we don't know".
 		live, err := gw.GetSubscription(subID)
-		if !revokeConfirmed(live, err) {
+		if !revokeConfirmed(live, err, cols.priceID) {
 			if err != nil {
 				rep.Skipped++
 				log.Printf("reconcile: %s confirm of %s failed, leaving %s alone: %v",

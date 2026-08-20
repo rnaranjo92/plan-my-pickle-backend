@@ -18,6 +18,12 @@
 alter table pmp_profiles add column if not exists club_plan boolean not null default false;
 alter table pmp_profiles add column if not exists club_subscription_status text;
 alter table pmp_profiles add column if not exists club_subscription_id text;
+-- Shared with Premium and the coach plan, and written by the club webhook too.
+-- It already exists wherever the Premium rails were set up, but no migration in
+-- this repo creates it — so claim it here rather than assume. Without it the
+-- club upsert 400s, the webhook 500s on every retry, and a paid subscription
+-- never records.
+alter table pmp_profiles add column if not exists stripe_customer_id text;
 
 -- Verify:
 --   select count(*) from pmp_profiles where club_plan;

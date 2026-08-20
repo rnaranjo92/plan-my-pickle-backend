@@ -49,10 +49,11 @@ func TestRevokeStepConfirmsBeforeRevoking(t *testing.T) {
 
 func TestRevokeConfirmedRequiresASuccessfulInactiveRead(t *testing.T) {
 	cases := []struct {
-		name string
-		ev   gateway.SubscriptionEvent
-		err  error
-		want bool
+		name  string
+		ev    gateway.SubscriptionEvent
+		err   error
+		price string
+		want  bool
 	}{
 		{
 			name: "confirmed cancelled — the one case that revokes",
@@ -79,10 +80,33 @@ func TestRevokeConfirmedRequiresASuccessfulInactiveRead(t *testing.T) {
 			err:  errors.New("timeout"),
 			want: false,
 		},
+		{
+			// A portal plan-switch keeps the subscription ACTIVE on someone else's
+			// price. Without this, a Club subscriber who downgrades to Premium keeps
+			// club_plan set forever while paying $15.
+			name:  "active but switched to another plan's price — revoke this plan",
+			ev:    gateway.SubscriptionEvent{Active: true, Status: "active", PriceID: "price_premium"},
+			price: "price_club",
+			want:  true,
+		},
+		{
+			name:  "active on our own price — keep",
+			ev:    gateway.SubscriptionEvent{Active: true, Status: "active", PriceID: "price_club"},
+			price: "price_club",
+			want:  false,
+		},
+		{
+			// An unknown price on either side is missing information, and missing
+			// information must never read as "not subscribed".
+			name:  "active with no price known — keep",
+			ev:    gateway.SubscriptionEvent{Active: true, Status: "active"},
+			price: "price_club",
+			want:  false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := revokeConfirmed(tc.ev, tc.err); got != tc.want {
+			if got := revokeConfirmed(tc.ev, tc.err, tc.price); got != tc.want {
 				t.Fatalf("revokeConfirmed = %v, want %v", got, tc.want)
 			}
 		})

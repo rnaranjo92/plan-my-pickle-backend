@@ -217,3 +217,49 @@ func TestDuprMatchBody(t *testing.T) {
 		t.Error("matchBody is empty")
 	}
 }
+
+// The club roster parse is shape-tolerant on purpose: a mismatch doesn't error,
+// it yields zero members, which reads to the organizer as "my club is empty".
+// The original code understood only the flat {"results":…} form while the rest
+// of the file uses DUPR's {status,message,result} envelope, so both must work.
+func TestParseClubMembersShapes(t *testing.T) {
+	const one = `{"id":"D1","fullName":"Ann Lee","singles":"3.5","doubles":"4.0"}`
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"flat results", `{"results":[` + one + `]}`},
+		{"enveloped hits", `{"status":"SUCCESS","result":{"hits":[` + one + `],"total":1}}`},
+		{"enveloped results", `{"status":"SUCCESS","result":{"results":[` + one + `]}}`},
+		{"enveloped members", `{"status":"SUCCESS","result":{"members":[` + one + `]}}`},
+		{"enveloped bare array", `{"status":"SUCCESS","result":[` + one + `]}`},
+		{"bare array", `[` + one + `]`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseClubMembers([]byte(c.body))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d members, want 1", len(got))
+			}
+			if got[0].DuprID != "D1" || got[0].FullName != "Ann Lee" ||
+				got[0].Doubles != "4.0" || got[0].Singles != "3.5" {
+				t.Errorf("bad member: %+v", got[0])
+			}
+		})
+	}
+}
+
+// An unrecognised payload must come back empty rather than erroring — but it is
+// logged, so "empty club" and "we misread the response" stay distinguishable.
+func TestParseClubMembersUnknownShape(t *testing.T) {
+	got, err := parseClubMembers([]byte(`{"status":"SUCCESS","result":{"foo":1}}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d members, want 0", len(got))
+	}
+}

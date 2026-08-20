@@ -557,19 +557,97 @@ func (d *RealDupr) ClubMembers(clubID string) ([]DuprMember, error) {
 	if code < 200 || code >= 300 {
 		return nil, fmt.Errorf("dupr club members %d: %s", code, snippet(raw))
 	}
-	var res struct {
-		Results []struct {
-			ID       string `json:"id"`
-			FullName string `json:"fullName"`
-			Singles  string `json:"singles"`
-			Doubles  string `json:"doubles"`
-		} `json:"results"`
+	return parseClubMembers(raw)
+}
+
+// parseClubMembers pulls the roster out of a club-members response, tolerating
+// every envelope DUPR might use.
+//
+// This is deliberately shape-tolerant rather than pinned to one layout. The rest
+// of this file unwraps DUPR's documented {status,message,result} envelope, but
+// the roster was originally read as a TOP-LEVEL {"results":[…]} — the two can't
+// both be right, and the partner docs aren't publicly reachable to settle it. The
+// failure mode is what makes tolerance worth it: a shape mismatch doesn't error,
+// it silently yields zero members, which the organizer sees as "Imported 0" and
+// reads as "my club is empty". So try the envelope first, then the flat form, and
+// accept a bare array too.
+func parseClubMembers(raw []byte) ([]DuprMember, error) {
+	type member struct {
+		ID       string `json:"id"`
+		FullName string `json:"fullName"`
+		Singles  string `json:"singles"`
+		Doubles  string `json:"doubles"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, err
+	// Every container DUPR could plausibly put the list in. `hits` is the paged
+	// form; `results`/`members` the flat ones.
+	type holder struct {
+		Hits    []member `json:"hits"`
+		Results []member `json:"results"`
+		Members []member `json:"members"`
+		Total   *int     `json:"total"`
 	}
-	out := make([]DuprMember, 0, len(res.Results))
-	for _, m := range res.Results {
+	pick := func(h holder) ([]member, *int, bool) {
+		switch {
+		case len(h.Hits) > 0:
+			return h.Hits, h.Total, true
+		case len(h.Results) > 0:
+			return h.Results, h.Total, true
+		case len(h.Members) > 0:
+			return h.Members, h.Total, true
+		}
+		return nil, h.Total, false
+	}
+
+	var found []member
+	var total *int
+	// 1. The documented envelope: {status,message,result:{…}}.
+	var env duprEnvelope
+	if json.Unmarshal(raw, &env) == nil && len(env.Result) > 0 {
+		var h holder
+		if json.Unmarshal(env.Result, &h) == nil {
+			if ms, t, ok := pick(h); ok {
+				found, total = ms, t
+			}
+		}
+		// result may itself be the bare array.
+		if found == nil {
+			var arr []member
+			if json.Unmarshal(env.Result, &arr) == nil && len(arr) > 0 {
+				found = arr
+			}
+		}
+	}
+	// 2. Flat, un-enveloped: {"results":[…]} — the original reading.
+	if found == nil {
+		var h holder
+		if json.Unmarshal(raw, &h) == nil {
+			if ms, t, ok := pick(h); ok {
+				found, total = ms, t
+			}
+		}
+	}
+	// 3. A bare top-level array.
+	if found == nil {
+		var arr []member
+		if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
+			found = arr
+		}
+	}
+	if found == nil {
+		// Genuinely empty and "we didn't understand the payload" look identical to
+		// the organizer, so say which one this was in the logs.
+		log.Printf("dupr: club members returned no recognisable roster; body=%s",
+			snippet(raw))
+		return nil, nil
+	}
+	// A short read against a known total means the roster is PAGED and we're
+	// importing a slice of it. Surfacing that beats quietly importing page one.
+	if total != nil && *total > len(found) {
+		log.Printf("dupr: club members returned %d of %d — roster is paged, "+
+			"only the first page was imported", len(found), *total)
+	}
+	out := make([]DuprMember, 0, len(found))
+	for _, m := range found {
 		out = append(out, DuprMember{
 			DuprID:   m.ID,
 			FullName: m.FullName,

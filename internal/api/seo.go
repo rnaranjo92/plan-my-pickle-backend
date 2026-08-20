@@ -1085,7 +1085,7 @@ h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
 .foot{margin-top:40px;color:var(--muted);font-size:13px}
 .foot a{color:var(--green)}
 </style></head><body><div class="wrap">
-<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28">PlanMyPickle</a></header>`
+<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28">PlanMyPickle<sup style="font-size:.55em;vertical-align:super;margin-left:.1em">&trade;</sup></a></header>`
 
 const seoFoot = `<p class="foot"><a href="/coaches">Find a pickleball coach</a> · <a href="/coaches/apply">Coach with us</a></p>
 <p class="foot">Powered by <a href="` + seoCanonicalBase + `">PlanMyPickle</a> — run pickleball tournaments, minus the chaos.</p>

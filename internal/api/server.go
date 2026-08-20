@@ -107,6 +107,14 @@ func NewServer(svc *service.Service) http.Handler {
 			// feature is free-for-all (IsPremium short-circuits true); true = the
 			// paid plan is live and Premium features are really gated.
 			"subscriptions": service.SubscriptionsEnabled(),
+			// Whether AI poster generation is metered (POSTER_CREDITS_ENABLED).
+			"posterCredits": service.PosterCreditsEnabled(),
+			// The joke-of-the-day job's last claimed day, straight from
+			// daily_jobs. "Did the 9am joke run?" was previously answerable only
+			// by hunting Railway logs — and the manual broadcast stamps the same
+			// row, so even the DB couldn't distinguish them. This at least makes
+			// the claim state visible from outside without a dashboard.
+			"jokeRanOn": s.svc.JokeLastRunDay(),
 			// Whether ONESIGNAL_REST_API_KEY is present — the boolean only, never
 			// the key. Without this, "push isn't working" and "push isn't
 			// configured" are indistinguishable from outside, and we spent a round

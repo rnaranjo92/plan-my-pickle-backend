@@ -51,6 +51,21 @@ func (s *Service) SendJokeOfTheDay() {
 		time.Now().UTC().Format("2006-01-02"), jokeDay().Format("2006-01-02"))
 }
 
+// JokeLastRunDay reports the day the joke job last claimed (UTC, "2006-01-02"),
+// or "" if it has never run / the table is missing. Exposed on /healthz so
+// "did the 9am joke go out?" is answerable with a curl.
+func (s *Service) JokeLastRunDay() string {
+	if !s.columnReady("daily_jobs", "name") {
+		return ""
+	}
+	row, err := s.sb.SelectOne("daily_jobs",
+		"name=eq."+store.Q(jokeJobName)+"&select=ran_on")
+	if err != nil || row == nil {
+		return ""
+	}
+	return asStr(row, "ran_on")
+}
+
 // jokeDay is the date the joke is chosen for.
 //
 // A single notification goes to everyone, so ONE day has to be picked — and it

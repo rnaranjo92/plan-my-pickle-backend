@@ -155,8 +155,7 @@ func (s *Service) GeneratePoster(
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
 		log.Printf("poster: generate failed for %s: %v", eventID, err)
-		return "", errors.New("could not generate the poster — try again, " +
-			"or a different style")
+		return "", posterGenError(err)
 	}
 	ext := "png"
 	if strings.Contains(mime, "jpeg") {
@@ -330,8 +329,7 @@ func (s *Service) GenerateLeaguePoster(
 	img, mime, err := gateway.GenerateImage(prompt, nil)
 	if err != nil {
 		log.Printf("poster: league generate failed for %s: %v", leagueID, err)
-		return "", errors.New("could not generate the poster — try again, " +
-			"or a different style")
+		return "", posterGenError(err)
 	}
 	ext := "png"
 	if strings.Contains(mime, "jpeg") {
@@ -598,8 +596,7 @@ func (s *Service) GenerateStudioPoster(
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
 		log.Printf("poster: studio generate failed for %s: %v", callerID, err)
-		return "", errors.New("could not generate the poster — try again, " +
-			"or a different style")
+		return "", posterGenError(err)
 	}
 	ext := "png"
 	if strings.Contains(mime, "jpeg") {
@@ -744,6 +741,13 @@ func (s *Service) SweepOldPosters() error {
 		return nil
 	}
 	cutoff := time.Now().Add(-posterRetention).UTC().Format(time.RFC3339)
+	nowISO := time.Now().UTC().Format(time.RFC3339)
+	// A poster that is (or recently was) an event's own poster gets a rolling
+	// grace period, refreshed every time the sweep sees it in use. Without it,
+	// detaching a 40-day-old poster — swapping a banner to compare, say — deleted
+	// it within the hour, and re-attaching from a stale gallery view left the
+	// event showing a 404. Now it survives 30 more days after it stops being used.
+	graceUntil := time.Now().Add(posterRetention).UTC().Format(time.RFC3339)
 	var swept, kept int
 	// PAGE past the rows we keep. Rows that stay (still someone's active poster)
 	// are never deleted, so they'd otherwise sit at the front of an
@@ -754,7 +758,9 @@ func (s *Service) SweepOldPosters() error {
 	for page := 0; page < posterSweepMaxPages; page++ {
 		rows, err := s.sb.Select("poster_generations",
 			"created_at=lt."+store.Q(cutoff)+
-				"&select=id,url&order=created_at.asc"+
+				"&or=(protected_until.is.null,protected_until.lt."+
+				store.Q(nowISO)+")"+
+				"&select=id,url,protected_until&order=created_at.asc"+
 				"&limit="+strconv.Itoa(posterSweepPage)+
 				"&offset="+strconv.Itoa(kept))
 		if err != nil {
@@ -772,7 +778,17 @@ func (s *Service) SweepOldPosters() error {
 			url := asStr(r, "url")
 			if inUse[url] {
 				kept++
-				continue // still an active poster — leave both the object and the row
+				// Refresh the grace window while it's in use, so the clock starts
+				// at DETACH rather than at creation.
+				if s.columnReady("poster_generations", "protected_until") {
+					if _, uerr := s.sb.Update("poster_generations",
+						"id=eq."+store.Q(id),
+						map[string]any{"protected_until": graceUntil}); uerr != nil {
+						log.Printf("poster sweep: could not extend grace for %s: %v",
+							id, uerr)
+					}
+				}
+				continue // still an active poster — leave both object and row
 			}
 			if bucket, path, ok := storagePathFromPublicURL(url); ok {
 				if derr := s.sb.StorageDelete(bucket, path); derr != nil {
@@ -884,6 +900,47 @@ type PosterLogo struct {
 	// "Charity partner"). For the three canonical roles it's optional; for
 	// role=other it's the whole meaning, quoted to the model verbatim.
 	Label string `json:"label"`
+}
+
+// posterGenError turns a Gemini failure into something the organizer can act on.
+//
+// Every failure used to read "could not generate the poster — try again, or a
+// different style", which is wrong advice for most of them: a different style
+// doesn't help when the account is rate-limited or the model is overloaded, and
+// the real cause sat only in the server log. The categories below are the ones
+// that actually occur, and each says what to DO. The underlying error is still
+// logged in full — this only decides what a person is told.
+func posterGenError(err error) error {
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "429"),
+		strings.Contains(s, "resource_exhausted"),
+		strings.Contains(s, "quota"),
+		strings.Contains(s, "rate limit"):
+		return errors.New("the poster service is at its limit right now — " +
+			"wait a minute and try again")
+	case strings.Contains(s, "503"),
+		strings.Contains(s, "unavailable"),
+		strings.Contains(s, "overloaded"),
+		strings.Contains(s, "500"):
+		return errors.New("the poster service is busy — try again in a moment")
+	case strings.Contains(s, "deadline"),
+		strings.Contains(s, "timeout"),
+		strings.Contains(s, "context canceled"):
+		return errors.New("that took too long to draw — try again, or a " +
+			"simpler style")
+	case strings.Contains(s, "safety"),
+		strings.Contains(s, "blocked"),
+		strings.Contains(s, "prohibited"):
+		return errors.New("the image service declined that request — try " +
+			"different wording or a different style")
+	case strings.Contains(s, "api key"),
+		strings.Contains(s, "401"), strings.Contains(s, "403"):
+		return errors.New("posters aren't configured correctly — check " +
+			"GEMINI_API_KEY")
+	}
+	return errors.New("could not generate the poster — try again, or a " +
+		"different style")
 }
 
 // fetchPosterLogos downloads the attached logos (max 5 total), grouped by role

@@ -360,15 +360,15 @@ func (s *Service) GenerateLeaguePoster(
 // creative direction, %s the list of facts.
 //
 // The rules below are the ones EARNED by looking at output, not guesses:
-//   • ONCE — a venue holding its own city ("Chula Vista Elite…") plus a separate
+//   - ONCE — a venue holding its own city ("Chula Vista Elite…") plus a separate
 //     city fact produced posters printing the city twice. The facts are already
 //     de-duplicated upstream; this stops the model re-stating them anyway.
-//   • NOTHING EXTRA — models love to invent a plausible time, price or slogan to
+//   - NOTHING EXTRA — models love to invent a plausible time, price or slogan to
 //     fill space, and an invented fact on a printed flyer is the one failure this
 //     feature must never produce.
-//   • HIERARCHY — without an explicit order everything competes at the same size
+//   - HIERARCHY — without an explicit order everything competes at the same size
 //     and the result reads as a menu.
-//   • ROOM — "a poster, not a collage" was already here and does real work.
+//   - ROOM — "a poster, not a collage" was already here and does real work.
 const posterPromptTemplate = "A portrait 3:4 pickleball event poster. Style: %s. " +
 	"It must read instantly as PICKLEBALL — paddles and a pickleball, never " +
 	"tennis rackets or tennis balls. %s " +
@@ -1004,14 +1004,27 @@ func logoFacts(counts [4]int, labels []string, offset int) string {
 	}
 	if n := counts[1]; n > 0 {
 		parts = append(parts, fmt.Sprintf(
-			"TEAMS: %s are participating team logos — place them together in a "+
-				"medium-sized featured band within the artwork.", span(n)))
+			"TEAMS: %s are %d DIFFERENT participating team logos — place each "+
+				"one exactly once, together in a medium-sized featured band "+
+				"within the artwork.", span(n), n))
 		offset += n
 	}
 	if n := counts[2]; n > 0 {
-		parts = append(parts, fmt.Sprintf(
-			"SPONSORS: %s are sponsor logos — one small, evenly spaced row of "+
-				"credits INSIDE the poster's bottom margin.", span(n)))
+		// State the COUNT and place it accordingly. "An evenly spaced row of
+		// credits" reads to the model as a row that wants filling, so a single
+		// sponsor logo came back tiled five times across the bottom.
+		if n == 1 {
+			parts = append(parts, fmt.Sprintf(
+				"SPONSOR: %s is a single sponsor logo — place it ONCE, small, "+
+					"inside the poster's bottom margin. There is exactly one "+
+					"sponsor: do not repeat it, and do not pad the space with "+
+					"copies of it.", span(n)))
+		} else {
+			parts = append(parts, fmt.Sprintf(
+				"SPONSORS: %s are %d DIFFERENT sponsor logos — place each one "+
+					"exactly once, small, in a single row inside the poster's "+
+					"bottom margin.", span(n), n))
+		}
 		offset += n
 	}
 	// Organizer-named kinds: each gets its own line with the organizer's words,
@@ -1037,7 +1050,10 @@ func logoFacts(counts [4]int, labels []string, offset int) string {
 	return strings.Join(parts, " ") + " Every attached logo must be composited " +
 		"INTO the poster's own artwork and background — never on a separate " +
 		"plain strip outside or below the design — and reproduced faithfully: " +
-		"never redrawn, recolored, cropped or distorted."
+		"never redrawn, recolored, cropped or distorted. Each attached logo " +
+		"appears EXACTLY ONCE in the finished poster. Never duplicate, tile, " +
+		"mirror or repeat a logo to fill a row or balance the layout; if a " +
+		"space looks empty, leave it empty."
 }
 
 // fetchSmallImage downloads a small public asset (the club logo), bounded so a

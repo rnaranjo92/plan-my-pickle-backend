@@ -109,6 +109,11 @@ func NewServer(svc *service.Service) http.Handler {
 			"subscriptions": service.SubscriptionsEnabled(),
 			// Whether AI poster generation is metered (POSTER_CREDITS_ENABLED).
 			"posterCredits": service.PosterCreditsEnabled(),
+			// Whether the Club tier can be BOUGHT — i.e. STRIPE_CLUB_PRICE_ID is
+			// set. Never the id itself. Until this is true the Club tile is hidden
+			// app-wide, and "why can't anyone see Club?" is otherwise only
+			// answerable by reading Railway's env vars.
+			"clubPlan": service.ClubPlanSellable(),
 			// The joke-of-the-day job's last claimed day, straight from
 			// daily_jobs. "Did the 9am joke run?" was previously answerable only
 			// by hunting Railway logs — and the manual broadcast stamps the same

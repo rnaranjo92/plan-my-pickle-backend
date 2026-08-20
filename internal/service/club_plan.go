@@ -113,6 +113,11 @@ func (s *Service) ClubPlanActive(userID string) bool {
 	return asBool(row, "comped") || asBool(row, "club_plan")
 }
 
+// ClubPlanSellable reports whether a Club price is configured — the switch that
+// turns the tier on. Exposed for /healthz so the state is checkable from outside
+// without reading Railway's env vars. Never exposes the price id itself.
+func ClubPlanSellable() bool { return clubPriceID() != "" }
+
 // StartClubCheckout opens a Stripe subscription Checkout for the Club plan.
 func (s *Service) StartClubCheckout(
 	userID, email, successURL, cancelURL string,

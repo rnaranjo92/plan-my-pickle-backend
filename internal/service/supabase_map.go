@@ -75,6 +75,16 @@ func orNull(s string) any {
 	return s
 }
 
+// orNullInt maps 0 to a JSON null, else the value. For nullable integer columns
+// where 0 is the "unset" sentinel — storing NULL keeps "not configured" distinct
+// from a real 0 at the database level.
+func orNullInt(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
+}
+
 // fOrNull maps a nil *float64 to JSON null, else the dereferenced value.
 func fOrNull(f *float64) any {
 	if f == nil {
@@ -173,23 +183,26 @@ func asMap(m map[string]any, k string) map[string]any {
 
 func mapEvent(m map[string]any) model.Event {
 	e := model.Event{
-		OwnerID:                    asStr(m, "owner_id"),
-		RecurIntervalDays:          asInt(m, "recur_interval_days"),
-		RecurUntil:                 asStrPtr(m, "recur_until"),
-		SeriesID:                   asStrPtr(m, "series_id"),
-		Perpetual:                  asBool(m, "perpetual"),
-		RecurPaused:                asBool(m, "recur_paused"),
-		RecurSkipUntil:             asStrPtr(m, "recur_skip_until"),
-		ID:                         asStr(m, "id"),
-		Name:                       asStr(m, "name"),
-		Format:                     asStr(m, "format"),
-		PartnerMode:                asStr(m, "partner_mode"),
-		TournamentFormat:           asStr(m, "tournament_format"),
-		ScoringMode:                asStr(m, "scoring_mode"),
-		NumCourts:                  asInt(m, "num_courts"),
-		PointsToWin:                asInt(m, "points_to_win"),
-		WinBy:                      asInt(m, "win_by"),
-		BestOf:                     asInt(m, "best_of"),
+		OwnerID:           asStr(m, "owner_id"),
+		RecurIntervalDays: asInt(m, "recur_interval_days"),
+		RecurUntil:        asStrPtr(m, "recur_until"),
+		SeriesID:          asStrPtr(m, "series_id"),
+		Perpetual:         asBool(m, "perpetual"),
+		RecurPaused:       asBool(m, "recur_paused"),
+		RecurSkipUntil:    asStrPtr(m, "recur_skip_until"),
+		ID:                asStr(m, "id"),
+		Name:              asStr(m, "name"),
+		Format:            asStr(m, "format"),
+		PartnerMode:       asStr(m, "partner_mode"),
+		TournamentFormat:  asStr(m, "tournament_format"),
+		ScoringMode:       asStr(m, "scoring_mode"),
+		NumCourts:         asInt(m, "num_courts"),
+		PointsToWin:       asInt(m, "points_to_win"),
+		WinBy:             asInt(m, "win_by"),
+		BestOf:            asInt(m, "best_of"),
+		// 0 (absent column, or NULL) reads as "same as pool play".
+		PlayoffPointsToWin:         asInt(m, "playoff_points_to_win"),
+		PlayoffWinBy:               asInt(m, "playoff_win_by"),
 		GameDurationMinutes:        asInt(m, "game_duration_minutes"),
 		MinPoolRounds:              asInt(m, "min_pool_rounds"),
 		MaxPoolRounds:              asInt(m, "max_pool_rounds"),

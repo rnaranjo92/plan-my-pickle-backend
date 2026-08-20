@@ -17,16 +17,16 @@ import (
 // "row" they just wrote. Unseeded tables return an empty array, which exercises
 // each read method's empty-result path without erroring.
 type fakeSupabase struct {
-	mu     sync.Mutex
-	get    map[string]string                   // table -> JSON array of rows (GET)
-	rpc    map[string]string                   // function -> JSON body
-	rpcFn  map[string]func(body []byte) string // function -> payload-aware responder
-	reqs   []string                            // "METHOD /path" captured for assertions
+	mu    sync.Mutex
+	get   map[string]string                   // table -> JSON array of rows (GET)
+	rpc   map[string]string                   // function -> JSON body
+	rpcFn map[string]func(body []byte) string // function -> payload-aware responder
+	reqs  []string                            // "METHOD /path" captured for assertions
 	// urls captures "METHOD /path?query" — reqs drops the query string, but the
 	// PostgREST FILTER is the query string, so anything asserting that a read is
 	// actually scoped (e.g. "only checked-in players") has to read this.
-	urls []string
-	writes map[string][]map[string]any         // table -> captured insert/update rows
+	urls   []string
+	writes map[string][]map[string]any // table -> captured insert/update rows
 	// targeted records writes together with the URL filter that selected the
 	// row. writes alone can't tell you WHICH row a PATCH hit — the id lives in
 	// the query string — so anything asserting a per-row update reads this.

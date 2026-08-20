@@ -205,13 +205,13 @@ func (s *Service) ReportScore(matchID, token, callerUserID string, t1, t2 int) (
 	// (e.g. 11-10 or 15-11 for an 11/win-by-2 event) would be stored as a report
 	// that can never be confirmed, and the auto-confirm ticker would retry it
 	// forever. So any report we accept here can actually be finalized.
-	ptw := asInt(ev, "points_to_win")
-	if ptw <= 0 {
-		ptw = 11
-	}
-	winBy := asInt(ev, "win_by")
-	if winBy <= 0 {
-		winBy = 2
+	// Resolved through the SAME helper finalize uses, so the playoff override is
+	// honored here too: a bracket game is legal at 12–10 in an event whose pool
+	// play is win-by-1, and rejecting it here would refuse a score that
+	// RecordSeries would happily finalize.
+	ptw, winBy, _, serr := s.scoringForMatch(matchID)
+	if serr != nil {
+		return ScoreReportState{}, serr
 	}
 	if err := validateGame(t1, t2, ptw, winBy); err != nil {
 		return ScoreReportState{}, err

@@ -781,6 +781,18 @@ func (s *Service) CreateEvent(req model.CreateEventRequest, ownerID string) (str
 	if req.PlayoffSize != nil && s.columnReady("events", "playoff_size") {
 		payload["playoff_size"] = normalizePlayoffSize(*req.PlayoffSize)
 	}
+	// Separate playoff scoring ships in add_playoff_scoring.sql — gated so a
+	// create still works pre-migration (pools and playoffs just share scoring,
+	// exactly as before).
+	if req.PlayoffPointsToWin != nil && s.columnReady("events", "playoff_win_by") {
+		wb := 0
+		if req.PlayoffWinBy != nil {
+			wb = *req.PlayoffWinBy
+		}
+		pts, margin := normalizePlayoffScoring(*req.PlayoffPointsToWin, wb)
+		payload["playoff_points_to_win"] = orNullInt(pts)
+		payload["playoff_win_by"] = orNullInt(margin)
+	}
 	// rsvp_enabled ships in add_session_rsvps.sql — gate so it works pre-migration.
 	if s.columnReady("events", "rsvp_enabled") {
 		payload["rsvp_enabled"] = req.RsvpEnabled
@@ -1979,6 +1991,18 @@ func (s *Service) UpdateEvent(id string, req model.CreateEventRequest) error {
 	// value alone rather than clearing it.
 	if req.PlayoffSize != nil && s.columnReady("events", "playoff_size") {
 		upd["playoff_size"] = normalizePlayoffSize(*req.PlayoffSize)
+	}
+	// Separate playoff scoring (set or clear back to pool scoring). Same nil
+	// rule as playoff_size: an older build that never sends the field must not
+	// wipe what the organizer configured on the web.
+	if req.PlayoffPointsToWin != nil && s.columnReady("events", "playoff_win_by") {
+		wb := 0
+		if req.PlayoffWinBy != nil {
+			wb = *req.PlayoffWinBy
+		}
+		pts, margin := normalizePlayoffScoring(*req.PlayoffPointsToWin, wb)
+		upd["playoff_points_to_win"] = orNullInt(pts)
+		upd["playoff_win_by"] = orNullInt(margin)
 	}
 	// rsvp_enabled: organizer toggle for the league RSVP strip (set or clear).
 	if s.columnReady("events", "rsvp_enabled") {
@@ -8792,6 +8816,23 @@ func normalizePlayoffSize(n int) int {
 	}
 }
 
+// normalizePlayoffScoring clamps an optional playoff scoring override to
+// something a game can actually end on. 0 (or anything nonsensical) means
+// "same as pool play", which is how every event behaved before this existed.
+//
+// The bounds are the same ones pool scoring already accepts: a target of 1–99
+// and a margin of 1 or 2. Rejecting instead of clamping would fail an organizer's
+// save over a typo in a field they may not have touched.
+func normalizePlayoffScoring(points, winBy int) (int, int) {
+	if points < 1 || points > 99 {
+		return 0, 0 // unusable target → fall back to pool scoring entirely
+	}
+	if winBy != 1 && winBy != 2 {
+		winBy = 2 // the pickleball default; win-by-1 is the deliberate choice
+	}
+	return points, winBy
+}
+
 // validateManualSides ensures every team in [manual] is a real team in [valid]
 // (matched as an unordered player set) and that none repeats — so a manual
 // playoff seed can reorder/trim teams but never invent or duplicate one.
@@ -9165,18 +9206,36 @@ func (s *Service) bracketStarted(bracketID string) (bool, error) {
 // RecordSeries validates a best-of-N result for a match against the event's
 // format (points_to_win / win_by / best_of) and writes it. games holds the
 // per-game scores; the winner is decided by games won.
-func (s *Service) RecordSeries(matchID string, games []model.GameScore) error {
-	// Defaults (11, win by 2, single game) apply if the event predates a column.
-	ptw, winBy, bestOf := 11, 2, 1
-	fmtRow, err := s.sb.SelectOne("matches",
-		"id=eq."+store.Q(matchID)+"&select=line_type,event:events!event_id(points_to_win,win_by,best_of)")
+// scoringForMatch resolves the target, margin and games-per-match ONE match is
+// actually played to.
+//
+// The stage matters. An organizer can run quick pool games to 11 win-by-1 and
+// then a knockout to 11 win-by-2, so validating a playoff game against pool
+// scoring rejects the very score the players were told to play to (12–10 would
+// come back as "a game to 11 with no win-by margin ends at 11"). Every path that
+// accepts a score — organizer entry, player self-report, the court QR scorer —
+// must resolve here, or the same game is legal on one screen and illegal on
+// another.
+//
+// Defaults (11, win by 2, single game) apply when the event predates a column.
+func (s *Service) scoringForMatch(matchID string) (ptw, winBy, bestOf int, err error) {
+	ptw, winBy, bestOf = 11, 2, 1
+	// The playoff columns ship in add_playoff_scoring.sql — only select them once
+	// they exist, so scoring still works on a pre-migration database.
+	playoffCols := ""
+	if s.columnReady("events", "playoff_win_by") {
+		playoffCols = ",playoff_points_to_win,playoff_win_by"
+	}
+	row, err := s.sb.SelectOne("matches", "id=eq."+store.Q(matchID)+
+		"&select=line_type,stage,event:events!event_id(points_to_win,win_by,best_of"+
+		playoffCols+")")
 	if err != nil {
-		return err
+		return ptw, winBy, bestOf, err
 	}
-	if fmtRow == nil {
-		return ErrNotFound
+	if row == nil {
+		return ptw, winBy, bestOf, ErrNotFound
 	}
-	if ev, ok := fmtRow["event"].(map[string]any); ok {
+	if ev, ok := row["event"].(map[string]any); ok {
 		if g := asInt(ev, "points_to_win"); g > 0 {
 			ptw = g
 		}
@@ -9186,11 +9245,29 @@ func (s *Service) RecordSeries(matchID string, games []model.GameScore) error {
 		if b := asInt(ev, "best_of"); b > 0 {
 			bestOf = b
 		}
+		// Bracket games use the playoff override when the organizer set one. A
+		// target with no margin keeps the pool margin, matching the client rule.
+		if asStr(row, "stage") == "bracket" {
+			if p := asInt(ev, "playoff_points_to_win"); p > 0 {
+				ptw = p
+				if w := asInt(ev, "playoff_win_by"); w > 0 {
+					winBy = w
+				}
+			}
+		}
 	}
-	// MLP DreamBreaker: the decider line is a single game to 21, win by 2 (not the
-	// event's per-line target).
-	if asStr(fmtRow, "line_type") == "dec" {
+	// MLP DreamBreaker: the decider line is a single game to 21, win by 2 — it
+	// outranks both pool and playoff scoring.
+	if asStr(row, "line_type") == "dec" {
 		ptw, winBy, bestOf = 21, 2, 1
+	}
+	return ptw, winBy, bestOf, nil
+}
+
+func (s *Service) RecordSeries(matchID string, games []model.GameScore) error {
+	ptw, winBy, bestOf, err := s.scoringForMatch(matchID)
+	if err != nil {
+		return err
 	}
 	winner, t1, t2, err := validateSeries(games, bestOf, ptw, winBy)
 	if err != nil {

@@ -73,7 +73,6 @@ func TestClubPlanFreeWhileSubscriptionsAreOff(t *testing.T) {
 	}
 }
 
-
 // The finding that prompted these: checkout.session.completed carries NO line
 // items, so the router used to see PriceID=="" and fall into the premium
 // column — a Club (or coach) purchase granted $15 Premium instead of the

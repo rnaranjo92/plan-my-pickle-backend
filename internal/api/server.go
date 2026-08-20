@@ -80,7 +80,7 @@ func NewServer(svc *service.Service) http.Handler {
 		createLimiter:     newRateLimiter(20, 60),   // 20 event/league creates/min per user
 		sessionLimiter:    newRateLimiter(600, 60),  // 600 checkout-session Stripe lookups/min (global, cache-miss only)
 		otpLimiter:        newRateLimiter(5, 600),   // 5 OTP sends / 10 min per user
-		posterLimiter:     newRateLimiter(15, 3600),  // 15 poster renders / hour per user
+		posterLimiter:     newRateLimiter(15, 3600), // 15 poster renders / hour per user
 		clubInviteLimiter: newRateLimiter(30, 3600), // 30 club invites / hour per user
 		liveLimiter:       newRateLimiter(240, 60),  // 240 scorebug pushes/min per court (~4/sec)
 		captcha:           gateway.NewTurnstile(os.Getenv("TURNSTILE_SECRET")),
@@ -1219,13 +1219,13 @@ func (s *Server) generateLeaguePoster(w http.ResponseWriter, r *http.Request) {
 // it's for later.
 func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title  string `json:"title"`
-		Date   string `json:"date"`
-		Venue  string `json:"venue"`
-		Style           string   `json:"style"`
-		Layout          string   `json:"layout"`
-		Vibe            string   `json:"vibe"`
-		Extra           string   `json:"extra"`
+		Title           string               `json:"title"`
+		Date            string               `json:"date"`
+		Venue           string               `json:"venue"`
+		Style           string               `json:"style"`
+		Layout          string               `json:"layout"`
+		Vibe            string               `json:"vibe"`
+		Extra           string               `json:"extra"`
 		Custom          string               `json:"custom"`
 		Logos           []service.PosterLogo `json:"logos"`
 		SponsorLogoUrls []string             `json:"sponsorLogoUrls"`

@@ -13,6 +13,12 @@ type Event struct {
 	WinBy               int    `json:"winBy"`
 	BestOf              int    `json:"bestOf"` // games per match: 1 (single) or 3 (best of 3)
 	GameDurationMinutes int    `json:"gameDurationMinutes"`
+	// Optional separate scoring for the BRACKET. 0 = "same as pool play", which
+	// is every event that hasn't opted in. The common reason to differ: quick
+	// pool games to 11 win-by-1 to get everyone playing, then 11 win-by-2 for
+	// the knockout so medal rounds are decided out of deuce.
+	PlayoffPointsToWin int `json:"playoffPointsToWin"`
+	PlayoffWinBy       int `json:"playoffWinBy"`
 	// MinPoolRounds / MaxPoolRounds bound the pool-play round-robin length
 	// (0 = unset). Max caps a full RR (partial round-robin); min tops it up by
 	// repeating matchups so everyone gets a guaranteed number of games.
@@ -1333,28 +1339,35 @@ type DuprConnection struct {
 }
 
 type CreateEventRequest struct {
-	Name                 string `json:"name"`
-	Format               string `json:"format"`           // singles|doubles (default doubles)
-	PartnerMode          string `json:"partnerMode"`      // fixed|rotating (default rotating)
-	TournamentFormat     string `json:"tournamentFormat"` // default round_robin
-	ScoringMode          string `json:"scoringMode"`      // default wins
-	NumCourts            int    `json:"numCourts"`
-	PointsToWin          int    `json:"pointsToWin"`
-	WinBy                int    `json:"winBy"`
-	BestOf               int    `json:"bestOf"`
-	GameDurationMinutes  int    `json:"gameDurationMinutes"`
-	MinPoolRounds        int    `json:"minPoolRounds"`
-	MaxPoolRounds        int    `json:"maxPoolRounds"`
-	RoundsPerSession     int    `json:"roundsPerSession"`
-	RsvpEnabled          bool   `json:"rsvpEnabled"`
+	Name                string `json:"name"`
+	Format              string `json:"format"`           // singles|doubles (default doubles)
+	PartnerMode         string `json:"partnerMode"`      // fixed|rotating (default rotating)
+	TournamentFormat    string `json:"tournamentFormat"` // default round_robin
+	ScoringMode         string `json:"scoringMode"`      // default wins
+	NumCourts           int    `json:"numCourts"`
+	PointsToWin         int    `json:"pointsToWin"`
+	WinBy               int    `json:"winBy"`
+	BestOf              int    `json:"bestOf"`
+	GameDurationMinutes int    `json:"gameDurationMinutes"`
+	MinPoolRounds       int    `json:"minPoolRounds"`
+	MaxPoolRounds       int    `json:"maxPoolRounds"`
+	RoundsPerSession    int    `json:"roundsPerSession"`
+	RsvpEnabled         bool   `json:"rsvpEnabled"`
 	// PlayoffSize: auto-built playoff draw size (0=off, 4/8/16) — see Event.
 	//
 	// A POINTER because absent must not mean zero: the live mobile builds predate
 	// this field, so an unrelated edit from one of them omits it entirely, and
 	// writing 0 there would silently wipe an organizer's configured playoff
 	// finish. nil = "don't touch"; &0 = the organizer explicitly chose none.
-	PlayoffSize          *int   `json:"playoffSize"`
-	RegistrationFeeCents int    `json:"registrationFeeCents"`
+	PlayoffSize *int `json:"playoffSize"`
+	// Separate scoring for the bracket. POINTERS for the same reason as
+	// PlayoffSize: every shipped mobile build predates these fields, so an edit
+	// from a phone omits them — and a plain int would read absent as 0, i.e.
+	// "same as pools", silently wiping the organizer's playoff scoring on an
+	// unrelated save. nil = don't touch; &0 = explicitly back to pool scoring.
+	PlayoffPointsToWin   *int `json:"playoffPointsToWin"`
+	PlayoffWinBy         *int `json:"playoffWinBy"`
+	RegistrationFeeCents int  `json:"registrationFeeCents"`
 	// Currency the fees are collected in (ISO-4217, e.g. USD/CAD/PHP/GBP/AUD).
 	// Empty on update = leave unchanged; empty on create defaults to USD.
 	Currency string `json:"currency"`

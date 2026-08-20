@@ -285,6 +285,10 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /events/{id}/teams/{teamId}/rename", s.ownerOnly("event", "id", s.mlpRenameTeam))
 	mux.HandleFunc("POST /events/{id}/teams/{teamId}/members", s.ownerOnly("event", "id", s.mlpAddTeamMember))
 	mux.HandleFunc("DELETE /events/{id}/team-members/{memberId}", s.ownerOnly("event", "id", s.mlpRemoveTeamMember))
+	mux.HandleFunc("POST /events/{id}/redraw-upcoming",
+		s.ownerOnly("event", "id", s.redrawUpcomingRounds))
+	mux.HandleFunc("GET /events/{id}/redraw-plan",
+		s.ownerOnly("event", "id", s.planRoundRedraw))
 	mux.HandleFunc("POST /events/{id}/team-schedule", s.ownerOnly("event", "id", s.mlpGenerateTies))
 	mux.HandleFunc("GET /events/{id}/ties", s.mlpListTies)
 	mux.HandleFunc("POST /events/{id}/playoff", s.ownerOnly("event", "id", s.mlpGeneratePlayoff))
@@ -5318,6 +5322,34 @@ func (s *Server) mlpRemoveTeamMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// redrawUpcomingRounds replaces a recurring league's not-yet-played rounds with
+// a fresh draw for whoever is checked in now — the "someone arrived after round
+// 1" case. Played rounds are never touched.
+func (s *Server) redrawUpcomingRounds(w http.ResponseWriter, r *http.Request) {
+	res, plan, err := s.svc.RedrawUpcomingRounds(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"matches": res.Matches, "replacedRounds": plan.Rounds,
+		"blocked": plan.Blocked, "unscheduled": res.Unscheduled,
+		"skipped": res.Skipped,
+	})
+}
+
+// planRoundRedraw powers the confirmation: how many rounds would be replaced,
+// which divisions are being left alone, and whether nothing has been marked
+// played yet (in which case the app warns about paper scoring before deleting).
+func (s *Server) planRoundRedraw(w http.ResponseWriter, r *http.Request) {
+	plan, err := s.svc.PlanRoundRedraw(r.PathValue("id"))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
 }
 
 func (s *Server) mlpGenerateTies(w http.ResponseWriter, r *http.Request) {

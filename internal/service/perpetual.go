@@ -1346,6 +1346,242 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 	// new session doesn't run alongside a stale in-progress game — which otherwise
 	// lingers on the court scorer + steals the stream overlay.
 	s.cancelStalePerpetualGames(ev)
+	return s.buildPerpetualRoundsLocked(ev)
+}
+
+// ErrNoIdleRounds means there is no round a redraw could safely replace.
+var ErrNoIdleRounds = errors.New(
+	"no upcoming rounds to redraw — every round tonight has been played or started")
+
+// RedrawPlan is what a redraw WOULD do, so the organizer approves a known
+// change rather than a blank cheque.
+type RedrawPlan struct {
+	// Rounds that would be replaced.
+	Rounds int `json:"rounds"`
+	// True when NOTHING tonight is marked started or scored. The rounds then
+	// look untouched but may have been played on paper — a match only becomes
+	// in_progress when someone taps Start, so a club scoring at the end of the
+	// night has every match sitting at 'scheduled'. Only the organizer knows
+	// which it is, so the app must ask rather than guess.
+	NothingPlayedYet bool `json:"nothingPlayedYet"`
+	// Divisions that can't rebuild right now (too few checked in). Their rounds
+	// are LEFT ALONE — deleting a division's draw and then failing to rebuild it
+	// is the one outcome that loses work with nothing to show for it.
+	Blocked []string `json:"blocked,omitempty"`
+}
+
+// PlanRoundRedraw reports what RedrawUpcomingRounds would replace, without
+// touching anything.
+func (s *Service) PlanRoundRedraw(eventID string) (RedrawPlan, error) {
+	_, plan, err := s.redrawTargets(eventID)
+	return plan, err
+}
+
+// RedrawUpcomingRounds replaces TONIGHT's not-yet-played rounds with a fresh
+// draw for whoever is checked in now, leaving every played round untouched.
+//
+// The problem it solves: one Build creates a BLOCK of rounds, so a player who
+// arrives after round 1 is missing from rounds 2 and 3 as well, and the ordinary
+// Build only APPENDS — they'd wait until round 4 while everyone else plays on.
+//
+// Three rules make a destructive action safe here:
+//   - Only TONIGHT. Prior sessions are real history (they show in History and
+//     may still be awaiting paper scores) and are never touched.
+//   - Only rounds AFTER the last one with activity, per division. A round that
+//     comes before a played round can't be "upcoming".
+//   - Validate BEFORE deleting. A division that can't field a game keeps its
+//     rounds; if no division can, nothing is deleted at all.
+func (s *Service) RedrawUpcomingRounds(eventID string) (model.ScheduleResult, RedrawPlan, error) {
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return model.ScheduleResult{}, RedrawPlan{}, err
+	}
+	if !ev.Perpetual || ev.TournamentFormat != "round_robin" {
+		return model.ScheduleResult{}, RedrawPlan{}, errors.New(
+			"redrawing upcoming rounds is only for a recurring league")
+	}
+	// Both locks. lockPerpetualBuild serializes builds (the round offset is a
+	// read-modify-write); lockScoreEvent is what the SCORING paths take, and
+	// without it a score landing between the scan and the delete would be
+	// destroyed with its round.
+	defer s.lockPerpetualBuild(eventID)()
+	defer s.lockScoreEvent(eventID)()
+
+	// Close a stale live game from a prior day first — exactly as a normal Build
+	// does. Skipping it left a phantom in_progress game that both protected an
+	// old round from the redraw and kept stealing the court scorer / overlay.
+	s.cancelStalePerpetualGames(ev)
+
+	ids, plan, err := s.redrawTargets(eventID)
+	if err != nil {
+		return model.ScheduleResult{}, plan, err
+	}
+	if len(ids) == 0 {
+		return model.ScheduleResult{}, plan, ErrNoIdleRounds
+	}
+	// Guarded delete: drop only matches still untouched. If a game went live or
+	// was scored between the scan and here, its row survives and so does its
+	// score — the round is left with that game rather than vanishing.
+	if err := s.sb.Delete("matches", "round_id="+store.In(ids)+
+		"&status=not.eq.in_progress&team1_score=is.null"); err != nil {
+		return model.ScheduleResult{}, plan, err
+	}
+	// Only delete rounds that are now genuinely empty. A round that kept a
+	// just-started game still has matches and must stay.
+	empty, err := s.roundsWithoutMatches(ids)
+	if err != nil {
+		return model.ScheduleResult{}, plan, err
+	}
+	if len(empty) > 0 {
+		if err := s.sb.Delete("rounds", "id="+store.In(empty)); err != nil {
+			return model.ScheduleResult{}, plan, err
+		}
+	}
+	plan.Rounds = len(empty)
+	s.cleanupStaleSubstitutes(eventID, ev.PartnerMode)
+	res, err := s.buildPerpetualRoundsLocked(ev)
+	return res, plan, err
+}
+
+// roundsWithoutMatches filters to the rounds that hold no match at all.
+func (s *Service) roundsWithoutMatches(ids []string) ([]string, error) {
+	rows, err := s.sb.SelectAll("matches", "round_id="+store.In(ids)+"&select=round_id")
+	if err != nil {
+		return nil, err
+	}
+	kept := map[string]bool{}
+	for _, m := range rows {
+		kept[asStr(m, "round_id")] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !kept[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// eventLocalZone is the event's local timezone, derived from its configured
+// start time-of-day — the same approach clearCurrentUnscoredSessionLocked and
+// resetStaleCheckins use. A pure UTC bucket would mis-classify an evening
+// league's session in any non-UTC zone and could treat a genuinely-prior LOCAL
+// session as "tonight".
+func (s *Service) eventLocalZone(eventID string) *time.Location {
+	if ev, _ := s.sb.SelectOne("events",
+		"id=eq."+store.Q(eventID)+"&select=starts_at"); ev != nil {
+		if st := strings.TrimSpace(asStr(ev, "starts_at")); st != "" {
+			if t, e := time.Parse(time.RFC3339, st); e == nil {
+				return t.Location()
+			}
+		}
+	}
+	return time.UTC
+}
+
+// redrawTargets returns the round ids a redraw may replace, plus the plan the
+// organizer is asked to approve.
+func (s *Service) redrawTargets(eventID string) ([]string, RedrawPlan, error) {
+	var plan RedrawPlan
+	ev, err := s.GetEvent(eventID)
+	if err != nil {
+		return nil, plan, err
+	}
+	loc := s.eventLocalZone(eventID)
+	rounds, err := s.sb.SelectAll("rounds", "event_id=eq."+store.Q(eventID)+
+		"&select=id,bracket_id,round_number,created_at")
+	if err != nil {
+		return nil, plan, err
+	}
+	if len(rounds) == 0 {
+		return nil, plan, nil
+	}
+	nowLocal := time.Now().In(loc)
+	today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, loc)
+	type rd struct {
+		id, bracket string
+		number      int
+	}
+	var todays []rd
+	for _, r := range rounds {
+		t, e := time.Parse(time.RFC3339, asStr(r, "created_at"))
+		if e != nil {
+			continue
+		}
+		l := t.In(loc)
+		if !time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc).Equal(today) {
+			continue // a prior session is history — never redraw it
+		}
+		todays = append(todays, rd{asStr(r, "id"), asStr(r, "bracket_id"),
+			asInt(r, "round_number")})
+	}
+	if len(todays) == 0 {
+		return nil, plan, nil
+	}
+	ids := make([]string, 0, len(todays))
+	for _, r := range todays {
+		ids = append(ids, r.id)
+	}
+	matches, err := s.sb.SelectAll("matches",
+		"round_id="+store.In(ids)+"&select=round_id,status,team1_score")
+	if err != nil {
+		return nil, plan, err
+	}
+	active := map[string]bool{}
+	for _, m := range matches {
+		st := asStr(m, "status")
+		if st == "in_progress" || (st == "completed" && m["team1_score"] != nil) {
+			active[asStr(m, "round_id")] = true
+		}
+	}
+	// Per division, the furthest round anyone has actually reached. Anything at
+	// or before it is not "upcoming", whatever its own status says.
+	highWater := map[string]int{}
+	for _, r := range todays {
+		if active[r.id] && r.number > highWater[r.bracket] {
+			highWater[r.bracket] = r.number
+		}
+	}
+	plan.NothingPlayedYet = len(active) == 0
+	// Divisions that can't field a game right now keep their rounds.
+	blocked := map[string]bool{}
+	bks, err := s.GetBrackets(eventID)
+	if err != nil {
+		return nil, plan, err
+	}
+	minPlayers := 2
+	if ev.Format == "doubles" {
+		minPlayers = 4
+	}
+	for _, b := range bks {
+		regs, rerr := s.bracketRegs(eventID, b.ID, true)
+		if rerr != nil {
+			return nil, plan, rerr
+		}
+		if len(regs) < minPlayers {
+			blocked[b.ID] = true
+			plan.Blocked = append(plan.Blocked,
+				shortDivisionMsg(b.Name, len(regs), minPlayers))
+		}
+	}
+	var out []string
+	for _, r := range todays {
+		if active[r.id] || blocked[r.bracket] || r.number <= highWater[r.bracket] {
+			continue
+		}
+		out = append(out, r.id)
+	}
+	plan.Rounds = len(out)
+	return out, plan, nil
+}
+
+// buildPerpetualRoundsLocked appends one block of rounds for whoever is CHECKED
+// IN right now, after the highest existing round number. The caller must already
+// hold the per-event build lock (the round offset is a read-modify-write).
+//
+// Shared by the ordinary Build and by RebuildUpcomingRounds, so the two can
+// never drift apart on who is eligible or how the draw is formed.
+func (s *Service) buildPerpetualRoundsLocked(ev model.Event) (model.ScheduleResult, error) {
 	bks, err := s.GetBrackets(ev.ID)
 	if err != nil {
 		return model.ScheduleResult{}, err

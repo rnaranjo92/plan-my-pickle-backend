@@ -1038,6 +1038,10 @@ const seoHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{{.Title}}</title>
 <meta name="description" content="{{.Description}}">
 <link rel="canonical" href="{{.Canonical}}">
+<link rel="icon" href="` + seoCanonicalBase + `/assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="` + seoCanonicalBase + `/assets/favicon-48.png" sizes="48x48">
+<link rel="apple-touch-icon" href="` + seoCanonicalBase + `/assets/apple-touch-icon.png">
+<meta name="theme-color" content="#16245c">
 <meta property="og:title" content="{{.Title}}">
 <meta property="og:description" content="{{.Description}}">
 <meta property="og:url" content="{{.Canonical}}">
@@ -1047,17 +1051,27 @@ const seoHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="twitter:image" content="{{.OGImage}}">{{end}}
 <script type="application/ld+json">{{.JSONLD}}</script>
 <style>
-:root{--navy:#16245c;--green:#4f8b3b;--ink:#16203a;--muted:#5b6b80}
-*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#f6faf1;line-height:1.5}
-.wrap{max-width:760px;margin:0 auto;padding:24px 18px 60px}
+:root{--navy:#16245c;--green:#4f8b3b;--lime:#8dc63f;--yellow:#f5c518;--yellow-d:#d9a800;--ink:#16203a;--muted:#5b6b80;--line:#e4ecd9}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#f6faf1;line-height:1.5;-webkit-font-smoothing:antialiased}
+/* A thin brand rule across the top. The page opened on plain cream, which read
+   as an unstyled document rather than a product. */
+body::before{content:"";display:block;height:4px;background:linear-gradient(90deg,var(--navy),var(--green) 55%,var(--lime))}
+.wrap{max-width:760px;margin:0 auto;padding:22px 18px 72px}
 /* The real mark, not an emoji — this is the only branding on a page organizers
    share publicly, and an emoji renders differently on every platform. */
 header a{color:var(--green);font-weight:800;text-decoration:none;font-size:18px;display:inline-flex;align-items:center;gap:8px}
 .brand{width:28px;height:28px;border-radius:7px;display:block;flex:none}
-h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
+h1{color:var(--navy);font-size:clamp(26px,5.2vw,36px);line-height:1.15;margin:20px 0 8px;letter-spacing:-0.015em;text-wrap:balance}
 .meta{color:var(--muted);font-size:15px;margin:2px 0}
-.badge{display:inline-block;background:#e9f2df;color:var(--green);font-weight:800;font-size:12px;padding:3px 9px;border-radius:999px;margin-top:8px}
-.cta{display:inline-block;margin:22px 0 6px;background:#f5c518;color:var(--ink);text-decoration:none;font-weight:800;padding:13px 22px;border-radius:999px}
+/* The DUPR badge is a CREDENTIAL — it is the reason a rated player trusts the
+   event, so it reads as a stamp rather than a footnote. */
+.badge{display:inline-flex;align-items:center;gap:6px;background:#eaf3e1;color:var(--green);font-weight:800;font-size:12.5px;letter-spacing:.02em;padding:6px 13px;border-radius:999px;margin-top:10px;border:1px solid rgba(79,139,59,.28)}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--lime)}
+/* One obvious next step. Full-width on a phone, where this page is read. */
+.cta{display:inline-block;margin:24px 0 6px;background:var(--yellow);color:var(--ink);text-decoration:none;font-weight:800;font-size:16.5px;padding:15px 28px;border-radius:999px;box-shadow:0 4px 0 var(--yellow-d);transition:transform .12s ease,box-shadow .12s ease}
+.cta:hover{transform:translateY(-2px);box-shadow:0 6px 0 var(--yellow-d)}
+.cta:active{transform:translateY(0);box-shadow:0 2px 0 var(--yellow-d)}
+@media(max-width:560px){.cta{display:block;text-align:center}}
 .facts{list-style:none;padding:0;margin:14px 0 4px;display:flex;flex-wrap:wrap;gap:8px}
 .facts li{background:#e9f2df;color:var(--green);font-weight:700;font-size:13px;padding:6px 12px;border-radius:999px}
 .sec{margin:26px 0 2px;font-size:16px;color:var(--navy)}
@@ -1073,16 +1087,16 @@ h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
    all cut off. This is the one image on the page and the whole reason the link
    gets shared, so never crop it: fit it whole, cap the height so a tall poster
    can't push Register below the fold, and centre it. */
-.hero{display:block;max-width:100%;width:auto;height:auto;max-height:76vh;margin:16px auto 10px;border-radius:14px;border:1px solid #e7eedd;background:#eef4e6}
+.hero{display:block;max-width:100%;width:auto;height:auto;max-height:76vh;margin:18px auto 12px;border-radius:16px;border:1px solid var(--line);background:#eef4e6;box-shadow:0 18px 40px -22px rgba(22,36,92,.45)}
 /* The event's facts, grouped — they read as one block instead of three loose
    grey lines drifting under the poster. */
-.panel{background:#fff;border:1px solid #e7eedd;border-radius:14px;padding:14px 18px;margin:16px 0 2px}
-.panel .meta{margin:7px 0;font-size:15.5px;color:var(--ink)}
+.panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin:18px 0 2px;box-shadow:0 1px 2px rgba(22,36,92,.04)}
+.panel .meta{margin:9px 0;font-size:15.5px;color:var(--ink);display:flex;gap:10px;align-items:flex-start}
 .panel .meta:first-child{margin-top:0}
 .panel .meta:last-child{margin-bottom:0}
 .cta{box-shadow:0 2px 10px rgba(245,197,24,.45)}
 @media(min-width:620px){h1{font-size:30px}}
-.foot{margin-top:40px;color:var(--muted);font-size:13px}
+.foot{margin-top:36px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 .foot a{color:var(--green)}
 </style></head><body><div class="wrap">
 <header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28">PlanMyPickle<sup style="font-size:.55em;vertical-align:super;margin-left:.1em">&trade;</sup></a></header>`

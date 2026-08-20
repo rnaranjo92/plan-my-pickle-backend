@@ -54,3 +54,35 @@ func TestLogoFactsEmptyWhenNoLogos(t *testing.T) {
 		t.Errorf("want empty, got %q", got)
 	}
 }
+
+// The sponsor must sit ON the poster's own artwork. Asking for the "bottom
+// margin" produced a strip that read as bolted on underneath the design.
+func TestLogoFactsSponsorIsBlendedNotBanded(t *testing.T) {
+	for _, counts := range [][4]int{{0, 0, 1, 0}, {0, 0, 3, 0}} {
+		got := logoFacts(counts, nil, 0)
+		if !strings.Contains(got, "own background as part of the design") {
+			t.Errorf("counts %v: sponsor should sit on the artwork: %s", counts, got)
+		}
+		if !strings.Contains(got, "band, bar, footer, panel or strip") {
+			t.Errorf("counts %v: a separate strip must be ruled out: %s", counts, got)
+		}
+		if strings.Contains(got, "bottom margin") {
+			t.Errorf("counts %v: 'bottom margin' is what produced the strip: %s",
+				counts, got)
+		}
+	}
+}
+
+// The uploaded artwork is a brand asset: only size and position may change.
+// A poster style that distresses or tints everything must not touch it.
+func TestLogoFactsProtectsTheArtworkItself(t *testing.T) {
+	got := logoFacts([4]int{1, 0, 0, 0}, nil, 0)
+	for _, want := range []string{
+		"UNTOUCHABLE", "pixel-faithfully", "texture, grain, filter",
+		"Only its SIZE and POSITION may change",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("logo integrity rule missing %q: %s", want, got)
+		}
+	}
+}

@@ -1015,15 +1015,20 @@ func logoFacts(counts [4]int, labels []string, offset int) string {
 		// sponsor logo came back tiled five times across the bottom.
 		if n == 1 {
 			parts = append(parts, fmt.Sprintf(
-				"SPONSOR: %s is a single sponsor logo — place it ONCE, small, "+
-					"inside the poster's bottom margin. There is exactly one "+
-					"sponsor: do not repeat it, and do not pad the space with "+
-					"copies of it.", span(n)))
+				"SPONSOR: %s is a single sponsor logo — place it ONCE, small, in "+
+					"the lower third, sitting ON the poster's own background as "+
+					"part of the design. There is exactly one sponsor: do not "+
+					"repeat it and do not pad the space with copies of it. Do "+
+					"NOT give it a band, bar, footer, panel or strip of its "+
+					"own, and do not change the poster's background behind it.",
+				span(n)))
 		} else {
 			parts = append(parts, fmt.Sprintf(
 				"SPONSORS: %s are %d DIFFERENT sponsor logos — place each one "+
-					"exactly once, small, in a single row inside the poster's "+
-					"bottom margin.", span(n), n))
+					"exactly once, small, spaced across the lower third and "+
+					"sitting ON the poster's own background as part of the "+
+					"design. Do NOT give them a band, bar, footer, panel or "+
+					"strip of their own.", span(n), n))
 		}
 		offset += n
 	}
@@ -1049,11 +1054,16 @@ func logoFacts(counts [4]int, labels []string, offset int) string {
 	}
 	return strings.Join(parts, " ") + " Every attached logo must be composited " +
 		"INTO the poster's own artwork and background — never on a separate " +
-		"plain strip outside or below the design — and reproduced faithfully: " +
-		"never redrawn, recolored, cropped or distorted. Each attached logo " +
-		"appears EXACTLY ONCE in the finished poster. Never duplicate, tile, " +
-		"mirror or repeat a logo to fill a row or balance the layout; if a " +
-		"space looks empty, leave it empty."
+		"plain strip outside or below the design. Each attached logo appears " +
+		"EXACTLY ONCE in the finished poster. Never duplicate, tile, mirror or " +
+		"repeat a logo to fill a row or balance the layout; if a space looks " +
+		"empty, leave it empty. THE LOGO ARTWORK ITSELF IS UNTOUCHABLE: " +
+		"reproduce every logo pixel-faithfully and in full — never redraw, " +
+		"restyle, recolor, tint, crop, stretch, rotate, add or remove text, " +
+		"change its typeface, or apply the poster's texture, grain, filter or " +
+		"distressing to it. Scale it proportionally and nothing more. Only its " +
+		"SIZE and POSITION may change; everything inside its edges stays " +
+		"exactly as supplied."
 }
 
 // fetchSmallImage downloads a small public asset (the club logo), bounded so a

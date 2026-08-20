@@ -6297,18 +6297,22 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 
 	total := 0
 	var droppedIDs []string
+	var skipped []string
 	for _, b := range bks {
 		regs, err := s.bracketRegs(eventID, b.ID, ev.Perpetual)
 		if err != nil {
 			return model.ScheduleResult{}, err
 		}
 		// Doubles needs at least 4 players (a full game); singles 2. Skip
-		// undersized divisions instead of persisting empty rounds.
+		// undersized divisions instead of persisting empty rounds — but RECORD
+		// which ones, so the organizer is told rather than left with a division
+		// that silently produced nothing.
 		minPlayers := 2
 		if ev.Format == "doubles" {
 			minPlayers = 4
 		}
 		if len(regs) < minPlayers {
+			skipped = append(skipped, shortDivisionMsg(b.Name, len(regs), minPlayers))
 			continue
 		}
 		// A doubles player with no partner to pair with is left out of the draw —
@@ -6402,7 +6406,8 @@ func (s *Service) GenerateSchedule(eventID string, force, arrange bool) (model.S
 	if err != nil {
 		return model.ScheduleResult{}, err
 	}
-	return model.ScheduleResult{Matches: total, Unscheduled: unscheduled}, nil
+	return model.ScheduleResult{
+		Matches: total, Unscheduled: unscheduled, Skipped: skipped}, nil
 }
 
 // CreateManualGame inserts an organizer-defined match — chosen teams on a chosen

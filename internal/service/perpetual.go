@@ -1360,6 +1360,7 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 	}
 	total := 0
 	var droppedIDs []string
+	var skipped []string
 	for _, b := range bks {
 		regs, err := s.bracketRegs(ev.ID, b.ID, true) // checked-in players only
 		if err != nil {
@@ -1370,7 +1371,12 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 			minPlayers = 4
 		}
 		if len(regs) < minPlayers {
-			continue // not enough checked in for a game in this division
+			// Name the division and how short it is. A session builds only from
+			// who's checked in, so "nothing happened" is almost always "not
+			// enough people are checked in yet" — and the organizer is standing
+			// on court with players waiting, needing that in one read.
+			skipped = append(skipped, shortDivisionMsg(b.Name, len(regs), minPlayers))
+			continue
 		}
 		droppedIDs = append(droppedIDs, droppedDoublesPlayers(ev, regs)...)
 		offset := s.maxRoundNumber(ev.ID, b.ID)
@@ -1380,6 +1386,12 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 		}
 		total += n
 	}
+	// Nothing was built. Fail LOUDLY rather than returning an empty success and
+	// leaving the organizer to guess: this is the check-in gate doing its job,
+	// and the fix ("check more players in") is entirely in their hands.
+	if total == 0 {
+		return model.ScheduleResult{}, errors.New(noGamesBuiltMsg(ev.Format, skipped))
+	}
 	if _, err := s.sb.Update("events", "id=eq."+store.Q(ev.ID),
 		map[string]any{"status": "in_progress"}); err != nil {
 		return model.ScheduleResult{}, err
@@ -1388,5 +1400,35 @@ func (s *Service) generatePerpetualSession(ev model.Event) (model.ScheduleResult
 	if err != nil {
 		return model.ScheduleResult{}, err
 	}
-	return model.ScheduleResult{Matches: total, Unscheduled: unscheduled}, nil
+	// Some divisions built and others didn't — a partial success the organizer
+	// still needs told about, since the missing division looks like a bug.
+	return model.ScheduleResult{
+		Matches: total, Unscheduled: unscheduled, Skipped: skipped}, nil
+}
+
+// shortDivisionMsg describes one division that couldn't field a game.
+func shortDivisionMsg(name string, have, need int) string {
+	label := strings.TrimSpace(name)
+	if label == "" {
+		label = "Your division"
+	}
+	return fmt.Sprintf("%s: %d checked in, needs %d", label, have, need)
+}
+
+// noGamesBuiltMsg is what the organizer reads when a build produced nothing. It
+// leads with the cause, because they're on court with players waiting.
+func noGamesBuiltMsg(format string, skipped []string) string {
+	need := 2
+	kind := "singles"
+	if format == "doubles" {
+		need, kind = 4, "doubles"
+	}
+	msg := fmt.Sprintf(
+		"No games were built — a %s session needs at least %d players checked in. "+
+			"Check players in on the Players tab, then build again.",
+		kind, need)
+	if len(skipped) > 0 {
+		msg += " (" + strings.Join(skipped, "; ") + ")"
+	}
+	return msg
 }

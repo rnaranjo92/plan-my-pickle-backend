@@ -1305,6 +1305,11 @@ type PlayoffSeedInfo struct {
 type ScheduleResult struct {
 	Matches     int      `json:"matches"`
 	Unscheduled []string `json:"unscheduled"`
+	// Divisions that produced no games, each with the reason — in practice
+	// "not enough players checked in". These used to be skipped in silence, so
+	// an organizer who built a session with too few people present got an empty
+	// screen and nothing saying why.
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // DuprConnectInput is what the frontend sends after the SSO iframe posts back —

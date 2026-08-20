@@ -1050,7 +1050,10 @@ const seoHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 :root{--navy:#16245c;--green:#4f8b3b;--ink:#16203a;--muted:#5b6b80}
 *{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#f6faf1;line-height:1.5}
 .wrap{max-width:760px;margin:0 auto;padding:24px 18px 60px}
-header a{color:var(--green);font-weight:800;text-decoration:none;font-size:18px}
+/* The real mark, not an emoji — this is the only branding on a page organizers
+   share publicly, and an emoji renders differently on every platform. */
+header a{color:var(--green);font-weight:800;text-decoration:none;font-size:18px;display:inline-flex;align-items:center;gap:8px}
+.brand{width:28px;height:28px;border-radius:7px;display:block;flex:none}
 h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
 .meta{color:var(--muted);font-size:15px;margin:2px 0}
 .badge{display:inline-block;background:#e9f2df;color:var(--green);font-weight:800;font-size:12px;padding:3px 9px;border-radius:999px;margin-top:8px}
@@ -1065,11 +1068,24 @@ h1{color:var(--navy);font-size:26px;line-height:1.2;margin:18px 0 6px}
 .cbody{min-width:0}
 .avatar{border-radius:50%}
 .portrait{width:120px;height:120px;border-radius:50%;object-fit:cover;background:#eef4e6;border:1px solid #e7eedd;margin:16px 0 0;display:block}
-.hero{width:100%;max-height:420px;object-fit:cover;border-radius:14px;border:1px solid #e7eedd;background:#eef4e6;margin:14px 0 4px;display:block}
+/* Event posters are almost always PORTRAIT, and a full-width 420px-tall crop
+   showed a horizontal slice out of the middle — title, date and division times
+   all cut off. This is the one image on the page and the whole reason the link
+   gets shared, so never crop it: fit it whole, cap the height so a tall poster
+   can't push Register below the fold, and centre it. */
+.hero{display:block;max-width:100%;width:auto;height:auto;max-height:76vh;margin:16px auto 10px;border-radius:14px;border:1px solid #e7eedd;background:#eef4e6}
+/* The event's facts, grouped — they read as one block instead of three loose
+   grey lines drifting under the poster. */
+.panel{background:#fff;border:1px solid #e7eedd;border-radius:14px;padding:14px 18px;margin:16px 0 2px}
+.panel .meta{margin:7px 0;font-size:15.5px;color:var(--ink)}
+.panel .meta:first-child{margin-top:0}
+.panel .meta:last-child{margin-bottom:0}
+.cta{box-shadow:0 2px 10px rgba(245,197,24,.45)}
+@media(min-width:620px){h1{font-size:30px}}
 .foot{margin-top:40px;color:var(--muted);font-size:13px}
 .foot a{color:var(--green)}
 </style></head><body><div class="wrap">
-<header><a href="` + seoCanonicalBase + `">🥒 PlanMyPickle</a></header>`
+<header><a href="` + seoCanonicalBase + `"><img class="brand" src="` + seoCanonicalBase + `/assets/logo.svg" alt="" width="28" height="28">PlanMyPickle</a></header>`
 
 const seoFoot = `<p class="foot"><a href="/coaches">Find a pickleball coach</a> · <a href="/coaches/apply">Coach with us</a></p>
 <p class="foot">Powered by <a href="` + seoCanonicalBase + `">PlanMyPickle</a> — run pickleball tournaments, minus the chaos.</p>
@@ -1078,9 +1094,11 @@ const seoFoot = `<p class="foot"><a href="/coaches">Find a pickleball coach</a> 
 var seoEventTmpl = template.Must(template.New("ev").Parse(seoHead + `
 <h1>{{.H1}}</h1>
 {{if .Poster}}<img class="hero" src="{{.Poster}}" alt="{{.H1}} event poster">{{end}}
+<div class="panel">
 {{if .DateLine}}<p class="meta">📅 {{.DateLine}}</p>{{end}}
 {{if .VenueLine}}<p class="meta">📍 {{.VenueLine}}</p>{{end}}
 <p class="meta">💵 {{.FeeLine}}</p>
+</div>
 {{if .Dupr}}<span class="badge">DUPR Sanctioned</span>{{end}}
 <p><a class="cta" href="{{.RegisterURL}}">Register &amp; see the live bracket →</a></p>
 <p class="meta">Registration, live scores, schedule, and standings run on PlanMyPickle. Tap above to open the event and sign up.</p>

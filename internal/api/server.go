@@ -173,6 +173,7 @@ func NewServer(svc *service.Service) http.Handler {
 	// account + data. requireAuth scopes it to the authenticated user only.
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
 	// Aggregated activity feed across the user's events (powers the NewsFeed tab).
+	mux.HandleFunc("POST /me/home-location", requireAuth(s.setHomeLocation))
 	mux.HandleFunc("GET /me/feed", requireAuth(s.myFeed))
 	mux.HandleFunc("POST /me/posts", requireAuth(s.createPost))
 	mux.HandleFunc("DELETE /me/posts/{id}", requireAuth(s.deletePost))
@@ -1396,6 +1397,24 @@ func (s *Server) partnerDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// setHomeLocation records the caller's home county from coordinates the app
+// already holds. Reverse-geocoded server-side so a profile and an event in the
+// same place agree on what that place is called.
+func (s *Server) setHomeLocation(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Lat float64 `json:"lat"`
+		Lng float64 `json:"lng"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetHomeLocation(userID(r), req.Lat, req.Lng); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) myFeed(w http.ResponseWriter, r *http.Request) {

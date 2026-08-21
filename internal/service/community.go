@@ -4,21 +4,97 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/courts"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 	"github.com/rnaranjo92/plan-my-pickle-backend/internal/store"
 )
 
-// userHomeCounty returns the caller's chosen home county + state (from their
-// pmp_profiles row), or empty strings if unset. Best-effort.
+// userHomeCounty returns the caller's home county + state, or empty strings
+// when we genuinely can't tell. Best-effort.
+//
+// Reads the profile first, then FALLS BACK to where they actually play. The
+// profile column went years with nothing writing it — every account read as
+// null, so anything county-scoped showed nothing to anybody. SetHomeLocation
+// now fills it from the app, but that only helps people who open the app again;
+// the fallback makes every existing account work immediately, because an event
+// they own or are registered in already carries a county.
 func (s *Service) userHomeCounty(userID string) (county, state string) {
 	if userID == "" {
 		return "", ""
 	}
 	if pr, err := s.sb.SelectOne("pmp_profiles",
 		"user_id=eq."+store.Q(userID)+"&select=county,state"); err == nil && pr != nil {
-		return asStr(pr, "county"), asStr(pr, "state")
+		if c := strings.TrimSpace(asStr(pr, "county")); c != "" {
+			return c, asStr(pr, "state")
+		}
+	}
+	return s.countyFromTheirEvents(userID)
+}
+
+// countyFromTheirEvents infers a home county from the events this person is
+// actually involved in — one they own, else one they're registered in. Newest
+// first, because where somebody plays now beats where they played a year ago.
+func (s *Service) countyFromTheirEvents(userID string) (county, state string) {
+	if rows, err := s.sb.Select("events",
+		"owner_id=eq."+store.Q(userID)+"&county=not.is.null"+
+			"&select=county,state&order=created_at.desc&limit=1"); err == nil &&
+		len(rows) > 0 {
+		return asStr(rows[0], "county"), asStr(rows[0], "state")
+	}
+	// Not an organizer — follow their player rows into the events they joined.
+	pids, perr := s.playerIDsForUser(userID, "")
+	if perr != nil || len(pids) == 0 {
+		return "", ""
+	}
+	regs, err := s.sb.Select("registrations",
+		"player_id="+store.In(pids)+"&select=event_id&limit=50")
+	if err != nil || len(regs) == 0 {
+		return "", ""
+	}
+	ids := make([]string, 0, len(regs))
+	for _, r := range regs {
+		if id := asStr(r, "event_id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return "", ""
+	}
+	if rows, err := s.sb.Select("events",
+		"id="+store.In(ids)+"&county=not.is.null"+
+			"&select=county,state&order=created_at.desc&limit=1"); err == nil &&
+		len(rows) > 0 {
+		return asStr(rows[0], "county"), asStr(rows[0], "state")
 	}
 	return "", ""
+}
+
+// SetHomeLocation records where somebody is, from coordinates the app already
+// has, so county-scoped features have something to work with.
+//
+// Reverse-geocoded SERVER-side: the client has coordinates but no geocoder, and
+// this reuses the same lookup that stamps counties onto events, so a profile and
+// an event in the same place agree on what that place is called.
+//
+// Never overwrites a county with nothing: a failed lookup leaves what was there.
+func (s *Service) SetHomeLocation(userID string, lat, lng float64) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ErrForbidden
+	}
+	if lat == 0 && lng == 0 {
+		return errors.New("need a real location")
+	}
+	county, state := courts.ReverseCounty(lat, lng)
+	if strings.TrimSpace(county) == "" {
+		return nil // couldn't tell — leave whatever is stored alone
+	}
+	_, err := s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+		"user_id": userID,
+		"county":  county,
+		"state":   state,
+	})
+	return err
 }
 
 // CreateCommunityPost creates a standalone USER post (no event) tagged with the

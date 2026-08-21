@@ -174,6 +174,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("DELETE /me", requireAuth(s.deleteMe))
 	// Aggregated activity feed across the user's events (powers the NewsFeed tab).
 	mux.HandleFunc("POST /me/home-location", requireAuth(s.setHomeLocation))
+	// Events for someone whose feed is empty, resolved WITHOUT a location
+	// permission prompt (stored county, else where they play, else newest).
+	mux.HandleFunc("GET /me/discover", requireAuth(s.myDiscover))
 	mux.HandleFunc("GET /me/feed", requireAuth(s.myFeed))
 	mux.HandleFunc("POST /me/posts", requireAuth(s.createPost))
 	mux.HandleFunc("DELETE /me/posts/{id}", requireAuth(s.deletePost))
@@ -1415,6 +1418,17 @@ func (s *Server) setHomeLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// myDiscover backs the home feed's "Happening near you" section. Capped at 5 —
+// it's a nudge inside a feed, not the Nearby tab.
+func (s *Server) myDiscover(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.HomeFeedEvents(userID(r), 5)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) myFeed(w http.ResponseWriter, r *http.Request) {

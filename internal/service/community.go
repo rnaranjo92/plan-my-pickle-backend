@@ -97,6 +97,55 @@ func (s *Service) SetHomeLocation(userID string, lat, lng float64) error {
 	return err
 }
 
+// HomeDiscovery is what the home feed shows someone who has no activity yet.
+// Place names the area when the events really are local, so the client can say
+// so instead of claiming "near you" about a list it picked nationally.
+type HomeDiscovery struct {
+	Events []model.PublicEvent `json:"events"`
+	Place  string              `json:"place,omitempty"`
+}
+
+// HomeFeedEvents returns discovery events for the home feed WITHOUT the device
+// ever being asked for its location.
+//
+// The feed used to sit behind a "Show events near me" button, because the only
+// location we had came from the GPS permission prompt. But we can usually
+// already tell: userHomeCounty reads the stored county, and failing that infers
+// one from an event the person owns or plays in. Asking for a permission to
+// learn something we know is a toll booth on an empty road.
+//
+// Falls back to the newest listed events nationally when there's no county to
+// work with — a brand-new account with no events anywhere near it still opens on
+// something real rather than an empty screen with a button on it. Place is empty
+// in that case, which is how the client knows not to call it "near you".
+func (s *Service) HomeFeedEvents(userID string, limit int) (HomeDiscovery, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	county, state := s.userHomeCounty(userID)
+	if strings.TrimSpace(county) != "" {
+		evs, err := s.PublicEvents(limit, county)
+		if err != nil {
+			return HomeDiscovery{}, err
+		}
+		// An empty county result is not an answer — a county with nothing on
+		// this week would otherwise leave the screen blank for someone we could
+		// still show something to.
+		if len(evs) > 0 {
+			place := county
+			if st := strings.TrimSpace(state); st != "" {
+				place = county + ", " + st
+			}
+			return HomeDiscovery{Events: evs, Place: place}, nil
+		}
+	}
+	evs, err := s.PublicEventsNewest(limit)
+	if err != nil {
+		return HomeDiscovery{}, err
+	}
+	return HomeDiscovery{Events: evs}, nil
+}
+
 // CreateCommunityPost creates a standalone USER post (no event) tagged with the
 // author's home county so it can surface in that county's NewsFeed. Signed-in
 // only; the author can delete it later. Text is trimmed + capped.

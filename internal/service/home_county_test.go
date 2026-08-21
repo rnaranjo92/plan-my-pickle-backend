@@ -65,3 +65,59 @@ func TestSetHomeLocationRejectsNullIsland(t *testing.T) {
 		t.Error("0,0 is not a real location and should be refused")
 	}
 }
+
+// The home feed must be able to fill itself WITHOUT a location prompt, and it
+// must only claim proximity when proximity is real. Place is what the client
+// reads to decide between "Happening near you" and a neutral heading, so these
+// assert the label as much as the list.
+func TestHomeFeedEventsNamesTheCountyWhenItKnowsOne(t *testing.T) {
+	f := newFake().
+		seed("pmp_profiles", `[{"county":"San Diego","state":"CA"}]`).
+		seed("events", `[{"id":"e1","name":"Slam","listed":true,"format":"doubles","starts_at":"2030-01-01T18:00:00Z","county":"San Diego","state":"CA"}]`)
+	s := newFakeSvc(t, f)
+	out, err := s.HomeFeedEvents("u1", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Events) != 1 {
+		t.Fatalf("want the county's event; got %d", len(out.Events))
+	}
+	if out.Place != "San Diego, CA" {
+		t.Fatalf("want a named place so the client can say 'near you'; got %q", out.Place)
+	}
+}
+
+// No county anywhere → still return something, but do NOT call it near anyone:
+// an empty Place is the client's signal to head the list neutrally.
+func TestHomeFeedEventsFallsBackWithoutClaimingAPlace(t *testing.T) {
+	f := newFake().
+		seed("pmp_profiles", `[{"county":null,"state":null}]`).
+		seed("events", `[{"id":"e1","name":"Slam","listed":true,"format":"doubles","starts_at":"2030-01-01T18:00:00Z"}]`)
+	s := newFakeSvc(t, f)
+	out, err := s.HomeFeedEvents("u1", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Events) != 1 {
+		t.Fatalf("a blank feed should still get the newest events; got %d", len(out.Events))
+	}
+	if out.Place != "" {
+		t.Fatalf("national fallback must not claim a place; got %q", out.Place)
+	}
+}
+
+// A known county with nothing listed in it must not report the place either —
+// otherwise the heading says "near you" over an empty list.
+func TestHomeFeedEventsWithNothingToShowReportsNoPlace(t *testing.T) {
+	f := newFake().
+		seed("pmp_profiles", `[{"county":"San Diego","state":"CA"}]`).
+		seed("events", `[]`)
+	s := newFakeSvc(t, f)
+	out, err := s.HomeFeedEvents("u1", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Events) != 0 || out.Place != "" {
+		t.Fatalf("want empty/unnamed; got %d events, place %q", len(out.Events), out.Place)
+	}
+}

@@ -177,6 +177,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Events for someone whose feed is empty, resolved WITHOUT a location
 	// permission prompt (stored county, else where they play, else newest).
 	mux.HandleFunc("GET /me/discover", requireAuth(s.myDiscover))
+	// Club manager mode — an ACCOUNT setting, so the nav shape survives sign-out
+	// and follows the owner to another device.
+	mux.HandleFunc("POST /me/club-manager-mode", requireAuth(s.setClubManagerMode))
 	mux.HandleFunc("GET /me/feed", requireAuth(s.myFeed))
 	mux.HandleFunc("POST /me/posts", requireAuth(s.createPost))
 	mux.HandleFunc("DELETE /me/posts/{id}", requireAuth(s.deletePost))
@@ -1414,6 +1417,20 @@ func (s *Server) setHomeLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.SetHomeLocation(userID(r), req.Lat, req.Lng); err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) setClubManagerMode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		On bool `json:"on"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.SetClubManagerMode(userID(r), req.On); err != nil {
 		status(w, err)
 		return
 	}

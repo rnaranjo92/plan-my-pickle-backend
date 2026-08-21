@@ -265,3 +265,33 @@ func (s *Service) DeleteCommunityPost(id, userID string) error {
 	}
 	return s.sb.Delete("feed_items", "id=eq."+store.Q(id))
 }
+
+// SetClubManagerMode records whether this account navigates as a club manager.
+//
+// Stored on the ACCOUNT rather than the device. The switch reshapes the nav
+// bar, and a club owner who signs out, reinstalls, or picks up a second phone
+// expects to find the app arranged the way they left it — a device-local
+// setting would silently revert them to the player tabs each time.
+//
+// Reports a real error when the column is missing rather than shrugging: the
+// caller flips the nav locally either way, so a silent failure here would look
+// exactly like success until they signed in somewhere else and found it gone.
+func (s *Service) SetClubManagerMode(userID string, on bool) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ErrForbidden
+	}
+	ready, err := s.columnReadyErr("pmp_profiles", "club_manager_mode")
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return errors.New(
+			"club manager mode isn't available yet — run add_club_manager_mode.sql")
+	}
+	_, err = s.sb.Upsert("pmp_profiles", "user_id", map[string]any{
+		"user_id":           userID,
+		"club_manager_mode": on,
+	})
+	return err
+}

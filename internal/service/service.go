@@ -11332,6 +11332,16 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 			p.CardPattern = asStr(pr, "card_pattern")
 		}
 	}
+	// Club manager mode, guarded the same way — the column postdates most
+	// installs, and folding it into a shared select would blank everything in
+	// that select on a database that hasn't run the migration.
+	if s.columnReady("pmp_profiles", "club_manager_mode") {
+		if pr, err := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(userID)+
+				"&select=club_manager_mode"); err == nil && pr != nil {
+			p.ClubManagerMode = asBool(pr, "club_manager_mode")
+		}
+	}
 	// Onboarded flag in its OWN best-effort read so a pre-migration DB (no
 	// `onboarded` column) still returns the fields above instead of erroring.
 	if pr, err := s.sb.SelectOne("pmp_profiles",

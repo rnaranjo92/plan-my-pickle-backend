@@ -2693,6 +2693,11 @@ type Profile struct {
 	// CardFont / CardPattern are the other two axes of the card's look.
 	CardFont    string `json:"cardFont,omitempty"`
 	CardPattern string `json:"cardPattern,omitempty"`
+	// ClubManagerMode: this account navigates as a club manager (the app swaps
+	// its two player tabs for a Manage tab). Stored on the ACCOUNT, not the
+	// device — a club owner who signs out, or picks up a second phone, should
+	// find the app arranged the way they left it.
+	ClubManagerMode bool `json:"clubManagerMode"`
 	// Partner-finder fields (account-level, pmp_profiles).
 	Gender         string `json:"gender,omitempty"`
 	City           string `json:"city,omitempty"`

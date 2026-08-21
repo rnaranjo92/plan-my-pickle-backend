@@ -2270,7 +2270,10 @@ type Club struct {
 	Name string `json:"name"`
 	// Address is the street address a member can navigate to. City is kept
 	// separately and stays a CITY — it slugs the public directory pages.
-	Address     string `json:"address,omitempty"`
+	Address string `json:"address,omitempty"`
+	// BrandColor ('#RRGGBB') is the accent the club's own pages are drawn in.
+	// Empty = the house palette.
+	BrandColor  string `json:"brandColor,omitempty"`
 	City        string `json:"city,omitempty"`
 	Description string `json:"description,omitempty"`
 	LogoURL     string `json:"logoUrl,omitempty"`
@@ -2310,6 +2313,7 @@ type CreateClubRequest struct {
 	// caller doesn't send one — the city column still slugs the public
 	// directory pages, so it has to stay a city.
 	Address        string `json:"address"`
+	BrandColor     string `json:"brandColor"`
 	City           string `json:"city"`
 	Description    string `json:"description"`
 	DuprClubID     string `json:"duprClubId"`

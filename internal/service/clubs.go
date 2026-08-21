@@ -31,6 +31,13 @@ func (s *Service) CreateClub(ownerID string, req model.CreateClubRequest) (model
 	if s.columnReady("clubs", "address") {
 		row["address"] = orNull(addr)
 	}
+	brand, berr := normalizeBrandColor(req.BrandColor)
+	if berr != nil {
+		return model.Club{}, berr
+	}
+	if s.columnReady("clubs", "brand_color") {
+		row["brand_color"] = orNull(brand)
+	}
 	rows, err := s.sb.Insert("clubs", row)
 	if err != nil {
 		return model.Club{}, err
@@ -66,6 +73,13 @@ func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubReques
 	}
 	if s.columnReady("clubs", "address") {
 		patch["address"] = orNull(addr)
+	}
+	brand, berr := normalizeBrandColor(req.BrandColor)
+	if berr != nil {
+		return berr
+	}
+	if s.columnReady("clubs", "brand_color") {
+		patch["brand_color"] = orNull(brand)
 	}
 	// Only send the waiver columns once they exist, so an unrun migration leaves
 	// the rest of the edit form working instead of failing the whole save.
@@ -519,6 +533,7 @@ func mapClub(m map[string]any) model.Club {
 		OwnerID:     asStr(m, "owner_id"),
 		Name:        asStr(m, "name"),
 		Address:     asStr(m, "address"),
+		BrandColor:  asStr(m, "brand_color"),
 		City:        asStr(m, "city"),
 		Description: asStr(m, "description"),
 		LogoURL:     asStr(m, "logo_url"),

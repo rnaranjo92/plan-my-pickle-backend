@@ -371,6 +371,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Everything happening across the club's events, in one place. optionalAuth:
 	// members see their club's unlisted events too, visitors see only listed.
 	mux.HandleFunc("GET /clubs/{id}/feed", optionalAuth(s.clubFeed))
+	// QA-only: fill a club with sample events + activity so its pages can be
+	// looked at with something in them.
+	mux.HandleFunc("POST /clubs/{id}/seed-demo", requireAuth(s.seedClubDemo))
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
 	// The club's front door: who's asking to come in, and letting them in.
@@ -4250,6 +4253,23 @@ func (s *Server) orgReportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="organization-report.csv"`)
 	_, _ = w.Write(data)
+}
+
+// seedClubDemo fills a club with sample data. Gated to the QA accounts, like
+// the other seeders: this writes real rows, and an open endpoint that invents
+// events is a way to bloat the database.
+func (s *Server) seedClubDemo(w http.ResponseWriter, r *http.Request) {
+	email := strings.ToLower(strings.TrimSpace(userEmail(r)))
+	if email != "rolando.naranjo0420@gmail.com" && email != "krizhia_roxas29@yahoo.com" {
+		writeErr(w, http.StatusForbidden, errors.New("not allowed"))
+		return
+	}
+	n, err := s.svc.SeedClubDemo(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]int{"events": n})
 }
 
 // clubFeed lists recent activity across a club's events.

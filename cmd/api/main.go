@@ -253,6 +253,18 @@ func main() {
 		}
 	}()
 
+	// Weekly "what's on near you" digest. Hourly tick, but the send is gated to
+	// Thursday morning Pacific and claimed once per day, then claimed again per
+	// PERSON — so a run that dies halfway resumes on the next tick without
+	// emailing anybody twice.
+	go func() {
+		time.Sleep(6 * time.Minute) // stagger away from the other boot jobs
+		for {
+			svc.SendWeeklyDigest()
+			time.Sleep(time.Hour)
+		}
+	}()
+
 	// Poster gallery retention: sweep generated posters older than 30 days and
 	// their storage objects, EXCEPT any still shown as an event/league poster.
 	// Bounded to 200 rows per pass and a no-op once caught up, so hourly is cheap;

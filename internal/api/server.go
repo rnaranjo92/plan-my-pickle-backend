@@ -209,6 +209,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// Today's joke. Public: it's a joke, and gating it behind auth would only
 	// mean the signed-out home screen has a hole where it goes.
 	mux.HandleFunc("GET /joke-of-the-day", s.jokeOfTheDay)
+	// One-click unsubscribe from the weekly digest. PUBLIC and unauthenticated
+	// on purpose: it is clicked from an email client, often on a device that
+	// isn't signed in, and an unsubscribe that asks you to log in first is an
+	// unsubscribe that doesn't work. The signed token is what makes that safe.
+	mux.HandleFunc("GET /digest/unsubscribe", s.digestUnsubscribe)
 	mux.HandleFunc("POST /me/subscribe", requireAuth(s.subscribePremium))
 	// The coach plan is its own product on its own Stripe price — a coach paying
 	// for organizer Premium (or the reverse) is the thing this separation exists
@@ -5937,6 +5942,39 @@ func (s *Server) setComped(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// digestUnsubscribe opts this account out of the weekly digest.
+func (s *Server) digestUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	err := s.svc.DigestUnsubscribe(q.Get("u"), q.Get("t"))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err != nil {
+		// Deliberately vague: a precise error tells someone probing the endpoint
+		// whether an id exists.
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(digestUnsubPage(
+			"That link didn't work",
+			"Use the Unsubscribe link in the most recent email, or reply and we'll take you off.")))
+		return
+	}
+	_, _ = w.Write([]byte(digestUnsubPage(
+		"You're unsubscribed",
+		"You won't get the weekly what's-on email again. Everything else — event confirmations, court calls — is unchanged.")))
+}
+
+// digestUnsubPage is a whole page, not a bare 200: this is opened in a browser
+// by someone who wants to be told it worked.
+func digestUnsubPage(title, body string) string {
+	return `<!doctype html><meta charset="utf-8">` +
+		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
+		`<title>` + title + ` | PlanMyPickle</title>` +
+		`<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;` +
+		`max-width:460px;margin:14vh auto;padding:0 20px;color:#16245C;text-align:center">` +
+		`<h1 style="font-size:22px;margin:0 0 10px">` + title + `</h1>` +
+		`<p style="color:#6b7280;line-height:1.5">` + body + `</p>` +
+		`<p style="margin-top:26px"><a href="https://planmypickle.com" ` +
+		`style="color:#16245C;font-weight:700">planmypickle.com</a></p></div>`
 }
 
 // jokeOfTheDay returns today's joke — the same one the daily push sends.

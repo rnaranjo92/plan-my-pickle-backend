@@ -368,6 +368,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// The club's home view: what's on next, and the VIEWER's own record —
 	// optionalAuth because a signed-out visitor still gets "what's on".
 	mux.HandleFunc("GET /clubs/{id}/home", optionalAuth(s.clubHome))
+	// Everything happening across the club's events, in one place. optionalAuth:
+	// members see their club's unlisted events too, visitors see only listed.
+	mux.HandleFunc("GET /clubs/{id}/feed", optionalAuth(s.clubFeed))
 	mux.HandleFunc("POST /clubs/{id}/join", requireAuth(s.joinClub))
 	mux.HandleFunc("POST /clubs/{id}/leave", requireAuth(s.leaveClub))
 	// The club's front door: who's asking to come in, and letting them in.
@@ -4247,6 +4250,16 @@ func (s *Server) orgReportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="organization-report.csv"`)
 	_, _ = w.Write(data)
+}
+
+// clubFeed lists recent activity across a club's events.
+func (s *Server) clubFeed(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ClubFeed(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 // clubRosterImport bulk-adds members from pasted CSV.

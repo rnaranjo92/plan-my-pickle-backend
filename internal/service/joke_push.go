@@ -25,10 +25,18 @@ func (s *Service) SendJokeOfTheDay() {
 	if !s.claimDailyJob(jokeJobName) {
 		return // already sent today, or the marker table isn't there yet
 	}
-	joke := JokeOfTheDay(jokeDay())
+	// The joke for the day this will LAND on, not the day it is queued.
+	//
+	// OneSignal holds this until 9am in each subscriber's own timezone, but the
+	// day is claimed once per UTC day — so the first tick after 00:00 UTC queues
+	// it at 5pm Pacific, and it arrives the NEXT morning. Choosing on the queue
+	// day meant every push carried the joke the card had already shown all
+	// yesterday: two surfaces, same feature, one day apart.
+	day := jokeDeliveryDay()
+	joke := JokeOfTheDay(day)
 	if joke == "" {
 		log.Printf("joke push: no joke for %s — nothing sent",
-			jokeDay().Format("2006-01-02"))
+			day.Format("2006-01-02"))
 		s.releaseDailyJob(jokeJobName)
 		return
 	}
@@ -47,8 +55,8 @@ func (s *Service) SendJokeOfTheDay() {
 	// A success line, not just a failure one. This job runs unattended once a
 	// day and every one of its exits was previously silent, so "did it go?" had
 	// no answer short of waiting for 9am and asking a human.
-	log.Printf("joke push: queued for 9am local (claimed %s UTC, joke day %s)",
-		time.Now().UTC().Format("2006-01-02"), jokeDay().Format("2006-01-02"))
+	log.Printf("joke push: queued for 9am local (claimed %s UTC, delivers %s)",
+		time.Now().UTC().Format("2006-01-02"), day.Format("2006-01-02"))
 }
 
 // JokeLastRunDay reports the day the joke job last claimed (UTC, "2006-01-02"),
@@ -81,6 +89,26 @@ func jokeDay() time.Time {
 		return time.Now().UTC() // zoneinfo missing — better a joke than none
 	}
 	return time.Now().In(loc)
+}
+
+// jokeDeliveryDay is the day the 9am push will actually arrive on.
+//
+// Before 9am Pacific, today's 9am is still ahead, so it lands today. At or
+// after 9am it has passed and the notification waits for tomorrow's. The
+// scheduled job normally queues at 5pm Pacific, which is the second case.
+//
+// Separate from jokeDay() on purpose: the IMMEDIATE paths (the manual
+// broadcast, the preview) send now and must keep matching the card, which
+// shows the caller's own today.
+func jokeDeliveryDay() time.Time { return deliveryDayFor(jokeDay()) }
+
+// deliveryDayFor is the pure half, so the rule is testable without waiting for
+// 5pm.
+func deliveryDayFor(queuedAt time.Time) time.Time {
+	if queuedAt.Hour() < 9 {
+		return queuedAt
+	}
+	return queuedAt.AddDate(0, 0, 1)
 }
 
 // TodaysJoke is today's joke text, for the owner's manual broadcast.

@@ -350,6 +350,9 @@ func NewServer(svc *service.Service) http.Handler {
 	mux.HandleFunc("POST /orgs", requireAuth(s.createOrg))
 	mux.HandleFunc("GET /orgs/{id}/summary", requireAuth(s.orgSummary))
 	mux.HandleFunc("GET /orgs/{id}/staff", requireAuth(s.orgStaff))
+	// The report a viewer can actually take away — same rollup as the summary,
+	// as a file that survives being forwarded.
+	mux.HandleFunc("GET /orgs/{id}/report.csv", requireAuth(s.orgReportCSV))
 	mux.HandleFunc("POST /orgs/{id}/role", requireAuth(s.setOrgRole))
 	mux.HandleFunc("DELETE /orgs/{id}/members/{userId}", requireAuth(s.removeOrgMember))
 	mux.HandleFunc("POST /clubs/{id}/org", requireAuth(s.attachClubToOrg))
@@ -398,6 +401,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// The same roster as a spreadsheet. A club's committee lives in email, and
 	// a volunteer who will never install this app still gets to help.
 	mux.HandleFunc("GET /clubs/{id}/roster.csv", requireAuth(s.clubRosterCSV))
+	// Bulk-add members from a pasted spreadsheet. Admin-only; matches on email
+	// and phone, never on name, and reports back whoever it couldn't identify.
+	mux.HandleFunc("POST /clubs/{id}/roster/import", requireAuth(s.clubRosterImport))
 
 	// Social graph: search players & follow them.
 	mux.HandleFunc("GET /users/search", requireAuth(s.searchUsers))
@@ -4226,6 +4232,34 @@ func (s *Server) unrecordDuesPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// orgReportCSV downloads the organization rollup as a spreadsheet.
+func (s *Server) orgReportCSV(w http.ResponseWriter, r *http.Request) {
+	data, err := s.svc.OrgReportCSV(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="organization-report.csv"`)
+	_, _ = w.Write(data)
+}
+
+// clubRosterImport bulk-adds members from pasted CSV.
+func (s *Server) clubRosterImport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CSV string `json:"csv"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	out, err := s.svc.ImportClubRoster(r.PathValue("id"), userID(r), req.CSV)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // clubRosterCSV downloads the roster with each member's recent turnout.

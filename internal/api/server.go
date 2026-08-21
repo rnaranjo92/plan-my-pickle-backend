@@ -371,6 +371,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Everything happening across the club's events, in one place. optionalAuth:
 	// members see their club's unlisted events too, visitors see only listed.
 	mux.HandleFunc("GET /clubs/{id}/feed", optionalAuth(s.clubFeed))
+	// The other branches under this club's organization. Empty unless the
+	// caller has a role in that organization.
+	mux.HandleFunc("GET /clubs/{id}/siblings", requireAuth(s.clubSiblings))
 	// QA-only: fill a club with sample events + activity so its pages can be
 	// looked at with something in them.
 	mux.HandleFunc("POST /clubs/{id}/seed-demo", requireAuth(s.seedClubDemo))
@@ -4270,6 +4273,16 @@ func (s *Server) seedClubDemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]int{"events": n})
+}
+
+// clubSiblings lists the other clubs under this club's organization.
+func (s *Server) clubSiblings(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.SiblingClubs(r.PathValue("id"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // clubFeed lists recent activity across a club's events.

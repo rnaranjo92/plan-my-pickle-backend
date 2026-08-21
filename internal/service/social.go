@@ -479,7 +479,8 @@ var cardPatterns = map[string]bool{
 //
 // Each field is applied only when its column exists, so a partial migration
 // stores what it can rather than failing the whole tap.
-func (s *Service) SetCardStyle(userID string, theme, font, pattern *string) error {
+func (s *Service) SetCardStyle(
+	userID string, theme, font, pattern, clubWatermark *string) error {
 	if strings.TrimSpace(userID) == "" {
 		return ErrForbidden
 	}
@@ -511,9 +512,27 @@ func (s *Service) SetCardStyle(userID string, theme, font, pattern *string) erro
 			row["card_pattern"] = p
 		}
 	}
+	// The club watermark: a club id, or "" for none.
+	//
+	// A card is the PLAYER'S. Wearing a club's mark is opt-in and can only be
+	// a club they actually belong to — otherwise anyone could stamp any
+	// organisation's logo on their own identity, which is somebody else's
+	// branding on somebody else's card.
+	if clubWatermark != nil {
+		id := strings.TrimSpace(*clubWatermark)
+		// isClubMember (club_dues.go) covers the owner too: they're inserted as
+		// a member row at creation.
+		if id != "" && !s.isClubMember(id, userID) {
+			return errors.New("you can only show a club you belong to")
+		}
+		if s.columnReady("pmp_profiles", "card_club_watermark") {
+			row["card_club_watermark"] = id
+		}
+	}
 	if len(row) == 1 {
 		return nil // nothing storable — a pre-migration database
 	}
 	_, err := s.sb.Upsert("pmp_profiles", "user_id", row)
 	return err
 }
+

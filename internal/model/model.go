@@ -2693,6 +2693,14 @@ type Profile struct {
 	// CardFont / CardPattern are the other two axes of the card's look.
 	CardFont    string `json:"cardFont,omitempty"`
 	CardPattern string `json:"cardPattern,omitempty"`
+	// CardClubWatermark is the club whose logo sits faintly behind this
+	// player's ID card, or "" for none. OPT-IN, always: a card is the player's,
+	// and stamping an organisation on it unasked is somebody else's branding on
+	// somebody else's identity.
+	CardClubWatermark string `json:"cardClubWatermark,omitempty"`
+	// CardClubWatermarkURL is that club's logo, resolved here so the card can
+	// paint itself without a second round trip.
+	CardClubWatermarkURL string `json:"cardClubWatermarkUrl,omitempty"`
 	// ClubManagerMode: this account navigates as a club manager (the app swaps
 	// its two player tabs for a Manage tab). Stored on the ACCOUNT, not the
 	// device — a club owner who signs out, or picks up a second phone, should

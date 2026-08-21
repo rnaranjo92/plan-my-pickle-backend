@@ -11332,6 +11332,29 @@ func (s *Service) MyProfile(userID, email, metaName string) model.Profile {
 			p.CardPattern = asStr(pr, "card_pattern")
 		}
 	}
+	// The card's club watermark, and the logo it points at. Guarded read: the
+	// column postdates most installs.
+	if s.columnReady("pmp_profiles", "card_club_watermark") {
+		if pr, err := s.sb.SelectOne("pmp_profiles",
+			"user_id=eq."+store.Q(userID)+
+				"&select=card_club_watermark"); err == nil && pr != nil {
+			p.CardClubWatermark = strings.TrimSpace(asStr(pr, "card_club_watermark"))
+		}
+	}
+	if p.CardClubWatermark != "" {
+		// Resolved from the club rather than stored on the profile: a club that
+		// changes its logo must change every card wearing it, and a copy taken
+		// at opt-in time would freeze the old one forever.
+		if c, err := s.sb.SelectOne("clubs",
+			"id=eq."+store.Q(p.CardClubWatermark)+
+				"&select=logo_url"); err == nil && c != nil {
+			p.CardClubWatermarkURL = asStr(c, "logo_url")
+		} else {
+			// The club was deleted out from under the card. Report no
+			// watermark rather than a broken image.
+			p.CardClubWatermark = ""
+		}
+	}
 	// Club manager mode, guarded the same way — the column postdates most
 	// installs, and folding it into a shared select would blank everything in
 	// that select on a database that hasn't run the migration.

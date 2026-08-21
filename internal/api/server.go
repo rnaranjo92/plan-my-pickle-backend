@@ -1155,12 +1155,15 @@ func (s *Server) saveCardTheme(w http.ResponseWriter, r *http.Request) {
 		Theme   *string `json:"theme"`
 		Font    *string `json:"font"`
 		Pattern *string `json:"pattern"`
+		// ClubWatermark is a club id, or "" to take the mark off. A pointer for
+		// the same reason as the rest: "" is a real choice here, not an omission.
+		ClubWatermark *string `json:"clubWatermark"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	if err := s.svc.SetCardStyle(
-		userID(r), req.Theme, req.Font, req.Pattern); err != nil {
+		userID(r), req.Theme, req.Font, req.Pattern, req.ClubWatermark); err != nil {
 		status(w, err)
 		return
 	}

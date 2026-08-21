@@ -2267,7 +2267,10 @@ type ImportDuprRequest struct {
 type Club struct {
 	ID          string `json:"id"`
 	OwnerID     string `json:"ownerId"`
-	Name        string `json:"name"`
+	Name string `json:"name"`
+	// Address is the street address a member can navigate to. City is kept
+	// separately and stays a CITY — it slugs the public directory pages.
+	Address     string `json:"address,omitempty"`
 	City        string `json:"city,omitempty"`
 	Description string `json:"description,omitempty"`
 	LogoURL     string `json:"logoUrl,omitempty"`
@@ -2302,7 +2305,11 @@ type Club struct {
 
 // CreateClubRequest is the create/edit payload for a club.
 type CreateClubRequest struct {
-	Name           string `json:"name"`
+	Name string `json:"name"`
+	// Address is the club's street address. City is DERIVED from it when the
+	// caller doesn't send one — the city column still slugs the public
+	// directory pages, so it has to stay a city.
+	Address        string `json:"address"`
 	City           string `json:"city"`
 	Description    string `json:"description"`
 	DuprClubID     string `json:"duprClubId"`

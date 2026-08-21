@@ -18,13 +18,20 @@ func (s *Service) CreateClub(ownerID string, req model.CreateClubRequest) (model
 	if name == "" {
 		return model.Club{}, errors.New("club name is required")
 	}
-	rows, err := s.sb.Insert("clubs", map[string]any{
+	addr := strings.TrimSpace(req.Address)
+	row := map[string]any{
 		"owner_id":     ownerID,
 		"name":         name,
-		"city":         orNull(strings.TrimSpace(req.City)),
+		"city":         orNull(clubCityFor(req.City, addr)),
 		"description":  orNull(strings.TrimSpace(req.Description)),
 		"dupr_club_id": orNull(strings.TrimSpace(req.DuprClubID)),
-	})
+	}
+	// Guarded, so a database that hasn't run add_club_address.sql still creates
+	// clubs instead of failing every save.
+	if s.columnReady("clubs", "address") {
+		row["address"] = orNull(addr)
+	}
+	rows, err := s.sb.Insert("clubs", row)
 	if err != nil {
 		return model.Club{}, err
 	}
@@ -50,11 +57,15 @@ func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubReques
 	if name == "" {
 		return errors.New("club name is required")
 	}
+	addr := strings.TrimSpace(req.Address)
 	patch := map[string]any{
 		"name":         name,
-		"city":         orNull(strings.TrimSpace(req.City)),
+		"city":         orNull(clubCityFor(req.City, addr)),
 		"description":  orNull(strings.TrimSpace(req.Description)),
 		"dupr_club_id": orNull(strings.TrimSpace(req.DuprClubID)),
+	}
+	if s.columnReady("clubs", "address") {
+		patch["address"] = orNull(addr)
 	}
 	// Only send the waiver columns once they exist, so an unrun migration leaves
 	// the rest of the edit form working instead of failing the whole save.
@@ -507,6 +518,7 @@ func mapClub(m map[string]any) model.Club {
 		ID:          asStr(m, "id"),
 		OwnerID:     asStr(m, "owner_id"),
 		Name:        asStr(m, "name"),
+		Address:     asStr(m, "address"),
 		City:        asStr(m, "city"),
 		Description: asStr(m, "description"),
 		LogoURL:     asStr(m, "logo_url"),

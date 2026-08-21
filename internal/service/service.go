@@ -10696,7 +10696,15 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		}
 	}
 	out := make([]model.FeedItem, 0, len(rows))
-	itemIDs := make([]string, 0, len(rows))
+	// One row is one card, however many paths reach it.
+	//
+	// The same feed_items row arrives here from several directions: an event you
+	// play in whose organizer you also FOLLOW hits both this block and the follow
+	// graph, and a followee's event card hits the follow graph twice (once by
+	// author, once by event). Each append was blind to the others, so the card
+	// rendered twice in the same feed. Seeded here and honoured by every append
+	// below — keyed on row id, because these are literally the same row.
+	added := map[string]bool{}
 	for _, r := range rows {
 		fi := mapFeedItem(r)
 		// Keep obviously-QA/test events (Demo/Test/dbg…) out of the NewsFeed — even
@@ -10705,11 +10713,14 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 		if publicFeedTestName.MatchString(names[fi.EventID]) {
 			continue
 		}
+		if added[fi.ID] {
+			continue
+		}
+		added[fi.ID] = true
 		fi.ReactionCounts = map[string]int{}
 		fi.MyReactions = []string{}
 		fi.EventName = names[fi.EventID]
 		out = append(out, fi)
-		itemIDs = append(itemIDs, fi.ID)
 	}
 	// Activity from people I follow: their community posts and the latest items
 	// from events they play in — the "wall" half of the NewsFeed (top 10 each,
@@ -10734,6 +10745,12 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 						continue
 					}
 				}
+				// Already shown because it's MY event — following its organizer
+				// must not print the same card a second time.
+				if added[fi.ID] {
+					continue
+				}
+				added[fi.ID] = true
 				fi.ReactionCounts = map[string]int{}
 				fi.MyReactions = []string{}
 				out = append(out, fi)
@@ -10787,6 +10804,12 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 							"&type=eq.event&select=*&order=created_at.desc&limit=10"); err == nil {
 						for _, r := range frows {
 							fi := mapFeedItem(r)
+							// A followee's own event card reaches this block by
+							// event AND the block above by author.
+							if added[fi.ID] {
+								continue
+							}
+							added[fi.ID] = true
 							fi.ReactionCounts = map[string]int{}
 							fi.MyReactions = []string{}
 							fi.EventName = names[fi.EventID]
@@ -10799,18 +10822,17 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	}
 	// My own community posts (standalone user posts, no event). County-scoped
 	// visibility to OTHERS lands in a later phase; the author always sees theirs.
-	seen := map[string]bool{}
-	for _, id := range itemIDs {
-		seen[id] = true
-	}
+	// (This block used to keep its own `seen` map, seeded from block 1 only —
+	// which is why it was the one path that never doubled up. `added` is that
+	// map, extended to cover every append.)
 	if crows, err := s.sb.Select("feed_items",
 		"author_id=eq."+store.Q(userID)+"&select=*&order=created_at.desc&limit=60"); err == nil {
 		for _, r := range crows {
 			fi := mapFeedItem(r)
-			if seen[fi.ID] {
+			if added[fi.ID] {
 				continue
 			}
-			seen[fi.ID] = true
+			added[fi.ID] = true
 			fi.ReactionCounts = map[string]int{}
 			fi.MyReactions = []string{}
 			out = append(out, fi)

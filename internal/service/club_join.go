@@ -53,7 +53,7 @@ func (s *Service) hasJoinRequest(clubID, userID string) map[string]any {
 // say which happened instead of guessing. Idempotent in both directions —
 // asking twice is a double tap, not a second person in the queue.
 func (s *Service) RequestJoinClub(clubID, userID string) (bool, error) {
-	row, err := s.sb.SelectOne("clubs", "id=eq."+store.Q(clubID)+"&select=id,name")
+	row, err := s.sb.SelectOne("clubs", "id=eq."+store.Q(clubID)+"&select=*")
 	if err != nil {
 		return false, err
 	}
@@ -64,18 +64,39 @@ func (s *Service) RequestJoinClub(clubID, userID string) (bool, error) {
 	if s.isClubMember(clubID, userID) {
 		return true, nil
 	}
-	// No queue yet (migration not run) — behave exactly as before.
-	if !s.joinQueueReady() {
-		return true, s.JoinClub(clubID, userID)
-	}
+	queue := s.joinQueueReady()
 	// Invited by the club: admitted on accepting.
-	if req := s.hasJoinRequest(clubID, userID); req != nil && asBool(req, "invited") {
-		if err := s.JoinClub(clubID, userID); err != nil {
-			return false, err
+	//
+	// FIRST, and that order is the point: a private club still invites people,
+	// and an invitation the invitee cannot accept is not an invitation. Private
+	// governs who may ASK, never who the club has already chosen.
+	if queue {
+		if req := s.hasJoinRequest(clubID, userID); req != nil &&
+			asBool(req, "invited") {
+			if err := s.JoinClub(clubID, userID); err != nil {
+				return false, err
+			}
+			_ = s.sb.Delete("club_join_requests",
+				"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID))
+			return true, nil
 		}
-		_ = s.sb.Delete("club_join_requests",
-			"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(userID))
-		return true, nil
+	}
+	// Private: members come by invitation only, and nobody else gets in.
+	//
+	// Enforced HERE rather than by hiding the button, because a button is not a
+	// control — anyone can post to this endpoint with a club id.
+	//
+	// ABOVE the no-queue fallback below, not under it. Privacy must not depend
+	// on whether add_club_join_requests.sql has run: with the gate underneath,
+	// a database without the queue auto-admitted every stranger to a private
+	// club. Without a queue there are no invitations either, so a private club
+	// simply takes nobody — which is the safe end of that trade.
+	if !asBoolDefaultTrue(row, "is_public") {
+		return false, ErrForbidden
+	}
+	// No queue yet (migration not run) — behave exactly as before.
+	if !queue {
+		return true, s.JoinClub(clubID, userID)
 	}
 	// Was there already a pending request? If so this is a repeat tap — upsert
 	// it (idempotent) but do NOT re-notify the admins, or a script looping the

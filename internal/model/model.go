@@ -2285,6 +2285,13 @@ type Club struct {
 	// does is stop a player finding out at the net.
 	RequiresWaiver bool   `json:"requiresWaiver,omitempty"`
 	WaiverURL      string `json:"waiverUrl,omitempty"`
+	// IsPublic: anyone can find this club and ask to join it. A private club
+	// takes members by invitation only and stays out of the directory, the city
+	// hubs and the sitemap — while still opening on a DIRECT link, because that
+	// is exactly what an invitation is. NOT omitempty: false is the interesting
+	// value, and dropping it would read as "absent" to a client that treats a
+	// missing flag as public.
+	IsPublic bool `json:"isPublic"`
 	// Per-view aggregates + caller flags (set when fetched for a specific user).
 	MemberCount int  `json:"memberCount"`
 	EventCount  int  `json:"eventCount"`
@@ -2319,6 +2326,11 @@ type CreateClubRequest struct {
 	DuprClubID     string `json:"duprClubId"`
 	RequiresWaiver bool   `json:"requiresWaiver"`
 	WaiverURL      string `json:"waiverUrl"`
+	// IsPublic is a POINTER so "not sent" differs from "sent as false".
+	// Every client already in the wild omits it, and treating that silence as
+	// false would turn a club private the first time somebody edited its name.
+	// nil = leave as it is (public, for anything created before the flag).
+	IsPublic *bool `json:"isPublic"`
 }
 
 // ClubStanding is one player's cumulative record ACROSS all of a club's events

@@ -38,6 +38,11 @@ func (s *Service) CreateClub(ownerID string, req model.CreateClubRequest) (model
 	if s.columnReady("clubs", "brand_color") {
 		row["brand_color"] = orNull(brand)
 	}
+	// Public unless the caller said otherwise. A club nobody can find or ask to
+	// join is a deliberate choice, not somewhere to land by default.
+	if s.columnReady("clubs", "is_public") {
+		row["is_public"] = req.IsPublic == nil || *req.IsPublic
+	}
 	rows, err := s.sb.Insert("clubs", row)
 	if err != nil {
 		return model.Club{}, err
@@ -86,6 +91,13 @@ func (s *Service) UpdateClub(clubID, callerID string, req model.CreateClubReques
 	if s.clubWaiverReady() {
 		patch["requires_waiver"] = req.RequiresWaiver
 		patch["waiver_url"] = orNull(normalizeWaiverURL(req.WaiverURL))
+	}
+	// Only touched when the caller actually sent it. The field is a POINTER for
+	// this reason: every client shipped before the flag existed omits it, and
+	// reading that silence as false would flip a club private the first time
+	// somebody edited its name from an older build.
+	if req.IsPublic != nil && s.columnReady("clubs", "is_public") {
+		patch["is_public"] = *req.IsPublic
 	}
 	_, err := s.sb.Update("clubs", "id=eq."+store.Q(clubID), patch)
 	return err
@@ -570,6 +582,10 @@ func mapClub(m map[string]any) model.Club {
 		// the check existed can't render a hostile href.
 		RequiresWaiver: asBool(m, "requires_waiver"),
 		WaiverURL:      normalizeWaiverURL(asStr(m, "waiver_url")),
+		// Default TRUE when the column isn't there yet: every club predates the
+		// flag and was public. A plain asBool would have deployed "every club is
+		// private" to production for as long as the migration went unrun.
+		IsPublic: asBoolDefaultTrue(m, "is_public"),
 	}
 }
 

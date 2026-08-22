@@ -47,9 +47,16 @@ func (s *Service) PublicClubs(limit int) ([]PublicClub, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
+	// A PRIVATE club is not in the directory or the sitemap. Guarded, because
+	// naming a column that hasn't been migrated in fails the whole select and
+	// would take every club's public page down with it.
+	privacy := ""
+	if s.columnReady("clubs", "is_public") {
+		privacy = "&is_public=is.true"
+	}
 	rows, err := s.sb.Select("clubs",
-		"select=id,name,city,description,logo_url&order=created_at.desc&limit="+
-			strconv.Itoa(limit))
+		"select=id,name,city,description,logo_url"+privacy+
+			"&order=created_at.desc&limit="+strconv.Itoa(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +134,9 @@ func (s *Service) PublicClubByID(
 	if s.clubWaiverReady() {
 		cols += ",requires_waiver"
 	}
+	if s.columnReady("clubs", "is_public") {
+		cols += ",is_public"
+	}
 	row, err := s.sb.SelectOne("clubs",
 		"id=eq."+store.Q(clubID)+"&select="+cols)
 	if err != nil {
@@ -137,6 +147,15 @@ func (s *Service) PublicClubByID(
 	}
 	name := strings.TrimSpace(asStr(row, "name"))
 	if name == "" || isDemoClubName(name) {
+		return PublicClub{}, nil, nil, ClubActivity{}, ErrNotFound
+	}
+	// A private club has NO crawlable page. This is the SSR/no-login view — the
+	// one search engines index — so 404 is the honest answer.
+	//
+	// The club is still reachable in the APP by direct link (GET /clubs/{id}),
+	// which is what makes an invitation work: the invitee opens the club, and
+	// the invite admits them. Private governs publication, not access.
+	if !asBoolDefaultTrue(row, "is_public") {
 		return PublicClub{}, nil, nil, ClubActivity{}, ErrNotFound
 	}
 	club := PublicClub{

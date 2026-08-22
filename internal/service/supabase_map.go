@@ -54,6 +54,21 @@ func asBool(m map[string]any, k string) bool {
 	return b
 }
 
+// asBoolDefaultTrue reads a boolean whose ABSENCE means true.
+//
+// For a flag added later as `default true`, a plain asBool is a trap: a row
+// read before the migration has run carries no such key, so it reads false and
+// the code applies the exact opposite of the column's default to every existing
+// row. Telling "missing" apart from "present and false" is the whole job.
+func asBoolDefaultTrue(m map[string]any, k string) bool {
+	v, ok := m[k]
+	if !ok || v == nil {
+		return true
+	}
+	b, isBool := v.(bool)
+	return !isBool || b
+}
+
 func asFloatPtr(m map[string]any, k string) *float64 {
 	switch v := m[k].(type) {
 	case float64:

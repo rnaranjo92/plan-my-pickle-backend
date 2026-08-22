@@ -8,6 +8,7 @@ import (
 	"html"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,8 +27,6 @@ import (
 // produces no email at all. "There's nothing near you" is a worse message than
 // silence: it teaches people the email is safe to ignore, and the one week
 // there IS something they won't open it.
-
-const digestJobName = "weekly_digest"
 
 // digestDay is when it goes out. Thursday: far enough ahead of a weekend to
 // plan around, late enough in the week that the weekend's events are firm.
@@ -52,15 +51,21 @@ func (s *Service) SendWeeklyDigest() {
 	if now.Weekday() != digestDay || now.Hour() < 8 {
 		return
 	}
-	// One claim per day stops two Railway containers both starting a run. The
-	// per-person stamp below is what makes a re-run safe.
-	if !s.claimDailyJob(digestJobName) {
-		return
-	}
+	// NO day-level claim, deliberately.
+	//
+	// The first version took one, which quietly capped the whole feature at
+	// digestBatch people: the batch is per RUN and the day-claim stopped every
+	// later run that Thursday, so recipient 201 would have waited a week. The
+	// comment said the job "picks up where it left off" and the code made that
+	// impossible.
+	//
+	// The PER-PERSON claim below is already the concurrency guard — it is a
+	// conditional update, so two containers racing on the same person means one
+	// wins and one moves on. That is all the day-claim was buying, and it was
+	// charging a batch limit for it.
 	ready, err := s.columnReadyErr("pmp_profiles", "digest_sent_on")
 	if err != nil || !ready {
 		log.Printf("weekly digest: skipped — run add_weekly_digest.sql")
-		s.releaseDailyJob(digestJobName)
 		return
 	}
 
@@ -82,6 +87,10 @@ func (s *Service) SendWeeklyDigest() {
 			continue
 		}
 		sent++
+		// Stay well under Resend's default rate limit (~2 req/s), the same pace
+		// the schedule blast uses. This is a background job, so the wall-clock
+		// costs nobody anything — where a burst of 429s costs the whole batch.
+		time.Sleep(400 * time.Millisecond)
 	}
 	log.Printf("weekly digest: %d sent, %d had nothing near them", sent, skipped)
 }
@@ -93,10 +102,19 @@ type digestRecip struct {
 // digestRecipients finds people who can be emailed and haven't been this week.
 func (s *Service) digestRecipients() []digestRecip {
 	cutoff := time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02")
+	// NOT filtered on county.
+	//
+	// It was, and that was close to fatal: pmp_profiles.county went years with
+	// nothing writing it, which is exactly why userHomeCounty grew a fallback to
+	// the events somebody owns or plays in. Requiring a stored county here threw
+	// that fallback away and left the digest reaching almost nobody — the same
+	// null column that made every county-scoped feature look broken.
+	//
+	// So resolve per person below and skip the ones we genuinely can't place.
 	rows, err := s.sb.Select("pmp_profiles",
-		"digest_opt_out=is.false&county=not.is.null"+
+		"digest_opt_out=is.false"+
 			"&or=(digest_sent_on.is.null,digest_sent_on.lt."+cutoff+")"+
-			"&select=user_id,full_name,county,state&limit="+itoaDigest(digestBatch))
+			"&select=user_id,full_name,county,state&limit="+strconv.Itoa(digestBatch))
 	if err != nil {
 		log.Printf("weekly digest: could not list recipients: %v", err)
 		return nil
@@ -112,8 +130,20 @@ func (s *Service) digestRecipients() []digestRecip {
 		if email == "" {
 			continue
 		}
+		// Blank counts as unset, the same rule userHomeCounty uses — an empty
+		// string is what an empty form submit leaves behind, and treating it as
+		// an answer would head the email "near ," and pull events from a county
+		// it never names.
 		place := strings.TrimSpace(asStr(r, "county"))
-		if st := strings.TrimSpace(asStr(r, "state")); st != "" && place != "" {
+		st := strings.TrimSpace(asStr(r, "state"))
+		if place == "" {
+			place, st = s.userHomeCounty(uid) // the fallback: where they play
+			place = strings.TrimSpace(place)
+		}
+		if place == "" {
+			continue // genuinely can't place them — not a recipient
+		}
+		if st != "" {
 			place = place + ", " + st
 		}
 		out = append(out, digestRecip{
@@ -283,4 +313,3 @@ func (s *Service) DigestUnsubscribe(userID, token string) error {
 	return err
 }
 
-func itoaDigest(n int) string { return fmt.Sprintf("%d", n) }

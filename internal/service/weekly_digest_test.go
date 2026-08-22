@@ -64,3 +64,41 @@ func TestDigestEmailAlwaysCarriesAnUnsubscribeLink(t *testing.T) {
 		t.Fatalf("subject doesn't say what's inside: %q", subject)
 	}
 }
+
+// THE BUG THAT WOULD HAVE REACHED NOBODY.
+//
+// The recipient query used to require a stored county. pmp_profiles.county went
+// years with nothing writing it -- which is the whole reason userHomeCounty has
+// a fallback to the events somebody owns or plays in -- so that filter threw the
+// fallback away and left the digest with almost no recipients.
+//
+// The fake ignores query filters, so this asserts the RESOLUTION: a profile with
+// a blank county still gets placed, from an event they own.
+func TestDigestRecipientsFallBackToWhereTheyPlay(t *testing.T) {
+	f := newFake().
+		seed("pmp_profiles", `[{"user_id":"u1","full_name":"Kim Naranjo","county":"","state":""}]`).
+		seed("players", `[{"user_id":"u1","email":"kim@example.com"}]`).
+		seed("events", `[{"county":"San Diego","state":"CA","owner_id":"u1"}]`)
+	s := newFakeSvc(t, f)
+	got := s.digestRecipients()
+	if len(got) != 1 {
+		t.Fatalf("a blank county should fall back, not disqualify; got %d", len(got))
+	}
+	if got[0].place != "San Diego, CA" {
+		t.Fatalf("place not resolved from their events: %q", got[0].place)
+	}
+}
+
+// Somebody we genuinely cannot place is not a recipient -- better no email than
+// one headed "near ," listing events from a county it never names.
+func TestDigestRecipientsSkipAnyoneUnplaceable(t *testing.T) {
+	f := newFake().
+		seed("pmp_profiles", `[{"user_id":"u1","full_name":"Nobody","county":"","state":""}]`).
+		seed("players", `[{"user_id":"u1","email":"n@example.com"}]`).
+		seed("events", `[]`).
+		seed("registrations", `[]`)
+	s := newFakeSvc(t, f)
+	if got := s.digestRecipients(); len(got) != 0 {
+		t.Fatalf("an unplaceable person became a recipient: %+v", got)
+	}
+}

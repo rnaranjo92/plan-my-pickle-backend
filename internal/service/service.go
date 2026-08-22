@@ -10845,6 +10845,32 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 			out = append(out, fi)
 		}
 	}
+	// ONE EVENT, ONE CARD — however many rows the table holds for it.
+	//
+	// `added` above is keyed on ROW id. That is right for the same row arriving
+	// by several paths, and blind to two DIFFERENT rows describing the same
+	// event. ensureEventPosts is a read-then-insert with nothing unique
+	// underneath it, so two feed loads racing each other (the app opening and
+	// refreshing) can both find no card and both write one. It runs only for
+	// events you OWN, which is exactly who was seeing the double: the organizer
+	// saw two identical cards, everyone else saw one.
+	//
+	// Keep the OLDEST. It is the original, and reactions and comments point at
+	// its id — collapsing onto the newer row would show the card with its
+	// conversation missing. Ties break on id so the choice is stable between
+	// requests (a batch insert can stamp identical timestamps).
+	type cardPick struct{ id, at string }
+	keepCard := map[string]cardPick{}
+	for _, fi := range out {
+		if fi.Type != "event" || fi.EventID == "" {
+			continue
+		}
+		cur, ok := keepCard[fi.EventID]
+		if !ok || fi.CreatedAt < cur.at ||
+			(fi.CreatedAt == cur.at && fi.ID < cur.id) {
+			keepCard[fi.EventID] = cardPick{fi.ID, fi.CreatedAt}
+		}
+	}
 	// Final guarantee: drop any QA/test/demo event post no matter which append
 	// path added it (own, followed, or own-authored). Block 1 filters early for
 	// efficiency; this is the single chokepoint so nothing test-named slips out.
@@ -10852,6 +10878,11 @@ func (s *Service) MyFeed(userID string) ([]model.FeedItem, error) {
 	for _, fi := range out {
 		if isTestFeedItem(fi, names) {
 			continue
+		}
+		if fi.Type == "event" && fi.EventID != "" {
+			if k, ok := keepCard[fi.EventID]; ok && k.id != fi.ID {
+				continue // a duplicate card for an event already shown
+			}
 		}
 		// Refresh the card image from the event's CURRENT poster (the meta copy is
 		// snapshotted at post-creation and goes stale when the organizer adds/swaps

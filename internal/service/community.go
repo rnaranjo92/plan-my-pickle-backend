@@ -247,7 +247,17 @@ func (s *Service) ensureEventPosts(eventIDs []string) {
 		})
 	}
 	if len(batch) > 0 {
-		_, _ = s.sb.Insert("feed_items", batch)
+		if _, err := s.sb.Insert("feed_items", batch); err != nil && len(batch) > 1 {
+			// One row can sink the whole statement — a unique index on the
+			// event card (see migrations/dedupe_event_feed_cards.sql) turns the
+			// race this function has always had into a rejected insert, and a
+			// batch rejected wholesale means every OTHER event in it silently
+			// goes without a card. Retry one at a time so a single loser costs
+			// only itself.
+			for _, row := range batch {
+				_, _ = s.sb.Insert("feed_items", []map[string]any{row})
+			}
+		}
 	}
 }
 

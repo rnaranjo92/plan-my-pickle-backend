@@ -2633,18 +2633,13 @@ func (s *Service) notifyRotationRound(sessionID string, courts []engine.RotCourt
 		_ = s.sendPush(benchUids, "PlanMyPickle 🎾",
 			fmt.Sprintf("Round %d — you're resting this round. You rotate back in next.", round), "")
 	}
-	// Organizer summary (the session owner).
-	if owner, _ := s.OwnerOfRotationSession(sessionID); owner != "" {
-		word := "courts"
-		if len(courts) == 1 {
-			word = "court"
-		}
-		msg := fmt.Sprintf("Round %d started — %d %s playing", round, len(courts), word)
-		if len(bench) > 0 {
-			msg += fmt.Sprintf(", %d resting", len(bench))
-		}
-		_ = s.sendPush([]string{owner}, "Rotation session", msg, "")
-	}
+	// NO organizer summary at round start.
+	//
+	// The organizer is the person who just tapped Start, holding the board that
+	// already lists every court — a buzz reciting what is on the screen in their
+	// hand is noise, and it arrived every single round of the night. The message
+	// they actually want is the opposite one: the round has run PAST its time
+	// and nothing has moved. That is notifyRotationOvertime, fired by the sweep.
 }
 
 // --- mapping helpers --------------------------------------------------------

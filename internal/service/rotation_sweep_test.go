@@ -104,3 +104,38 @@ func TestRotationSessionAbandoned(t *testing.T) {
 		})
 	}
 }
+
+// The overtime alert exists because the round-start push was removed: the
+// organizer is told when the night has STOPPED, not when it starts. These two
+// properties are what keep it from becoming the noise it replaced.
+func TestRotationOvertimeFiresAfterTheAdvanceSweep(t *testing.T) {
+	// A session that auto-advances normally moves its deadline at the sweep
+	// grace, so it must never live long enough to reach the overtime mark.
+	// If this ever inverts, every working session buzzes its organizer.
+	if rotationOvertimeAfter <= rotationSweepGrace {
+		t.Fatalf("overtime (%v) must be longer than the sweep grace (%v), or a "+
+			"session the server is about to advance gets alerted first",
+			rotationOvertimeAfter, rotationSweepGrace)
+	}
+}
+
+func TestOvertimeNoticeIsSentOncePerRound(t *testing.T) {
+	s := &Service{}
+	k := overtimeKey{"sess-1", 3}
+	if !s.claimOvertimeNotice(k) {
+		t.Fatal("first pass should send the alert")
+	}
+	// The sweep ticks every 30s; without this the organizer is buzzed twice a
+	// minute for as long as the round stays stuck.
+	if s.claimOvertimeNotice(k) {
+		t.Error("second pass on the same round should stay silent")
+	}
+	// A later round of the same session is a new event and must alert again.
+	if !s.claimOvertimeNotice(overtimeKey{"sess-1", 4}) {
+		t.Error("the next round should be able to alert")
+	}
+	// And the superseded round's mark is dropped rather than accumulating.
+	if s.overtimeNotified[k] {
+		t.Error("the earlier round's mark should have been cleaned up")
+	}
+}

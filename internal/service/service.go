@@ -84,6 +84,13 @@ type Service struct {
 	announceMu       sync.Mutex
 	lastClubAnnounce map[string]time.Time
 
+	// overtimeNotified is the (session, round) pairs whose organizer has already
+	// been told the round ran over — the sweep ticks every 30s and must not
+	// repeat itself. In memory for the same reason as lastClubAnnounce: a
+	// repeated nudge after a deploy is cheap, a migration is not.
+	overtimeMu       sync.Mutex
+	overtimeNotified map[overtimeKey]bool
+
 	colProbeMu  sync.Mutex
 	colProbe    map[string]bool
 	colProbeNeg map[string]time.Time

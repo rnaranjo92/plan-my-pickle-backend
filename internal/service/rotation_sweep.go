@@ -2,7 +2,9 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"os"
 	"time"
 )
 
@@ -89,6 +91,95 @@ func rotationSweepFilter(cutoff string) string {
 	return "status=eq.live&auto_advance=is.true" +
 		"&round_ends_at=lt." + cutoff +
 		"&select=id,current_round,round_ends_at&limit=200"
+}
+
+// --- overtime: telling the organizer when a round is stuck -------------------
+
+// rotationOvertimeAfter is how far past its deadline a round runs before the
+// organizer is told about it.
+//
+// Deliberately LONGER than rotationSweepGrace. An auto-advance session that is
+// working advances at the grace mark and moves its deadline, so it never
+// reaches this and nobody is buzzed — the alert only fires when the round is
+// genuinely stuck: auto-advance is off and the organizer's device didn't
+// advance, or the sweep tried and was blocked by a tied court. Both are cases
+// where the night has stopped and only a person can restart it.
+//
+// This replaced a push at every round START, which told the organizer what was
+// already on the screen in their hand.
+const rotationOvertimeAfter = rotationSweepGrace + 45*time.Second
+
+// overtimeNotified remembers which (session, round) pairs have been buzzed, so
+// a 30-second ticker doesn't repeat the same alert until the round moves.
+//
+// In memory on purpose: this is a nudge, not a record. A restart at worst
+// repeats one push, where a table would mean a migration to run before the fix
+// did anything.
+type overtimeKey struct {
+	sessionID string
+	round     int
+}
+
+// NotifyOverdueRotationRounds tells organizers about rounds that have run over.
+//
+// Runs on the same tick as the advance sweep and deliberately changes nothing:
+// it never advances, never writes to the session. Paused sessions are excluded
+// — a paused night is over-running on purpose.
+func (s *Service) NotifyOverdueRotationRounds() error {
+	if os.Getenv("ONESIGNAL_REST_API_KEY") == "" {
+		return nil // push not configured → don't even query
+	}
+	cutoff := time.Now().UTC().Add(-rotationOvertimeAfter).Format(time.RFC3339)
+	rows, err := s.sb.Select("rotation_sessions",
+		"status=eq.live&round_ends_at=lt."+cutoff+
+			"&select=id,name,current_round&limit=200")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		id, round := asStr(r, "id"), asInt(r, "current_round")
+		if id == "" || round < 1 {
+			continue
+		}
+		if !s.claimOvertimeNotice(overtimeKey{id, round}) {
+			continue // already told them about this round
+		}
+		owner, _ := s.OwnerOfRotationSession(id)
+		if owner == "" {
+			continue
+		}
+		name := asStr(r, "name")
+		if name == "" {
+			name = "Rotation session"
+		}
+		_ = s.sendPush([]string{owner}, name,
+			fmt.Sprintf("Round %d has run past its time — the board is waiting.",
+				round), "")
+	}
+	return nil
+}
+
+// claimOvertimeNotice reports whether THIS pass should send the alert, marking
+// it sent. One buzz per round: the caller runs every 30 seconds.
+//
+// Also drops the marks for earlier rounds of the same session as it goes, so a
+// long-running server doesn't accumulate a key per round of every night played.
+func (s *Service) claimOvertimeNotice(k overtimeKey) bool {
+	s.overtimeMu.Lock()
+	defer s.overtimeMu.Unlock()
+	if s.overtimeNotified == nil {
+		s.overtimeNotified = map[overtimeKey]bool{}
+	}
+	if s.overtimeNotified[k] {
+		return false
+	}
+	for prev := range s.overtimeNotified {
+		if prev.sessionID == k.sessionID && prev.round < k.round {
+			delete(s.overtimeNotified, prev)
+		}
+	}
+	s.overtimeNotified[k] = true
+	return true
 }
 
 // rotationAbandonedAfter is how long past its last round deadline a session has

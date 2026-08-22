@@ -198,6 +198,13 @@ func main() {
 			if err := svc.SweepOverdueRotationRounds(); err != nil {
 				log.Printf("rotation sweep: pass failed: %v", err)
 			}
+			// And tell the organizer about a round that has run over and is
+			// NOT being advanced for them — auto-advance off, or the sweep
+			// blocked by a tied court. Fires later than the sweep's grace, so a
+			// session advancing normally never triggers it.
+			if err := svc.NotifyOverdueRotationRounds(); err != nil {
+				log.Printf("rotation overtime: pass failed: %v", err)
+			}
 		}
 	}()
 

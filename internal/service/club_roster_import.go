@@ -102,6 +102,7 @@ func (s *Service) ImportClubRoster(clubID, callerID, raw string) (ClubImportResu
 	}
 
 	seen := map[string]bool{} // one line per person, however often they appear
+	added := []string{}       // told at the end, in one batch
 	for _, r := range rows {
 		uid := ""
 		if r.Email != "" {
@@ -139,8 +140,37 @@ func (s *Service) ImportClubRoster(clubID, callerID, raw string) (ClubImportResu
 			continue
 		}
 		out.Added++
+		added = append(added, uid)
+	}
+
+	// TELL the people who were just added.
+	//
+	// An import enrolls directly rather than inviting — that is deliberate, it
+	// is how a club moves a roster it already has. But being enrolled silently
+	// means the club's name appears on your profile and its admins can push to
+	// your phone before you know you're in it. The notification is what keeps
+	// this an administrative act rather than the app speaking for people: it
+	// names the club, and Leave is one tap from the page it links to.
+	if len(added) > 0 {
+		name := s.clubNameOr(clubID, "a club")
+		msg := "You've been added to " + name + "."
+		s.recordNotifications(added, "club_added", msg, "club:"+clubID)
+		_ = s.sendPush(added, name, msg, "")
 	}
 	return out, nil
+}
+
+// clubNameOr returns the club's name, or fallback if it can't be read. Used
+// where a missing name must not fail the operation that is reporting it.
+func (s *Service) clubNameOr(clubID, fallback string) string {
+	row, err := s.sb.SelectOne("clubs", "id=eq."+store.Q(clubID)+"&select=name")
+	if err != nil || row == nil {
+		return fallback
+	}
+	if n := strings.TrimSpace(asStr(row, "name")); n != "" {
+		return n
+	}
+	return fallback
 }
 
 // usersByEmail maps each given email to an account id, for emails that have one.

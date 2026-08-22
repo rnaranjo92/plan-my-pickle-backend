@@ -35,9 +35,16 @@ func (s *Service) SiblingClubs(clubID, callerID string) ([]model.Club, error) {
 	if !orgCanRead(s.OrgRoleFor(orgID, callerID)) {
 		return []model.Club{}, nil
 	}
+	// Naming a column that hasn't been migrated in fails the WHOLE select, which
+	// would take this section down on any database that has organizations but
+	// not branding. Every other read of brand_color is guarded the same way.
+	cols := "id,name,city,logo_url"
+	if s.columnReady("clubs", "brand_color") {
+		cols += ",brand_color"
+	}
 	rows, err := s.sb.Select("clubs",
 		"org_id=eq."+store.Q(orgID)+"&id=neq."+store.Q(clubID)+
-			"&select=id,name,city,logo_url,brand_color&order=name.asc")
+			"&select="+cols+"&order=name.asc")
 	if err != nil {
 		return nil, err
 	}

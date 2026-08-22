@@ -141,14 +141,25 @@ func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {
 
 // MyClubs lists clubs the user owns OR belongs to, newest first.
 func (s *Service) MyClubs(userID string) ([]model.Club, error) {
-	mem, err := s.sb.Select("club_members", "user_id=eq."+store.Q(userID)+"&select=club_id")
+	mem, err := s.sb.Select("club_members",
+		"user_id=eq."+store.Q(userID)+"&select=club_id,role")
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(mem))
+	// The role came back with the membership rows, so knowing which of these
+	// clubs the user CO-OWNS costs nothing extra. Without it the list showed a
+	// co-owner as an ordinary member and — because the waiting-to-join count is
+	// only filled for owners and co-owners — could never show them the queue.
+	coOwned := map[string]bool{}
 	for _, m := range mem {
-		if id := asStr(m, "club_id"); id != "" {
-			ids = append(ids, id)
+		id := asStr(m, "club_id")
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+		if strings.EqualFold(strings.TrimSpace(asStr(m, "role")), ClubRoleCoOwner) {
+			coOwned[id] = true
 		}
 	}
 	if len(ids) == 0 {
@@ -164,8 +175,13 @@ func (s *Service) MyClubs(userID string) ([]model.Club, error) {
 		c := mapClub(r)
 		c.IsOwner = c.OwnerID == userID
 		c.IsMember = true
+		c.IsCoOwner = coOwned[c.ID]
 		c.MemberCount = s.countRows("club_members", "club_id=eq."+store.Q(c.ID), "user_id")
 		c.EventCount = s.countRows("events", "club_id=eq."+store.Q(c.ID), "id")
+		// Fills PendingJoins for the clubs this user runs, so "N waiting" can
+		// appear on the LIST. Before this an owner discovered a queue only by
+		// opening each club in turn.
+		s.clubJoinState(&c, userID)
 		out = append(out, c)
 	}
 	return out, nil
@@ -250,7 +266,18 @@ func (s *Service) ClubMembers(clubID string) ([]model.ClubMember, error) {
 // to a club (the normal workflow) exposed its name, venue and payment handles
 // on the anonymous events API and the crawlable club page.
 func (s *Service) ClubEventsFor(clubID, viewerID string) ([]model.Event, error) {
-	if viewerID != "" && s.isClubMember(clubID, viewerID) {
+	if viewerID == "" {
+		return s.publicClubEvents(clubID)
+	}
+	if s.isClubMember(clubID, viewerID) {
+		return s.ClubEvents(clubID)
+	}
+	// An ORGANIZATION admin manages this club without necessarily holding a
+	// member row, so the membership check alone showed them the crawler's view
+	// here while the roster — built from ClubEvents — showed them the unlisted
+	// ones. Two surfaces on one screen disagreeing about which events exist.
+	// Checked second: it costs a query, and members are the common case.
+	if s.IsClubAdmin(clubID, viewerID) {
 		return s.ClubEvents(clubID)
 	}
 	return s.publicClubEvents(clubID)

@@ -99,8 +99,12 @@ func (s *Service) RequestJoinClub(clubID, userID string) (bool, error) {
 		who = "Someone"
 	}
 	if admins := s.clubAdminIDs(clubID); len(admins) > 0 {
-		s.recordNotifications(admins, "club_join_request",
-			who+" asked to join "+name, "club:"+clubID)
+		msg := who + " asked to join " + name
+		s.recordNotifications(admins, "club_join_request", msg, "club:"+clubID)
+		// And push. The bell alone meant an admin learned of the queue only by
+		// opening the app for some other reason; the repeat-tap guard above is
+		// what stops this becoming a flood.
+		_ = s.sendPush(admins, name, msg, "")
 	}
 	return false, nil
 }
@@ -292,7 +296,9 @@ func (s *Service) clubJoinState(c *model.Club, callerID string) {
 			c.JoinPending = true
 		}
 	}
-	if c.IsOwner || c.IsCoOwner {
+	// Org admins can approve these too (requireClubAdmin admits them), so they
+	// get the count as well or the queue is invisible to the person on duty.
+	if c.IsOwner || c.IsCoOwner || c.IsOrgAdmin {
 		c.PendingJoins = s.pendingJoinCount(c.ID)
 	}
 }

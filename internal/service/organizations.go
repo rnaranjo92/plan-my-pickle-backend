@@ -236,7 +236,70 @@ func (s *Service) SetOrgRole(orgID, callerID, targetUserID, role string) error {
 	_, err := s.sb.Upsert("organization_members", "org_id,user_id", map[string]any{
 		"org_id": orgID, "user_id": targetUserID, "role": role,
 	})
+	if err == nil {
+		// TELL the person. An appointment nobody is told about is head office
+		// believing a site is covered while the appointee has no idea — the org
+		// layer's whole job is access that follows the job, and the job has to
+		// hear it started. (Removal, below, stays deliberately SILENT: the same
+		// reasoning as declined club joins — an app announcing "your access was
+		// revoked" is speaking for the org about the one thing it would want to
+		// phrase itself.)
+		name := s.orgNameOr(orgID, "an organization")
+		what := "You can now manage " + name + " and its clubs."
+		if role == OrgRoleViewer {
+			what = "You can now view reports for " + name + "."
+		}
+		s.notifyUser(targetUserID, "org_role", callerID,
+			s.nameOfUser(callerID), what, "org:"+orgID)
+	}
 	return err
+}
+
+// orgNameOr returns the organization's name, or fallback — for messages that
+// must not fail because a name couldn't be read.
+func (s *Service) orgNameOr(orgID, fallback string) string {
+	row, err := s.sb.SelectOne("organizations",
+		"id=eq."+store.Q(orgID)+"&select=name")
+	if err != nil || row == nil {
+		return fallback
+	}
+	if n := strings.TrimSpace(asStr(row, "name")); n != "" {
+		return n
+	}
+	return fallback
+}
+
+// UpdateOrganization renames the org / changes its contact address. OWNER only:
+// admins run sites; the name on the contract belongs to whoever holds it.
+//
+// Until this existed both fields were immutable — set once at creation, typo
+// and all, forever. contact_email was write-once read-never.
+func (s *Service) UpdateOrganization(
+	orgID, callerID, name, contactEmail string,
+) error {
+	if s.OrgRoleFor(orgID, callerID) != OrgRoleOwner {
+		return ErrForbidden
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("what's the organization called?")
+	}
+	_, err := s.sb.Update("organizations", "id=eq."+store.Q(orgID),
+		map[string]any{
+			"name":          name,
+			"contact_email": orNull(strings.TrimSpace(contactEmail)),
+		})
+	return err
+}
+
+// DeleteOrganization removes the org. OWNER only. The schema makes this safe
+// the same way DeleteClub is: organization_members cascade away and
+// clubs.org_id is SET NULL — every club survives, just no longer under a roof.
+func (s *Service) DeleteOrganization(orgID, callerID string) error {
+	if s.OrgRoleFor(orgID, callerID) != OrgRoleOwner {
+		return ErrForbidden
+	}
+	return s.sb.Delete("organizations", "id=eq."+store.Q(orgID))
 }
 
 // RemoveOrgMember revokes someone's access. Owner only.

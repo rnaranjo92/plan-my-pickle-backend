@@ -98,6 +98,11 @@ func notifPushURL(link string) string {
 		// shares. Reusing it means an invite push lands on the club page with a
 		// Join button, rather than opening the app to wherever it was.
 		return base + "/?club=" + strings.TrimPrefix(link, "club:")
+	case strings.HasPrefix(link, "org:"):
+		// LIST-level, not the org itself: the appointee usually has exactly
+		// one, the list is a single tap from it, and it is never a dead end for
+		// someone whose access changed between the push and the tap.
+		return base + "/?org=1"
 	case strings.HasPrefix(link, "coaching:"):
 		// coaching:<threadID>[?tab=<name>] -> /?coaching=<threadID>[&tab=<name>]
 		id := strings.TrimPrefix(link, "coaching:")

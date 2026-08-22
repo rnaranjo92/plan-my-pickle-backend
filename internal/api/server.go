@@ -358,6 +358,11 @@ func NewServer(svc *service.Service) http.Handler {
 	// The report a viewer can actually take away — same rollup as the summary,
 	// as a file that survives being forwarded.
 	mux.HandleFunc("GET /orgs/{id}/report.csv", requireAuth(s.orgReportCSV))
+	// Rename / change contact, and closing the org down. Both owner-only in the
+	// service. Until these existed an org's name was set once, typo and all,
+	// forever — and a test org could never be removed.
+	mux.HandleFunc("POST /orgs/{id}", requireAuth(s.updateOrg))
+	mux.HandleFunc("DELETE /orgs/{id}", requireAuth(s.deleteOrg))
 	mux.HandleFunc("POST /orgs/{id}/role", requireAuth(s.setOrgRole))
 	mux.HandleFunc("DELETE /orgs/{id}/members/{userId}", requireAuth(s.removeOrgMember))
 	mux.HandleFunc("POST /clubs/{id}/org", requireAuth(s.attachClubToOrg))
@@ -4378,6 +4383,30 @@ func (s *Server) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, org)
+}
+
+func (s *Server) updateOrg(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name         string `json:"name"`
+		ContactEmail string `json:"contactEmail"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.svc.UpdateOrganization(r.PathValue("id"), userID(r),
+		req.Name, req.ContactEmail); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteOrg(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteOrganization(r.PathValue("id"), userID(r)); err != nil {
+		status(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // orgSummary is the corporate view: every site on one page, quietest first.

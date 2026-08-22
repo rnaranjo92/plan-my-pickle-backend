@@ -150,6 +150,10 @@ func (s *Service) GetClub(clubID, callerID string) (model.Club, error) {
 	c.IsOwner = callerID != "" && callerID == c.OwnerID
 	c.MemberCount = s.countRows("club_members", "club_id=eq."+store.Q(clubID), "user_id")
 	c.EventCount = s.countRows("events", "club_id=eq."+store.Q(clubID), "id")
+	if c.OwnerID != "" {
+		c.OwnerName = s.clubDisplayNames([]string{c.OwnerID})[c.OwnerID]
+		c.OwnerPhotoURL = s.photosByUser([]string{c.OwnerID})[c.OwnerID]
+	}
 	if callerID != "" {
 		m, _ := s.sb.SelectOne("club_members",
 			"club_id=eq."+store.Q(clubID)+"&user_id=eq."+store.Q(callerID)+

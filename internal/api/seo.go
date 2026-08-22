@@ -374,6 +374,11 @@ type seoHubData struct {
 	// Facts is a short list of plain statements ("Plays most Tuesdays"), shown
 	// above the sections.
 	Facts []string
+	// Accent is a club's "#rrggbb" brand colour; it tints the top rule and the
+	// mobile theme-color and nothing else — the page stays PMP, the club shows
+	// through. Normalized in the service layer; html/template's CSS filter
+	// would strip anything that isn't a colour anyway.
+	Accent string
 }
 
 // seoCityHub serves BOTH /pickleball-tournaments/{state}/{county} and the same
@@ -768,6 +773,7 @@ func (s *Server) seoClubPage(w http.ResponseWriter, r *http.Request) {
 		Section2Title: section2,
 		Cards2:        recentCards,
 		JSONLD:        template.JS(ld),
+		Accent:        club.BrandColor,
 	})
 }
 
@@ -1214,6 +1220,7 @@ page automatically once it's published and listed publicly.</p>
 ` + seoFoot))
 
 var seoHubTmpl = template.Must(template.New("hub").Parse(seoHead + `
+{{if .Accent}}<style>body::before{background:{{.Accent}}}</style>{{end}}
 <h1>{{.H1}}</h1>
 <p class="meta">{{.Intro}}</p>
 {{if .Facts}}<ul class="facts">{{range .Facts}}<li>{{.}}</li>{{end}}</ul>{{end}}

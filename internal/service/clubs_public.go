@@ -36,6 +36,11 @@ type PublicClub struct {
 	// club-supplied and this page is crawlable, so it stays on the member-facing
 	// club page rather than becoming an outbound link on a public one.
 	RequiresWaiver bool `json:"requiresWaiver,omitempty"`
+	// BrandColor ('#RRGGBB') tints the public page's header — the one surface a
+	// prospective member sees before ever opening the app, and until now the
+	// only club surface the brand DIDN'T reach. Safe in markup: it was
+	// normalized on the way in and is re-checked on the way out.
+	BrandColor string `json:"brandColor,omitempty"`
 }
 
 // PublicClubs lists clubs for the sitemap and the city hubs, newest first.
@@ -137,6 +142,9 @@ func (s *Service) PublicClubByID(
 	if s.columnReady("clubs", "is_public") {
 		cols += ",is_public"
 	}
+	if s.columnReady("clubs", "brand_color") {
+		cols += ",brand_color"
+	}
 	row, err := s.sb.SelectOne("clubs",
 		"id=eq."+store.Q(clubID)+"&select="+cols)
 	if err != nil {
@@ -166,6 +174,12 @@ func (s *Service) PublicClubByID(
 		LogoURL:     strings.TrimSpace(asStr(row, "logo_url")),
 
 		RequiresWaiver: asBool(row, "requires_waiver"),
+	}
+	// Re-normalized on the way OUT: this string lands in a <style> attribute on
+	// a crawlable page, so a row written before the check existed must not be
+	// able to carry anything but a colour.
+	if c, err := normalizeBrandColor(asStr(row, "brand_color")); err == nil {
+		club.BrandColor = c
 	}
 
 	events, _ := s.publicClubEvents(clubID)

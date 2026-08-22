@@ -2297,6 +2297,11 @@ type Club struct {
 	EventCount  int  `json:"eventCount"`
 	IsOwner     bool `json:"isOwner"`
 	IsMember    bool `json:"isMember"`
+	// OwnerName / OwnerPhotoURL let the visitor-facing invitation say WHO runs
+	// this club — an invitation signed by a person, not a row id. Set on single
+	// reads (GetClub); list endpoints skip the extra lookups.
+	OwnerName     string `json:"ownerName,omitempty"`
+	OwnerPhotoURL string `json:"ownerPhotoUrl,omitempty"`
 	// IsCoOwner: the caller may RUN this club without owning it. Separate from
 	// IsOwner because the two grant different things — a co-owner runs the club
 	// day to day but cannot delete it or appoint other co-owners — and because

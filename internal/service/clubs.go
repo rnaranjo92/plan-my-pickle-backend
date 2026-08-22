@@ -18,6 +18,24 @@ func (s *Service) CreateClub(ownerID string, req model.CreateClubRequest) (model
 	if name == "" {
 		return model.Club{}, errors.New("club name is required")
 	}
+	// ONE club per account (Kim, 2026-08-22). A club is a community with a
+	// history, not a folder — somebody's second and third club is either a test
+	// (which clutters the directory) or a multi-site operation, and multi-site
+	// is the org layer's job, provisioned by us in the backend rather than
+	// stacked on one person's account. Enforced HERE, not by hiding the button:
+	// anyone can post to the endpoint.
+	//
+	// JOINING other clubs is untouched — the limit is on owning.
+	if row, err := s.sb.SelectOne("clubs",
+		"owner_id=eq."+store.Q(ownerID)+"&select=id,name"); err == nil && row != nil {
+		have := strings.TrimSpace(asStr(row, "name"))
+		if have == "" {
+			have = "your club"
+		}
+		return model.Club{}, errors.New(
+			"you already run " + have + " — one club per account. " +
+				"Running several sites? Talk to us about an organization.")
+	}
 	addr := strings.TrimSpace(req.Address)
 	row := map[string]any{
 		"owner_id":     ownerID,

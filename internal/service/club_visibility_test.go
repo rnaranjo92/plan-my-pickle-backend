@@ -3,6 +3,8 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"github.com/rnaranjo92/plan-my-pickle-backend/internal/model"
 )
 
 // A private club takes members by INVITATION. These are the two halves of that
@@ -136,5 +138,30 @@ func TestOrgUpdateAndDeleteAreOwnerOnly(t *testing.T) {
 	}
 	if err := s.DeleteOrganization("o1", "boss"); err != nil {
 		t.Fatalf("owner delete: %v", err)
+	}
+}
+
+// ONE club per account. Enforced in the service because the button is not a
+// control — and the message points multi-site operators at the org layer
+// instead of leaving them at a dead end.
+func TestSecondClubIsRefusedWithTheFirstOnesName(t *testing.T) {
+	f := newFake().
+		seed("clubs", `[{"id":"c1","name":"LT Test","owner_id":"u1"}]`)
+	s := newFakeSvc(t, f)
+	_, err := s.CreateClub("u1", model.CreateClubRequest{Name: "Second Club"})
+	if err == nil {
+		t.Fatal("a second club should be refused")
+	}
+	if !strings.Contains(err.Error(), "LT Test") {
+		t.Fatalf("the refusal should name the club they already run: %v", err)
+	}
+}
+
+func TestFirstClubIsStillAllowed(t *testing.T) {
+	f := newFake().seed("clubs", `[]`)
+	s := newFakeSvc(t, f)
+	if _, err := s.CreateClub("u1",
+		model.CreateClubRequest{Name: "First Club"}); err != nil {
+		t.Fatalf("first club should create: %v", err)
 	}
 }

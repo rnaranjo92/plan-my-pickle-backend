@@ -381,6 +381,9 @@ func NewServer(svc *service.Service) http.Handler {
 	// Everything happening across the club's events, in one place. optionalAuth:
 	// members see their club's unlisted events too, visitors see only listed.
 	mux.HandleFunc("GET /clubs/{id}/feed", optionalAuth(s.clubFeed))
+	// A member saying something TO the club — text, photo or video. The feed
+	// above narrates the club's events; this is the club's own wall.
+	mux.HandleFunc("POST /clubs/{id}/posts", requireAuth(s.createClubPost))
 	// The other branches under this club's organization. Empty unless the
 	// caller has a role in that organization.
 	mux.HandleFunc("GET /clubs/{id}/siblings", requireAuth(s.clubSiblings))
@@ -4383,6 +4386,24 @@ func (s *Server) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, org)
+}
+
+func (s *Server) createClubPost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text      string `json:"text"`
+		MediaURL  string `json:"mediaUrl"`
+		MediaType string `json:"mediaType"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	item, err := s.svc.CreateClubPost(r.PathValue("id"), userID(r),
+		userEmail(r), req.Text, req.MediaURL, req.MediaType)
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) updateOrg(w http.ResponseWriter, r *http.Request) {

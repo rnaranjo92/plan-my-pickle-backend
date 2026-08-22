@@ -606,6 +606,7 @@ func mapFeedItem(m map[string]any) model.FeedItem {
 		fi.StartsAt = asStrPtr(meta, "starts_at")
 		fi.MediaURL = asStrPtr(meta, "media_url")
 		fi.MediaType = asStrPtr(meta, "media_type")
+		fi.ClubName = asStr(meta, "club_name")
 	}
 	return fi
 }

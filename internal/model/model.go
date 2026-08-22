@@ -2524,6 +2524,10 @@ type FeedItem struct {
 	// (also stashed in the item's meta JSON). MediaType is "video" or "image".
 	MediaURL  *string `json:"mediaUrl,omitempty"`
 	MediaType *string `json:"mediaType,omitempty"`
+	// ClubName is the club a CLUB POST belongs to, lifted from meta so the card
+	// can say where it lives when it travels beyond the club page (e.g. the
+	// author's own NewsFeed).
+	ClubName string `json:"clubName,omitempty"`
 	// EventName is the parent event's name. Attached only by MyFeed (the app's
 	// NewsFeed aggregates activity across many events and needs the label);
 	// empty on the per-event feed where the event is already in context.

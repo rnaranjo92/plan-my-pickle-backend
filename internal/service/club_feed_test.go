@@ -115,3 +115,28 @@ func TestClubPostCarriesTheClubNameForContext(t *testing.T) {
 		t.Fatalf("post not tied to the club: %v", got)
 	}
 }
+
+// An announcement now leaves a durable, labeled copy on the club feed — the
+// bell is per-recipient and a member who joins next week never sees it.
+func TestAnnouncementLeavesALabeledFeedCopy(t *testing.T) {
+	f := newFake().
+		seed("clubs", `[{"id":"c1","name":"LT Test","owner_id":"boss"}]`).
+		seed("club_members", `[{"club_id":"c1","user_id":"m1","role":"member"}]`).
+		seed("feed_items", `[{"club_id":"present"}]`)
+	s := newFakeSvc(t, f)
+	if _, err := s.AnnounceToClub("c1", "boss", "Tuesday is cancelled"); err != nil {
+		t.Fatalf("announce: %v", err)
+	}
+	wrote := f.written("feed_items")
+	if len(wrote) == 0 {
+		t.Fatal("no feed copy written")
+	}
+	last := wrote[len(wrote)-1]
+	if last["type"] != "club_announcement" || last["club_id"] != "c1" {
+		t.Fatalf("wrong feed copy: %v", last)
+	}
+	if meta, ok := last["meta"].(map[string]any); !ok ||
+		meta["club_name"] != "LT Test" {
+		t.Fatalf("club name missing from meta: %v", last["meta"])
+	}
+}

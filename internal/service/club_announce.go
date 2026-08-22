@@ -94,6 +94,25 @@ func (s *Service) AnnounceToClub(clubID, callerID, message string) (int, error) 
 	// means a failed push still leaves the message somewhere it can be read.
 	s.recordNotifications(uids, "club_announcement", message, "club:"+clubID)
 	_ = s.sendPush(uids, name, message, "")
+	// AND the club's feed — the announcement's durable, FINDABLE copy. The
+	// bell is per-recipient: a member who joins next week never sees it, and
+	// the club itself had no record of what it sent (the audit's write-only
+	// finding). As a feed item it's labeled "Club announcement", attributed,
+	// and carries the club's name wherever the card travels. Guarded on the
+	// club-posts migration; best-effort — the send already succeeded, and a
+	// feed hiccup must not report the announcement as failed.
+	if s.clubPostsReady() {
+		if _, ferr := s.sb.Insert("feed_items", map[string]any{
+			"type":       "club_announcement",
+			"club_id":    clubID,
+			"text":       message,
+			"author_id":  callerID,
+			"actor_name": s.nameOfUser(callerID),
+			"meta":       map[string]any{"club_name": name},
+		}); ferr != nil {
+			log.Printf("club announce: feed copy failed for %s: %v", clubID, ferr)
+		}
+	}
 	s.markClubAnnounced(clubID, time.Now())
 	log.Printf("club announce: %s (%s) to %d member(s)", clubID, name, len(uids))
 	return len(uids), nil

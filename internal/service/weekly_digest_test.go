@@ -80,12 +80,15 @@ func TestDigestRecipientsFallBackToWhereTheyPlay(t *testing.T) {
 		seed("players", `[{"user_id":"u1","email":"kim@example.com"}]`).
 		seed("events", `[{"county":"San Diego","state":"CA","owner_id":"u1"}]`)
 	s := newFakeSvc(t, f)
-	got := s.digestRecipients()
+	got, dropped := s.digestRecipients()
 	if len(got) != 1 {
 		t.Fatalf("a blank county should fall back, not disqualify; got %d", len(got))
 	}
 	if got[0].place != "San Diego, CA" {
 		t.Fatalf("place not resolved from their events: %q", got[0].place)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("nobody should have been dropped: %v", dropped)
 	}
 }
 
@@ -98,7 +101,35 @@ func TestDigestRecipientsSkipAnyoneUnplaceable(t *testing.T) {
 		seed("events", `[]`).
 		seed("registrations", `[]`)
 	s := newFakeSvc(t, f)
-	if got := s.digestRecipients(); len(got) != 0 {
+	got, dropped := s.digestRecipients()
+	if len(got) != 0 {
 		t.Fatalf("an unplaceable person became a recipient: %+v", got)
+	}
+	// ...and they must be REPORTED, not silently discarded. Unclaimed, they
+	// match the recipient query again on every run, and enough of them fill the
+	// batch window with people who can never be mailed — starving everyone
+	// behind them. The caller claims these so the queue keeps draining.
+	if len(dropped) != 1 || dropped[0] != "u1" {
+		t.Fatalf("unplaceable person must be returned for claiming; got %v",
+			dropped)
+	}
+}
+
+// The email is the one place a stored UTC timestamp becomes a claim about WHEN
+// something happens, so it is written in the reader's timezone. Printing raw
+// UTC put a Friday-evening league night on Saturday.
+func TestDigestWhenIsWrittenInPacificNotUTC(t *testing.T) {
+	// 2026-08-22T02:00:00Z is Friday 7pm Pacific, not Saturday 2am.
+	utc := "2026-08-22T02:00:00Z"
+	got := digestWhen(&utc)
+	if !strings.HasPrefix(got, "Fri, Aug 21") {
+		t.Fatalf("expected the Friday evening it actually is, got %q", got)
+	}
+	if !strings.Contains(got, "7:00 PM") {
+		t.Fatalf("expected 7:00 PM Pacific, got %q", got)
+	}
+	// An unparseable or absent date must stay honest rather than inventing one.
+	if digestWhen(nil) != "Date TBD" {
+		t.Fatal("a missing date should read Date TBD")
 	}
 }

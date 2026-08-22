@@ -69,8 +69,17 @@ func (s *Service) SendWeeklyDigest() {
 		return
 	}
 
-	sent, skipped := 0, 0
-	for _, r := range s.digestRecipients() {
+	recips, dropped := s.digestRecipients()
+	// Claim the ones we can't mail at all, so they don't sit in the window
+	// forever. They were never getting this week's email; leaving them
+	// unclaimed only means re-resolving them every hour and, once there are
+	// enough of them, crowding out everyone behind them.
+	for _, uid := range dropped {
+		s.claimDigest(uid, now)
+	}
+
+	sent, skipped, failed := 0, 0, 0
+	for _, r := range recips {
 		// CLAIM BEFORE SENDING. Stamping first means a crash costs one person
 		// their digest; sending first means a re-run mails everyone twice.
 		if !s.claimDigest(r.userID, now) {
@@ -84,6 +93,16 @@ func (s *Service) SendWeeklyDigest() {
 		subject, htmlBody, text := digestEmail(r.name, r.place, evs, r.userID)
 		if err := s.Email.SendEmail(r.email, subject, htmlBody, text); err != nil {
 			log.Printf("weekly digest: send to %s failed: %v", r.email, err)
+			// Give the claim back. A bad ten minutes at the mail provider would
+			// otherwise burn through the whole batch — everyone stamped, nobody
+			// mailed — and the hourly re-run, which exists to resume exactly
+			// this, would step straight past them until next Thursday.
+			//
+			// The risk this reintroduces is a send that errored AFTER the
+			// provider accepted it, which would double-send on the retry. That
+			// is rare; a silent week of nothing is not.
+			s.releaseDigest(r.userID)
+			failed++
 			continue
 		}
 		sent++
@@ -92,7 +111,9 @@ func (s *Service) SendWeeklyDigest() {
 		// costs nobody anything — where a burst of 429s costs the whole batch.
 		time.Sleep(400 * time.Millisecond)
 	}
-	log.Printf("weekly digest: %d sent, %d had nothing near them", sent, skipped)
+	log.Printf("weekly digest: %d sent, %d had nothing near them, "+
+		"%d unplaceable, %d failed (will retry)",
+		sent, skipped, len(dropped), failed)
 }
 
 type digestRecip struct {
@@ -100,7 +121,14 @@ type digestRecip struct {
 }
 
 // digestRecipients finds people who can be emailed and haven't been this week.
-func (s *Service) digestRecipients() []digestRecip {
+//
+// Also returns the ids it had to DROP — no address, or nowhere we can place
+// them. Those matter to the caller: they still match the query, so unless they
+// are claimed too they come back on every run and eventually fill the whole
+// batch window with people who can never receive anything, and nobody behind
+// them is ever fetched. "Signed up, no county, never joined an event" describes
+// a lot of casual signups, so this is a matter of time, not a hypothetical.
+func (s *Service) digestRecipients() (out []digestRecip, dropped []string) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02")
 	// NOT filtered on county.
 	//
@@ -111,15 +139,18 @@ func (s *Service) digestRecipients() []digestRecip {
 	// null column that made every county-scoped feature look broken.
 	//
 	// So resolve per person below and skip the ones we genuinely can't place.
+	// Ordered, so which slice of the list a run gets is defined rather than
+	// whatever the planner felt like returning.
 	rows, err := s.sb.Select("pmp_profiles",
 		"digest_opt_out=is.false"+
 			"&or=(digest_sent_on.is.null,digest_sent_on.lt."+cutoff+")"+
-			"&select=user_id,full_name,county,state&limit="+strconv.Itoa(digestBatch))
+			"&select=user_id,full_name,county,state&order=user_id.asc"+
+			"&limit="+strconv.Itoa(digestBatch))
 	if err != nil {
 		log.Printf("weekly digest: could not list recipients: %v", err)
-		return nil
+		return nil, nil
 	}
-	out := make([]digestRecip, 0, len(rows))
+	out = make([]digestRecip, 0, len(rows))
 	for _, r := range rows {
 		uid := asStr(r, "user_id")
 		if uid == "" {
@@ -128,6 +159,7 @@ func (s *Service) digestRecipients() []digestRecip {
 		// The address lives on the player row, not the profile.
 		email := s.emailForUser(uid)
 		if email == "" {
+			dropped = append(dropped, uid)
 			continue
 		}
 		// Blank counts as unset, the same rule userHomeCounty uses — an empty
@@ -141,7 +173,8 @@ func (s *Service) digestRecipients() []digestRecip {
 			place = strings.TrimSpace(place)
 		}
 		if place == "" {
-			continue // genuinely can't place them — not a recipient
+			dropped = append(dropped, uid) // genuinely can't place them
+			continue
 		}
 		if st != "" {
 			place = place + ", " + st
@@ -153,13 +186,21 @@ func (s *Service) digestRecipients() []digestRecip {
 			place:  place,
 		})
 	}
-	return out
+	return out, dropped
 }
 
 // emailForUser returns an address for this account, or "".
+//
+// One account can own several player rows carrying different addresses, so the
+// pick is ORDERED — otherwise the digest could arrive at one address this week
+// and another the next, which reads as a different mailing list. Ordered on id
+// rather than a date: nothing in this codebase reads created_at off players, and
+// naming a column that isn't there fails the whole select, which here would
+// quietly mean nobody is a recipient at all.
 func (s *Service) emailForUser(userID string) string {
 	row, err := s.sb.SelectOne("players",
-		"user_id=eq."+store.Q(userID)+"&email=not.is.null&select=email")
+		"user_id=eq."+store.Q(userID)+"&email=not.is.null&select=email"+
+			"&order=id.asc")
 	if err != nil || row == nil {
 		return ""
 	}
@@ -176,6 +217,16 @@ func (s *Service) claimDigest(userID string, now time.Time) bool {
 			"&or=(digest_sent_on.is.null,digest_sent_on.lt."+cutoff+")",
 		map[string]any{"digest_sent_on": now.Format("2006-01-02")})
 	return err == nil && len(rows) > 0
+}
+
+// releaseDigest hands a claim back, so the next hourly tick retries this person.
+// Unconditional: we only call it for a claim we just won ourselves.
+func (s *Service) releaseDigest(userID string) {
+	if _, err := s.sb.Update("pmp_profiles", "user_id=eq."+store.Q(userID),
+		map[string]any{"digest_sent_on": nil}); err != nil {
+		log.Printf("weekly digest: could not release the claim for %s: %v",
+			userID, err)
+	}
 }
 
 // digestEventsFor is what's on near this person in the window.
@@ -210,7 +261,10 @@ func digestEmail(name, place string, evs []model.PublicEvent, userID string) (
 	if i := strings.IndexByte(who, ' '); i > 0 {
 		who = who[:i] // first name only — this is a note, not a letter
 	}
-	subject := fmt.Sprintf("%d pickleball event%s near you this week",
+	// No "this week": the window is 10 days, deliberately, so the weekend AFTER
+	// this one is in here. Promising a week and then listing something 9 days
+	// out is a small lie in the first line the reader sees.
+	subject := fmt.Sprintf("%d pickleball event%s near you",
 		len(evs), plural(len(evs)))
 
 	var b strings.Builder
@@ -269,6 +323,22 @@ func plural(n int) string {
 	return "s"
 }
 
+// digestZone is the timezone the email is WRITTEN in.
+//
+// Events are stored UTC, and printing that raw put a Friday 7pm league night in
+// the email as "Sat · 2:00 AM" — the wrong DAY, in the one email whose entire
+// job is saying when things are. A 9am Saturday tournament read as 4:00 PM.
+//
+// Pacific because that is where the events are; the joke push makes the same
+// assumption. When that stops being true this wants to key off the EVENT's own
+// locale rather than the sender's, which needs a timezone on the event row.
+func digestZone() *time.Location {
+	if loc, err := time.LoadLocation("America/Los_Angeles"); err == nil {
+		return loc
+	}
+	return time.UTC // zoneinfo missing — UTC beats no email
+}
+
 // digestWhen writes the date the way somebody reads it, not the way it's stored.
 func digestWhen(startsAt *string) string {
 	if startsAt == nil {
@@ -278,7 +348,7 @@ func digestWhen(startsAt *string) string {
 	if err != nil {
 		return "Date TBD"
 	}
-	return t.Format("Mon, Jan 2 · 3:04 PM")
+	return t.In(digestZone()).Format("Mon, Jan 2 · 3:04 PM")
 }
 
 func seoEventLink(id string) string {

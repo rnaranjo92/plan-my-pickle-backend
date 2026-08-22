@@ -261,9 +261,9 @@ func main() {
 	}()
 
 	// Weekly "what's on near you" digest. Hourly tick, but the send is gated to
-	// Thursday morning Pacific and claimed once per day, then claimed again per
-	// PERSON — so a run that dies halfway resumes on the next tick without
-	// emailing anybody twice.
+	// Thursday morning Pacific and claimed per PERSON — so a run that dies
+	// halfway resumes on the next tick without emailing anybody twice, and a
+	// list longer than one batch drains across the ticks that follow.
 	go func() {
 		time.Sleep(6 * time.Minute) // stagger away from the other boot jobs
 		for {

@@ -200,3 +200,41 @@ func TestNormalizePosterQRURL(t *testing.T) {
 		t.Error("an over-long link should be refused")
 	}
 }
+
+// "Men's Doubles 3.0 · Mixed Doubles 3.5" followed by "Play format: Doubles"
+// letters the same fact twice — the duplicate-city bug in a new outfit. The
+// brief de-duplicates BEFORE the model sees it (Kim spotted it on a real
+// poster, 2026-08-22).
+func TestPosterBriefSkipsTheFormatWhenDivisionsAlreadySayIt(t *testing.T) {
+	f := newFake().
+		seed("events", `[{"id":"e1","name":"Summer Slam","format":"doubles"}]`).
+		seed("brackets", `[
+			{"id":"b1","event_id":"e1","name":"Men's Doubles 3.0","sort_order":0},
+			{"id":"b2","event_id":"e1","name":"Mixed Doubles 3.5","sort_order":1}
+		]`)
+	s := newFakeSvc(t, f)
+	ev, _ := s.sb.SelectOne("events", "id=eq.e1&select=*")
+	prompt, _ := s.posterBrief(ev, "any style")
+	if strings.Contains(prompt, "Play format") {
+		t.Fatalf("format fact should be dropped when divisions mention it:\n%s",
+			prompt)
+	}
+	if !strings.Contains(prompt, "Men's Doubles 3.0") {
+		t.Fatalf("divisions should still be in the brief:\n%s", prompt)
+	}
+}
+
+func TestPosterBriefKeepsTheFormatWhenDivisionsDoNot(t *testing.T) {
+	f := newFake().
+		seed("events", `[{"id":"e1","name":"Summer Slam","format":"doubles"}]`).
+		seed("brackets", `[
+			{"id":"b1","event_id":"e1","name":"Open 3.0 - 3.5","sort_order":0}
+		]`)
+	s := newFakeSvc(t, f)
+	ev, _ := s.sb.SelectOne("events", "id=eq.e1&select=*")
+	prompt, _ := s.posterBrief(ev, "any style")
+	if !strings.Contains(prompt, `"Doubles"`) {
+		t.Fatalf("format fact should survive when divisions don't say it:\n%s",
+			prompt)
+	}
+}

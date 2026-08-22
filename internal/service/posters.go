@@ -468,6 +468,7 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 	// len > 1 meant most events printed no division at all. Capped at 6 so a
 	// mega-draw doesn't turn the design into a spreadsheet. Skipped only when
 	// the sole division just repeats the event's own name.
+	divisionLine := ""
 	if id := strings.TrimSpace(asStr(ev, "id")); id != "" {
 		if bks, err := s.GetBrackets(id); err == nil && len(bks) > 0 {
 			names := make([]string, 0, 6)
@@ -482,24 +483,31 @@ func (s *Service) posterBrief(ev map[string]any, stylePrompt string) (string, []
 			if len(names) == 1 && strings.EqualFold(names[0], name) {
 				names = nil // "Summer Slam / Summer Slam" says nothing twice
 			}
+			divisionLine = strings.Join(names, " · ")
 			if len(names) == 1 {
 				facts = append(facts, fmt.Sprintf(
 					"The division, rendered EXACTLY: %q.", names[0]))
 			} else if len(names) > 1 {
 				facts = append(facts, fmt.Sprintf(
 					"The divisions, rendered EXACTLY as a compact list: %q.",
-					strings.Join(names, " · ")))
+					divisionLine))
 			}
 		}
 	}
 
 	// Singles vs doubles — one word, and the first thing a player checks after
-	// the date.
-	switch strings.ToLower(strings.TrimSpace(asStr(ev, "format"))) {
-	case "singles":
-		facts = append(facts, `Play format, rendered EXACTLY: "Singles".`)
-	case "doubles":
-		facts = append(facts, `Play format, rendered EXACTLY: "Doubles".`)
+	// the date. SKIPPED when the division names already say it: "Men's Doubles
+	// 3.0 · Mixed Doubles 3.5" followed by "Play format: Doubles" letters the
+	// same fact twice, which is the duplicate-city bug in a new outfit. The
+	// facts are de-duplicated BEFORE the model sees them — a brief that repeats
+	// itself gets a poster that repeats itself.
+	format := strings.ToLower(strings.TrimSpace(asStr(ev, "format")))
+	if format == "singles" || format == "doubles" {
+		if !strings.Contains(strings.ToLower(divisionLine), format) {
+			facts = append(facts, fmt.Sprintf(
+				"Play format, rendered EXACTLY: %q.",
+				strings.ToUpper(format[:1])+format[1:]))
+		}
 	}
 
 	// Entry fee. A poster that doesn't say the price makes everyone ask, and

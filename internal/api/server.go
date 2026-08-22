@@ -1263,6 +1263,9 @@ func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
 		Custom          string               `json:"custom"`
 		Logos           []service.PosterLogo `json:"logos"`
 		SponsorLogoUrls []string             `json:"sponsorLogoUrls"`
+		// QrUrl: put a QR to this link on the poster. Empty = no code. There is
+		// no event behind a studio poster, so the link has to be given.
+		QrURL string `json:"qrUrl"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -1279,7 +1282,7 @@ func (s *Server) studioGeneratePoster(w http.ResponseWriter, r *http.Request) {
 	url, err := s.svc.GenerateStudioPoster(userID(r),
 		req.Title, req.Date, req.Venue,
 		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom,
-		logos)
+		logos, req.QrURL)
 	if err != nil {
 		status(w, err)
 		return

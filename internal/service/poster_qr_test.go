@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -152,5 +153,50 @@ func TestAddPosterQRFailuresReturnTheOriginalImage(t *testing.T) {
 				t.Error("the original image must be handed back untouched")
 			}
 		})
+	}
+}
+
+// The studio's link is typed by hand and ends up PRINTED, so what it accepts
+// and refuses is pinned here rather than left to a regex nobody re-reads.
+func TestNormalizePosterQRURL(t *testing.T) {
+	ok := []struct{ in, want string }{
+		{"https://planmypickle.com/e/abc", "https://planmypickle.com/e/abc"},
+		{"http://example.org/x", "http://example.org/x"},
+		// The common case: they type the domain and mean the web.
+		{"planmypickle.com", "https://planmypickle.com"},
+		{"  planmypickle.com/e/1  ", "https://planmypickle.com/e/1"},
+	}
+	for _, c := range ok {
+		got, err := normalizePosterQRURL(c.in)
+		if err != nil {
+			t.Errorf("%q: unexpected error %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%q → %q, want %q", c.in, got, c.want)
+		}
+	}
+	bad := []string{
+		"",
+		"   ",
+		// A QR is unreadable to a human, so they cannot see what they are about
+		// to hand out — anything that isn't a plain web link is refused.
+		"javascript:alert(1)",
+		"mailto:someone@example.com",
+		"tel:+16195551234",
+		"data:text/html,<h1>hi</h1>",
+		"not a url",
+		"https://has space.com/x",
+		"localhost", // no dot: not a real public host
+		"https://x", // ditto
+	}
+	for _, in := range bad {
+		if got, err := normalizePosterQRURL(in); err == nil {
+			t.Errorf("%q should have been refused, got %q", in, got)
+		}
+	}
+	// Too long to scan from a wall.
+	if _, err := normalizePosterQRURL("https://e.com/" + strings.Repeat("a", 600)); err == nil {
+		t.Error("an over-long link should be refused")
 	}
 }

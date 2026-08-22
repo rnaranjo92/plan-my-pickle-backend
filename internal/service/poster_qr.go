@@ -8,6 +8,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	neturl "net/url"
 	"strings"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -56,14 +57,87 @@ func registrationURLFor(eventID string) string {
 	return "https://app.planmypickle.com/?register=" + eventID
 }
 
+// normalizePosterQRURL vets a link typed into the Poster Studio, where there is
+// no event to derive one from.
+//
+// Stricter than it looks, because the result is PRINTED and permanent. A typo
+// is not recoverable once the flyer is on a wall, so a bare "planmypickle.com"
+// gets https:// rather than being rejected, and anything that isn't a plain
+// web link is refused outright — a QR is unreadable to a human, so they cannot
+// see what they are about to hand out. Non-http schemes are exactly how a code
+// ends up doing something the person holding it did not expect.
+func normalizePosterQRURL(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", errors.New("add the link the QR code should open")
+	}
+	if len(u) > 512 {
+		// Long inputs force a denser code; past a point it stops scanning from
+		// a poster on a wall, which is the only place it will ever be used.
+		return "", errors.New("that link is too long to scan reliably")
+	}
+	if strings.ContainsAny(u, " \t\n\r") {
+		return "", errors.New("a link can't contain spaces")
+	}
+	lower := strings.ToLower(u)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		// Refuse ANY other scheme, and note that not all of them carry "://" —
+		// mailto:, tel: and javascript: don't, so a "://" test alone let them
+		// through and then prepended https:// to them.
+		if hasURLScheme(lower) {
+			return "", errors.New("the QR code can only open a web link")
+		}
+		u = "https://" + u // the common case: they typed the domain
+	}
+	parsed, err := neturl.Parse(u)
+	if err != nil || parsed.Host == "" || !strings.Contains(parsed.Host, ".") {
+		return "", errors.New("that doesn't look like a web address")
+	}
+	return u, nil
+}
+
+// hasURLScheme reports whether the string opens with a URI scheme — "scheme:"
+// per RFC 3986, where a scheme is a letter followed by letters, digits, +, -
+// or . and the colon comes before any slash.
+//
+// Written out rather than leaning on "://" because the schemes that matter
+// most here don't use the slashes: mailto:, tel:, javascript:, data:.
+func hasURLScheme(s string) bool {
+	for i, r := range s {
+		switch {
+		case r == ':':
+			return i > 0
+		case r == '/' || r == '?' || r == '#':
+			return false // path/query started; no scheme
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9',
+			r == '+', r == '-', r == '.':
+			if i == 0 && !(r >= 'a' && r <= 'z') {
+				return false // a scheme must START with a letter
+			}
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // posterQRReservation is appended to the model's brief when a QR is coming, so
 // it composes with a hole rather than having one punched through its focal
 // point. Best-effort by nature — the model may ignore it, and the opaque card
 // below is what makes that survivable rather than a broken poster.
-const posterQRReservation = " Leave the BOTTOM-RIGHT corner visually quiet: " +
-	"a clear area about one quarter of the poster's width, free of text, faces " +
-	"and busy detail, because a QR code is placed there afterwards. Letter the " +
-	"words SCAN TO REGISTER in small type immediately to the LEFT of that area."
+const posterQRReservation = posterQRReservationPlain +
+	" Letter the words SCAN TO REGISTER in small type immediately to the LEFT " +
+	"of that area."
+
+// posterQRReservationPlain reserves the space WITHOUT captioning it — used by
+// the Poster Studio, where the organizer supplies an arbitrary link and we have
+// no idea whether it leads to a registration form, a venue map or a sponsor.
+// Lettering "SCAN TO REGISTER" over a link that doesn't register anyone would
+// be the model stating a fact we made up, which is the one thing the whole
+// prompt is built to prevent.
+const posterQRReservationPlain = " Leave the BOTTOM-RIGHT corner visually " +
+	"quiet: a clear area about one quarter of the poster's width, free of text, " +
+	"faces and busy detail, because a QR code is placed there afterwards."
 
 // qrLayout is where the code lands and how big its parts are, in pixels.
 type qrLayout struct {

@@ -589,13 +589,23 @@ func studioPosterPath(userID, ext string) string {
 
 // GenerateStudioPoster renders a poster from typed-in details, with NO event
 // behind it. Returns the public URL; the caller decides what to do with it.
+// [qrURL] adds a QR to that link. There is no event here to derive one from, so
+// the studio asks for it — validated BEFORE the model runs, because a rejected
+// link after a paid render would be the worst possible moment to say no.
 func (s *Service) GenerateStudioPoster(
 	callerID, title, dateText, venueText, style, layout, vibe, extra, custom string,
-	logos []PosterLogo,
+	logos []PosterLogo, qrURL string,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
 			"posters aren't enabled yet — set GEMINI_API_KEY in Railway")
+	}
+	qrLink := ""
+	if strings.TrimSpace(qrURL) != "" {
+		var qerr error
+		if qrLink, qerr = normalizePosterQRURL(qrURL); qerr != nil {
+			return "", qerr // before the credit is spent
+		}
 	}
 	if err := s.requirePosterCredit(callerID); err != nil {
 		return "", err
@@ -610,10 +620,23 @@ func (s *Service) GenerateStudioPoster(
 		prompt += " " + logoFacts(counts, labels, 0)
 		refs = lrefs
 	}
+	if qrLink != "" {
+		// No caption: the link is whatever they typed, so telling the model to
+		// letter "SCAN TO REGISTER" could label a venue map as a sign-up form.
+		prompt += posterQRReservationPlain
+	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
 		log.Printf("poster: studio generate failed for %s: %v", callerID, err)
 		return "", posterGenError(err)
+	}
+	if qrLink != "" {
+		withQR, qrMime, qerr := addPosterQR(img, mime, qrLink)
+		if qerr != nil {
+			log.Printf("poster: studio QR skipped for %s: %v", callerID, qerr)
+		} else {
+			img, mime = withQR, qrMime
+		}
 	}
 	ext := "png"
 	if strings.Contains(mime, "jpeg") {

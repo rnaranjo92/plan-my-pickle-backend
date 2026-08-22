@@ -1354,6 +1354,11 @@ func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 		// don't send the field. Only the Poster Studio, which borrows an event for
 		// its details, sends false.
 		Attach *bool `json:"attach"`
+		// QR: composite a code onto the poster that opens this event's
+		// registration form. A plain bool, so absent means NO — every client
+		// already in the wild omits it, and stamping a code onto their posters
+		// without being asked is not a default to acquire by accident.
+		QR bool `json:"qr"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -1370,7 +1375,7 @@ func (s *Server) generatePoster(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := s.svc.GeneratePoster(r.PathValue("id"), userID(r),
 		req.Style, req.Layout, req.Vibe, req.Extra, req.Custom,
-		logos, attach)
+		logos, attach, req.QR)
 	if err != nil {
 		status(w, err)
 		return

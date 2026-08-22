@@ -115,9 +115,11 @@ func (s *Service) posterAllowed(ev map[string]any, callerID string) bool {
 // there to try a style must not silently replace the poster an event is already
 // advertising with. The studio shows the result and lets the organizer choose
 // "Use on an event".
+// [qr] adds a scannable code to the event's registration form, composited after
+// generation — see poster_qr.go for why the model is never asked to draw it.
 func (s *Service) GeneratePoster(
 	eventID, callerID, style, layout, vibe, extra, custom string,
-	logos []PosterLogo, attach bool,
+	logos []PosterLogo, attach, qr bool,
 ) (string, error) {
 	if !s.PostersEnabled() {
 		return "", errors.New(
@@ -152,10 +154,25 @@ func (s *Service) GeneratePoster(
 		prompt += " " + logoFacts(counts, labels, len(refs))
 		refs = append(refs, lrefs...)
 	}
+	// Ask for the corner BEFORE generating, so the art composes around the code
+	// instead of having it punched through the middle of something.
+	if qr {
+		prompt += posterQRReservation
+	}
 	img, mime, err := gateway.GenerateImage(prompt, refs)
 	if err != nil {
 		log.Printf("poster: generate failed for %s: %v", eventID, err)
 		return "", posterGenError(err)
+	}
+	if qr {
+		// Best-effort: a poster without its QR still beats losing a paid
+		// generation, so a failure here is logged and the image kept.
+		withQR, qrMime, qerr := addPosterQR(img, mime, registrationURLFor(eventID))
+		if qerr != nil {
+			log.Printf("poster: QR skipped for %s: %v", eventID, qerr)
+		} else {
+			img, mime = withQR, qrMime
+		}
 	}
 	ext := "png"
 	if strings.Contains(mime, "jpeg") {

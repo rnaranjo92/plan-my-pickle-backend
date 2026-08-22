@@ -384,6 +384,10 @@ func NewServer(svc *service.Service) http.Handler {
 	// A member saying something TO the club — text, photo or video. The feed
 	// above narrates the club's events; this is the club's own wall.
 	mux.HandleFunc("POST /clubs/{id}/posts", requireAuth(s.createClubPost))
+	// One member, in full — contact, ratings, their record HERE. Admin-only in
+	// the service: this is where phone numbers live.
+	mux.HandleFunc("GET /clubs/{id}/members/{userId}",
+		requireAuth(s.clubMemberProfile))
 	// The other branches under this club's organization. Empty unless the
 	// caller has a role in that organization.
 	mux.HandleFunc("GET /clubs/{id}/siblings", requireAuth(s.clubSiblings))
@@ -4386,6 +4390,16 @@ func (s *Server) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, org)
+}
+
+func (s *Server) clubMemberProfile(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.ClubMemberProfileFor(
+		r.PathValue("id"), r.PathValue("userId"), userID(r))
+	if err != nil {
+		status(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) createClubPost(w http.ResponseWriter, r *http.Request) {
